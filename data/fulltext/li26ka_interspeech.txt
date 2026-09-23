@@ -1,0 +1,508 @@
+Read What You Hear: Reference-Free Hypotheses Evaluation with Acoustic
+Discrepancy
+Zhihan Li, Hankun Wang, Yiwei Guo, Bohan Li, Xie Chen, Kai Yu ∗∗
+X-LANCE Lab, School of Computer Science, Shanghai Jiao Tong University, China
+MoE Key Lab of Artificial Intelligence, Jiangsu Key Lab of Language Computing, China
+{lizhihan957, kai.yu}@sjtu.edu.cn
+Abstract
+Automatic speech recognition systems commonly rely on ref-
+erence transcriptions for evaluation, while reference-free ap-
+proaches often depend on internal confidence estimation or aux-
+iliary language models. We propose READ (Reference-free
+Hypothesis Evaluation with Acoustic Discrepancy), a novel
+metric that evaluates ASR hypotheses directly from the speech
+signal. READ emphasizes the acoustic grounding of hypothe-
+ses. It uses a pretrained auto-regressive TTS model to com-
+pute the conditional likelihood of speech tokens given a text hy-
+pothesis, to measure fine-grained acoustic discrepancy between
+speech and text. Without additional training, READ can be ap-
+plied for hypothesis refinement. Experiments show that READ
+correlates with specific recognition errors and improves ASR
+outputs, achieving up to 20% relative error rate reduction, with
+particularly strong gains under noisy conditions.
+Index Terms: speech recognition, hypothesis evaluation, hy-
+pothesis refinement
+1. Introduction
+Automatic Speech Recognition (ASR) has achieved remarkable
+progress with the advent of large-scale pre-training and end-
+to-end architectures. However,hypothesis evaluationof ASR
+systems remains a non-trivial challenge, particularly in real-
+world scenarios where ground-truth transcripts are often un-
+available. Traditional evaluation relies heavily on reference-
+based metrics such as Word Error Rate (WER). While WER
+provides a definitive measure of accuracy, its requirement for
+human-labeled references limits its utility in large-scale unsu-
+pervised scenarios and iterative system self-improvement.
+To address the absence of references, various reference-free
+evaluation methods have been proposed. Internal confidence
+scores [1, 2] derived from ASR decoders offer a computation-
+ally efficient proxy, but often suffer from poor calibration and
+overconfidence [3, 4]. External evaluation methods such as
+Language Model (LM) rescoring [5, 6], incorporate linguistic
+priors to assess the “fluency” of hypotheses. However, text-only
+approaches inherently overlook the speech signal. Quality Es-
+timation (QE) models like eWER [7] have attempted to predict
+absolute error rates, yet they typically require supervised train-
+ing on error-labeled datasets and lack the granularity to pinpoint
+the exact error locations.
+A primary application of evaluation methods ishypothesis
+refinement, adjusting ASR outputs to achieve lower error rates.
+Classical refinement strategies, such asN-best reranking and
+system combination (e.g., ROVER [8]), often utilize confidence
+scores or rescoring weights. The emergence of Large Lan-
+**indicates the corresponding author.
+Word Error Rate
+Semantic Distance
+READ (Ours)
+ASR Confidence
+LM Scoring
+Quality Estimation
+Error Correction
+N-Best Rescoring
+System Combination
+READ (Ours)
+Reference-based Evaluation Reference-free Evaluation
+Internal
+External
+Hypothesis Reﬁnement
+AR TTS
+Hypotheses
+......
+......
+......
+Figure 1:We propose READ for hypothesis evaluation.
+guage Models (LLMs) has introduced a generative paradigm,
+directly producing improved hypotheses without explicit eval-
+uation [9, 10, 11]. While generative approaches demonstrate
+impressive performance, they do not eliminate the need for eval-
+uation. We still need metrics that provide interpretable and di-
+agnostic insights to guide the optimization of existing systems.
+We believe that a system should be cognizant of its own
+actions, so do the evaluation methods. [12] emphasizes the
+significance of model reliability and proposed specific met-
+rics. Inspired by these insights, we reconsider what reliabil-
+ity means in ASR. Recalling the early formulation of ASR,
+Bayes’ theorem decomposes the posteriorP(text|speech)
+into an acoustic modelP(speech|text)and a language model
+P(text). While LM rescoring reinforceslinguistic plausibil-
+ity, a corresponding mechanism foracoustic groundingis no-
+tably absent. Though speech signals are incorporated in some
+works [13, 14, 15, 16, 17], acoustic and linguistic factors are
+processed within E2E black boxes, hindering clear verification.
+In this paper, we proposeREAD(Reference-free Hypoth-
+esisEvaluation withAcousticDiscrepancy), a novel unsuper-
+vised metric that restores the balance by re-emphasizing the
+role of the acoustic model. Our motivation stems from the prin-
+ciple ofanalysis-by-synthesis[18]: if a hypothesis accurately
+represents the speech, we should be able to resynthesize the
+speech with high likelihood. By utilizing a pre-trained discrete
+auto-regressive TTS model (e.g., CosyV oice2 [19]) in a teacher-
+forcing mode, we compute the conditional likelihood of discrete
+speech tokens given a text hypothesis. The resulting negative
+log-likelihood (NLL) sequence serves as a fine-grained “acous-
+tic discrepancy” map, where spikes in loss directly correspond
+to misaligned or erroneous segments in the ASR output. READ
+places a strong emphasis onacoustic grounding, ensuring that
+the hypothesis is faithful to the speech signal. Our proposed
+READ metric offers the following advantages:
+•Reference-free evaluation.READ can be used without rely-
+ing on ground truth. By evaluating the discrepancy between
+a hypothesis and the speech signal, READ is able to assess
+relative quality among arbitrary hypotheses.
+•Locality modeling.READ produces metrics aligned with
+the speech frame sequence and concentrates acoustic discrep-
+ancies within their corresponding temporal regions. This en-
+937
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3434
+ables precise localization of specific errors.
+•Model-agnostic and training-free.READ requires no ad-
+ditional training on specific ASR systems or target datasets.
+The evaluation relies entirely on the intrinsic knowledge in
+an off-the-shelf TTS model.
+•Robustness against noisy speech.Benefiting from the sta-
+ble acoustic modeling from TTS systems, READ-based eval-
+uation demonstrates stronger performance when confronted
+with challenging acoustic conditions, such as noisy speech.
+2. Background
+2.1. ASR Hypothesis Evaluation
+ASR Hypothesis Evaluation concerns the problem of assessing
+how well the hypothesis explains the original speech signal.
+Reference-based Evaluation.Reference-based methods
+directly compare the generated hypothesis with a given ground-
+truth transcript. Among these, the edit-distance-based Word Er-
+ror Rate (WER) has become a foundational metric. Alternative
+measures such as Semantic Distance [20] evaluates the text dis-
+crepancy in semantic space rather than lexical space.
+Reference-free Internal Evaluation.Focusing on confi-
+dence estimation derived from the internal signals of ASR sys-
+tems, hypothesis reliability is inferred from posterior probabil-
+ities, hidden representations, etc. Such methods are compu-
+tationally efficient and naturally integrated into the decoding
+process. However, internal confidence relies entirely on the
+model, it often suffers from calibration issues and overconfi-
+dence [1, 2, 21, 22, 3, 4].
+Reference-free External Evaluation.External evaluation
+introduces auxiliary knowledge sources to assess hypothesis
+quality. A common strategy is Language Model (LM) rescor-
+ing, leveraging linguistic prior probabilities to evaluate the hy-
+potheses. Quality Estimation (QE) methods [7, 13, 14, 15]
+train proxy models to approximate metrics like WER without
+grounding truth.
+Hypothesis Refinement.Hypothesis refinement refers to
+methods that directly refine the final output. Classical refine-
+ment approaches include reranking based on LM rescoring or
+ASR confidence, as well as system combination methods such
+as ROVER [8]. Recently, the emergence of LLMs has enabled
+generative revising paradigms, in which explicit evaluation is
+bypassed and LLM directly produces refined transcriptions.
+2.2. Auto-Regressive Text-to-Speech Systems Based on Dis-
+crete Tokens
+Many works [23, 19, 24, 25] model TTS by auto-regressively
+predicting discrete speech tokens. They typically rely on a
+causal Transformer to model the distribution of the next token.
+As a result, such models can naturally provide the conditional
+likelihood of token sequences for evaluation. Moreover, their
+auto-regressive component is often based on semantic tokens,
+focusing primarily on the linguistic content of the speech sig-
+nal. This makes them more task-relevant for ASR evaluation.
+3. READ: Reference-Free Hypotheses
+Evaluation with Acoustic Discrepancy
+3.1. Deriving Acoustic Discrepancy from AR TTS Systems
+LetX= (X 1,...,X N )denote a sequence of text tokens and
+Y= (Y 1,...,Y T )denote a sequence of speech tokens. A
+trained auto-regressive TTS system parameterized byθmodels
+the sequence causally, defining a conditional probability dis-
+tributionP θ(Yt |X,Y <t)at each time stept, whereY <t =
+(Y1,...,Y t−1). This enables likelihood evaluation for any
+speech-text pair(x,y)regardless of whether it is matched. We
+define the frame-level conditional likelihood at steptas
+ℓt(x,y) :=P θ(Yt =y t|X=x,Y <t =y <t),(1)
+which measures the consistency of the observed speech token
+yt with the conditioning text and preceding acoustic context.
+Due to maximum likelihood training, the TTS model ex-
+plicitly maximizesℓ t at each time step for matched speech-
+text pairs. Therefore, speech-text pairs that are consistent with
+the actual distribution are expected to yield higher values ofℓ t,
+whereas mismatched pairs typically result in lowerℓt.
+We defineREAD(Reference-Free HypothesesEvaluation
+withAcousticDiscrepancy) as
+READt(x,y) =−logℓ t,READ(x,y) =
+TX
+t=1
+READt.(2)
+This defines a sequence of discrepancy scores aligned
+with the speech sequence. Notice thatREAD(x,y) =PT
+t=1−logℓ t =−logP θ(y|x), which corresponds to the
+negative conditional log-likelihood of the entire speech, and
+thus serves as a global measure of speech-text discrepancy.
+Importantly, theREAD t sequence exhibitslocality. Dis-
+crepancies occurring around framey t will primarily affect
+READt and its neighboring positions. As a result, local
+speech-text mismatches tend to manifest as concentrated in-
+creases inREAD t within the corresponding temporal region.
+This locality enablesREAD t to provide finer-grained, frame-
+level indications of speech-text discrepancy.
+For fine-grained evaluation, it is desirable to transfer
+READt defined along the speech sequenceyback to the text
+sequencexusing the monotonic alignment betweenyandx.
+Multiple alignment models [26, 27, 28] can provide such map-
+pings. However, these alignments originate from systems that
+are different from the TTS model for measuringREAD t, po-
+tentially introducing cross-model inconsistencies. To maintain
+internal consistency, we instead extract alignment directly from
+the same auto-regressive TTS model that derivesREADt.
+Following prior work [29], we discover and utilize the
+speech-text alignment information from the attention heads in
+the decoder-only Transformer of a TTS model. Let the concate-
+nated input sequence have lengthT+N, consisting ofNtext
+tokens followed byTspeech tokens under causal masking. The
+full self-attention map is therefore a(T+N)×(T+N)matrix.
+From this matrix, we extract theT×Nsubmatrix correspond-
+ing to attention weights from speech positions to text positions,
+denoted asA∈R T×N , whereA t,n represents the attention
+weight from speech frametto text tokenn. We formulate align-
+ment as a monotonic mappingπ:{1,...,T}→{1,...,N},
+with monotonicity constraintπ(t+ 1)≥π(t)and boundary
+conditionsπ(1) = 1,π(T) =N. The optimal alignment is
+obtained via dynamic programming [29] as
+π∗ = arg max
+π∈M
+TX
+t=1
+At,π(t),(3)
+whereMdenotes the set of all possible mappings satisfying the
+above constraint.
+938
+What I cannot create I do not understand
+What I cannot create I 'd not understand
+I cannot create I do not understand
+DISPUTED ⚠ CONSENSUS ✅ ⚠ CONSENSUS ✅
+Hyp 1
+Hyp 2
+Hyp 3
+Hyp 1: "What I cannot create I" Hyp 3: "do not understand"
+Segment 01 Segment 02
+Compare
+Segmentation
+Combination
+[Hyp 1] 3.41; [Hyp 2] 3.48; [Hyp 3] 4.70 [Hyp 1] 2.43; [Hyp 2] 2.68; [Hyp 3] 2.42Minimize READ
+Figure 2:Segment-level combination with READ Evaluation.
+Given the optimal mappingπ ∗, we aggregate discrepancy
+from speech-token-level to any text segment:
+READtext
+[n1,n2] =
+X
+t:n 1≤π∗(t)≤n2
+READt.(4)
+This yields discrepancy scores for any text segments, en-
+abling fine-grained identification of positions that are poorly
+supported by the speech signal.
+3.2. ASR Hypothesis Refinement with READ
+3.2.1. Sentence-Level Rescoring
+The proposed READ metric can first be used for sentence-level
+hypothesis rescoring. Given anN-best list or multiple candi-
+date hypotheses from multiple ASR systems, we compute the
+total acoustic discrepancy for each candidate textx (i) condi-
+tioned on the same speech sequencey:
+Score
+
+x(i)|y
+
+=−READ
+
+x(i),y
+
+.(5)
+As previously mentioned, this corresponds to the log-likelihood
+of the entire speech under different hypotheses. Hypotheses
+with smaller total acoustic discrepancy are rescored higher.
+3.2.2. Segment-Level Combination
+Since READ exhibits locality, it enables finer-grained system
+combination. To achieve this, we perform segmentation along
+the speech signal, as shown in Figure 2. We first identify inter-
+vals where different hypotheses dispute and those where they
+reach consensus. Since READ is temporally aligned, an inter-
+val is considered consensus only when both the content and the
+time span are identical across hypotheses.
+We assume that the influence of a disputed interval persists
+at most until the beginning of the next disputed interval, cover-
+ing itself together with a subsequent consensus interval. Seg-
+mentation is performed according to this strategy and Eq.(4).
+We select the hypothesis that yields minimal READ value for
+each segment.
+Although this strategy relies on a locality assumption and
+adopts a greedy selection scheme, experimental results show
+that more than 98% of the merged outputs achieve simultaneous
+READ reduction within each segment.
+3.2.3. Integrating READ with ROVER
+Moreover, we show that READ can also corporate with other
+system combination methods, like ROVER [8]. Since READ
+sequences are not directly comparable across segments of un-
+equal length, combination cannot be performed at a granular-
+ity finer than the intervals in Section 3.2.2. To address this, we
+adopt a simple strategy: we treat the segment-level combination
+as a new candidate and feed it into ROVER together with the
+original candidates. The system retains ROVER’s token-level
+merging capability, while the new candidate injects a segment-
+level bias.
+0 25 50 75 100
+WER (%)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Proportion of READ(hyp, y) READ(GT, y) > threshold
+ Clean
+Utterances
+Corr. = 0.7213
+0 50 100
+WER (%)
+SNR=20dB
+Utterances
+Corr. = 0.7711
+0 50 100 150
+WER (%)
+SNR=10dB
+Utterances
+Corr. = 0.8015
+0 50 100 150 200
+WER (%)
+SNR=0dB
+Utterances
+Corr. = 0.8539
+Figure 3:Correlation between READ difference and WER. The
+y-axis shows the proportion of duration where the difference
+exceeds an empirically set threshold (0.3).
+4. Experiments
+4.1. Experimental Setup
+We conduct experiments mainly on CosyV oice2 [19], a discrete
+auto-regressive TTS system. We adopt the official checkpoints,
+which have not been subjected to any additional training on the
+involved datasets. This setup is to make sure that the evaluation
+capability originates purely from the TTS model itself.
+For candidate ASR systems, we select powerful models
+with different architectures, including Whisper [30] (medium
+and large-v3), NVIDIA NeMo [31], and Qwen2.5-Omni [32].
+We adopt Whisper-large-v3 inN-best generation. Follow-
+ing [10], we perform beam search decoding with a beam size
+of 60, then remove duplicates caused by case, punctuation and
+timestamps. Finally we keep the top-5 unique candidates.
+For test-sets, we use the LibriSpeech [33] test-clean and
+test-other splits as representatives of clean speech data. SPGIS-
+peech [34], Switchboard [35], TEDLIUM3 [36], and VCTK-
+noisy [37] are employed to evaluate performance under di-
+verse acoustic scenarios. We further consider the challenging
+code-switching setting, and include the ASRU2019 [38] and
+TALCS [39] Mandarin–English code-switching datasets.
+To simulate more challenging acoustic conditions, we con-
+struct noise-augmented versions of the aforementioned datasets.
+Random noise from the WHAM! [40] test set is added at SNR
+levels of 0, 10, and 20dB.
+4.2. Effectiveness of READ Evaluation
+4.2.1. READ for Reference-Based Evaluation
+We first demonstrate the effectiveness of READ in reference-
+based evaluation. For each hypothesis-reference pair, we com-
+pute the READ difference sequence, where higher values indi-
+cate more severe errors.
+We define an error-rate-like metric as the proportion of du-
+ration where the READ difference exceeds a threshold (set to
+0.3 empirically). As shown in Figure 3, this metric correlates
+with WER across noise conditions, while remaining distinct
+due to the gap between acoustic and lexical errors. As noise
+increases, errors are more dominated by acoustic failures, lead-
+ing to stronger correlation and reflecting READ’s bias toward
+acoustic modeling.
+4.2.2. Case Study: On the Locality of READ Evaluation
+We illustrate the reference-free evaluation capability of READ
+and its locality through a case study, considering Hyp 1 from
+Qwen2.5-Omni and Hyp 2 from Whisper medium on an utter-
+ance from SPGISpeech.
+Figure 4 presents the difference between theREAD t se-
+quences of two hypotheses. Positive spikes clearly correspond
+to time regions where Hyp 2 is better supported by the speech
+signal, while negative ones indicate that Hyp 1 is better. With
+939
+We'reGT
+Hyp 1 looking forward ...... completely sub-leased so that we can stop that.
+We're looking forward ...... completely sub- lit so that we can stop that.
+<Del>
+looking forward ...... completely sub- leased so that we can stop that.
+Hyp 2
+Figure 4:Case study of READ’s locality in reference-free eval-
+uation. When two hypotheses differ , their READ values exhibit
+clear peaks of difference in the corresponding temporal range.
+the internal alignment extracted from the TTS model, these
+peaks can be mapped back to text segments, making it straight-
+forward to locate the words responsible for the mismatch.
+This locality endows READ with a fine-grained advantage:
+it can precisely identify where recognition performance deteri-
+orates, thus enabling targeted optimization. But the capability
+of READ to distinguish among substitution, deletion, and inser-
+tion errors remains to be further explored.
+4.3. Performance of Hypothesis Refinement with READ
+We first perform dataset-level reference-free evaluation to select
+the base system with the lowest average READ. As READ cap-
+tures only acoustic grounding, we slightly bias the base system
+by scaling its READ sequence by 0.95. This retains basic lan-
+guage modeling, allowing READ-based evaluation to act only
+when acoustic reliability is uncertain.
+Then, we use READ for hypothesis refinement in differ-
+ent granularities, illustrated by Section 3.2. All results are re-
+ported with WER(%) for English test sets and Mixed Error Rate
+(MER)(%) for code-switching test sets.
+4.3.1. Sentence-Level Rescoring
+Table 1:N-Best rescoring performances. “Oracle” refers to
+collecting the hypotheses with lowest error rate for each utter-
+ance, which is the topline for rescoring.
+Dataset Hypothesis Rescoring
+w/ READ
+Oracle
+1st 2nd 3rd 4th 5th
+LS-clean2.062.74 3.10 3.57 4.121.91 (-7.28%)1.15
+LS-other3.664.71 5.37 5.63 6.063.48 (-4.92%)2.15
+VCTK-noisy7.418.76 9.21 10.85 12.187.19 (-2.97%)6.14
+ASRU-test9.9611.97 12.64 13.39 14.429.67 (-2.91%)6.20
+TALCS-test 18.9418.5618.57 18.93 19.6914.98 (-20.91%)13.07
+SWBD-test15.0215.18 15.22 15.48 15.5111.93 (-20.57%)10.51
+TEDLIUM3-test 4.223.954.26 4.51 4.693.40 (-19.43%)2.71
+SPGI-val4.244.42 4.84 4.93 5.623.33 (-21.46%)2.15
+Table 1 presents the results of sentence-level rescoring over
+the top-5 transcription hypotheses generated by Whisper large-
+v3. Across all datasets, sentence-level reranking based on the
+READ metric consistently outperforms the original top-1 re-
+sults, demonstrating READ’s ability to effectively exploit the
+latent potential within theN-best list.
+4.3.2. Segment-Level Combination
+Table 2 reports system combination performance across four
+candidate systems. On most datasets, segment-level combina-
+tion method effectively leverages the locality of READ, achiev-
+ing better performance through finer-grained merging.
+On some datasets, however, segment-level combination
+does not significantly outperform sentence-level selection. This
+is because the disputed intervals are overly long, causing the
+Table 2:System Combination performances. “R. ”, “Sen. ”,
+“Seg. ”, and “R+. ” denote the ROVER baseline, sentence-level
+combination, segment-level combination, and ROVER inte-
+grated with segment-level combination, respectively.
+Dataset
+Candidates
+R.
+Ours
+Whisper
+large-v3
+Whisper
+medium NeMo Qwen2.5-
+Omni Sen. Seg. R+.
+LS-clean 2.20 2.791.671.74 1.51 1.67 1.661.49
+LS-other 4.16 7.52 3.653.453.18 3.39 3.352.97
+VCTK-noisy 8.87 18.33 2.852.471.84 2.36 2.181.52
+ASRU-test 10.35 11.98 21.708.009.04 7.607.277.60
+TALCS-test 16.77 20.74 44.479.2120.84 9.618.2216.55
+SWBD-test 12.57 14.535.1612.78 10.365.235.53 8.65
+TEDLIUM3-test3.376.69 4.21 3.91 3.853.273.34 3.71
+SPGI-val 3.60 7.25 4.402.763.15 3.14 3.012.80
+segment-level combination to degenerate into sentence-level se-
+lection. A finer-grained scheme remains to be explored.
+4.3.3. Integrating READ with ROVER
+Table 2 also compares ROVER integrated with READ. Al-
+though its performance is sometimes constrained by ROVER
+and thus cannot consistently surpass all alternatives, it steadily
+outperforms the vanilla ROVER baseline, demonstrating the ef-
+fectiveness of READ as an incremental evaluation signal.
+4.3.4. Robustness against Noisy Speech
+Table 3:System Combination performances on noisy datasets.
+“Ours” refers to direct segment-level combination without
+ROVER, since ROVER can be easily affected by several frag-
+ile systems.
+Dataset SNR=20dB SNR=10dB SNR=0dB
+Best ROVER Ours Best ROVER Ours Best ROVER Ours
+LS-clean 1.781.621.73 2.282.002.14 6.81 11.534.87
+LS-other 4.063.653.98 5.374.875.12 17.17 21.9616.15
+VCTK-noisy2.032.09 2.20 2.71 3.402.6813.28 17.6512.77
+ASRU-test 8.38 9.607.449.60 10.658.2819.78 21.8617.51
+TALCS-test 11.95 23.2710.0922.84 29.0813.7041.63 46.3130.03
+SWBD-test6.2610.30 6.36 11.21 12.629.7123.10 27.9021.79
+TEDLIUM3-test 3.37 3.953.27 3.654.41 4.15 7.98 14.317.74
+SPGI-val 3.65 3.593.434.11 4.704.0611.69 18.1111.26
+As shown in Table 3, as SNR decreases, the advantage of
+the proposed READ-based method becomes increasingly pro-
+nounced among the best single-system results and the ROVER
+outputs. This trend suggests that the effectiveness of READ-
+based evaluation is more evident under noisy conditions.
+This is probably because in noisy conditions, ASR errors
+are more strongly related to acoustic modeling difficulty. In
+such cases, a powerful acoustic model is particularly important.
+5. Conclusion
+We propose READ, a hypothesis evaluation method based on
+the conditional likelihood modeled by a TTS system. READ
+is reference-free and requires only the original speech signal to
+assess hypotheses, indicating fine-grained acoustic discrepancy.
+Without any additional training tailored to specific ASR
+models or datasets, our approach leverages the intrinsic knowl-
+edge of the TTS model to derive a READ metric that aligns well
+with specific recognition errors. This metric can be effectively
+applied to hypothesis refinement throughN-best rescoring or
+system combina

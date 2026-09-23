@@ -1,0 +1,457 @@
+Controlled Generation of Synthetic Speaker Vectors for Voice Anonymization
+Ekaterina Kolos1,∗∗, Sarina Meyer ID 1, Ngoc Thang Vu ID 1
+1 Institute for Natural Language Processing, University of Stuttgart, Germany
+ekaterina.kolos|sarina.meyer|thang.vu@ims.uni-stuttgart.de
+Abstract
+V oice anonymization benefits from transparent control over
+the pseudo-speaker’s voice. Anonymization approaches based
+on resynthesis substitute the original speaker vector with a dif-
+ferent, often artificial, vector, but this does not allow for control-
+ling which original speaker attributes are preserved. To address
+this, we extend one existing WGAN-based artificial vector gen-
+eration method with attribute-label conditioning. We also in-
+troduce diffusion models as a robust alternative for generating
+speaker vectors, utilizing classifier guidance for label-informed
+synthesis. Evaluated using the V oice Privacy Challenge 2024
+suite, both approaches demonstrate strong attribute control
+while maintaining competitive privacy and utility. Further-
+more, we propose measures for diversity, originality, and nat-
+uralness of synthesized embeddings. Combined with TTS per-
+formance on challenging speech, these measures enable the se-
+lection of optimal generator configurations for the anonymiza-
+tion pipeline.
+Index Terms: voice anonymization, privacy, diffusion, GAN
+1. Introduction
+Humans can be identified through their voices, both by other
+humans and by modern automatic speaker verification systems
+with high accuracy [1, 2].Voice anonymizationaims to con-
+ceal a speaker’s identity by modifying a recording so that lin-
+guistic (and often paralinguistic) information remains but the
+perceived speaker changes.
+Preserving attributes like gender, age, or speaking style in
+anonymized speech ensures human-centric authenticity (e.g.,
+in whistle-blowing or counseling [3]) and protects data-driven
+utility for downstream analysis e.g. in medical or behavioral
+contexts. However, retaining group demographics introduces
+a privacy-utility trade-off. While our experiments focused on
+matching the source gender, our flexible mechanism can pre-
+serve, modify, or standardize attributes depending on task-
+specific policy objectives.
+Ideally, the pseudo-speaker in the anonymized audio should
+not resemble any real individual, who might reasonably object
+to their voice being used to articulate specific content. To ad-
+dress this, voice anonymization systems based on resynthesis
+rely onartificial speaker vectors. Such vectors can be cre-
+ated by averaging multiple natural vectors1 [4], or by sampling
+a novel artificial voice with a generative model [5]. Previous
+work has demonstrated the efficacy of unconditional generation
+of speaker embeddings, such as the use of Generative Adver-
+sarial Networks (GANs) [5] or speaker embedding diffusion
+**indicates the corresponding author.
+1A natural vector is a speaker vector extracted from the speech data
+of a real human voice using a speaker embedding model.
+models [6]. When integrated into a text-to-speech system, these
+synthetic voices can produce naturally sounding voices while
+representing no real person.
+While these methods generate high-quality embeddings,
+they often lack fine-grained control over the output’s charac-
+teristics. Speaker vectors could theoretically be sampled from
+a synthetic pool over and over again until the desired attribute
+is present in the vector; the complexity of this would increase
+with the number of attributes to be controlled at once. Recent
+attempts have introduced control by discovering principal di-
+rections in the latent space [7], however, this focuses rather on
+changing attributes than preserving them. In this work, we di-
+verge from latent-discovery approaches by suggesting methods
+for explicit, transparent conditioning through categorical labels.
+Specifically, we investigate the generation of synthetic speaker
+embeddings by directly extending the GAN framework of the
+V oice Privacy Challenge (VPC) 2024 [8] baseline B3 [9], while
+introducing diffusion models. Because B3 inherently operates
+on speaker vectors, it serves as the ideal foundational pipeline
+for implementing our controllability methods. We implement
+conditioning either by concatenating labels with noise vectors
+[10] or via classifier guidance [11]. Evaluated within this
+voice anonymization speech-to-text-to-speech (STTTS) frame-
+work using new intermediate metrics, our approach 2 achieves
+strong performance in privacy and utility, demonstrating effec-
+tive gender conditioning and naturalness.
+2. Voice Privacy System
+Synthesis 
+Module
+Extraction 
+Module
+Anonymized 
+Speech
+Anonymization
+Module
+Unconditional
+Vector Generator
+Conditional Vector
+Generator
+Prosody Info
+ASR
+Speaker
+Embedding
+Gender LabelOriginal 
+Speech
+Setting: normal | copy gender
+TTS
+Vocoder
+speech content
+prosodic features
+attribute
+natural
+vector
+natural
+vector
+pseudo-
+speaker 
+vector
+mel spectrogram
+Figure 1:Pipeline of the B3 voice anonymization system, with
+our proposed extensions for unconditional (blue) and condi-
+tional (orange) speaker vector generation.
+Consistent with the B3 system, we adopt the resynthesis
+model of [4], performing feature-level anonymization (vs. neu-
+ral codecs [12] and waveform manipulation [13]). Speech is de-
+composed into content, prosody, and a speaker vector. The orig-
+inal vector is replaced with a pseudo-speaker vector constrained
+2https://github.com/katja-kolos/synthetic-speaker-vectors
+5221
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1464
+by cosine distance; content and prosody remain unchanged and
+are resynthesized (Fig. 1). In the conditional setup, gender la-
+bels from metadata guide speaker vector sampling.
+Contributions.(1) We replace the Wasserstein GAN
+with quadratic cost (WGAN-QC) generator with a diffusion-
+based generator for speaker vector sampling. (2) We enable
+attribute-controlled generation via (a) conditional WGAN-QC
+(cWGAN-QC) and (b) diffusion classifier guidance, training
+gender-conditional models and sampling from gender-specific
+synthetic pools (labels from VPC metadata).
+3. Synthesis of Speaker Embeddings
+For the application in voice anonymization, the synthetic em-
+bedding generator should satisfy four key constraints: (1) Dis-
+tributional similarity to natural vectors is required for TTS com-
+patibility and low WER. (2) Originality needs to be enforced so
+that the model does not simply “copy” training identities. (3)
+Diversity in the generated pool is preferred to support multi-
+speaker scenarios and avoid unnatural repetition. (4) For con-
+ditional generation, the embeddings must reliably represent the
+target attribute (e.g., gender).
+3.1. Synthesis of Speaker Vectors with WGAN-QC
+The distribution of natural speaker embeddings has specific ge-
+ometric structure that a synthetic distribution should match. In
+optimal transport (OT) theory, there are generally many pos-
+sible ways to map one continuous distribution to another, and
+at least one optimal transport plan minimizes the total trans-
+port cost [14]. In GANs, the generator aims to reduce a di-
+vergence between the real and synthetic distributions. Ar-
+jovsky et al. [15] showed that the Earth Mover’s (Wasserstein-
+1) distance provides more stable and meaningful gradients
+than the Jensen–Shannon divergence used in the original GAN
+formulation [16]. Using the Kantorovich dual formulation,
+the Wasserstein-1 distance can be computed via a single 1-
+Lipschitz function, which is approximated by the discriminator
+in WGAN. In contrast, approaches based on the quadratic-cost
+Wasserstein-2 distance (e.g., [17]) generally require approxi-
+mating the transport plan more explicitly, relying on optimal
+transport solvers, which are typically implemented using linear
+programming (LP) in the discrete case3.
+3.1.1. Unconditional Generation with WGAN-QC
+As a baseline for unconditional generation of speaker embed-
+dings, we reproduce the WGAN-QC approach successfully
+demonstrated in [18]. For this, we rely on the B3 baseline code
+published in the repository of the VPC 2024 4 with explicit OT
+approximation and linear programming.
+3.1.2. Conditional Generation with cWGAN-QC
+To perform label-informed synthesis, conditional WGAN-QC
+(cWGAN-QC) extends WGAN-QC by injecting label embed-
+dings into both the generator and critic, as proposed in [10]. The
+key modification as opposed to unconditional version is solving
+quadratic-cost optimal transport class-wise instead of globally,
+3In theory, the distribution of utterance-level speaker embeddings is
+continuous. However, in practice we only observe a finite sample of
+embeddings, so optimal transport is computed here between empirical
+(discrete) distributions. This is exactly the setting where linear pro-
+gramming–based OT solvers apply.
+4https://github.com/V oice-Privacy-Challenge
+with separate LP-based dual potential regression per label to
+ensure label-consistent training.
+3.2. Synthesis of Speaker Vectors with Denoising Diffusion
+We explore swapping WGANs for diffusion models to syn-
+thesize new speaker embeddings. While this trades sampling
+speed for quality and diversity, reflecting the generative learn-
+ing trilemma [19], this cost is mitigated by our low-dimensional
+data. Diffusion models [20] generate data by learning to reverse
+a gradual noising process. Denoising Diffusion Probabilistic
+Models (DDPMs) [21] formulate this by training a neural net-
+work to predict thenoiseϵadded at each timestept. Genera-
+tion starts from random noise and iteratively denoises it to ob-
+tain a realistic sample (here, a speaker embedding). Denoising
+Diffusion Implicit Models (DDIMs) [22] generalize DDPMs
+via non-Markovian sampling, accelerating inference with fewer
+timesteps while preserving the training objective and quality.
+3.2.1. Unconditional Generation with Denoising Diffusion
+For unconditional generation of speaker embeddings, we fol-
+low the implementation of [6]. The denoising network architec-
+ture and timestep embedding design are inspired by [23]. Con-
+cretely, the model is a timestep-conditioned residual multi-layer
+perceptron (MLP): it takes a noisy speaker embedding and a si-
+nusoidal timestep embedding as input, processes them through
+stacked residual blocks, and predicts the added noise. Training
+minimizes the mean squared error between the true and pre-
+dicted noise. For sampling, we use a DDIM scheduler [22]
+implemented in thediffuserslibrary [24], enabling faster
+generation of plausible synthetic speaker embeddings.
+3.2.2. Conditional Generation with Denoising Diffusion and
+Classifier Guidance
+We train a lightweight noise-robust classifier consisting of a 2-
+layer MLP with dropout and 1-layer MLP for time embedding
+to predict gender given a speaker vector and a timestept. The
+classifier is trained on noisy embeddings using the same noise
+scheduler and time encoding function as the diffusion model,
+with cross-entropy loss. During sampling, we employ classi-
+fier guidance following theϵ-prediction formulation described
+in [11]. Specifically, we modify the predicted noiseϵθ(xt,t)by
+subtracting the classifier gradient∇ xt logpϕ(y|xt), scaled by
+the cumulative noise factor
+p
+(1−¯αt)and a hyperparameter
+guidance scales. This guided noiseˆϵis then used to compute
+the subsequent latentxt−1 viadiffusers.
+4. Experimental Setup
+4.1. Data
+Table 1:Summary of datasets used for speaker vector synthesis
+and classifier training.
+Original Synthesis Classifiers
+CorpusUtt(Spk)Utt(Spk)Utt(Spk)
+LibriTTS 375,086 (2,456) 4,490 (1,120) 149,736 (1,151)
+ESD (en) 17,480 (10) 40 (10) –
+RA VDESS 1,440 (24) 96 (24) –
+Our models operate on utterance-level speaker embeddings
+based on Global Style Tokens (GST) [25] . In our implementa-
+5222
+tion, these are 128-dimensional vectors representing a weighted
+average of style tokens. Following the approach of [7] for more
+versatile data, we train the generative models on a diverse pool
+of natural speaker embeddings from three corpora, as shown
+in 1. FromLibriTTS[26], we sampled four random utterances
+per speaker from thetrain-cleanpartitions. We excluded
+31 speakers with fewer than four utterances. Crucially, Lib-
+riTTS test and development partitions were withheld from all
+training stages, as they overlap with the VPC evaluation suite
+used in our final downstream experiments. For more diver-
+sity, we further included four utterances (angry, sad, happy,
+and neutral) per speaker from both the English subset of the
+Emotional Speech Dataset(ESD) [27] and the speech subset
+of theRyerson Audio-Visual Database of Emotional Speech
+and Song(RA VDESS) [28]. We used the combined LibriTTS
+train-clean-100and360(1,151 speakers; 149,736 utter-
+ances) to train two gender classifiers: one for evaluating condi-
+tioning and a noise-robust version for classifier guidance. Eval-
+uation of the anonymization framework is conducted using the
+standard VPC suite (IEMOCAP [29] and LibriSpeech [30]).
+4.2. Configuration
+The unconditionalWGAN-QCwas trained for 2000 cycles (1
+epoch/cycle) with a learning rate (LR) of10 −5, Adam opti-
+mizer,β= (0.5,0.999), and batch size 128 to ensure a robust
+optimal transport (OT) approximation. We applied data normal-
+ization during training and inverse normalization during sam-
+pling. The conditional variant (cWGAN-QC) used 200 cycles
+(10 epochs/cycle), LR10 −6,β= (0.7,0.9), and batch size 64.
+For both, we setzdim = 16,γ= 1, and utilized ResNet architec-
+tures (size= 8unconditional,16conditional) with a maximum
+of 16 filters. The unconditionalDiffusionused 4 ResNet blocks
+and a DDIM scheduler, trained for 20 cycles (10 epochs/cycle)
+with LR10 −5 and batch size 16. We used 2000 training and
+1500 sampling timesteps. For conditional generation viaclas-
+sifier guidance, we applied scales of 0.22 and 0.72 for male
+and female targets, respectively. Our vectors are integrated into
+the resynthesis pipeline of [5], extended with prosody cloning
+[9]. The system uses ESPNet2 [31] for ASR, FastPitch [32]
+with GSTs [25] for speaker embeddings, FastSpeech2 [33], and
+Avocodo [34] via IMS Toucan [35] v2.5 with GST vectors.
+4.3. Voice Anonymization Evaluation
+To assess voice anonymization using generated speaker vectors,
+we follow the evaluation framework of VPC 2024. Privacy is
+quantified using theEqual Error Rate(EER) of an Automatic
+Speaker Verification (ASV) attacker trained on anonymized
+data (semi-informed condition). A higher EER indicates more
+successful voice anonymization because the attacker fails to
+map unseen trial speakers to known enrollment speakers. Util-
+ity is measured viaWord Error Rate(WER) to verify the
+preservation of linguistic content, alongside emotion preserva-
+tion metrics (UAR). EER and WER are evaluated using the Lib-
+riSpeech splits of the VPC, IEMOCAP is used for UAR.
+4.4. Evaluation of Synthetic Vector Pools
+4.4.1. Vector Pool Assessment
+We test various configurations for generating the pools of syn-
+thetic speaker vectors, integrating only the high-performing
+configurations into the downstream TTS. Because subopti-
+mal hyperparameter settings or architectural choices can yield
+speaker vectors that produce corrupted waveforms character-
+ized by nonsense syllables and noise, we develop a set of cus-
+tom measures to filter out such vectors early on. These include:
+an approximation of Wasserstein-2 (W2) distance implemented
+with thePOTlibrary[36, 37] 5;Diversity: mean pairwise cosine
+distance within the pool of synthetic vectors, which tests for
+mode collapse (the one in the pool of natural vectors is≈0.93);
+Copying Similarity: 1 - the average minimal pairwise cosine
+distance between synthetic and natural speaker vectors, which
+serves as a diagnostic for training data memorization.
+4.4.2. Effect on Synthesis
+To assess the pureTTS applicabilityof the embeddings without
+confounding errors from the prosody cloning or ASR models,
+we disable the extraction module and only input embeddings
+and golden transcripts to the synthesis module to synthesize
+Harvard sentence with generated embeddings 6 [38]. We re-
+port the resulting word accuracy (wAcc):1−WER. This tiny
+dataset is more challenging than LibriTTS as it contains phonet-
+ically diverse sentences and homonyms (e.g.:’Glue the sheet to
+the dark blue background’).
+4.5. Attribute Control
+We process the synthesized waveforms of the VPC data through
+a robust pre-trained ECAPA-TDNN [39] gender classifier 7 to
+confirm the acoustic realization of the intended gender. We also
+evaluate the correspondence of generated speaker vectors to the
+desired gender label with a classifier trained on natural data.
+5. Results and Discussion
+5.1. Voice Anonymization
+Table 2 shows that our diffusion model achieves downstream
+privacy and utility performance comparable to the original
+WGAN-QC baseline, while our conditional setups, classifier
+guidance and cWGAN, successfully introduce high-accuracy
+attribute control without compromising these metrics.
+5.1.1. Privacy and Utility
+Speaker vectors generated unconditionally with diffusion, as
+well as those generated conditionally with cWGAN-QC or with
+classifier guidance, all show stable downstreamprivacyperfor-
+mance within the STTTS pipeline: the EER scores of the semi-
+informed ASV attacker are comparable to those of the baseline
+B3 (WGAN-QC). At the same time, all our vectors show better
+privacy metrics on female speakers and worse on male speakers.
+Word error rate scores on LibriSpeech (test) and UAR scores
+in emotion recognition demonstrate that our new synthetic em-
+beddings do not affect the overallutilityof STTTS pipeline sig-
+nificantly, while the conditional WGAN-QC even slightly out-
+performs the unconditional version (despite the baseline being
+trained on a larger dataset).
+5.1.2. Attribute Control
+We report for comparison the performance of our approaches on
+the trials (female and male subsets separately) of LibriSpeech
+test.Unconditionalgeneration of vectors randomly selects a
+vector ignoring the gender attribute of the original speech, re-
+sulting in 38.7% accuracy for male speakers in diffusion, show-
+5https://pythonot.github.io
+6https://www.cs.columbia.edu/∼hgs/audio/harvard.html
+7https://huggingface.co/JaesungHuh/voice-gender-classifier
+5223
+Table 2:Voice anonymization results on LibriSpeech (EER, WER) and IEMOCAP (UAR). Gender Accuracy of synthesized audios is
+reported on both for female (f) and male (m) conditioning targets.
+EER [%]↑WER [%]↓UAR [%]↑Gender Acc.↑
+Model Conditionalf m all Total f m
+WGAN-QC (B3) No 27.92 26.72 4.35 37.57 50.95 36.35
+WGAN-QC No 27.74 25.85 4.17 36.15 45.36 53.02
+Diffusion No 27.96 26.01 4.24 35.95 67.30 38.71
+cWGAN-QC Yes 28.29 26.10 4.22 38.28 99.86 100.00
+Diffusion+CG Yes 30.11 25.17 4.42 37.28 99.59 90.68
+B3
+our 
+WGAN
+our
+diffusion
+Figure 2:Multi-objective comparison of synthetic speaker vec-
+tor pools. Star marks the optimum.
+ing the model’s bias towards female speakers (67.3% accuracy).
+Bothconditionalapproaches, cWGAN-QC and classifier guid-
+ance, obtain almost perfect attribute control on female speakers.
+At the same time, while classifier guidance has an accuracy of
+90.7% for male speakers, cWGAN-QC obtains perfect perfor-
+mance on this split. Our vector-based gender classifier reports
+male label in 79.9% and female label in 99.6% of the vectors
+synthesized with classifier guidance and respective label, and
+perfect scores for cWGAN-QC (both male and female). We
+opted for a stronger guidance scale for female speakers (0.72 vs
+0.22), which explains better accuracy for female label.
+5.2. Experiments with Synthesis of Speaker Vectors
+The exact WGAN and diffusion configurations for the voice
+anonymization pipeline were selected as a result of independent
+assessment of the distribution of synthetic vectors and of the
+TTS integration, free from ASR and prosody artifacts. We also
+compare all tested configurations to a pool ofnaturalembed-
+dings, and arandombaseline: 128-dimensional vectors from
+a uniform distributionU(−0.5,0,5), matching the empirical
+value range observed in natural GST embeddings.
+As illustrated in Figure 2, there is a distinct trade-off be-
+tween the synthetic pool’s diversity, originality, and utility. The
+natural baseline (diamond) serves as the performance anchor,
+demonstrating high word accuracy and optimal naturalness; its
+Copying Similarity to the closest natural vector is trivially 1.0.
+The anchor on the opposite side is a pool of randomly sam-
+pled speaker vectors, which perform significantly worse when
+plugged into TTS with a word accuracy of 87.5%. These em-
+beddings understandably have high originality: obtaining ran-
+domly a close copy of a voice from the training data is unex-
+pected. The configurations of diffusion (circles) and WGAN
+(squares) lie somewhere in-between. Diffusion-based synthetic
+pools demonstrate superior originality, consistently maintain-
+ing lower Copying Similarity compared to their WGAN coun-
+terparts. While this indicates a more robust generation process
+that avoids memorization, it comes at the cost of naturalness,
+as seen in the lighter green and yellow hues representing higher
+W2 distances, which also correlates with worse wAcc. WGAN
+generations generally achieve higher naturalness, reflected by
+darker purple hues (lowerW 2 values). LowerW 2 also corre-
+lates with better wAcc, as expected: the speech synthesis sys-
+tem was trained on a specific distribution of natural speaker em-
+beddings, and closer alignment with this distribution improves
+downstream synthesis quality. At the same time, several well-
+converged WGAN configurations exhibit high Copying Simi-
+larity, suggesting a risk to reproduce training samples rather
+than drawing new original vectors from the distribution. Op-
+timizing for better originality can lead to worseW 2 values.
+The optimal synthetic pool is characterized by a balance of
+low WER, high diversity (large bubble size), and low Copying
+Similarity without sacrificingW 2 distance. One WGAN-QC
+setup is very close, but only generates male speakers. For our
+voice privacy framework, we select anotherWGANfor uncon-
+ditional generation, with balanced gender and slightly betterW2
+(highlighted with a bright border in the picture). The selected
+unconditionaldiffusionis the one that achieves best WER on
+Harvard Sentences and has goodW 2 measures, average copy-
+ing similarity and good diversity; this model is also used for
+classifier guidance in conditional generation.
+Experiments with theguidance scaleslead us to select
+0.72 for female and 0.22 for male speakers. Increasingsfor
+male speakers triggers a sharp performance trade-off (3.12to
+8.37WER for 79.9% to 99.8% attribute accuracy). Conversely,
+largersimproves performance for female speakers, where all
+variants (2.06to2.62WER) actually surpass the cWGAN-
+QC baseline. cWGAN-QC remains a robust foundation for the
+anonymizaiton pipeline with WER of2.53for female and2.68
+for male speakers, and 100.0% accuracy in attribute control.
+6. Conclusion
+In this paper, we propose novel methods for synthetic speaker
+vector generation and gender control for voice anonymization.
+While both WGAN and diffusion models produce high-utility
+embeddings, diffusion with classifier guidance offers a flexible
+mechanism that theoretically scales to new attributes via stan-
+dalone classifiers; cWGAN, on the other hand, shows superior
+performance in our gender-controlled tests. In future work, we
+plan to empirically extend this to multilabel and multiclass con-
+trol of diverse speaker attributes.
+5224
+7. Acknowledgments
+This work is funded by the Deutsche Forschungsgemein-
+schaft (DFG, German Research Foundation) – Project: Mul-
+tilingual Controllable V oice Privacy (V oiPy) - Project number
+533241795.
+8. Generative AI Use Disclosure
+During the preparation of this work, the authors utilized Chat-
+GPT (versions 4o and 5.2) and Gemini 3 Flash as assistive tools.
+These models were used for preliminary literature screening,
+conceptual brainstorming, and manusc

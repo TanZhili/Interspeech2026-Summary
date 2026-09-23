@@ -1,0 +1,511 @@
+DTT-BSR+: A Generative-Regression Cascade for Music Source Restoration
+Youran Ni1,∗, Shihong Tan1,∗, Yuzhu Wang2, Gongping Huang1,∗∗
+1 School of Electronic Information, Wuhan University, China
+2 Signal Processing Research Center, Tampere University, Tampere, Finland
+2023302121082@whu.edu.cn,
+shihongtan@whu.edu.cn,yuzhu.wang@tuni.fi,gongpinghuang@whu.edu.cn
+Abstract
+Music source restoration (MSR) requires jointly address-
+ing source unmixing and the inversion of non-linear produc-
+tion effects. Current methods struggle to achieve accurate tar-
+get signal reconstruction while maintaining semantic consis-
+tency. To address this limitation, we propose DTT-BSR+, a
+two-stage cascade MSR system that decouples distribution fit-
+ting from signal reconstruction into separate stages. A gen-
+erative DTT-BSR separator in the first stage produces stems
+matching the prior of clean sources, and a modified Demucs net-
+work in the second stage enhances the first stage output using
+time-domain and multi-resolution spectral losses. DTT-BSR+
+improves multi-mel signal-to-noise ratio (MMSNR) over the
+single-stage DTT-BSR across all stems, and surpasses the state-
+of-the-art X-LANCE MSR system on five stems. We also re-
+veal through Fr ´echet Audio Distance (FAD) decomposition an
+implicit trade-off between signal reconstruction accuracy and
+semantic distribution fitting across stems.
+Index Terms: music source restoration, deep learning
+1. Introduction
+Music source restoration (MSR) [1] aims to estimate clean, un-
+processed stems from a mixture. The difficulty lies in the non-
+linear production effects applied to each stem during music cre-
+ation, such as dynamic range compression [2, 3] and codec
+encoding [4]. Accurate estimation requires jointly addressing
+source unmixing and the inversion of production effects, going
+beyond the music source separation (MSS) task [5, 6, 7] which
+models the mixture as a sum of sources without accounting for
+such effects [8]. In practice, MSR can be applied to a wide
+range of music production workflows, such as stem recovery
+and remixing from finished mixes.
+MSR research remains limited, with the most recent ad-
+vances primarily emerging from the ICASSP 2026 MSR Chal-
+lenge [9]. Existing methods can be broadly categorized into
+two groups. The first adopts a multi-stage design, where each
+stage is trained independently with its own objective. The
+X-LANCE MSR system [10] applies three pretrained BSRo-
+former [11] modules sequentially for separation, dereverbera-
+tion, and denoising, achieving state-of-the-art performance on
+both objective and subjective evaluations. CUPAudioGroup
+system [9] ensembles three complementary MSS models initial-
+ized from pretrained weights, leveraging model diversity to im-
+prove restoration quality. The second group builds joint systems
+optimized under multiple losses simultaneously. DTT-BSR [12]
+combines a dual-path TFC-TDF U-Net [13] with a RoPE trans-
+former bottleneck, trained with a joint GAN and reconstruction
+*These authors contributed equally.
+**indicates the corresponding author.
+Figure 1:Overview of the proposed DTT-BSR+ system.
+loss. Hachimi system [9] similarly adopts a mel-band back-
+bone with combined GAN and reconstruction losses. While
+existing methods achieve reasonable Fr ´echet Audio Distance
+(FAD) [14] scores, multi-mel signal-to-noise ratio (MMSNR)
+remains limited across all systems, suggesting that the restored
+stem matches the semantic distribution of the target but signal
+reconstruction remains inaccurate.
+To address this limitation, we propose DTT-BSR+, a two-
+stage cascade MSR system as shown in Figure 1. This cas-
+cade design is similar to the X-LANCE system. The difference
+is that the X-LANCE decomposes MSR into three sub-stages
+of separation, dereverberation, and denoising, whereas DTT-
+BSR+ decomposes it into a semantic distribution fitting stage
+and a signal reconstruction stage. The first stage uses DTT-
+BSR as a generative separator to estimate stems that match the
+prior distribution of clean sources. The second stage employs a
+modified Demucs network [15] trained to minimize the differ-
+ence between its output and the ground-truth clean stem, using
+the first stage output as input, optimized with time-domain and
+multi-resolution spectral losses to reconstruct the target signal.
+The main contributions of this paper are summarized as fol-
+lows. (1) We propose DTT-BSR+, a novel two-stage cascade
+MSR system. Experimental results show that DTT-BSR+ im-
+proves MMSNR over the single-stage DTT-BSR across all eight
+stems, and surpasses the state-of-the-art X-LANCE MSR sys-
+tem on five stems including V ocals, Guitars, Synthesizers, Bass,
+and Drums. (2) Through ablation experiments, we validate the
+design choices of the proposed DTT-BSR+, and identify its lim-
+itations for Percussions, where severe signal distortion in the
+first stage cannot be restored by the second stage, and a single-
+stage MSG network [16] is shown to be effective for this stem.
+(3) We show that improving signal reconstruction accuracy does
+not consistently improve FAD across stems, suggesting an im-
+plicit trade-off between accurate signal reconstruction and se-
+mantic distribution fitting. FAD decomposition further reveals
+3188
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2291
+1×1 Conv1d
+Downsampling
+RoPE
+TransformerMixture Generative
+estimate
+× Nblocks
+1×1 Conv1dDual-Path
+RNNTFC-TDF TFC-TDF TFC-TDF
+Upsampling
+× Nblocks
+STFT iSTFT
+(a)  DTT - BSR
+K : Kernel Size S : Stride
+(b)  Demucs - L
+Generative
+estimate
+Restored
+stem
+DecoderEncoder
+ReLU GLUConv1d
+Cin, Cout, K = 1, S = 1 OutputConv1d
+Cin, Cout, K = 8, S = 4Input ReLUGLU ConvTr1d
+Cin, Cout, K = 8, S = 4 OutputConv1d
+Cin, Cout, K = 3, S = 1Input
+Encoder 6
+Cin = 1024, Cout = 2048
+Encoder 2
+Cin = 64, Cout = 128
+Encoder 1
+Cin = 2, Cout = 64
+Decoder 6
+Cin = 2048, Cout = 1024
+Decoder 2
+Cin = 128, Cout = 64
+Decoder 1
+Cin = 64, Cout = 1 × 2
+… …
+Figure 2:Architecture of the proposed DTT-BSR+ system. (a) DTT-BSR serves as the first stage, producing a generative estimate from
+the degraded mixture. (b) Demucs-L serves as the second stage, reconstructing the target stem from the first stage output.
+that FAD degradation is primarily driven by semantic mean shift
+rather than changes in distribution variance.
+2. Problem Formulation
+In MSS, the time-domain observed mixturey∈R T is mod-
+eled as a sum ofCsource signals, i.e.,y= PC
+c=1xc, where
+xc ∈R T denotes thec-th source, and the goal is to estimate
+eachxc fromy[8]. MSR extends this by modeling each source
+asxc =f c(sc), wheresc∈R T is the clean, unprocessed stem
+andfc models the production effects, which may include spec-
+tral filtering [17], dynamic range compression, harmonic distor-
+tion [18], reverberation[19], and codec degradation. The MSR
+mixture model thus becomes
+y=
+CX
+c=1
+fc(sc),(1)
+and the goal is to estimate each clean stems c fromy[1]. In
+this paper, we considerC= 8stems: V ocals, Guitars, Key-
+boards, Synthesizers, Bass, Orchestral elements, Drums, and
+Percussions. The formulation reveals that MSR poses a greater
+challenge than MSS. Estimating eachsc fromyrequires simul-
+taneously addressing the mixing of sources and the non-linear,
+irreversible nature of the effect functionsf c, both of which are
+coupled in the observed mixture. Sincef c is many-to-one, the
+estimation ofsc is inherently ill-posed.
+3. Proposed Method: DTT-BSR+
+We propose DTT-BSR+, a two-stage cascade MSR system il-
+lustrated in Figure 2. The first stage employs a GAN-based
+separator to separate the target stem from the degraded mixture,
+with the adversarial objective constraining the output distribu-
+tion toward that of the clean and unprocessed stem. The second
+stage enhances the first stage output using a regression-based
+network to improve waveform-level reconstruction accuracy.
+3.1. First stage: GAN-based Separation
+The first stage adopts DTT-BSR [12] as the separation back-
+bone. Given the mixturey, DTT-BSR produces an estimate
+ˆstarget of the target clean stems target. The primary objective of
+this stage is to obtain a stem estimate whose distribution is con-
+sistent with the prior distribution of the clean target stem. DTT-
+BSR is trained with a joint objective combining adversarial and
+reconstruction losses. The reconstruction loss within the joint
+objective constrains the generation space, preventing the gen-
+erated output from deviating excessively from the target in the
+time-frequency domain. As a result,ˆs target achieves reasonable
+semantic consistency but exhibits limited waveform-level accu-
+racy [12]. These limitations motivate the second stage, which
+takesˆstarget as input and optimizes for waveform-level recon-
+struction.
+3.2. Second stage: Waveform-level Reconstruction
+The second stage takesˆstarget as input and producesˆsfinal as the
+reconstructed estimate of the target clean stems target. We adopt
+a modified Demucs [15] architecture referred to as Demucs-L as
+the reconstruction network. Demucs-L is based on a 1D convo-
+lutional U-Net with Gated Linear Units (GLU) [20] and strided
+convolutions. To prioritize local modeling over global sequence
+modeling, we remove the bidirectional long short-term mem-
+ory (BLSTM) bottleneck present in the standard Demucs ar-
+chitecture. This modification constrains the temporal receptive
+field, ensuring that the second stage focuses on local waveform-
+level reconstruction without altering the output distribution es-
+tablished by the first stage.
+3.3. Optimization Objective
+We train Demucs-L with a regression-based objective combin-
+ing a time-domainL 1 loss and a multi-resolution short-time
+Fourier transform (MR-STFT) loss [21] to jointly constrain re-
+construction accuracy in both the time and time-frequency do-
+mains,
+LTotal =λ 1LL1 +λ 2LMR-STFT,(2)
+whereλ 1 andλ 2 are weighting coefficients. TheL 1 lossLL1 =
+∥starget−ˆsfinal∥1 enforces point-wise waveform alignment be-
+tween the reconstructed output and the ground-truth clean stem.
+The MR-STFT lossL MR-STFT averages spectral reconstruction
+errors acrossMSTFT resolutions with varying FFT sizes, hop
+lengths, and window sizes, capturing reconstruction accuracy at
+multiple time-frequency scales. The two loss terms are comple-
+3189
+mentary, withLL1 constraining temporal fidelity andL MR-STFT
+constraining spectral fidelity across multiple resolutions.
+4. Experiment
+4.1. Dataset
+The proposed system is trained and evaluated on MSR-
+Bench [22], a benchmark dataset for music source restora-
+tion comprising3250stereo clips at48kHz, each10seconds
+in duration, with parallel degraded mixtures and unprocessed
+ground-truth stems. The dataset is split into2600training,325
+validation, and325test clips. The first stage DTT-BSR is pre-
+trained on RawStems [1] following [12], a dataset disjoint from
+MSRBench. To train the second stage, we run inference with
+the frozen first stage on the 2600 MSRBench training clips to
+generate an intermediate dataset of 2600 input-target pairs for
+each stem, where the input is the first stage output and the target
+is the corresponding ground-truth stem. The325test clips are
+reserved for evaluation and are not used in any stage of training.
+4.2. Training Configurations
+The first stage DTT-BSR is trained following [12]. The sec-
+ond stage Demucs-L uses a6-layer encoder and a symmetric
+6-layer decoder with skip connections, where the convolutional
+layers have a kernel size of8and a stride of4, starting with
+64channels that double at each downsampling step. We train
+Demucs-L using the Adam optimizer [23] with a learning rate of
+2×10 −4 for150epochs on an NVIDIA RTX 4090 GPU, with
+a batch size of16. The loss coefficients are set toλ 1 = 10.0
+andλ 2 = 1.0, and the checkpoint with the lowest validation
+loss is retained as the final model. All hyperparameters were
+determined through pre-experiments on the validation set.
+Two data augmentation strategies are applied during train-
+ing. A random phase offset is applied to the input in the fre-
+quency domain to improve robustness to phase variations. Ad-
+ditionally, the first stage output is replaced by the ground-truth
+target stem with a probability of10%, improving generalization
+and preventing the network from overfitting to the first stage
+output distribution. The10-second audio clips are chunked
+into1-second segments during training and evaluated without
+chunking during inference.
+4.3. Evaluation Metrics
+We assess restoration quality using three objective metrics.
+First, we calculate the scale-invariant MMSNR to measure
+spectral fidelity. MMSNR averages the signal-to-noise ratio
+acrossNMel-spectrogram resolutions to capture reconstruc-
+tion accuracy at multiple time-frequency scales,
+MMSNR = 1
+N
+NX
+i=1
+P
+T,F Melri(T,F) 2
+P
+T,F (Melri(T,F)−α ˆMelri(T,F)) 2
+,
+(3)
+wherer i denotes thei-th FFT resolution,Mel ri represents
+the corresponding Mel-spectrogram transformation, andαis
+the optimal scaling factor computed in the time domain as
+α=
+⟨starget,ˆsfinal⟩
+⟨ˆsfinal,ˆsfinal⟩ to ensure scale-invariance.
+Second, we employ Zimtohrli [24] to measure perceptual
+similarity. This psychoacoustic metric simulates the human
+auditory system using a Gammatone filterbank and non-linear
+loudness normalization, capturing perceptual distortions that
+are not directly reflected in signal-level reconstruction metrics
+such as MMSNR.
+0.0 0.2 0.4 0.6 0.8
+Time (s)
+0
+1k
+2k
+4k
+8k
+Frequency (Hz)
+(a)
+DTT-BSR
+0.0 0.2 0.4 0.6 0.8
+Time (s)
+(b)
+Clean
+0.0 0.2 0.4 0.6 0.8
+Time (s)
+(c)
+DTT-BSR+
+80
+60
+40
+20
+0
+dB
+Figure 3:Mel spectrograms of the Bass stem: (a) DTT-BSR
+output, (b) clean stem, and (c) DTT-BSR+ output.
+Finally, we evaluate semantic consistency using the
+Fr´echet Audio Distance based on CLAP embeddings (FAD-
+CLAP) [14],
+FAD-CLAP =∥µr−µg∥2
+2
+| {z }
+Dµ(mean term)
++ Tr(Σr + Σg−2
+p
+ΣrΣg)| {z }
+DΣ(covariance term)
+,
+(4)
+where(µ r,Σr)and(µ g,Σg)denote the mean and covariance
+matrices of the CLAP embeddings of the reference and restored
+audio, respectively. FAD-CLAP measures the distributional dis-
+tance between the reference and restored audio in the CLAP
+embedding space, where the mean termD µ captures the shift
+in the semantic center and the covariance termD Σ reflects the
+difference in distribution diversity.
+5. Results and Analysis
+We evaluate DTT-BSR+ against three systems. BSRNN [25]
+is a single-stage system serving as the official baseline of the
+ICASSP 2026 MSR Challenge. X-LANCE-MSR is a multi-
+stage system and the challenge winner representing the current
+state-of-the-art. DTT-BSR is a competitive single-stage system
+that also serves as the first stage component of DTT-BSR+.
+5.1. Performance Comparison
+Table 1 presents the per-stem results of DTT-BSR+ alongside
+all three comparison systems. DTT-BSR+ achieves consis-
+tent MMSNR improvements over DTT-BSR across all eight
+stems, demonstrating that the second stage effectively enhances
+the first stage output. The largest gains are observed on Bass
+(2.49dB to9.29dB), Drums (2.24dB to8.79dB), and V ocals
+(3.34dB to6.72dB). Figure 3 shows that the DTT-BSR+ out-
+put exhibits time-frequency characteristics closer to the target
+stem compared to the DTT-BSR output on Bass. Compared to
+X-LANCE-MSR, DTT-BSR+ achieves higher MMSNR on V o-
+cals, Guitars, Synthesizers, Bass, and Drums, with the largest
+margins on Bass (9.29dB vs4.22dB) and Drums (8.79dB vs
+2.48dB), while X-LANCE-MSR retains an advantage on Key-
+boards and Orchestral. Across all systems, Percussions remains
+the most challenging stem, with the best MMSNR among all
+methods reaching only0.59dB. DTT-BSR+ achieves the best
+Zimtohrli score across all eight stems, indicating that the gains
+in signal reconstruction accuracy are consistent with improve-
+ments in perceptual quality. Regarding FAD-CLAP, a compar-
+ison between DTT-BSR and DTT-BSR+ reveals two distinct
+trends across stems. On V ocals, Bass, Drums, and Percussions,
+FAD-CLAP decreases alongside the MMSNR improvement, in-
+dicating that both signal fidelity and semantic consistency bene-
+fit from the second stage. On Guitars, Keyboards, Synthesizers,
+and Orchestral, FAD-CLAP increases despite higher MMSNR,
+revealing a divergence between signal reconstruction accuracy
+3190
+Table 1:Per-stem results on MSRBench, evaluated with MMSNR (↑), Zimtohrli (↓), and FAD-CLAP (↓).
+Method Metric Voc Gtr Key Syn Bass Orc Drm Prc Avg.
+BSRNN (Baseline)
+MMSNR(↑) 3.24 1.15 0.57 0.35 2.37 0.34 1.83 0.01 1.23
+Zimtohrli(↓) 0.020 0.019 0.021 0.024 0.019 0.027 0.022 0.023 0.022
+FAD-CLAP(↓) 0.352 0.476 1.032 0.911 0.668 0.758 0.682 1.294 0.772
+X-LANCE-MSR
+MMSNR(↑) 3.36 1.992.761.22 4.221.592.480.592.28
+Zimtohrli(↓)0.0190.019 0.017 0.026 0.014 0.023 0.020 0.027 0.021
+FAD-CLAP(↓) 0.353 0.3980.523 0.639 0.4390.656 0.5330.973 0.564
+DTT-BSR
+MMSNR(↑) 3.34 1.12 0.93 0.44 2.49 0.39 2.24 0.07 1.38
+Zimtohrli(↓)0.0190.019 0.020 0.023 0.016 0.029 0.020 0.028 0.022
+FAD-CLAP(↓) 0.2980.3670.705 0.836 0.6030.5760.434 1.126 0.618
+DTT-BSR +
+MMSNR(↑)6.72 3.512.192.30 9.291.578.790.424.35
+Zimtohrli(↓)0.019 0.016 0.013 0.016 0.010 0.017 0.012 0.014 0.015
+FAD-CLAP(↓)0.2890.640 1.112 0.959 0.546 0.9800.3951.016 0.742
+Table 2:Ablation study on MSRBench (MMSNR↑).
+Stage-1 Stage-2 Voc Gtr Key Syn Bass Orc Drm Prc Avg.
+DTT-BSR — 3.34 1.12 0.93 0.44 2.49 0.39 2.24 0.07 1.38
+— MSG 4.70 0.07 0.30 0.34 7.33 0.14 7.892.472.91
+DTT-BSR MSG 5.70 3.21 0.90 0.29 8.64 0.089.010.13 3.50
+DTT-BSR Demucs-L6.72 3.51 2.19 2.30 9.29 1.578.79 0.424.35
+and semantic consistency on these stems.
+5.2. Ablation Study
+Table 2 presents the architectural ablation results, where
+Demucs-L denotes the modified Demucs network with the
+BLSTM bottleneck removed, restricting the temporal receptive
+field to focus on local waveform-level reconstruction rather than
+global sequence modeling. We also include MSG, a widely
+used GAN-based music enhancement network, as an alterna-
+tive second stage to compare generative and regression-based
+reconstruction approaches. Comparing rows1and4, adding
+the second stage consistently improves MMSNR across all eight
+stems, confirming that Demucs-L effectively enhances the first
+stage output. Comparing rows3and4, replacing MSG with
+Demucs-L as the second stage yields higher MMSNR on six
+stems, with large improvements on Keyboards (0.90dB to
+2.19dB) and Synthesizers (0.29dB to2.30dB), while MSG
+retains an advantage on Drums (9.01dB vs8.79dB). Com-
+paring the single-stage systems (rows1and2) against the
+cascade systems (rows3and4), the cascade configurations
+achieve higher MMSNR than their single-stage counterparts on
+most stems, demonstrating the overall advantage of the multi-
+stage design. The exception is Percussions, where the single-
+stage MSG achieves the best MMSNR among all configurations
+(2.47dB), while both cascade systems degrade substantially,
+with rows3and4reaching0.13dB and0.42dB respectively,
+indicating that the first stage processing introduces a distortion
+on this stem that cannot be improved by the second stage.
+5.3. FAD-CLAP Analysis
+For the five stems where DTT-BSR+ yields higher FAD than
+DTT-BSR despite improved MMSNR, Figure 4 decomposes the
+FAD-CLAP into its mean term and covariance term to identify
+the source of this divergence. Across all five stems, the in-
+crease in total FAD is driven by the mean term, which grows
+substantially from DTT-BSR to DTT-BSR+, while the covari-
+ance structure of the distribution remains largely unchanged.
+For example, on Keyboards, the mean term increases from0.47
+Gtr Key Syn Orc Prc0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4FAD-CLAP
+DTT-BSR: Mean term
+DTT-BSR: Covariance term
+DTT-BSR+: Mean term
+DTT-BSR+: Covariance term
+Figure 4:FAD-CLAP decomposition across five stems. Each
+bar represents the total FAD-CLAP score, decomposed into the
+mean term and covariance term.
+to0.92, whereas the covariance term decreases slightly from
+0.23to0.19. This indicates that the second stage enhance-
+ment shifts the mean of the restored audio in the CLAP embed-
+ding space without altering the distributional covariance struc-
+ture. These findings reveal that for certain stems, waveform-
+level reconstruction and semantic distribution alignment repre-
+sent conflicting objectives that cannot be simultaneously opti-
+mized within a single-stage joint system. The cascade design
+addresses this by assigning each objective to a separate stage,
+achieving substantial improvements in waveform reconstruction
+without compromising the distribution diversity established by
+the previous stage.
+6. Conclusion
+We present DTT-BSR+, a two-stage cascade MSR system de-
+coupling semantic distribution fitting from signal reconstruc-
+tion into separate stages, achieving consistent MMSNR im-
+provements over the single-stage DTT-BSR across all stems.
+Through FAD decomposition, we reveal an implicit trade-off
+between signal reconstruction accuracy and semantic distribu-
+tion fitting, where improving MMSNR leads to semantic mean
+shift while leaving distribution variance largely unchanged. The
+substantial performance variation across stems and the oppos-
+ing FAD and MMSNR trends observed in certain stems further
+highlight the importance of stem-specific design in MSR sys-
+tems. Our findings suggest that a unified architecture may be
+insufficient for all stem types, and future work should explore
+stem-aware approaches to optimize both reconstruction fidelity
+and semantic consistency.Furthermore, our future research will
+explore end-to-end joint training strategies to optimize global
+parameters, and investigate the integration of mask-free archi-
+tectures, such as TF-Locoformer [26], to enhance local wave-
+form modeling and semantic consistency.
+3191
+7. Acknowledgments
+This work was supported by the National Natural Science Foun-
+dation (NSFC) of China under Grant 62471340. The numerical
+calculations in this paper have been done on the supercomput-
+ing system in the Supercomputing Center of Wuhan University.
+8. Generative AI Use Disclosure
+Google Gemini was used in this paper only for polishing the
+manuscript.
+9. References
+[1] Y . Zang, Z. Dai, M. D. Plumbley, and Q. Kong, “Music Source
+Restoration,” in2025 IEEE International Workshop on Multime-
+dia Signal Processing (MMSP), 2025, pp. 138–143.
+[2] D. Giannoulis, M. Massberg, and J. Reiss, “Digital Dynamic
+Range Compressor Design—A Tutorial and Analysis,”AES:
+Journal of the Audio Engineering Society, vol. 60, 07 2012.
+[3] G. W. McNally, “Dynamic range control of digital audio signals,”
+Journal of the Audio Engineering Society, vol. 32, no. 5, pp. 316–
+327, 1984.
+[4] P. Sripada, “MP3 Decoder in Theory and Practice,” 2006.
+[Online]. Available: https://api.semanticscholar.org/CorpusID:
+61103574
+[5] S. Rouard, F. Massa, and A. D ´efossez, “Hybrid Transformers for
+Music Source Separation,” inICASSP 2023 - 2023 IEEE Inter-
+national Conference on Acoustics, Speech and Signal Processing
+(ICASSP), 2023, pp. 1–5.
+[6] J.-C. Wang, W.-T. Lu, and J. Chen, “Mel-RoFormer for V ocal Sep-
+aration and V ocal Melody Transcription,” inProceedings of the
+25th International Society for Music Information Retrieval Con-
+ference, 2024, pp. 454–461.
+[7] J. Wu, J. Liu, T. Pan, J. Tang, and G. Wu, “Towards Practical
+Real-Time Low-Latency Music Source Separation,” in2025 IEEE
+International Conference on Multimedia and Expo (ICME), 2025,
+pp. 1–6.
+[8] E. Cano, D. FitzGerald, A. Liutkus, M. D. Plumbley, and F.-R.
+St¨oter, “Musical source separation: An introduction,”IEEE Sig-
+nal Processing Magazine, vol. 36, no. 1, pp. 31–40, 2019.
+[9] Y . Zang, J. Hai, W. Ge, Q. Kong, Z. Dai, H. Wang,
+Y . Mitsufuji, and M. D. Plumbley, “Summary of the inaugural
+music source restoration challenge,” 2026. [Online]. Available:
+https://arxiv.org/abs/2601.04343
+[10] J. Zhu, H. Qiu, H. Zhu, J. Yu, K. Yu, and X. Chen, “The
+SJTU X-LANCE Lab System for MSR Challenge 2025,” 2026.
+[Online]. Available: https://arxiv.org/abs/2602.09042
+[11] W.-T. Lu, J.-C. Wang, Q. Kong, and Y .-N. Hung, “Music source
+separation with band-split rope transformer,” inICASSP 2024 -
+2024 IEEE Intern

@@ -1,0 +1,471 @@
+MeanVC 2: Robust Low-Latency Streaming Zero-Shot Voice Conversion
+Guobin Ma1,∗, Yuxuan Xia1,∗, Yuepeng Jiang1, Dake Guo1, Hanke Xie1, Jingbin Hu1, Yanbo Wang2,
+Lei Xie1,∗∗, Pengcheng Zhu3,∗∗
+1 Audio, Speech and Language Processing Group (ASLP@NPU), School of Software,
+Northwestern Polytechnical University, China
+2 The University of New South Wales, Australia
+3 WeNet Open Source Community, China
+guobin.ma@mail.nwpu.edu.cn, lxie@nwpu.edu.cn, zpcoftts@gmail.com
+Abstract
+Streaming zero-shot voice conversion (VC) has become in-
+creasingly popular due to its potential for real-time applications.
+The recently proposed MeanVC achieves lightweight stream-
+ing zero-shot VC, but it has several limitations: its chunk-
+wise autoregressive denoising doubles the effective training se-
+quence length, conversion quality degrades under small-chunk
+settings, and its timbre encoder directly relies on reference mel-
+spectrograms, making it sensitive to reference audio quality. To
+address these limitations we propose MeanVC 2. We intro-
+duce future-receptive chunking (FRC), which explicitly sched-
+ules past and future receptive fields across diffusion transformer
+decoder layers and removes clean-chunk teacher forcing. By
+incorporating bounded future context, FRC enables stable con-
+version with a 40 ms chunk size. We further introduce a univer-
+sal timbre token encoder, which constructs a timbre representa-
+tion from a global speaker embedding and retrieves fine-grained
+timbre cues via cross-attention, improving robustness to low-
+quality references and enhancing zero-shot speaker similarity.
+Experimental results show that MeanVC 2 significantly outper-
+forms MeanVC, while reducing latency from 211 ms to 110 ms.
+Audio samples are publicly available1. The source code will be
+publicly released.
+Index Terms: streaming voice conversion, zero-shot, mean
+flows, universal timbre token encoder
+1. Introduction
+Zero-shot voice conversion (VC) aims to transform the tim-
+bre of a source speaker into that of an arbitrary unseen target
+speaker while preserving the underlying linguistic content [1].
+This technology enables diverse practical applications, includ-
+ing movie dubbing [2, 3], privacy protection [4], and com-
+munication aids for individuals with speech impairments [5].
+Driven by continuous advances in deep learning, recent mod-
+els [6, 7, 8, 9, 10, 11, 12] demonstrate substantial improve-
+ments in generation naturalness and speaker similarity. Concur-
+rent with these developments, voice conversion gains increas-
+ing traction in real-time communication (RTC) scenarios, such
+as live broadcasting, online meetings, and voice chat in mul-
+tiplayer games. This widespread adoption highlights a press-
+ing need for streaming models that deliver low latency and low
+computational cost while maintaining high fidelity in both audio
+quality and speaker similarity.
+*These authors contributed equally.
+**indicates the corresponding author.
+1https://aslp-lab.github.io/MeanVC2/
+Recent streaming zero-shot VC methods primarily follow
+two architectural paradigms: autoregressive (AR) and non-
+autoregressive (NAR) frameworks. AR methods [13, 14] typi-
+cally employ strictly causal, step-by-step generation to avoid fu-
+ture look-ahead. While this often yields strong fidelity and sta-
+ble speaker characteristics, sequential decoding inevitably in-
+troduces substantial latency and computational overhead, hin-
+dering lightweight real-time deployment. In contrast, NAR
+methods [15, 16] reduce latency through parallel or few-step
+generation, making them more suitable for streaming scenarios.
+However, under a limited streaming context, particularly during
+short-chunk processing, these methods are prone to degraded
+intelligibility, audio quality, speaker similarity, and cross-chunk
+consistency. Consequently, achieving low latency and low com-
+putational cost without sacrificing fidelity and robustness re-
+mains a central challenge in streaming zero-shot VC.
+MeanVC [17] has attempted to address these challenges by
+combining chunk-wise autoregressive denoising (CARD) with
+mean flows [18]. Specifically, CARD enables streaming conver-
+sion through a chunk-wise causal attention mask, in which each
+noisy chunk attends to a limited window of previously gener-
+ated clean chunks, thereby preserving cross-chunk consistency.
+In addition, mean flows improves the efficiency of flow match-
+ing by training the model to regress the average velocity field
+along the ordinary differential equation (ODE) trajectory, en-
+abling high-quality spectrogram synthesis with only a single
+neural function evaluation (1-NFE). Despite its effectiveness,
+MeanVC still has several limitations that constrain its practi-
+cal performance. First, the CARD training scheme is training-
+unfriendly because it doubles the effective sequence length, in-
+creases memory consumption, and converges slowly in prac-
+tice. Second, with a 160 ms chunk size, MeanVC has an end-
+to-end first-packet latency of 211 ms, and its performance de-
+grades noticeably with smaller chunk sizes. Third, MeanVC
+relies on a multi-reference timbre encoder (MRTE) [19] that
+extracts fine-grained speaker characteristics directly from refer-
+ence mel-spectrograms, which makes speaker conditioning sen-
+sitive to reference audio quality and consequently leads to de-
+graded speaker similarity under low-quality references.
+To address these limitations we proposeMeanVC 2, a
+streaming zero-shot voice conversion system that delivers en-
+hanced robustness and reduced latency. Specifically, we pro-
+posefuture-receptive chunking(FRC), a block-wise receptive-
+field scheduling strategy for a decoder based on the diffusion
+transformer (DiT) [20], which assigns a dedicated attention
+mask at each layer to explicitly control how each chunk attends
+to past and future context. Compared with the CARD-based
+design in MeanVC, FRC eliminates the need for clean-chunk
+arXiv:2606.09050v1  [eess.AS]  8 Jun 2026
+4721
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1961
+Source Wav
+Speaker 
+Embeddings
+MLP
+K
++
++
+Cross
+Attention Lin
+DiT Decoder
+DiT Blocks
+Noise Timestep
+r, t  ∈  [0, 1]
+Vocos Vocoder
+Mean Flows Loss Converted Wav
+V
+Bottleneck
+Features
+..
+.. ..
+..
+Q
+Speaker
+Encoder
+UTTE
+Streaming
+ASR
+Reference Wav
+  Frozen during training
+  Only used in training
+Trainable priors
+  Independent training
+Figure 1:Overall architecture of our proposed MeanVC 2.
+teacher forcing, thereby substantially reducing training mem-
+ory consumption and improving overall training efficiency. Fur-
+thermore, by incorporating bounded future context into the re-
+ceptive field, FRC alleviates the acoustic context insufficiency
+that causes quality degradation under short chunks, enabling
+stable conversion with a 40 ms chunk size. Finally, we pro-
+pose theuniversal timbre token encoder(UTTE) to improve
+the robustness of speaker conditioning under low-quality ref-
+erence audio. UTTE decouples fine-grained timbre extraction
+from direct reliance on reference mel-spectrograms by con-
+structing a key–value timbre representation parameterized by
+universal timbre tokens (UTT) from a global speaker embed-
+ding, and using bottleneck features (BNFs) as queries to retrieve
+pronunciation-aware timbre details via cross-attention. This de-
+sign improves robustness to low-quality references, enhances
+zero-shot speaker similarity, and improves data scalability by
+reducing dependence on large-scale speaker-labeled reference
+mel data. Extensive experiments demonstrate that MeanVC 2
+substantially outperforms MeanVC in overall performance, re-
+ducing the end-to-end pipeline latency on a single CPU core
+from 211 ms to110 ms. The source code will be publicly re-
+leased.
+2. Preliminaries
+2.1. Conditional flow matching
+Conditional flow matching (CFM) [21] learns a vector field to
+transport samples from a prior distributionpprior(ϵ)to a data dis-
+tributionp data(x). Given a data samplex∼p data(x)and noise
+ϵ∼N(0,I), an optimal transport path is constructed asz t =
+(1−t)x+tϵ, with the conditional velocityvt =dz t/dt=ϵ−x.
+A neural networkfθ is trained to minimize the CFM objective:
+LCFM(θ) =E t,x,ϵ
+
+∥fθ(t,zt)−v t∥2
+.(1)
+During inference, the model solves an ODE to recoverxfrom
+ϵ, which typically requires multiple function evaluations and in-
+curs non-trivial latency.
+2.2. Mean flows
+To enable high-quality synthesis with only a single neural func-
+tion evaluation (1-NFE), this work adopts mean flows [18].
+Given a time interval[r,t], the average velocity along the ODE
+trajectory is defined as:
+u(zt,r,t)≜ 1
+t−r
+Z t
+r
+v(zτ,τ)dτ.(2)
+Differentiating with respect totand rearranging yields the mean
+flows identity:
+u(zt,r,t) =v(z t,t)−(t−r) d
+dtu(zt,r,t),(3)
+where the total derivative is expanded via the Jacobian-vector
+product as d
+dtu=v(z t,t)∂zu+∂ tu. Replacing the marginal
+velocityv(z t,t)with the conditional velocityv t =ϵ−x, the
+training target becomesu tgt =v t−(t−r)(v t∂zuθ +∂ tuθ).
+The mean flows training objective is:
+LMF(θ) =E t,r,x,ϵ
+
+∥fθ(zt,r,t)−sg(u tgt)∥2
+.(4)
+where sg(·)denotes the stop-gradient operation. Att=r,
+this objective reduces to the standard CFM loss. During 1-
+NFE sampling, the clean sample is recovered asz 0 =z 1−
+fθ(z1,0,1), wherez 1 =ϵ∼p prior(ϵ).
+3. Methods
+3.1. Overview
+As illustrated in Fig. 1, MeanVC 2 follows a recognition–
+synthesis framework and consists of a streaming automatic
+speech recognition (ASR) module, a speaker encoder, auniver-
+sal timbre token encoder(UTTE), a DiT decoder, and a vocoder.
+First, a pretrained streaming ASR model extracts bottleneck
+features (BNFs) from the source waveform, while a pretrained
+speaker encoder extracts a global speaker embedding from the
+reference waveform. The BNFs and the global speaker embed-
+ding are then fed into UTTE. Specifically, UTTE transforms
+the global speaker embedding into a UTT-based key–value tim-
+bre representation and uses the BNFs as queries in a cross-
+attention module to retrieve fine-grained, content-aware timbre
+cues, thereby producing timbre-aware BNFs.
+Conditioned on the timbre-aware BNFs, the DiT decoder
+generates the target mel-spectrogram in a streaming manner us-
+ing the proposed FRC strategy. Following MeanVC, the de-
+coder is trained with the mean flows formulation, which enables
+high-quality mel-spectrogram synthesis with 1-NFE while pre-
+serving the efficiency advantage of the original framework.
+3.2. Future-receptive chunking
+MeanVC adopts chunk-wise autoregressive denoising, where
+clean mel chunks serve as prompts to condition noisy chunks.
+This design preserves cross-chunk consistency but requires con-
+catenating all clean chunks and all noisy chunks into a2N-
+chunk sequence during training, which substantially increases
+4722
+memory cost and makes optimization less training-friendly. To
+improve training efficiency, we instead perform chunked train-
+ing with a block-wise attention mask on the noisy sequence,
+avoiding clean-chunk teacher forcing. In our implementation,
+under the same training configuration, this modification reduces
+the peak GPU memory footprint by about 60%. However, re-
+stricting attention to a short history window tends to fragment
+temporal context into small chunks, degrading cross-chunk con-
+sistency and audio quality.
+To mitigate these limitations, we introduce FRC, a block-
+wise receptive-field scheduling strategy for the DiT-based de-
+coder. FRC partitions the temporal sequence intoNchunks
+Ci
+N
+i=1, each containingBconsecutive frames, and assigns a
+dedicated attention mask at each DiT layer to explicitly con-
+trol how chunkCi attends to preceding and subsequent chunks.
+Specifically, FRC uses three complementary mask types: an
+intra-chunk mask that permits full attention within each chunk,
+a backward mask that allowsC i to attend to a limited number
+of preceding chunks, and a forward mask that allows it to attend
+to a limited number of subsequent chunks. Through this layer-
+wise scheduling, the receptive field expands across successive
+DiT layers in a controlled manner, rather than relying on a fixed
+sliding-window design.
+Concretely, for a decoder withLlayers, each chunk at layer
+ℓcan attend to at mostP ℓ past chunks andF ℓ future chunks,
+while full intra-chunk attention is always preserved. This de-
+sign defines a block maskM (ℓ) at layerℓ, where attention from
+chunkito chunkjis allowed only ifj∈[i−P ℓ,i+F ℓ]. In
+our implementation withL= 4, the past receptive fields are
+set toP ℓ = 2,2,1,1and the future receptive fields are set to
+Fℓ = 1,0,0,0, as shown in Fig. 2. As a result, the overall
+receptive field covers6past chunks, the current chunk, and1
+future chunk, for a total of8chunks. This explicit receptive-
+field scheduling with bounded look-ahead alleviates the lack of
+acoustic context in short-chunk settings and provides a more
+stable temporal context for streaming generation.
+DiT
+Layer 3 C2C1C0 C3 C4 C5 C6 C7
+DiT
+Layer 0
+DiT
+Layer 1
+DiT
+Layer 2
+Input
+Chunk C2C1C0 C3 C4 C5 C6 C7
+C2C1C0 C3 C4 C5 C6 C7
+C2C1C0 C3 C4 C5 C6 C7
+C2C1C0 C3 C4 C5 C6 C7
+Figure 2:Layer-wise receptive-field expansion of chunk C 6 un-
+der FRC in a 4-layer DiT decoder. Green, black, and blue edges
+denote dependencies introduced by the backward, intra-chunk,
+and forward masks, respectively.
+3.3. Universal timbre token encoder
+MeanVC relies on MRTE, which extracts fine-grained speaker
+characteristics directly from reference mel-spectrograms of the
+same speaker. This design makes speaker conditioning sensi-
+tive to the acoustic quality of the reference audio at inference
+time, often reducing speaker similarity when the reference is
+degraded. It also limits data scalability, since collecting large-
+scale reference audio with reliable speaker identity labels is dif-
+ficult. Inspired by TVTSYN [22], we propose UTTE to decou-
+ple fine-grained timbre extraction from direct reliance on refer-
+ence mel-spectrograms.
+UTTE first maps the global speaker embeddings, extracted
+by the speaker encoder, into a set of UTT parameterized asK
+key–value pairs{(k i,vi)}K
+i=1. The UTT adopts a dual repre-
+sentation consisting of a speaker-specific component generated
+fromsby a multilayer perceptron (MLP) and a set of learnable
+priors shared across all speakers, denoted byk prior
+i andv prior
+i .
+Each key-value pair is computed as:
+ki = MLPk(s)i + tanh(kprior
+i ),
+vi = MLPv(s)i + tanh(vprior
+i ).
+(5)
+The learnable priors act as universal timbre prototypes that cap-
+ture speaker-agnostic phonation traits such as breathiness and
+nasality, while the MLP outputs modulate these prototypes to
+reflect the identity of the target speaker. Applyingtanh(·)to the
+prior terms before additive fusion empirically improves token
+diversity. Intuitively, the UTT decomposes timbre into multiple
+facets each stored in a dedicated slot, which provides a strong
+inductive bias and improves both sample efficiency and training
+stability.
+Unlike TVTSYN, which applies scaled dot-product atten-
+tion between content embeddings and the UTT and then com-
+bines the resulting features with a global timbre embedding
+via spherical linear interpolation to obtain a time-varying tim-
+bre embedding, UTTE directly uses BNFs as queries to at-
+tend over the UTT key-value pairs, thereby extracting fine-
+grained, pronunciation-aware timbre features and producing
+timbre-aware BNFs for downstream spectrogram generation.
+4. Experiments
+4.1. Experiment setup
+Dataset.We train MeanVC 2 on the open-source Emilia [23]
+corpus. Specifically, we filter out utterances shorter than 5 s
+and randomly sample 10,000 hours of Mandarin data. All au-
+dio files are resampled to 16 kHz for VC training. For zero-shot
+evaluation, we use the Mandarin subset of the Seed-TTS test
+set [24], comprising 2,018 source–target test pairs. To eval-
+uate the robustness of speaker conditioning under low-quality
+reference audio, we further select 30 target speakers whose ref-
+erence recordings exhibit poor acoustic quality and sample 100
+utterances from the Seed-TTS test set as source recordings. To
+extract semantic features, we incorporate the streaming ASR
+model Fast-U2++ [25], implemented by WeNet [26] and trained
+on WenetSpeech [27].
+Implementation details.MeanVC 2 contains 18M parameters
+in total. The DiT decoder uses four DiT blocks, each with a
+hidden size of 512 and two attention heads. The UTTE in-
+cludes two independent two-layer MLPs, 32 UTT key-value
+pairs with a hidden size of 256, and a cross-attention mod-
+ule with a hidden size of 256 and four attention heads. Fast-
+U2++ uses an 80 ms chunk size for streaming inference and ex-
+tracts semantic features from 16 kHz waveforms with a 40 ms
+frame length. Speaker embeddings are extracted using ECAPA-
+TDNN [28]. We employ V ocos [29] as the vocoder to convert
+mel-spectrograms to high-fidelity 16 kHz speech waveforms.
+Evaluation metrics.For subjective evaluation, we use natural-
+ness mean opinion score (NMOS) and speaker similarity mean
+opinion score (SMOS), each reported with 95% confidence in-
+tervals. We randomly sample 100 test pairs and recruit 30 listen-
+ers for the listening tests. For objective evaluation, we measure
+4723
+Table 1:Zero-shot voice conversion results. RTF is measured for the VC module only, while latency denotes the end-to-end first-packet
+latency of the full pipeline. The best and second-best results are highlighted in bold and underlined, respectively, among the main
+systems (excluding ablations). Rows shaded in light green correspond to MeanVC 2 and its ablations.
+Method Quality Similarity Efficiency
+NMOS↑DNSMOS↑CER(%)↓SMOS↑SSIM↑Parameters(M) RTF↓Latency(ms)↓
+GT 4.07±0.02 3.79 1.36 - - - - -
+StreamV oice+ 3.70±0.04 3.52 10.27 3.65±0.02 0.552 153 14.732 1258.56
+MeanVC (80 ms) 3.61±0.02 3.37 11.66 3.61±0.03 0.599 14 0.177 111.64
+MeanVC (160 ms)3.86±0.043.81 5.113.87±0.03 0.687 140.136211.52
+MeanVC 2 3.81±0.05 3.89 7.44 3.89±0.04 0.710 18 0.371 109.88
+w/o forward mask 3.54±0.02 3.23 20.65 3.52±0.02 0.573 18 - -
+w/o UTTE 3.77±0.05 3.81 7.92 3.78±0.02 0.682 13 - -
+w/o tanh 3.79±0.03 3.83 7.79 3.82±0.05 0.692 18 - -
+intelligibility using character error rate (CER) computed by an
+ASR model 2. We measure speaker similarity (SSIM) using a
+WavLM-finetuned speaker verification model3 to compare con-
+verted speech with the target speaker. In addition, we use DNS-
+MOS4 to assess speech quality. For streaming performance, we
+report real-time factor (RTF) and latency. RTF is defined as the
+ratio between inference time and the generated audio duration.
+All RTF and latency measurements are conducted with single-
+threaded execution on a single-core AMD EPYC 7542 CPU.
+Baseline systems.To assess the effectiveness of the proposed
+approach, we evaluate MeanVC 2 against two baseline systems,
+MeanVC and StreamV oice+. MeanVC 2 uses 40 ms chunks and
+introduces a bounded future receptive field of one chunk, result-
+ing in an effective first-packet buffering of 80 ms at the BNF
+level. StreamV oice+ uses an 80 ms chunk size. MeanVC is
+evaluated with chunk sizes of 80 ms and 160 ms.
+4.2. Evaluation on zero-shot VC
+As shown in Table 1, MeanVC 2 attains the highest
+scores across all similarity metrics, surpassing StreamV oice+,
+MeanVC (80 ms), and MeanVC (160 ms). In terms of qual-
+ity metrics, MeanVC 2 achieves the highest DNSMOS [30].
+Since MeanVC 2 and MeanVC (80 ms) use the same 80 ms in-
+put chunk, this comparison is fair, and MeanVC 2 improves
+all five quality and similarity metrics over MeanVC (80 ms).
+The slight disadvantage in NMOS and CER relative to MeanVC
+(160 ms) is expected, as the 160 ms setting benefits from richer
+contextual information for acoustic reconstruction.
+MeanVC 2 contains only 18M parameters, comparable
+to MeanVC at 14M and much smaller than StreamV oice+ at
+153M. Its end-to-end first-packet latency is 109.88 ms, com-
+parable to MeanVC (80 ms) at 111.64 ms, but much lower
+than MeanVC (160 ms) at 211.52 ms and StreamV oice+ at
+1258.56 ms. The full pipeline remains real-time, with an overall
+RTF of0.114 + 0.371 + 0.148 = 0.633<1.0for the ASR
+encoder, VC module, and vocoder. Although the VC-module
+RTF of MeanVC 2 is higher than that of MeanVC (80 ms),
+i.e., 0.371 versus 0.177, the latter is a latency-matched baseline
+rather than an output-duration-matched computation reference.
+Under the same 40 ms output granularity, MeanVC has an RTF
+of 0.316, compared with 0.371 for MeanVC 2, indicating that
+MeanVC 2 only moderately increases the computational cost.
+All efficiency measurements were conducted without engineer-
+2https://huggingface.co/funasr/paraformer-zh
+3https://github.com/BytedanceSpeech/seed-tts-eval
+4https://github.com/microsoft/DNS-Challenge
+ing optimizations such as quantization or operator fusion, sug-
+gesting that further latency reduction remains possible.
+4.3. Evaluation on reference robustness
+As shown in Table 2, replacing UTTE with MRTE leads to con-
+sistent degradation across all metrics. These results demonstrate
+that UTTE extracts more reliable speaker representations from
+low-quality reference audio than MRTE, resulting in better out-
+put quality and greater speaker similarity under such conditions.
+Table 2:Evaluation results on reference robustness.
+Method DNSMOS↑CER(%)↓SSIM↑
+MeanVC 2 w/ MRTE 1.39 7.64 0.621
+MeanVC 21.87 6.55 0.643
+4.4. Ablation study
+To validate the contribution of each component, we conduct ab-
+lation experiments as shown in Table 1. Removing the forward
+mask from FRC results in the most severe degradation, indicat-
+ing that a limited lookahead receptive field is essential for cap-
+turing sufficient acoustic context under small chunk sizes. Re-
+moving UTTE leads to a notable drop in SSIM, confirming that
+UTTE captures fine-grained timbre information beyond what
+a global speaker embedding alone can provide; notably, even
+this reduced 13M-parameter variant still outperforms MeanVC
+(80 ms) across all metrics, highlighting the effectiveness of FRC
+under small chunk sizes. Removing the tanh activation causes
+a moderate drop in similarity metrics, suggesting that tanh reg-
+ularizes the distribution of utterance-level timbre embeddings
+and promotes greater diversity in speaker representations.
+5. Conclusion
+We propose MeanVC 2, a low-latency and robust streaming
+zero-shot VC system that addresses key limitations of MeanVC
+through FRC and UTTE. FRC removes clean-chunk teacher
+forcing to improve training efficiency and incorporates bounded
+future context to stabilize short-chunk conversion, enabling re-
+liable conversion with a 40 ms chunk size. UTTE improves
+speaker conditioning robustness by retrieving fine-grained tim-
+bre cues from a global speaker embedding, reducing sensitivity
+to low-quality reference audio. Experimental results demon-
+strate that MeanVC 2 substantially outperforms MeanVC in
+overall performance, reducing end-to-end pipeline latency from
+211 ms to 110 ms.
+4724
+6. Generative AI Use Disclosure
+In accordance with ISCA guidelines, the authors declare that
+all intellectual contributions to this manuscript—including core
+ideas, theoretical formulation, methodology, experimental de-
+sign, result analysis, and conclusions—originate entirely from
+the authors. Generative AI was used solely to assist with lan-
+guage editing and writing fluency. The authors take full respon-
+sibility for the accuracy, integrity, and originality of this work.
+No generative AI tool is listed as a co-author, and all authors
+have reviewed and approved the final submission.

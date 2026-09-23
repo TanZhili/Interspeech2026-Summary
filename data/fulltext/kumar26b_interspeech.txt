@@ -1,0 +1,540 @@
+ML-KD-DRI-GAN: Teacher-Guided Denoising and Triplet-Adversarial
+Training for Robust Spoken Language Understanding
+Ankit Kumar ID 1,∗,∗∗, Munir Georges ID 2,∗
+1 School of Computing Science and Engineering, Galgotias University, Greater Noida, India
+2 AImotion Bavaria, Technische Hochschule Ingolstadt, Germany
+anketvit@gmail.com, munir.georges@thi.de
+Abstract
+Automatic speech recognition (ASR) errors substantially
+degrade Spoken Language Understanding (SLU) by distorting
+semantic representations. We propose Multi-level Knowledge-
+Distillation DRI-GAN (ML-KD-DRI-GAN), a teacher-guided
+adversarial denoising framework that maps noisy embeddings
+onto a clean semantic manifold. A teacher model is first trained
+on clean transcripts, after which the student model is learned
+through (i) multi-level latent alignment at the generator to de-
+noise noisy embeddings and (ii) Bi-discriminator-cooperated
+distillation (Bi-DCD) at the discriminator to transfer teacher
+discriminative knowledge. We further introduce a synthetic
+generator to produce hard negatives and enforce triplet sep-
+aration among clean, denoised, and synthetic samples to im-
+prove robustness. Experiments on noisy SLU benchmarks show
+consistent gains over GAN-BERT baselines. On the SLURP
+dataset, ML-KD-DRI-GAN achieves absolute improvements of
+4.49% and 6.46% under moderate and severe ASR noise.
+Index Terms: Automatic Speech Recognition, Natural Lan-
+guage Understanding, Large Language Models
+1. Introduction
+Spoken Language Understanding (SLU) systems typically rely
+on an automatic speech recognition (ASR) front-end followed
+by downstream intent classification and slot filling [1]. In real-
+world deployments, ASR outputs often contain substitution, in-
+sertion, and deletion errors, resulting in a distribution mismatch
+between clean training data and noisy inference inputs [2, 3].
+This mismatch significantly degrades SLU performance, par-
+ticularly in low-resource settings where labeled data is limited.
+While end-to-end SLU [4] models jointly trained on speech sig-
+nals have been explored, they require large amounts of anno-
+tated speech data and remain sensitive to unseen linguistic and
+acoustic variations [5, 6]. As a result, modular SLU pipelines
+that leverage pre-trained language models remain a practical
+choice. Recent studies have highlighted the effectiveness of
+pre-trained language models for intent classification and slot-
+filling tasks in few-shot SLU settings [7]. However, despite
+their strong performance on clean text, such models are highly
+vulnerable to ASR noise, as transcription errors propagate di-
+rectly to downstream intent prediction [8].
+To address this issue, prior studies have proposed
+representation-level alignment strategies that encourage robust-
+ness by reducing discrepancies between clean transcripts and
+noisy ASR hypotheses. Methods based on contrastive learning
+and consistency objectives, such as SpokenCSE [9], and CCL
+*These authors contributed equally.
+**indicates the corresponding author.
+[10], improve robustness by enforcing representation similarity
+during training. Nevertheless, these approaches primarily fo-
+cus on deterministic encoders and representation consistency,
+without explicitly modeling denoising or transferring task-level
+decision boundaries.
+In parallel, adversarial learning has been explored to im-
+prove robustness against linguistic noise in NLP tasks. GAN-
+based frameworks have been applied to text correction and
+robustness-oriented learning, including lexical adversarial train-
+ing, GAN-like sequence labeling, and adversarial grammatical
+error correction [11, 12, 13]. While effective for modeling noisy
+or corrupted text, these approaches primarily operate at the sur-
+face text level and are not designed to explicitly address ASR-
+induced noise or task-level decision boundaries in SLU. Semi-
+supervised GAN-based approaches such as GAN-BERT [14]
+further demonstrate the effectiveness of adversarial learning
+for low-resource text classification by combining GAN train-
+ing with pre-trained language models. However, GAN-BERT is
+not designed to explicitly handle ASR corruption and does not
+exploit clean–noisy correspondence beyond adversarial feature
+matching. More recent GAN-based SLU methods [15, 16] in-
+troduce distribution-level objectives and metric learning to im-
+prove robustness, but they still lack a unified teacher–student
+distillation mechanism that aligns clean and noisy utterances at
+multiple semantic levels. Hu et al. [17] proposed Discriminator-
+Cooperated Distillation (DCD), showing that discriminator rep-
+resentations enable effective knowledge transfer in GAN. Sim-
+ilarly, recent work [18] explored embedding-space distribution
+alignment between teacher and student generators via latent dis-
+tillation to enhance GAN efficiency. Inspired by such recent ad-
+vances in GAN [18, 17], and Noisy-SLU [19], we propose ML-
+KD-DRI-GAN, a generative adversarial teacher–student frame-
+work that extends DRI-GAN to explicitly address ASR noise.
+Our approach first trains a teacher model on clean transcrip-
+tions, and subsequently guides a student model trained on noisy
+inputs through multi-level latent alignment at the generator,
+bi-discriminator cooperative knowledge distillation at the dis-
+criminator, and triplet-based metric learning. By jointly per-
+forming denoising, decision-boundary transfer, and geometry
+preservation within an adversarial learning paradigm, ML-KD-
+DRI-GAN enables robust intent classification under severe ASR
+noise. Our main contributions are as follows:
+• We propose ML-KD-DRI-GAN, a teacher-guided adversar-
+ial denoising framework that projects noisy SLU embeddings
+onto a clean semantic manifold via multi-level latent align-
+ment to improve robustness under ASR corruption.
+• We introduce Bi-discriminator-cooperated distillation (Bi-
+DCD) by adapting DCD-style knowledge transfer [17] to the
+discriminator, enabling effective transfer of teacher discrimi-
+native knowledge and enhanced decision boundaries.
+3458
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-670
+• We develop a unified training objective that jointly integrates
+adversarial learning, hierarchical semantic alignment, and
+teacher-student knowledge distillation while fine-tuning the
+language encoder for SLU optimization.
+2. Methodology
+Our proposed framework, ML-KD-DRI-GAN, is designed to
+improve SLU from noisy ASR transcripts by jointly perform-
+ing denoising, distribution alignment, and knowledge distilla-
+tion in the embedding space. Figure 1-a (Overview) illustrates
+the complete pipeline, while Figures (b)–(d) decompose the
+teacher training and student learning into generator-side and
+discriminator-side objectives.
+2.1. Problem Formulation
+LetX clean denote the clean transcription andX noisy its ASR-
+corrupted version. Lety∈{1,...,K}be the intent label. We
+use a BERT encoderE(·)to obtain continuous embeddings:
+hclean =E(X clean)∈R d,(1)
+hnoisy =E(X noisy)∈R d,(2)
+Althoughh noisy retains same intent information, it typi-
+cally exhibits semantic distortion, distributional shift, and re-
+duced class separability due to ASR errors. The goal of ML-
+KD-DRI-GAN is therefore to learn a transformation that: i)
+Mapsh noisy toward the clean semantic manifold defined by
+hclean, ii) Preserves intent-discriminative structure, and iii) Im-
+proves robustness against unseen noise.
+2.2. Architecture Overview
+ML-KD-DRI-GAN extends the DRI-GAN framework [15] by
+integrating multi-level latent alignment, knowledge distillation,
+and metric learning into a unified training scheme. The pro-
+posed architecture explicitly denoises ASR-corrupted embed-
+dings through multi-level latent alignment between a frozen
+teacher generator(G T )and a trainable student generator(G S),
+guiding the student to recover noise-invariant semantic repre-
+sentations. While generator-side latent alignment focuses on
+denoising representations, Bi-DCD transfers task-level discrim-
+inative knowledge from the teacher discriminator(D T )to the
+student discriminator(D S). This is achieved by aligning both
+intermediate bottleneck features and class logits, enabling the
+student discriminator to learn more stable and noise-robust de-
+cision boundaries. In parallel, a synthetic generator continues
+to produce noise-driven embeddings, preserving the adversar-
+ial min–max game between the student discriminator and the
+synthetic generator(G S2). Consequently, although adversar-
+ial training dynamics are maintained, the student’s real embed-
+dings are now teacher-aligned and semantically denoised, lead-
+ing to more robust intent classification under noisy ASR condi-
+tions.
+ML-KD-GAN contains: (i) a frozen teacher generatorG T
+and teacher discriminatorD T , (ii) a trainable teacher-aligned
+student generatorG S, and student discriminatorD S, and (iii) a
+synthetic student generatorG S2.
+2.3. Teacher Model Training (Clean Semantic Manifold)
+The teacher model is trained exclusively on clean transcrip-
+tionsX clean and is used to define a stable semantic reference
+space for student learning. The teacher generatorG T is an en-
+coder–decoder network with a low-dimensional bottleneck, de-
+signed to learn a compact clean-text manifold. The architecture
+of the generator follows:Encoder:768→512→256,De-
+coder:256→512→768.
+zT =Enc. T (hclean)∈R 256, ˆhT
+clean =Dec. T (zT )∈R 768.
+(3)
+The teacher discriminatorD T maps an embedding to (i) a
+bottleneck featureu T∈R 256 and (ii) classification logitso T∈
+RK+1, where the additional class corresponds to the real/fake
+indicator:
+(uT,o T ) =D T (ˆhT
+clean).(4)
+The teacher is trained using a GAN-BERT [14] objective.
+After convergence, bothG T andD T are frozen and used for
+knowledge transfer during student training.
+2.4. Student Model Training
+The student model is trained using noisy ASR transcriptions
+Xnoisy and extends the original DRI-GAN framework by in-
+corporating hierarchical latent alignment and knowledge distil-
+lation from the frozen teacher. The student consists of:(i) a stu-
+dent generatorG S, (ii) a student discriminatorD S, and (iii) a
+synthetic generatorG S2.
+2.4.1. Generator-Side Learning: Multi-level Latent Alignment
+The student generatorG S shares the same encoder–decoder
+structure as the teacherG T . To denoise noisy embeddings and
+align them with the clean teacher manifold, we apply hierar-
+chical alignment at two levels.Output-level alignmentaligns
+denoised embeddings with teacher outputs:
+LoutKD = 1−cos( ˆhS
+noisy, ˆhT
+clean).(5)
+Latent-level alignmentaligns bottleneck representations:
+LlatKD = 1−cos(z S,z T ).(6)
+Additionally, a synthetic generatorG S2 produces embeddings
+from random noise which act as adversarial negatives.
+ˆhS2
+syn =G S2(ϵ), ϵ∼U(0,1),(7)
+The overall generator-side loss combines the multi-level
+alignment terms with adversarial supervision from the discrim-
+inator. Formally, the generator is optimized as:
+LG =L GAN−BERT
+G +α.(L latKD +L outKD)(8)
+αcontrols the strength of teacher-guided multi-level alignment.
+2.4.2. Bi-discriminator Cooperative Distillation (Bi-DCD)
+The student discriminatorD S maps denoised embeddings to a
+bottleneck representation and intent logits:
+(uS,o S) =D S(ˆhS
+noisy)(9)
+To transfer discriminative structure from the clean teacher dis-
+criminatorD T to the noisy student discriminatorD S, we intro-
+duce Bi-DCD at both the feature and logit levels. We align the
+bottleneck representations of the student and teacher discrimi-
+nators:
+Lf eat
+DCD =||u S−u T||2
+2.(10)
+3459
+Multi-level Latent 
+Alignment
+Bi-Discriminator Cooperated 
+Distillation (Bi-DCD)      Frozen
+BERT
+Encoder
+BERT
+Encoder
+Trainable
+Noise 
+Vector
+Overview
+GT
+GS
+DT
+DS
+GS2
+xclean
+xnoisy
+E(xclean)
+hclean
+E(xnoisy)
+hnoisy
+ĥT
+clean
+ĥS
+noisy
+ĥS2
+syn
+BERT
+Encoder
+zT
+Enc Dec
+GT
+ DT
+(a) Teacher Model Training
+clean
+xclean
+E(xclean)
+hclean
+hclean
+ĥT
+clean
+EncT(hclean) DecT(zT) ➡➡ zT
+   ➡ ĥT
+clean
+(b) Multi-level Latent Alignment (Generator)
+ĥT
+clean ĥS
+noisy
+zT zS
+Multi-level Latent Alignment
+GS
+GT
+zT= EncT(hclean) zS= EncS(hnoisy)
+ĥT
+clean= GT(hclean) ĥS
+noisy= GS(hnoisy)
+(c) Bi-Discriminator Cooperated Distillation (Bi-DCD)
+ uS
+uT
+Bi-Discriminator Cooperated 
+Distillation (Bi-DCD)
+ĥT
+cleanĥS
+noisy
+uT= DT
+feat(ĥclean)uS= DS
+feat(ĥnoisy)
+DS DT
+ℓT
+intent
+ = ℓT[:c]ℓS
+intent
+ = ℓS[:c]
+Figure 1:A systematic overview of proposed Teacher-guided denoising and triplet adversarial training method. It consist of (a) Teacher
+model training on clean data using auto-encoder based generator architecture, (b) Multi-level latent alignment between teacher(G T )
+and student generator(G S), and (c) Bi-Discriminator cooperated distillation between teacher(D T )and student discriinator(D S).
+In addition, we perform knowledge distillation at the logit level:
+Llogit
+DCD = KL
+
+Softmax(oT/τ)∥Softmax(o S/τ)
+
+,(11)
+whereτdenotes the temperature parameter (set toτ= 1in our
+experiments). This objective transfers fine-grained class rela-
+tionships and uncertainty information from the teacher to the
+student. The discriminator-side objective integrates Bi-DCD
+with the standard GAN-BERT discriminator loss as follows:
+LD =L GAN−BERT
+D +β.(L f eat
+DCD +L logit
+DCD )(12)
+whereβcontrols the strength of teacher-guided distillation.
+2.4.3. Metric Learning via Triplet Loss
+Following the original DRI-GAN framework, we directly adopt
+the same triplet-based metric learning objective [20, 21] with-
+out modification. The triplet loss is applied to the discrimina-
+tor to preserve relative semantic geometry between noisy ASR
+hypotheses, their clean references, and negative samples. The
+triplet loss is defined as:
+Lslu
+triplet =
+
+dcos(xa,x p)−d cos(xa,x n) +m
+
++,(13)
+whered cos(·,·)denotes the cosine distance. The final dis-
+criminator objective is obtained by combining the distillation-
+augmented discriminator loss with the triplet loss:
+LD = (1−γ)∗L D +γ∗L slu
+triplet.(14)
+3. Datasets and Implementation Details
+We evaluate the proposed ML-KD-DRI-GAN method on the
+intent detection task using the SLURP dataset [22]. SLURP is
+a large-scale SLU dataset covering diverse domains, speakers,
+and recording environments, with intent labels defined as (sce-
+nario, action) pairs. SLURP contains 60 intent classes with an
+average utterance length of 6.9 tokens. The dataset consists of
+50,628 training samples, 8,690 validation samples, and 10,992
+test samples. To simulate realistic noisy SLU conditions, we
+use ASR hypotheses generated by the Google Web API and
+Wav2Vec 2.0 [23], obtained from the SpokenCSE 1 [9]. The
+median Word Error Rates (WER) are approximately 25% and
+60%, respectively.
+For the noisy SLU task, we employ contextualized text rep-
+resentations extracted using BERT [24] embeddings. The archi-
+tectures of the teacher and student generators and discrimina-
+tors are MLP-based with leaky ReLU activations, following the
+design described in Section 2.3. The additional synthetic gen-
+erator used to produce synthetic embedding of 768-dimension
+from random noise follows the same configuration as GAN-
+BERT [14]. We adopt a staged training strategy commonly
+used in knowledge distillation and metric learning frameworks
+[25, 26]. First, the teacher model is trained independently us-
+ing clean supervision. Next, the student model is initialized and
+trained for 10 epochs using only adversarial losses, without ap-
+plying any distillation or metric learning objectives, allowing it
+to learn a stable representation. After this warm-up phase, la-
+tent alignment and multi-level knowledge distillation losses are
+introduced, together with contrastive metric learning, to further
+guide the student toward the teacher’s representation space.
+All experiments are conducted with a batch size of 32 on
+NVIDIA A100 (80 GB) GPUs. To ensure robustness, each ex-
+periment is repeated five times with different random shuffles,
+and the average performance is reported.
+1https://github.com/MiuLab/SpokenCSE
+3460
+(a)Teacher
+ (b)Student(noisy)
+ (c)Student latent alignmnet
+ (d)Student with latent + KD
+ (e)latent+KD+Triplet loss
+Figure 2:t-SNE visualization of the embeddings using SLURP (20 classes) with noisy wav2vec2.0 ASR hypotheses
+0.0 0.1 0.3 0.5 0.7 1.0
+Loss Coefficient  (Generator)
+65
+70
+75
+80
+85
+90
+95Accuracy (%)
+Noisy0.25 Noisy0.60
+(a)Loss Coefficientα
+0.0 0.1 0.3 0.5 0.7 1.0
+Loss Coefficient  (Distriminator)
+65
+70
+75
+80
+85
+90
+95Accuracy (%)
+Noisy0.25 Noisy0.60 (b)Loss Coefficientβ
+0.1 0.2 0.3 0.4 0.5 0.6 0.7
+Loss Coefficient  (Distriminator)
+65
+70
+75
+80
+85
+90
+95Accuracy (%)
+Noisy0.25 Noisy0.60 (c)Loss Coefficientγ
+Figure 3:Sensitivity analysis of the student model with respect to (a) generator-side distillation weightα, (b) discriminator-side
+distillation weightβ, and (c) triplet loss weightγunder different ASR noise conditions.
+Table 1:Intent classification accuracy (%) on noisy SLURP .
+N0.25 and N0.60 denote the noise levels of 0.25 and 0.60.
+Model Embd. N 0.25 N0.60 Clean
+Joint-BERT BERT 84.13 70.2097.12
+SpokenCSE RoBERTa 85.26 70.31 95.82
+DRI-GAN Fused 85.71 71.75 96.99
+CCL RoBERTa 86.22 73.13 96.99
+GAN-BERT BERT 82.50 67.10 95.38
+ML-KD (Ours)BERT86.99 73.56-
+Table 2:Ablation study of ML-KD-DRI-GAN components.
+Configuration N 0.25 N0.60
+Student DRI-GAN (no latent, no KD) 82.36 67.80
++ Generator latent alignment 84.48 71.26
++ Discriminator KD (Logit + Bottle) 85.68 72.20
++ Triplet loss(ML-KD-DRI-GAN)86.99 73.56
+Table 1 compares the proposed method with prior ap-
+proaches and the GAN-BERT baseline on the noisy SLURP
+intent detection task. Over the GAN-BERT baseline, ML-
+KD-DRI-GAN consistently delivers absolute gains of 4.49%
+and 6.46% under moderate and severe ASR noise, respectively.
+These results demonstrate the effectiveness of incorporating
+multi-level knowledge distillation for robust SLU under noisy
+transcriptions. When compared with other competitive meth-
+ods such as SpokenCSE, DRI-GAN, and CCL, our approach
+achieves the best overall performance across noisy conditions.
+This improvement highlights the advantage of incorporating ad-
+versarial learning with multi-level knowledge distillation.
+Table 2 presents a progressive ablation study of the student
+model. Starting from a student DRI-GAN without distillation,
+adding generator-side latent alignment yields substantial gains,
+particularly under higher WER. Introducing discriminator-side
+knowledge distillation further improves performance, while the
+addition of triplet loss provides the final boost, resulting in the
+full ML-KD-DRI-GAN model. This confirms that each compo-
+nent contributes incrementally to robustness under noisy ASR
+conditions. Figure 2 illustrates the sensitivity of the student
+model to generator-side distillation weight (α), discriminator-
+side distillation weight (β), and triplet loss weight (γ). Per-
+formance consistently improves with increasing supervision
+strength up to an optimal range, after which gains saturate, with
+larger improvements observed under higher ASR noise. This
+highlights the importance of balanced distillation and metric
+learning for stable training.
+Figure 3 provides a t-SNE visualization of the embeddings
+on a subset of SLURP intent classes. Compared to the student
+without distillation, the novel approach produces more compact
+intra-class clusters and clearer inter-class separation. This indi-
+cates that knowledge distillation and metric learning effectively
+transfer discriminative structure from the teacher to the student.
+4. Conclusion
+This paper presented ML-KD-DRI-GAN, a multi-level knowl-
+edge distillation framework for robust SLU under noisy ASR
+conditions. By progressively distilling latent representations,
+discriminator knowledge, and metric structure from a teacher
+model, the proposed approach significantly improves intent de-
+tection performance over strong baselines. Extensive experi-
+ments on the SLURP dataset demonstrate consistent gains, sup-
+ported by ablation studies. These results highlight the effec-
+tiveness of combining adversarial denoising, knowledge distil-
+lation, and metric learning for noise-robust SLU, while future
+work will explore its generalization across more diverse real-
+world acoustic conditions and ASR systems.
+3461
+5. References
+[1] G. Tur and R. De Mori,Spoken language understanding: Systems
+for extracting semantic information from speech. John Wiley &
+Sons, 2011.
+[2] M. Sperber, G. Neubig, J. Niehues, and A. Waibel, “Neural lattice-
+to-sequence models for uncertain inputs,” inProceedings of the
+2017 Conference on Empirical Methods in Natural Language
+Processing, 2017, pp. 1380–1389.
+[3] C.-W. Huang and Y .-N. Chen, “Learning asr-robust contextual-
+ized embeddings for spoken language understanding,” inICASSP
+2020-2020 IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP). IEEE, 2020, pp. 8009–8013.
+[4] M. Radfar, A. Mouchtaris, and S. Kunzmann, “End-to-end neu-
+ral transformer based spoken language understanding,”arXiv
+preprint arXiv:2008.10984, 2020.
+[5] L. Lugosch, M. Ravanelli, P. Ignoto, V . S. Tomar, and Y . Ben-
+gio, “Speech model pre-training for end-to-end spoken language
+understanding,”arXiv preprint arXiv:1904.03670, 2019.
+[6] N. Kanda, X. Chang, Y . Gaur, X. Wang, Z. Meng, Z. Chen, and
+T. Yoshioka, “Investigation of end-to-end speaker-attributed asr
+for continuous multi-talker recordings,” in2021 IEEE Spoken
+Language Technology Workshop (SLT). IEEE, 2021, pp. 809–
+816.
+[7] A. Kumar, T. Choudhary, T. Choudhury, and B. K. Dewangan,
+“Comparative analysis of pre-trained language models for few-
+shot spoken language understanding,” in2025 4th OPJU Interna-
+tional Technology Conference (OTCON) on Smart Computing for
+Innovation and Advancement in Industry 5.0. IEEE, 2025, pp.
+1–4.
+[8] W. Ruan, Y . Nechaev, L. Chen, C. Su, and I. Kiss, “Towards an
+asr error robust spoken language understanding system,” 2020.
+[9] Y .-H. Chang and Y .-N. Chen, “Contrastive learning for improving
+asr robustness in spoken language understanding,”arXiv preprint
+arXiv:2205.00693, 2022.
+[10] S. Kim, J. Hwang, and H.-Y . Jung, “Contrastive and consistency
+learning for neural noisy-channel model in spoken language un-
+derstanding,”arXiv preprint arXiv:2405.15097, 2024.
+[11] V . Raheja and D. Alikaniotis, “Adversarial grammatical error cor-
+rection,” inFindings of the Association for Computational Lin-
+guistics: EMNLP 2020, 2020, pp. 3075–3087.
+[12] K. Parnow, Z. Li, and H. Zhao, “Grammatical error correction
+as gan-like sequence labeling,”arXiv preprint arXiv:2105.14209,
+2021.
+[13] J. Xu, L. Zhao, H. Yan, Q. Zeng, Y . Liang, and X. Sun, “Lex-
+icalat: Lexical-based adversarial reinforcement training for ro-
+bust sentiment classification,” inProceedings of the 2019 confer-
+ence on empirical methods in natural language processing and the
+9th international joint conference on natural language processing
+(EMNLP-IJCNLP), 2019, pp. 5518–5527.
+[14] D. Croce, G. Castellucci, and R. Basili, “Gan-bert: Generative ad-
+versarial learning for robust text classification with a bunch of la-
+beled examples,” inProceedings of the 58th annual meeting of the
+association for computational linguistics, 2020, pp. 2114–2119.
+[15] A. Kumar and M. Georges, “Dri-gan: A novel dual real input gan
+with triplet loss for cross-lingual and noisy slu,” inProc. Inter-
+speech 2025, 2025, pp. 4118–4122.
+[16] A. Kumar and M. Georges, “Joint-average mean and variance
+feature matching (jamvfm) semi-supervised gan with additional-
+objective training function for intent detection,” inInternational
+Conference on Text, Speech, and Dialogue. Springer, 2024, pp.
+275–287.
+[17] T. Hu, M. Lin, L. You, F. Chao, and R. Ji, “Discriminator-
+cooperated feature map distillation for gan compression,” inPro-
+ceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, 2023, pp. 20 351–20 360.
+[18] S. Yeo, Y . Jang, and J. Yoo, “Nickel and diming your gan: A dual-
+method approach to enhancing gan efficiency via knowledge dis-
+tillation,” inEuropean Conference on Computer Vision. Springer,
+2024, pp. 104–121

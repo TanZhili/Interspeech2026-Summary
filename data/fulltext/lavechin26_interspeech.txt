@@ -1,0 +1,430 @@
+BabAR: from phoneme recognition to developmental measures
+of young children’s speech production
+Marvin Lavechin ID 1,∗∗, Elika Bergelson ID 2, Roger Levy ID 3
+1 Laboratoire d’Informatique et Syst`emes, Universit´e Aix-Marseille, CNRS, France
+2 Department of Psychology, Harvard University, USA
+3 Department of Brain and Cognitive Sciences, Massachusetts Institute of Technology, USA
+marvinlavechin@gmail.com, elika bergelson@g.harvard.edu, rplevy@mit.edu
+Abstract
+Studying early speech development at scale requires automatic
+tools, yet automatic phoneme recognition, especially for young
+children, remains largely unsolved. Building on decades of data
+collection, we curate TinyV ox, a corpus of more than half a
+million phonetically transcribed child vocalizations in English,
+French, Portuguese, German, and Spanish. We use TinyV ox
+to train BabAR, a cross-linguistic phoneme recognition system
+for child speech. We find that pretraining the system on multi-
+lingual child-centered daylong recordings substantially outper-
+forms alternatives, and that providing 20 seconds of surround-
+ing audio context during fine-tuning further improves perfor-
+mance. Error analyses show that substitutions predominantly
+fall within the same broad phonetic categories, suggesting suit-
+ability for coarse-grained developmental analyses. We validate
+BabAR by showing that its automatic measures of speech ma-
+turity align with developmental estimates from the literature.
+Index Terms: child speech, phoneme recognition, self-
+supervised learning, connectionist temporal classification,
+speech production, language development
+1. Introduction
+The first years of life mark a period of dramatic transformation,
+as most children progress from simple sounds and syllables
+to words and phrases, developing the ability to combine basic
+sound units into increasingly complex sequences [1]. Decades
+of research on child speech production have produced a wealth
+of findings with both theoretical and practical implications re-
+garding how universal the order of learning of speech sounds
+is [2], how early babbling relates to later word production [3],
+how speech production is linked to various clinical conditions,
+and how to remediate speech difficulties [4].
+Audio recordings collected in controlled or naturalistic set-
+tings are the prevailing method for studying early speech devel-
+opment, providing precise data on individual speech sounds and
+how they change over development [5]. However, this approach
+requires costly manual phonetic transcription, which becomes
+infeasible at scale. This annotation burden creates a tradeoff be-
+tween depth and breadth that impedes scientific progress: lon-
+gitudinal studies capturing everyday experiences provide exten-
+sive data from few children, while more controlled settings en-
+able larger samples at the cost of sparse, brief recordings per
+**indicates the corresponding author.
+To run BabAR:https://github.com/MarvinLvn/BabAR
+To download TinyV ox:https://github.com/MarvinLvn/tinyvox
+Audio samples available at:
+https://marvinlvn.github.io/projects/babar/
+participant (Table 1 illustrates this tradeoff across the 31 cor-
+pora compiled for this study).
+Automatic speech recognition (ASR) algorithms, fueled by
+advances in self-supervised learning, have now reached impres-
+sive performance on adult speech, even in noisy recording con-
+ditions [6]. Building such systems for child speech could en-
+able detailed phonetic tracking across thousands of hours and
+diverse populations, in turn accelerating research on speech ac-
+quisition and related clinical markers, opening up analyses that
+were previously impractical at scale.
+However, child speech, especially from young infants,
+poses unique challenges. A newborn’s vocal tract differs sub-
+stantially from its adult shape: the larynx is positioned higher
+and the tongue fills much of the space of the oral cavity [7, 8].
+Throughout early childhood, articulatory motor control and per-
+ceptual systems are still developing, resulting in highly variable
+acoustic output that differs markedly from adult speech [1, 9].
+Various techniques have been proposed to address the
+gap between child and adult speech, including vocal tract
+length normalization [10], data augmentation/generation [11,
+12], multi-task learning [13], and transfer learning using self-
+supervised models pretrained on adult speech [14, 15]. Most of
+this work has focused on children older than 6 years, with ap-
+plications to educational technology, literacy assessment, and
+language learning tools [16, 17, 18]. A notable exception,
+and the closest to our work, is Li et al. (2024), who trained
+a phoneme recognition system on the Providence corpus (in-
+cluding children aged 11 to 48 months) using wav2vec 2.0
+pretrained on 4,300 hours of child-directed daylong record-
+ings from American English-speaking families. However, they
+achieve a phoneme error rate of around 60% [19, 20], illus-
+trating that child speech remains a formidable challenge for
+ASR systems. The difficulty building high-performing child
+ASR systems stems largely from the scarcity of publicly avail-
+able annotated data, especially for non-English languages and
+young children. Indeed, among 27 child ASR corpora re-
+cently reviewed, only 13 include non-English data, and only one
+(the Providence corpus) includes children younger than 4 years
+old [17]. Yet, publicly available repositories such as PhonBank
+contain decades of child speech recordings, laboriously col-
+lected and annotated by generations of researchers [21]. These
+resources remain largely untapped by the speech processing
+community due to the large technical debt required to aggre-
+gate disparate sources: reconciling diverse phonetic transcrip-
+tions, resolving human inconsistencies, and extracting machine-
+actionable segments from varied audio.
+In this work, we introduce BabAR (BABbling Automatic
+Recognition), a phoneme recognition system for child speech
+that substantially extends prior work in both scope and scale.
+4354
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1132
+We make the following contributions: First, we address the data
+barrier by curating TinyV ox, a large-scale standardization of
+PhonBank comprising over half a million IPA-transcribed vo-
+calizations from 560 children aged 6 months to 8 years across 5
+languages (English, French, Portuguese, German, and Spanish).
+Second, we systematically compare multiple self-supervised
+models that vary in their architecture, training set size, lan-
+guage coverage (English-only vs. multilingual), and whether
+they were trained on adult-only speech or both child and adult
+speech. Third, we study the impact of input context duration
+on phoneme recognition accuracy, demonstrating that longer
+context windows improve performance. Fourth, we provide de-
+tailed analyses of our best-performing model. Finally, we vali-
+date BabAR by applying it to a held-out longitudinal dataset of
+44 American English-learning children recorded monthly from
+6 to 18 months, and show that automatically extracted pro-
+portions of canonical vocalizations (a widely used measure of
+speech maturity) align with estimates from the language de-
+velopment literature. Together, these contributions represent
+a significant step toward automated phonetic analysis of early
+childhood speech that can scale to the longitudinal, naturalistic
+recordings needed to advance developmental research.
+2. Methods
+We next present our approach to recognizing phonemes in
+children’s speech. We begin with describing the dataset, the
+phoneme recognition system, and the self-supervised speech
+representations it builds upon. We then present our context-
+aware fine-tuning approach. Finally, we present the baselines
+against which BabAR is compared and our evaluation metric.
+We conclude with implementation details.
+2.1. Datasets
+2.1.1. TinyVox (training, validation, and test sets)
+Our dataset of IPA-transcribed children’s vocalizations was cre-
+ated from PhonBank [21], a large-scale database dedicated to
+the study of child phonology. All available data in English,
+French, Portuguese, German, and Spanish were downloaded
+and audio files were paired with their transcript (CHAT for-
+mat [22]). All audio files were converted to single-channel
+16 kHz and only transcription files with %pho or %xpho tiers,
+indicating phonetic transcriptions, were kept. Each utterance
+included temporal boundaries (onset and offset) and a human-
+annotated phonetic transcript.
+Phonetic normalization.The raw transcriptions contained 967
+distinct phonetic categories, including base IPA symbols with
+various diacritical modifications (length, aspiration, voicing,
+nasalization, secondary articulations, etc.). However, these cat-
+egories reflect heterogeneous annotation practices, with varying
+levels of phonetic detail across corpora. To create a more con-
+sistent cross-linguistic target inventory, we created a 57-sound
+set (30 consonants and 27 vowels) based on the adult phonemic
+inventories of all five languages. We excluded distinctions dif-
+ficult to predict acoustically (e.g., vowel length), though alter-
+native inventories can be created using our provided script. The
+967 surface variants were mapped to the 57 targets via phono-
+logical feature edit distance using panphon [23].
+Post-processing and cleaning steps.We removed all utterances
+with extreme durations (longer than 10 seconds or shorter than
+50 ms), those containing unidentified sounds (marked as ’X’,
+’C’, ’V’, ’G’, ’S’, ’xxx’, or ’*’), and those produced by children
+older than 8 years old. Due to the sheer scale of PhonBank,
+listening to all utterances to check whether they were aligned
+with the transcript was not feasible. We therefore implemented
+a two-pass sampling procedure. In the first pass, we randomly
+sampled 10% of files from each corpus and listened to 10 ran-
+domly selected utterances per file to identify corpora with sys-
+tematic alignment issues. This corpus-level screening flagged
+six problematic corpora: PhonBLA, PaidusGerman, PaidusS-
+panish, and Hunkeler were excluded entirely, while Davis and
+KernFrench were marked for file-level review. In the second
+pass, we listened to approximately 10 randomly sampled utter-
+ances per file in the flagged corpora and excluded files in which
+fewer than 8 out of 10 utterances matched their transcripts.
+Data quality validation.To assess the quality of the final
+dataset, we randomly sampled 200 utterances. We found 139
+had relatively accurate timestamps with only the transcribed
+child speech, while 58 included adult speech (in the vast ma-
+jority of cases), other children’s speech, or toy sounds due to
+inaccurate timestamp boundaries; 13 had overlapping speech
+sounds from adults, other children, or toys, and 3 were mis-
+aligned (wrong transcript).
+While these may appear problematic, they are inherent to
+aggregating naturalistic corpora with varying recording condi-
+tions and annotation practices. Importantly, the presence of
+competing speech and sounds from other sources, along with
+transcriptions indicating the target child phonemes, provides
+supervised training signal for two critical capabilities: child
+phoneme recognition and non-target speaker suppression. Since
+diarization systems still produce imprecise boundaries on nat-
+uralistic recordings [24, 25], training on such data prepares
+the downstream phoneme recognition system for real-world de-
+ployment conditions.
+Dataset statistics.Figure 1 shows the age and language distri-
+butions of the resulting dataset, which we named TinyV ox. It
+contains over half a million utterances from 560 children aged
+5 to 96 months (median: 29.3 months). Most of these utter-
+ances have been produced by children primarily learning En-
+glish (52.1%), followed by French (30.9%), Portuguese (9.3%),
+German (5.9%) or Spanish (1.7%). A minority of recordings
+have been collected in multilingual contexts (0.1%). Table 1
+provides summary statistics for each of the 31 corpora included
+in TinyV ox, spanning diverse recording contexts from sponta-
+neous everyday speech to elicited production tasks (e.g., picture
+naming or word repetition tasks) and therapy sessions.
+Training/validation/test split.The dataset was split by child
+rather than utterance to prevent speaker leakage between splits,
+targeting 80/10/10 proportions for train/validation/test. This
+speaker-independent split ensures we evaluate the model’s abil-
+ity to generalize to entirely new children at evaluation time,
+better reflecting real-world deployment where the system will
+encounter unseen speakers.
+2.1.2. The SEEDLingS corpus (held-out set)
+To evaluate BabAR for developmental research, we use the
+SEEDLingS corpus, which consists of daylong recordings col-
+lected monthly from 44 American English-learning children
+aged 6 to 17 months [55, 56].
+2.2. Automatic phoneme recognition
+The phoneme recognition problem can be formulated as a
+sequence-to-sequence task where the input is an audio repre-
+sentation divided intoTframesx={x 1, . . . , xT}at 20-
+millisecond intervals, and the goal is to predict the correspond-
+ing phoneme sequencey={y 1, . . . , yU}whereU≤Tand
+4355
+Table 1:Summary statistics for TinyVox, a dataset of child utterances transcribed into the International Phonetic Alphabet (IPA). All
+audio and transcript data are sourced from PhonBank [21] and have been curated to train our phoneme recognizer. Language codes:
+EN = English, FR = French, PT = Portuguese, DE = German, ES = Spanish. Location codes: US = United States, UK = United
+Kingdom, CA = Canada, LU = Luxembourg, FR = France, DE = Germany, ES = Spain, CL = Chile, PT = Portugal, BR = Brazil. L2
+indicates second language learners.
+Corpus Age mean
+(mo)
+Age range
+(mo)
+Nb. of
+children
+Transcribed
+speech dur. (h)
+Language
+(Location) Activity
+CCF [26] 30.9 [11.0, 58.2] 5 14.3 ES (CL) everyday activities
+Cattini [27] 51.7 [35.0, 82.0] 6 0.2 FR (FR) elicited production
+Chiat [28] 65.4 [60.0, 68.4] 4 0.5 EN (UK) play session
+ChildL2 [29] 57.6 [47.4, 75.3] 2 21.2 FR (L2) elicited production
+Cummings [30] 56.9 [36.6, 87.5] 21 13.2 EN (LU) elicited production
+Davis [31] 18.5 [6.3, 36.1] 17 53.4 EN (US) everyday activities
+FoxBoyer [32] 54.1 [27.0, 85.0] 27 0.7 DE (DE) elicited production
+Goad [33] 32.6 [17.6, 42.6] 2 3.7 EN (CA) play session
+GoadRose [34] 33.4 [12.9, 48.0] 2 3.1 FR (CA) play session
+Granada [35] 54.9 [37.0, 71.0] 19 1.3 ES (ES) elicited production
+Grimm [36] 20.9 [12.2, 25.2] 4 13.0 DE (DE) everyday activities
+KernFrench [37] 17.7 [7.5, 25.2] 4 13.1 FR (FR) everyday activities
+Lyon [38] 26.8 [11.6, 48.2] 5 41.8 FR (FR) everyday activities
+McAllister [39] 48.5 [45.9, 51.2] 1 2.0 EN (US) therapy session
+Menn [40] 14.4 [12.5, 15.7] 1 0.3 EN (US) everyday activities
+NeumannFoxBoyer [41] 60.8 [36.0, 88.0] 26 0.7 DE (DE) elicited production
+Paris [42] 33.6 [11.6, 83.9] 9 47.0 FR (FR) everyday activities
+Penney [43] 68.2 [59.9, 74.5] 26 0.7 EN (CA) elicited production
+PereiraFreitas [44] 31.4 [14.0, 55.6] 7 14.3 PT (PT) everyday activities
+PhonoDis [45] 70.8 [38.0, 93.0] 18 1.4 PT (PT) elicited production
+Preston [46] 55.1 [48.0, 69.0] 44 2.0 EN (US) elicited production
+Providence [47] 27.6 [11.1, 48.1] 6 107.8 EN (US) everyday activities
+Ramalho [45] 57.1 [38.5, 76.7] 60 2.8 PT (PT) elicited production
+Scheidnes [48] 82.0 [73.0, 88.8] 33 0.7 FR (L2) elicited production
+Seine-Marne [49] 82.9 [59.4, 95.9] 26 0.8 EN (L2) elicited production
+Stuttgart [50] 28.8 [5.1, 91.2] 8 1.6 DE (DE) play session
+TAKI [50] 44.9 [22.0, 91.2] 4 1.1 DE (DE) play session
+TorringtonEaton [51] 60.6 [48.7, 71.9] 53 2.6 EN (US) elicited production
+Twins-Brazil [52] 31.3 [14.1, 48.6] 3 1.5 PT (BR) everyday activities
+Vivar [53] 36.5 [24.0, 47.0] 116 1.5 ES (CL) elicited production
+Yamaguchi [54] 38.7 [15.3, 51.9] 1 6.8 FR (FR) everyday activities
+Total 32.7 [5.1, 95.9] 560 387.7 EN+FR+PT+DE+ES various
+eachy i belongs to our cross-lingual 57-phoneme inventory.
+Building on prior work that has shown promising perfor-
+mance on child speech [15], we use Connectionist Temporal
+Classification (CTC) to handle the variable-length alignments
+between input frames and output phonemes. At each time step,
+framex t is projected to phoneme posterior probabilities over
+the 57 phonemes plus a blank symbol. The CTC loss marginal-
+izes over all valid alignmentsA x,y:
+LCT C =−logp(y|x) =−log
+X
+A∈Ax,y
+TY
+t=1
+pt(at|x)
+wherea t denotes the symbol (phoneme or blank) at time stept
+in alignment pathA, andp t(at|x)is the probability predicted
+by the model for that symbol at timet.
+The frame representationsxare extracted from self-
+supervised models, which we describe next.
+Table 2:Self-supervised models evaluated in this study and
+their pretraining set characteristics. Dur. = total duration in
+hours; Adult = presence of adult speech; Child = presence of
+child speech; Multi. = multilingual speech; Nat. = naturalistic
+recordings capturing spontaneous speech and other sounds as
+they occur in everyday life. Checkmarks indicate the presence
+of each characteristic.
+Pretraining set characteristics
+System Dur. (h) Adult Child Multi. Nat.
+W2V2 [57] 960✓
+HuBERT [58] 960✓
+WavLM [59] 960✓
+W2V2 XLSR [60] 53,000✓ ✓
+W2V2 LL4300 [19] 4,300✓ ✓ ✓
+BabyHuBERT [25] 13,000✓ ✓ ✓ ✓
+4356
+Figure 1:Age distribution (panel a) and language distribution
+(panel b) of phonetically transcribed utterances in TinyVox.
+2.3. Self-supervised models
+We evaluate six self-supervised models that vary in their
+training data characteristics (Table 2) and their architecture:
+wav2vec 2.0 (hereinafter referred to as W2V2), HuBERT, or
+WavLM. All three architectures use a stack of convolutional
+layers to encode raw audio waveforms into features, followed
+by transformer layers that process these features into context-
+dependent representations. W2V2 uses a contrastive learn-
+ing objective where the model learns to distinguish true fu-
+ture representations from distractors [57]. HuBERT employs a
+masked-prediction objective in which the model predicts quan-
+tized representations of masked audio segments [58]. WavLM
+extends the masked prediction framework with an additional
+denoising objective [59]. The base versions of W2V2, Hu-
+BERT, and WavLM were trained on 960 hours of English au-
+diobook recordings (LibriSpeech [61]). W2V2 XLSR adapts
+the W2V2 large architecture to 53,000 hours of multilingual
+adult speech [60]. W2V2 LL4300 uses the base architecture but
+was trained on 4,300 hours of child-centered daylong record-
+ings from American English-speaking families, including both
+child and adult speech [19]. BabyHuBERT adapts the HuBERT
+base architecture and was trained on 13,000 hours of multilin-
+gual child-centered daylong recordings containing both child
+and adult speech [25]. To the best of our knowledge, W2V2
+LL4300 and BabyHuBERT are the only two self-supervised
+models pretrained on child-centered daylong recordings. Such
+pretraining is likely beneficial for child phoneme recognition,
+providing exposure to child speech, overlapping speech, back-
+ground noise, and variable acoustics.
+2.4. Context-aware fine-tuning with extended audio
+Beyond model pretraining, we hypothesize that providing ex-
+tended audio context during fine-tuning can further help the
+model adapt to challenging recording conditions, potentially
+improving phoneme recognition performance.
+Following recent work on context-aware ASR training [62,
+63, 64], we explore whether similar techniques can improve
+child phoneme recognition. For an utterance with annotated
+boundaries[t start, tend], we extract audio from the extended win-
+dow[t start−c/2, tend +c/2]wherecrepresents the context dura-
+tion in seconds. The full extended window is fed to the encoder
+to produce frame-level representations. However, the CTC loss
+is computed only on the frames corresponding to the target ut-
+terance. Similarly, at inference time, we extract predictions only
+from the target utterance frames, discarding predictions from
+the surrounding context. In other words, the transformer layers
+have access to all the context provided, while logits from non-
+target-speech segments (potentially unannotated) do not con-
+taminate either the loss computation or the final predictions.
+We systematically evaluate the impact of context duration
+by measuring performance withc∈{0,5,10,15,20,25,30}
+seconds, wherec= 0corresponds to the baseline model
+without context (i.e., the model receives only the target utter-
+ances). Unless otherwise specified, all reported results use mod-
+els trained without context (c= 0).
+2.5. Baselines
+We evaluate BabAR’s performance against two state-of-the-
+art phoneme recognition systems. W2V2Phoneme [65] is a
+phoneme recognizer built by fine-tuning the W2V2-XLSR ar-
+chitecture on labeled phoneme transcriptions from multiple lan-
+guages. ZIPA [66] is a Zipformer architecture trained from
+scratch on 17k hours of multilingual IPA-transcribed speech.
+Both systems are used off-the-shelf with their publicly avail-
+able checkpoints1. To ensure performance metrics are consis-
+tent across systems, we map the predicted phonetic categories
+to our 57 target categories via phonological feature edit dis-
+tance using panphon [23]. While neither system was trained on
+child speech, existing child phoneme recognition systems are
+typically monolingual and thus unable to predict our full cross-
+linguistic phoneme inventory. These two universal phone recog-
+nizers are therefore the most appropriate baselines for our cross-
+linguistic setting. However, our evaluation task is twofold:
+models must both extract the target child’s speech from seg-
+ments with noisy boundaries that may contain adult speech or
+other competing signals, and transcribe it into phonemes. Since
+neither baseline was designed to handle such conditions, we ex-
+pect their performance to be substantially degraded on TinyV ox.
+2.6. Evaluation metric
+To evaluate our models, we use the commonly used phoneme
+error rate (PER) defined as:
+PER= 100× I+D+S
+N
+whereI,D, andScount the insertions, deletions, and substi-
+tutions needed to align the predicted sequence to the reference,
+andNis the total number of phonemes in the reference.
+2.7. Implementation details
+Training.We fine-tune the self-supervised models by adding a
+two-layer feed-forward prediction head on top of the encoder:
+a hidden layer of 384 dimensions followed by a final projection
+1Available athttps://huggingface.co/facebook/wav2
+vec2-lv-60-espeak-cv-ftandhttps://huggingface.
+co/anyspeech/zipa-large-crctc-ns-800k, respectively.
+4357
+to the 57-phoneme vocabulary, with rectified linear unit (ReLU)
+activation and dropout (p=0.1). All self-supervised models are
+initialized from their publicly available pretrained checkpoints.
+Following [15, 59], we freeze the convolutional layers
+throughout training while keeping the transformer layers and
+the prediction head trainable and use the AdamW optimizer
+with a learning rate of10−5and a weight decay of10 −2. As
+in [59], we use a tri-stage learning rate scheduler with a linear
+warm-up from 0 to the peak learning rate over10%of train-
+ing steps (10,000steps), a constant learning rate for40%of
+steps (40,000steps), followed by a linear decay to 0 over the
+remaining50%steps. Training is conducted for a maximum
+of100,000steps (approximately21epochs). We use mixed-
+precision training (FP16) and gradient accumulation with a
+batch size of 32 and 2 accumulation steps, yielding an effective
+batch size of 64. Models are trained on a single NVIDIA V100
+GPU (32GB) for approximately 5 days, and each configuration
+is trained with 5 random seeds.
+V alidation and test.We validate after each training epoch and
+select the best checkpoint based on validation PER. During in-
+ference (validation and test), we use greedy decoding by select-
+ing the most probable phoneme at each time step and collaps-
+ing repeated predictions, as beam search with N-gram language
+models yielded no performance gains.
+3. Results
+We f

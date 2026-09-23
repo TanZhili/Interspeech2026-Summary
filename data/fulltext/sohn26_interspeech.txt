@@ -1,0 +1,510 @@
+DTM-Codec: Dynamic Token Masking for VFR Speech Coding with Efficient
+Boundary Selection
+Hoyeol Sohn1, Juhan Nam1
+1 Graduate School of Cultural Technology, KAIST, South Korea
+{hoyso48,juhan.nam}@kaist.ac.kr
+Abstract
+Variable frame rate (VFR) coding has recently emerged in neural
+speech codecs, allocating fewer frames to redundant regions and
+more frames to rapidly changing speech. VFR must transmit side
+information about retained time steps, but prior gains are either
+not rigorously addressed or often minor once these overhead bits
+are included in total bitrate. We present Dynamic Token Mask-
+ing (DTM)-Codec, a neural speech codec that demonstrates clear
+gains over fixed-frame-rate baselines under a strict matched-
+total-bitrate protocol. DTM keeps selected encoder tokens, fills
+masked positions with a learned <MASK> embedding, and trans-
+mits a binary keep-mask for position-aware decoding. We further
+introduce Path Length Equalization (PLE), a linear-time bound-
+ary selector for VFR coding that yields well-spread adaptive
+segments with negligible overhead. Across operating points,
+DTM-Codec broadly improves reconstruction quality and intelli-
+gibility over fixed-frame-rate baselines.
+Index Terms: speech codec, variable frame rate, token masking,
+low bitrate, speech tokenization
+1. Introduction
+Neural audio codecs have become a central tokenization layer for
+speech language models [1, 2, 3], text-to-speech synthesis [4],
+and audio generation [ 5]. The field has advanced from multi-
+codebook residual vector quantization (RVQ) systems such as
+SoundStream and EnCodec toward single-codebook tokenizers
+and semantic-aware designs [ 6, 7, 8, 9], while recent surveys
+identify temporal token allocation as a key open challenge be-
+yond codebook design [10, 11]. Single-codebook systems such
+as BigCodec [12], WavTokenizer [13], and TAAE [14] simplify
+language-model integration by producing a flat token sequence,
+yet they operate at fixed frame rates (e.g., 25–100 Hz), assigning
+uniform temporal resolution regardless of information density.
+Variable frame rate (VFR) coding addresses this limitation
+by allocating temporal resolution adaptively: fewer tokens for
+silence or sustained vowels, more for rapid phonetic transitions.
+Several recent works explore paradigms for VFR neural codecs.
+TFC-Codec [15] augments a standard codec with a plug-in mod-
+ule that selects among predefined temporal granularities per
+region. V ARSTok [16] fine-tunes a pretrained single-codebook
+codec to emit variable-length tokens by clustering adjacent
+frames and encoding duration implicitly within the token in-
+dex. CodecSlime [ 17] applies VFR as a post-training plugin:
+an optimization-based scheduler determines merge patterns on
+frozen encoder features, after which the decoder is adapted via
+two-stage fine-tuning. FlexiCodec [ 18] adopts a dual-stream
+architecture with a frozen ASR encoder alongside a codec en-
+coder, merging frames guided by semantic similarity to reach
+low frame rates.
+However, whether VFR yieldsconsistentreconstruction
+gains at matched total bitrate remains an open question. A fair
+comparison must account for side-information bits (position or
+duration) together with content bits. V ARSTok, TFC-Codec, and
+FlexiCodec each report bitrate-matched or reduced-rate settings,
+yet none provides a controlled same-architecture VFR-vs-FFR
+comparison in which timing-side-information overhead is ex-
+plicitly included in the total bitrate [ 16, 15, 18]. CodecSlime
+includes a strict matched-rate comparison, but the reported gains
+are partial and concentrated on a subset of metrics [17]. In ad-
+dition, optimization parity is not always controlled: V ARSTok
+adapts a pretrained WavTokenizer, and CodecSlime applies an
+additional two-stage Melt-and-Cool adaptation on top of a pre-
+trained FFR backbone to obtain its VFR variant [16, 17]. This
+motivates a practical question:can VFR deliver reliable re-
+construction improvements at matched total bitrate when side-
+information overhead is explicitly accounted for?
+We address this question with DTM-Codec, a 127M-
+parameter neural speech codec trained on LibriSpeech-960
+alone [19]—modest in both model size and data compared with
+recent systems that leverage large-scale multi-domain corpora
+and semantic teacher models [ 12, 3, 18]. Despite these con-
+straints, DTM-Codec outperforms or matches larger external
+codecs across multiple reconstruction metrics at matched bitrate,
+demonstrating that well-designed VFR mechanisms can com-
+pensate for scale [12, 3, 18]. Our contributions are as follows:
+1. Dynamic Token Masking (DTM).Rather than merging
+or pooling features, we retain selected encoder tokens and
+fill missing positions with a learnable <MASK> embedding.
+The binary mask is transmitted as compact position bits, en-
+abling position-aware decoding. This formulation yields the
+strongest overall reconstruction among common down/up-
+sampling alternatives at the same bitrate.
+2. Path Length Equalization (PLE).We introduce an O(N)
+boundary selector that partitions the cumulative feature change
+along the encoder trajectory into equal-length segments. Com-
+pared with representative heuristic and optimization-based
+selectors—including those used by V ARSTok, FlexiCodec,
+and CodecSlime—PLE achieves well-spread temporal cover-
+age with negligible runtime overhead and a favorable quality–
+efficiency trade-off.
+3. Strict matched-total-bitrate training and evaluation.We
+train and evaluate matched-rate VFR and FFR under a unified
+protocol that counts both content and timing-side-information
+bits across low-to-high frame-rate operating points. This con-
+trolled setup enables direct and fair comparisons and reveals
+clear and broadly VFR advantages over fixed-frame-rate base-
+lines at low-to-mid bitrates.
+https://github.com/hoyso48/DTM-Codec.
+2761
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2984
+2. Related Work
+2.1. Neural Audio Codecs
+Neural audio codecs (NACs) typically follow the VQ-V AE/VQ-
+GAN paradigm [20], learning an encoder–decoder with a dis-
+crete bottleneck [6, 7]. SoundStream and EnCodec use residual
+vector quantization (RVQ) with multiple codebooks to scale
+bitrate [6, 7]. Recent work pushes toward lower bitrates and
+LM-friendly token interfaces: TAAE uses a transformer autoen-
+coder with an FSQ bottleneck and reports 400–700 bps oper-
+ating points [14, 21]; BigCodec and WavTokenizer use single-
+codebook VQ tokenizers [12, 13]. Multi-resolution designs such
+as SNAC assign different frame rates to different quantizer lay-
+ers [22]. X-Codec [9] and X-Codec 2.0 [3] incorporate semantic
+feature distillation, while SpeechTokenizer [23] disentangles se-
+mantic and acoustic information across RVQ layers. DAC [8]
+improves codebook utilization within the RVQGAN framework.
+We build on the TAAE two-stage transformer template but use
+single-codebook VQ, an STFT/iSTFT front-end/back-end, and
+dynamic token masking for VFR coding (Section 3.1).
+2.2. Variable Frame Rate Coding in Speech Codecs
+Variable-rate discrete representation has roots in learned com-
+pression of images and audio [ 24]; variable-rate hierarchical
+CPC has demonstrated acoustic unit discovery in speech [ 25],
+and recent SSL work shows that self-distillation induces syllable-
+level temporal structure [ 26], providing linguistic motivation
+for adaptive-rate tokenization. Recent VFR speech codecs
+mainly differ along three axes: boundary selection, timing-side-
+information design, and training strategy. TFC [ 15] computes
+signal-level Shannon entropy over amplitude histograms to route
+each temporal window to one of three predefined granularities
+and fuses multi-resolution quantized tokens back to the finest
+timeline via granularity masks; the reported bitrate accounts for
+content bits only, without explicitly quantifying the mask over-
+head. V ARSTok [16] applies density-peak clustering on encoder
+features to produce content-adaptive segments with non-uniform
+boundaries, and folds duration into an extended token index
+ID = (d−1)×K+k , enabling standard next-token prediction
+over an expanded vocabulary without a separate duration chan-
+nel. CodecSlime [17] formulates boundary selection as a global
+L2-distortion minimization via dynamic programming and trans-
+mits segment lengths as explicit ⌈log2Smax⌉ bits per frame
+(whereSmax is the maximum segment span); a two-stageMelt-
+and-Coolpost-training recipe adapts a frozen FFR backbone
+to dynamic-rate operation. FlexiCodec [ 18] thresholds cosine
+similarity between consecutive frames of a frozen ASR encoder
+to merge segments of up to 8 frames, transmitting 3-bit length
+tags; random threshold sampling during training enables contin-
+uous rate control at inference and targets a sub-10 Hz regime.
+TaDiCodec [27] takes a complementary approach: rather than
+adaptive selection, it operates at a fixed 6.25 Hz and compensates
+for extreme compression via a text-conditioned flow-matching
+decoder, achieving 87.5 bps but requiring transcription at decode
+time. Compared with prior work, we focus on strict matched-
+total-bitrate evaluation with explicit position-bit accounting, and
+on a masking-based design that preserves selected token vectors
+exactly rather than averaging them.
+2.3. Adaptive Token Reduction for Efficient Transformers
+Adaptive token reduction in transformers is commonly grouped
+into pruning, pooling, and merging. Pruning methods learn token
+importance and remove low-utility tokens (e.g., PoWER-BERT,
+LAT, Learned Token Pruning, DynamicViT, SPViT, Adaptive
+Token Sampling) [ 28, 29, 30, 31, 32, 33]. Pooling methods
+compress multiple tokens into learned summaries (e.g., Token
+Pooling, TokenLearner, Dynamic Token Pooling) [34, 35, 36].
+Merging methods combine similar tokens directly (e.g., EViT,
+ToMe, ToMe-SD) [37, 38, 39]. These methods primarily target
+internal compute and memory efficiency while preserving task
+accuracy. Their success in transformer architectures motivated
+our adoption of a transformer-based codec backbone, where anal-
+ogous token-level selection can be repurposed for VFR coding.
+In contrast to the efficiency-oriented setting, our goal is speech
+coding at matched total bitrate, where the reduced token set must
+be transmitted together with explicit side information describing
+which positions were kept.
+3. Method
+3.1. Model Architecture
+3.1.1. Backbone
+DTM-Codec builds on the two-stage transformer encoder–
+decoder of TAAE [14] (Figure 1). The hierarchical encoder–
+decoder decomposes into a dense Stage-1 operating at the full
+temporal resolution and a compressed Stage-2 processing a re-
+duced token set. The fixed-rate strided convolution between
+stages can be replaced with a content-adaptive masking mod-
+ule without altering the rest of the pipeline, enabling controlled
+VFR–FFR comparisons at matched frame rates.
+3.1.2. Front-end / back-end
+TAAE uses a learned patch projection as its waveform-to-latent
+front-end. We replace the front-end and back-end with an
+STFT/iSTFT pair, following Fourier-domain codec designs such
+as ComplexDec [40]. For the decoder, we follow iSTFT-based
+reconstruction used in iSTFTNet [41], V ocos [42], and X-Codec
+2.0 [3]. The decoder predicts STFT magnitude and phase, and
+the iSTFT synthesizes time-domain waveforms. The STFT con-
+verts the input waveform into overlapping spectral frames at rate
+fS1 (e.g., 50 Hz), which are linearly projected to yieldN Stage-1
+tokens Z(1)∈R N×D . Because the Fourier basis is fixed rather
+than learned, this decomposition provides stable convergence
+across the diverse frame rates required for VFR experiments.
+3.1.3. Quantization
+TAAE employs Finite Scalar Quantization (FSQ) [ 21], which
+distributes the bottleneck across multiple bounded scalar chan-
+nels. We replace FSQ with a single-codebook Vector Quantiza-
+tion (VQ) bottleneck (|C|=16,384,b=14 bits/token) trained via
+straight-through estimation. VQ assigns exactly b= log 2|C|
+bits per token, making bitrate accounting straightforward—an
+important property for the matched-total-bitrate comparisons
+that are central to this work.
+3.1.4. Transformer blocks
+The transformer blocks [ 43] follow the pre-norm layout with
+LayerScale from TAAE [14], with the following substitutions:
+SwiGLU [44] replaces the standard FFN, RMSNorm [ 45] re-
+places LayerNorm, and rotary position embeddings (RoPE) [46]
+provide relative position information. Enc1 and Dec2 each use 6
+transformer layers operating at the full Stage-1 resolution; Enc2
+and Dec1 each use 12 layers at the compressed Stage-2 resolu-
+tion. All layers share a hidden dimension of 512 with 4 attention
+2762
+input waveform
+► STFT
+boundary
+selection
+M
+Continuous Tokens
+Discrete Tokens
+<𝙼𝙰𝚂𝙺> Tokens
+Encoder Path
+►
+▼
+Encoder Stage 1
+► 1 0 0 1 1
+▼
+0 0 1 1 1 0 0
+Downsample to fₜₒₖ = r·fₛ₁
+Mask-Guided Token Packing
+binary positions
+Encoder Stage 2
+▼
+VQ ► 2 43 11 5
+VQ indices
+25 14
+Decoder Path
+Decoder Stage 1►
+Upsample to fₛ₁ = (1/r)·fₜₒₖ
+<𝙼𝙰𝚂𝙺> token filling
+▼
+⌒► 1 0
+M
+0
+M
+1 1 0
+M
+0
+M
+1 1 1 0
+M
+0
+M
+Decoder Stage 2
+▼
+▼
+ISTFT ►
+reconstructed waveform
+Figure 1:DTM-Codec architecture. DTM operates between encoder stages: kept tokens (mt=1), selected by PLE, are quantized via VQ
+and decoded; masked positions (mt=0) are filled with a learnable <MASK> embedding. The binary mask m is transmitted as position
+bits.
+heads. Following TAAE, attention uses a sliding window of
+128 steps, which bounds memory cost while preserving suffi-
+cient temporal context for speech. For VFR training, Stage-2
+sequences vary in length across batch samples; we use FlashAt-
+tention’s variable-length kernel [47] to process packed sequences
+without padding. The full model comprises approximately 127M
+parameters.
+3.1.5. Pipeline overview
+The complete processing pipeline is:
+x
+STFT
+−−−−→S
+Enc1
+−−−→Z(1) DTM
+−−−→˜Z(1) Enc2
+−−−→Z(2)
+VQ
+−−→ˆZ(2) Dec1
+−−−→H
+Up
+−−→ˆZ(1) Dec2
+−−−→ˆS
+iSTFT
+−−−−→ˆx
+(1)
+We denote the Stage-1 frame rate (determined by the STFT
+hop size) asfS1 (Hz) and the effective token rate after masking
+asf tok =rf S1 (Hz), whereris the keep ratio.
+In TAAE, a fixed convolutional stride of 2 between Enc1
+and Enc2 reduces the sequence to N/2 tokens [14]. DTM-
+Codec replaces this fixed downsampling with DTM (Section 3.2),
+which retains a fractionr of Stage-1 tokens—thekeep ratio—
+determined by a content-adaptive boundary selector. With
+r=0.5, the average compression matches the original stride-2
+factor, but retained positions concentrate on informative regions
+rather than being uniformly spaced. The K=rN kept tokens
+are processed by Enc2 and quantized, yielding an effective to-
+ken rate ftok=rf S1 and a content bitrate of ftok×b bps. A
+1-bit-per-Stage-1-step binary mask is transmitted as position side
+information (Section 3.4).
+3.1.6. Training objective
+Following BigCodec [12], we train the model with an adversarial
+objective combined with reconstruction losses. The discrimina-
+tor ensemble comprises a multi-period discriminator (MPD) [48]
+and a multi-scale STFT (MS-STFT) discriminator [7], both with
+least-squares GAN loss [49]. Reconstruction uses the multi-scale
+mel-spectrogramL1 distance from DAC [8], computed at multi-
+ple FFT sizes and mel-bin counts, plus anL1 feature-matching
+loss on intermediate discriminator activations [48].
+3.2. Dynamic Token Masking
+DTM enables variable-rate coding within the two-stage architec-
+ture. Given the dense Stage-1 output Z(1)∈R N×D , it selects a
+subset of positions to retain, packs them into a shorter sequence
+for Stage-2 processing, and transmits the binary keep-mask m
+as side information for position-aware reconstruction.
+Prior VFR codecs typically downsample by averaging fea-
+tures within each segment and upsample by repeating the seg-
+ment representative across all positions in that interval [15, 17,
+18]. While efficient, repeat-based upsampling is brittle when
+boundaries are imperfect: a misaligned boundary can broad-
+cast a single token across mismatched regions (e.g., spanning a
+phonetic transition), degrading reconstruction. This motivates
+two design choices: mask-guided packing avoids aggregation at
+kept positions, and <MASK>-token filling treats masked slots as
+explicit unknowns rather than duplicating neighboring content.
+A boundary selector (e.g., PLE, Section 3.3) produces the
+binary mask m∈{0,1} N , wheremt=1 denotes a kept position
+andmt=0 a masked one; the first token is always kept (m1=1).
+The selector is external to the codec and can be swapped at
+inference time (Section 4.1).
+2763
+Algorithm 1Path Length Equalization (PLE)
+Require: Stage-1 features Z(1) = [z1,...,z N], thresholdτ >
+0
+Ensure:Keep-maskm∈{0,1} N
+1:m 1←1;S←0;k←1;u←k·τ
+2:fort= 2toNdo
+3:d t←1−
+z⊤
+t zt−1
+∥zt∥∥z t−1∥
+4:S←S+d t
+5:ifS≥uthen
+6:m t←1;k←k+ 1;u←k·τ
+7:else
+8:m t←0
+9:end if
+10:end for
+11:returnm
+The kept tokens are packed into ˜Z(1) ∈R K×D with
+K=P
+tmt:
+˜Z(1) = Pack(Z(1),m) = [z (1)
+t |m t = 1].(2)
+Unlike token merging [38] or averaging-based pooling, packing
+preserves the original feature vectors exactly, avoiding infor-
+mation loss from aggregation. The packed sequence is then
+processed by the Stage-2 encoder and quantized.
+After Stage-1 decoding, the output tokens H∈R K×D
+are restored to the originalN-length timeline by filling masked
+positions with a learnable<MASK>embeddinge mask∈R D:
+ˆz(1)
+t =
+(
+hπ(t), m t = 1,
+emask, m t = 0, π(t) =
+tX
+j=1
+mj.(3)
+Dec2 then reconstructs the full spectral representation from this
+mixed sequence, leveraging surrounding context to infer content
+at masked positions.
+The mask m costs one bit per Stage-1 time step—the key
+distinction from fixed-frame-rate coding. Because the decoder
+knowswhichpositions carry quantized content and which must
+be inferred, it can treat the two types differently, making the
+side-information overhead worthwhile (Section 4.3).
+3.3. Path Length Equalization
+PLE determines which Stage-1 positions to keep (i.e., the mask
+m in Section 3.2). It treats the encoder feature trajectory as a
+path in representation space and places boundaries so that each
+segment covers an equal amount of cumulative feature change.
+This yields content-adaptive allocation—more boundaries in
+rapidly changing regions (e.g., phonetic transitions), fewer in
+stationary regions (e.g., silence)—with guaranteed well-spread
+coverage in a singleO(N)pass.
+Algorithm 1 details the single-pass procedure. Each step
+distancedt measures the cosine distance between consecutive
+Stage-1 features; these are accumulated into a monotonic pathS,
+and a boundary is placed wheneverS crosses the next multiple
+ofτ. The resulting number of kept tokens isK= 1 +⌊S N/τ⌋,
+giving a keep ratio r=K/N that depends on the utterance’s
+total path length and the threshold.
+Because the total path lengthSN =PN
+t=2dt varies across
+utterances, a fixed τ yields different keep ratios per sample.
+During training,τ is adjusted via a Robbins–Monro controller
+to match a target keep ratior target (set to 0.5 in all experiments):
+τ←clip
+ 
+τ·exp
+ 
+−ηt (¯rema−r target)
+
+, τmin, τmax
+
+(4)
+whereηt =η 0/
+p
+1 +t/T is a decaying step size, ¯rema is an
+exponential moving average of the observed keep ratio, and
+the update is applied every Uctrl steps. During inference, the
+controller is frozen by default: the model uses the converged
+τ from training, yielding a keep ratio that naturally adapts per
+utterance based on content complexity. Alternatively,τ can be
+overridden at inference to target a different operating point—a
+(ftok,B total)pair—without retraining.
+3.4. Bitrate Accounting
+A fair VFR evaluation must account for all transmitted infor-
+mation [15, 16, 17]. We use “total bitrate” to mean the average
+transmitted bitrate in bps, including both content bits and VFR
+timing side information. Thus, for DTM-Codec, total bitrate
+decomposes into content bits and position bits:
+Btotal =f tok·b|{z}
+content
++p|{z}
+position
+(5)
+where ftok is the effective token rate after masking, b=14
+bits/token (|C|=16,384), and p is the position bitrate. Prior
+VFR codecs use different timing-bit conventions. Codec-
+Slime uses an explicit duration code where each merged
+token carries ⌈log2Smax⌉ duration bits [ 17], yielding
+pdur ≈f tok⌈log2Smax⌉. V ARSTok reports bitrate as
+ftok log2(|C|S max) [16], which can be decomposed into con-
+tent bits ftok log2|C| plus an implicit duration term pdur =
+ftok log2Smax.
+In contrast, our masking formulation transmits a binary keep-
+mask at Stage-1 resolution, sop equals the Stage-1 frame rate
+× 1 bit (e.g.,p=100 bps at 100 Hz), independent of local span
+lengths. This matches our default setting, which imposes no hard
+maximum span. Because duration-coded overhead depends on
+Smax, the relative cost of masking versus duration coding varies
+with the span bound: the duration term rfS1 log2Smax can be
+smaller or larger than our fixed mask overheadf S1 [16, 17].
+For FFR baselines,p=0; to match total bitrate, FFR models
+use a larger codebook (|C|=65,536,b=16) at the same token
+rate. All comparisons are at matchedBtotal, with content, posi-
+tion, and total bitrate reported separately.
+4. Experiments
+4.1. Experimental Setup
+Dataset and training.All models are trained on LibriSpeech-
+960 [19] at 16 kHz for 600k steps on 2×RTX 4090 with batch
+size 64, AdamW ((β1,β 2)=(0.8,0.9)), and bf16 precision.
+Model configurations.We compare two primary model vari-
+ants:
+• VFR(PLE): Trained from scratch with fixed keep ratior=0.5.
+Single-codebook VQ (|C|=16,384,b=14), plus 1-bit-per-step
+position bits.
+• FFR: Trained from scratch at a fixed frame rate using uniform
+stride masking (every⌊1/r⌋-th token kept) with no position
+bits. Single-codebook VQ (|C|=65,536,b=16) to match total
+bitrate.
+Evaluation metrics.Reconstruction quality is assessed with
+UTMOSv2 [ 50], UTMOS [ 51], PESQ (wideband) [ 52],
+STOI [53], speaker similarity (Spk-Sim; cosine similarity from
+a fine-tuned WavLM-Large speaker verification model [54, 55]),
+and word error rate (WER) from a HuBERT-Large ASR
+model [56]. All external codecs are re-evaluated under the same
+metric pipeline using official checkpoints.
+2764
+Table 1:Reconstruction results on LibriSpeech test-clean (2,620 utterances) at matched total bitrate. “Pos” denotes position bits (bps).
+Higher is better except WER↓; best and second-best in each bitrate block are shown in bold and underline .
+Model Params Frame Rate Content Pos Total bps UTMOSv2 UTMOS PESQ STOI Spk-Sim WER↓
+Ground Truth — — — — — 3.23 4.09 4.64 1.00 1.00 2.08
+Total bitrate>1.0 kbps
+DAC (16k) [8] 76M 50 8000 0 8000 3.09 4.023.97 0.97 0.95 2.14
+BigCodec [12] 159M 80 1040 0 1040 3.36 4.11 2.68 0.94 0.84 2.87
+FlexiCodec (τ= 1.0) [18] 450M 12.46 1234 37 1271 3.20 4.20 2.82 0.94 0.85 2.25
+DTM-Codec@80Hz 127M 80 1120 160 1280 3.42 4.202.95 0.95 0.87 2.98
+0.8 kbps≤Total bitrate≤1.0 kbps
+SNAC (12+23+47 Hz) [22] 19.8M 12+23+47 980 0 980 2.84 3.05 1.91 0.88 0.58 4.39
+WavTokenizer (70Hz) [13] 80.9M 75 900 0 900 2.76 4.00 2.38 0.91 0.68 4.32
+X-Codec 2.0 [3] 210M 50 800 0 800 3.23 4.13 2.44 0.92 0.822.57
+FlexiCodec (τ= 0.91) [18] 450M 8.26 818 25 843 3.17 4.19 2.46 0.92 0.782.35
+DTM-Codec@50Hz 127M 50 700 100 800 3.39 4.22 2.66 0.930.78 2.91
+0.5 kbps≤Total bitrate<0.8 kbps
+TAAE (700 bps) [14] 950M 25 700 0 700 3.10 3.92 2.16 0.91 0.57 6.21
+FlexiCodec (τ= 0.867) [18] 450M 6.23 617 19 636 3.14 4.14 2.19 0.90 0.71 2.80
+DTM-Codec@40Hz 127M 40 560 80 640 3.43 4.19 2.49 0.92 0.743.27
+Total bitrate<0.5 kbps
+WavTokenizer (40Hz) [13] 80.9M 40 480 0 480 3.11 3.78 1.88 0.87 0.57 8.16
+TAAE (400 bps) [14] 950M 25 400 0 400 3.03 3.81 2.00 0.89 0.53 9.39
+V ARSTok (τ= 0.8) [16] 80.9M 34.52 414 69 483 3.08 3.74 1.69 0.86 0.50 10.51
+V ARSTok (τ= 0.7) [16] 80.9M 29.03 348 58 406 3.03 3.64 1.54 0.84 0.43 15.39
+V ARSTok (τ= 0.6) [16] 80.9M 25.02 300 50 350 3.01 3.58 1.46 0.82 0.37 20.69
+DTM-Codec@25Hz 127M 25 350 50 400 3.37 4.11 2.07 0.90 0.58 4.73
+Table 2:Matched-rate FFR→VFR comparison at the same total bitrate. Each cell reports absolute values and relative change in
+parentheses. In each metric column, bold and un

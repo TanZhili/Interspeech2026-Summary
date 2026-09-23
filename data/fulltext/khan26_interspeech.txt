@@ -1,0 +1,449 @@
+Dual-Branch Gated Fusion for Open-Set Audio Deepfake Source Tracing
+Awais Khan ID 1,2, Kutub Uddin ID 1, Khalid Malik ID 1,2,∗∗
+1 College of Innovation and Technology, University of Michigan, Flint, MI, USA
+2 ProbeTruth Inc., MI, USA
+mawais@umich.edu, kutub@umich.edu, malik@probetruth.ai
+Abstract
+Attributing a synthetic utterance to its originating system re-
+mains an open challenge: closed-set models fail to reject unseen
+synthesizers and produce overconfident predictions. To address
+this, we propose a dual-branch gated fusion framework that
+pairs XLSR-53 with CORES, a 66-dimensional descriptor that,
+unlike prior Linear Filter Bank-only work, spans cepstral, os-
+cillatory, rhythmic, energy, and spectral dimensions to capture
+complementary synthesis artifacts. Our analysis shows XLSR-
+53 remains discriminative in-domain (ID) while CORES gen-
+eralizes stably under distribution shift (OOD), yet their naive
+concatenation fails due to SSL representational imbalance. To
+resolve this, an input-conditioned gate adaptively weights each
+branch under joint training with cross-entropy, an energy mar-
+gin loss for ID/OOD separation, and a gate diversity term. On
+the MLAAD benchmark, our system achieves 97.6% ID accu-
+racy, 4.9% EERc, and an 83.5% relative reduction in FPR95
+over the 2025 baseline.
+Index Terms: Audio Deepfake Detection, Source Tracing,
+XLSR-53, CORES, Dual-Branch Gated Network, Open-Set
+Source Tracing
+1. Introduction
+Hearing is no longer believing.This warning, once reserved
+for gossip and hearsay, has taken on an unsettling new dimen-
+sion in the age of generative AI. In January 2024, a phone
+call impersonating the voice of US President Biden discouraged
+thousands of New Hampshire voters from attending the primary
+election, triggering a federal investigation [1]. The threat has
+not abated: in January 2026, a businessman in the Swiss canton
+of Schwyz was deceived over a series of calls in which fraud-
+sters cloned the voice of a trusted business partner, ultimately
+transferring several million Swiss francs before the deception
+was uncovered [2]. These incidents share a common thread that
+the attacker’s identity remained hidden, not because the audio
+was undetectable, but because the tools to trace its origin were
+not in place. Knowing that a recording is synthetic is, increas-
+ingly, not enough. The more consequential question in digital
+forensics and accountability is which system produced it.
+Audio deepfake detection [3–5] has reached a level of ma-
+turity where systems report equal error rates (EER) below 0.5%
+on established benchmarks [6–10]. Source tracing, in contrast,
+which includes attributing a synthetic utterance to the specific
+TTS or voice conversion pipeline that generated it, is a harder
+and considerably less studied problem. Early work [11–16]
+framed it as multi-class classification over a fixed vocabulary
+of known systems. Granularity levels range from the model
+level [17, 18] to higher-level architecture components such as
+acoustic models and vocoders [19–21]. In particular, Klein
+**indicates the corresponding author.
+et al. [20] demonstrated that jointly classifying the acoustic
+model and the vocoder attributes across the generation pipeline
+is a viable strategy, while Doan et al. [21] introduced Varia-
+tional Information Bottleneck regularization to improve gener-
+alization within this closed-set regime. However, both lines of
+work [20, 21] rest on an assumption that fails immediately in
+practice, that every synthesis system encountered at the deploy-
+ment time was also seen during training.
+The ecosystem of generative speech models grows faster
+than any fixed training set. The ADD2023 [22] challenge Track
+3 included only a single held-out out-of-distribution (OOD)
+system, and subsequent studies have reached at most five un-
+seen classes [23, 24]. Interspeech 2025 responded by orga-
+nizing a dedicated source tracing special session around the
+MLAAD protocol [25], which positions 43 entirely unseen syn-
+thesis systems in the evaluation set, making it the most demand-
+ing open-set benchmark the field has seen to date. Underly-
+ing this challenge is a broader requirement for trustworthy AI:
+a source tracing system must reliably recognize what it does
+not know, and its confidence should naturally decay when con-
+fronted with synthesis pipelines outside its training distribution
+(OOD data). On this benchmark, the dominant approach is to
+fine-tune large self-supervised learning (SSL) representations
+such as wav2vec2.0 end-to-end with a discriminative backend
+such as AASIST (Interspeech special session baseline 1). Fol-
+lowing this, Kulkarni et al. [26] show that XLSR-Conformer
+variants with deep metric learning exceed 95% in-domain (ID)
+accuracy, while Klein et al. [27] demonstrate that pairing a
+ResNet34 with large margin cosine loss and softmax energy-
+guided training achieves 8.3% FPR95. Yet a fundamental chal-
+lenge persists across these systems: the same contextual rich-
+ness that makes SSL representations discriminative for known
+sources causes them to overcommit to the training distribution,
+assigning high confidence scores to utterances from synthe-
+sis pipelines the model has never seen. The best OOD-robust
+configuration reported in [26] is XLSR-53 with HYDRA (S5),
+which achieves its OOD advantage at the cost of 23 percentage
+points (pp) in in-domain accuracy, an unacceptable trade-off for
+operational deployment.
+This conflict between ID classification and OOD detection
+is not a tuning problem; it reflects a deeper mismatch between
+what deep self-supervised learning (SSL) features are optimized
+for and what open-set rejection requires. Handcrafted spec-
+tral and temporal features encode lower-level signal properties
+that are more conservative under distribution shift: cross-lingual
+source tracing experiments [12] have shown that LFCC-based
+representations generalize more stably to unseen conditions pre-
+1https://github.com/piotrkawa/
+audio-deepfake-source-tracing
+1047
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3008
+cisely because they do not over-commit to high-level contextual
+abstractions [26]. The complementarity between deep SSL rep-
+resentations and handcrafted acoustic descriptors is well doc-
+umented across speech tasks [28], yet it has not been deliber-
+ately exploited for OOD detection in source tracing. To test
+this directly, we first experiment with a fixed concatenation of
+the two feature streams. We observe, however, that joining
+a 1024-dimensional XLSR embedding with a 66-dimensional
+handcrafted vector without any conditioning causes the fused
+representation to be numerically dominated by the SSL com-
+ponent: the model overfits to the synthesis artifacts present in
+the training distribution and the handcrafted branch contributes
+negligibly, leaving the system with the same overconfidence on
+unseen systems that a single-stream SSL model exhibits [26].
+This finding motivates an input-conditioned gating mechanism
+that dynamically reweights the two branches rather than their
+fusion as a fixed operation.
+To address this, we propose a dual-branch gated fusion
+framework for open-set audio deepfake source tracing. One
+branch operates on frozen XLSR-53 embeddings that capture
+phonetic, prosodic, and speaker-level structure from large-scale
+multilingual pretraining; the other operates on a carefully de-
+signed 66-dimensional handcrafted descriptor we term CORES
+(Cepstral, Oscillatory, Rhythmic, Energy, and Spectral). Unlike
+prior handcrafted representations used in source tracing, which
+have typically relied on linear filter-bank (LFB) alone [27],
+CORES is purpose-designed to span the full range of signal-
+level artifacts that distinguish synthesized audio from natural
+speech and differentiate across synthesis pipelines. To the best
+of our knowledge, this five-dimensional combination has not
+been previously proposed for source tracing or deepfake detec-
+tion, and it provides distribution-agnostic coverage of synthe-
+sis artifacts precisely because it encodes signal dimensions that
+deep SSL representations do not prioritize. The relative con-
+tribution of each branch is determined by a lightweight gating
+network conditioned on the input itself, trained jointly with an
+energy margin loss that drives ID/OOD score separation and a
+gate diversity term that prevents collapse toward a single-branch
+solution. At inference, this input-conditioned routing maintains
+strong closed-set classification without sacrificing open-set sen-
+sitivity, a balance that fixed-weight fusion and single-stream
+SSL architectures cannot simultaneously achieve.
+2. Proposed Method
+Our approach is based on a central observation: synthesis arti-
+facts span multiple representational levels, affecting fine spec-
+tral cues, harmonic and temporal dynamics, and higher-level
+phonetic structure. No single feature family captures these reli-
+ably across both seen and unseen systems. We therefore com-
+bine two complementary front-ends: a handcrafted acoustic de-
+scriptor and a frozen self-supervised representation, and replace
+fixed fusion with an input-conditioned gating module that adap-
+tively weights each branch based on the sample’s distributional
+properties. The overall framework is illustrated in Figure 1.
+2.1. Feature Extraction
+We extract two representations from each utterance. The first
+is produced by a frozen XLSR-53 encoder [29], pretrained on
+56,000 hours of multilingual speech. We freeze the encoder
+to preserve generalized representations and prevent overfitting
+on the training subset, then mean-pool the final hidden states
+to yieldx ssl∈R 1024. The second is a 66-dimensional hand-
+crafted descriptorx hc ∈R 66, referred to as CORES, which
+captures complementary signal-level synthesis artifacts. It com-
+prises five complementary dimensions:Cepstral:13 MFCCs
+with first (∆) and second-order (∆∆) derivatives (39-d);Os-
+cillatory:chroma features capturing pitch-class tonal structure
+(14-d);Rhythmic:zero-crossing rate reflecting temporal onset
+patterns (1-d);Energy:RMS energy (1-d); andSpectral:spec-
+tral centroid, bandwidth, and roll-off (3-d), spectral contrast (7-
+d), and spectral flatness (1-d). Frame-level values are mean-
+pooled to yield the 66-dimensional utterance descriptor. While
+handcrafted features have been employed in prior source trac-
+ing [27] and deepfake detection [30, 31], most commonly as
+LFCC or MFCC descriptors in isolation [12, 32, 33], CORES
+deliberately combines five complementary signal dimensions to
+cover the breadth of artifacts introduced across different synthe-
+sis architectures. We do not claim novelty of individual compo-
+nents, but of their deliberate five-dimensional combination for
+distribution-agnostic coverage of synthesis artifacts. Unlike the
+SSL representation, it requires no learned parameters, making it
+invariant to training distribution and conservatively stable under
+distribution shift.
+2.2. Dual-Branch Expert Architecture
+Within the proposed system, each feature type is processed
+by a dedicated projection network. Both map their inputs
+through two fully-connected layers (hidden dim 512, Batch-
+Norm, ReLU, dropoutp=0.3) into a shared 256-dimensional
+embedding space:e hc,e ssl∈R 256. Direct concatenation is in-
+sufficient, as the SSL input is15×larger than CORES before
+projection and retains substantially higher gradient energy af-
+terward, causing the model to route almost entirely through the
+SSL branch. We validate this behavior via ablation in Section 3.
+2.3. Input-Conditioned Gating
+To resolve the dominance problem, we introduce a lightweight
+gating network that computes a soft branch allocation from
+the input itself. Given the concatenated expert embeddings
+[ehc;e ssl]∈R 512, the gate applies a two-layer gating network
+Figure 1:Proposed dual-branch gated fusion framework for open-set audio deepfake source tracing. The gating network adaptively
+balances contextual SSL representations and low-level CORES to improve attribution robustness under unseen generative systems.
+1048
+(512→128→2, ReLU, dropoutp= 0.2) followed by soft-
+max:
+[αhc,α ssl] = softmax[W2 ReLU (W1 (fehc,f essl))](1)
+The fused embedding is the gated weighted sum:
+efused =α hc·e hc +α ssl·e ssl ∈R 256 (2)
+A linear classifier mapse fused to logits over 24 ID classes.
+2.4. Training Objectives
+We combine three complementary losses that jointly encour-
+age in-distribution classification, out-of-distribution separabil-
+ity, and input-dependent gate specialization.
+Source classification.We first apply cross-entropy loss with
+label smoothing (ε= 0.15) to the ID logits, which anchors the
+classifier to discriminate among the 24 seen synthesis systems.
+LCE =−
+X
+i:yi̸=−1
+CX
+c=1
+q(i)
+c log ˆp(i)
+c ,q (i)
+c = (1−ϵ)1[yi =c]+ ϵ
+C,
+(3)
+Energy margin loss.L CE does not provide a signal for reject-
+ing unseen systems. We therefore adopt the energy margin loss
+of Liu et al. [34], using Dev-split OOD samples as auxiliary
+data. DefiningE(x)=−log P
+kezk, we penalize ID samples
+with energy abovem in and OOD samples belowm out:
+Lenergy =E xin[ReLUE(xin)−m in)]
++E xout[ReLU(mout−E(x out))] (4)
+with marginsm in =−15.0andm out =−2.0. The loss is in-
+active once the margins are satisfied, providing a stable training
+signal without continuously distorting the classifier.
+Gate diversity loss.Without explicit regularization, the gate
+collapses toward the SSL branch. To counter this, we maximize
+the KL divergence between batch-mean gate distributions over
+ID and OOD samples to force input-dependent routing:
+Lgate =−D KL( ¯αid|| ¯αood)(5)
+DKL(p||q) =
+X
+k
+pk logpk
+qk
+(6)
+A gate entropy termL ent = P
+kαk logα k prevents degenerate
+one-hot routing. Combining all three terms, our total training
+objective is:
+L=L ce +λ eLenergy +λ gLgate +λ hLent (7)
+withλ e = 0.5,λ g = 0.05, andλ h = 0.3.
+2.5. Implementation Details
+All models are trained for 150 epochs using AdamW (lr=
+10−4, weight decay= 10 −4) with cosine annealing to a min-
+imum of5×10 −6, batch size 128, and gradient clipping at
+ℓ2 norm 5.0. Dev-split OOD samples serve as auxiliary out-
+of-distribution data forL energy andL gate, requiring no exter-
+nal corpus. We find that activatingL energy before the expert
+branches have formed stable representations causes the gate to
+collapse toward the SSL branch from the first epoch, preventing
+the handcrafted branch from contributing meaningfully. We ad-
+dress this with agate freezestrategy: the gating network param-
+eters are frozen for the first 10 epochs, during whichL ce trains
+both expert branches independently. The gate is then unfrozen
+with a strong entropy regularization weight (λ h = 0.3) to en-
+force complementary routing before the gate settles. Check-
+points are saved independently for each scorer based on the low-
+est FPR95 on the Dev set.
+Table 1:OOD detection performance under three post-hoc
+scoring functions on the MLAAD Eval set (epoch 122 check-
+point, ID Acc = 97.65%). AUROC: Area Under the ROC Curve.
+All scorers useT= 1.0.
+Scorer AUROC↑FPR95%↓OOD-EER%↓EERc%↓
+Energy [34] 0.796 21.2 24.1 13.23
+SME [27]0.965 10.4 7.62 4.98
+MSP 0.963 10.5 7.71 5.03
+Table 2:MLAAD source tracing protocol statistics.
+Set ID Arch. ID Samples OOD Arch. OOD Samples
+Train 24 11,000 — —
+Dev 8 4,800 17 7,200
+Eval 21 13,591 43 20,309
+2.6. OOD Detection at Inference
+At inference, OOD rejection requires no retraining: we apply
+three post-hoc scoring functions directly to the classifier logits.
+Each scorer assigns a scalar confidence score; an utterance is
+flagged as OOD when its score falls below a thresholdτset on
+the Dev set, and attributed to one of the 24 ID classes other-
+wise. Energy scoring [34] uses the log-sum-exp of raw logits,
+Softmax Energy (SME) [27] applies softmax first to accentuate
+the logit skew of confidently classified ID samples, and Max-
+imum Softmax Probability (MSP) uses the negative peak soft-
+max probability. In all cases, ID samples produce more nega-
+tive scores than OOD samples, reflecting higher classifier con-
+fidence. Results are reported in Table 1; we adopt SME as our
+primary scorer.
+3. Experiments and Results
+3.1. Experimental Setup
+We evaluate on the MLAAD 2 source tracing protocol [25],
+which comprises 83 TTS systems across 26 languages parti-
+tioned into training, development, and evaluation splits (Ta-
+ble 2). The evaluation set contains 43 entirely unseen syn-
+thesizers across 26 languages. To enrich OOD coverage, we
+augment both training ID samples and the Dev-OOD auxil-
+iary split5×using the baseline augmentation pipeline [35],
+codec distortion, additive noise from MUSAN [36], and rever-
+beration from RIRs 3 NOISES, raising the effective OOD aux-
+iliary pool to 36,000 utterances. Crucially, the original (non-
+augmented) Dev-OOD samples are withheld from training; only
+transformed copies are used, to prevent any label leakage from
+the development distribution. We report three metrics: ID accu-
+racy (seen-system classification), FPR95 [27] (OOD false pos-
+itive rate at 95% ID true positive rate), and EERc [27] (joint
+metric counting an ID sample correct only when both correctly
+classified and accepted as in-distribution; lower is better).
+3.2. Comparative Results
+Table 3 compares our system against two direct baselines. The
+dominant open-set approach is Klein et al. [27]’s ResNet34 with
+Large Margin Cosine Loss (LMCL) and SME-guided training
+(318M parameters), which achieves 8.3% FPR95 with copy-
+synthesis augmentation. The second is the publicly available
+Wav2Vec2.0-AASIST baseline [35] released with the Inter-
+speech 2025 special session and establishes the base result at
+63.0% FPR95. Our Dual-Branch Gated Fusion achieves 97.6%
+2https://deepfake-total.com/mlaad.
+3https://www.openslr.org/28/
+1049
+Table 3:Results on MLAAD Eval set. OOD metrics use the
+SME score. Aug: codec + reverb augmentation. †: Best check-
+point, –: not reported, BL: Baseline Reference system, publicly
+available at the special session repository.
+System Aux / Aug ID Acc%↑EERc%↓FPR95%↓
+Klein et al.: ResNet34+LMCL (318M params)
+B1 [27] None / × 95.7 9.0 10.7
+B2 [27] None /✓95.8 8.8 9.9
+B3 [27] ASV-CS /✓95.5 8.1 8.3
+BL [35] None / × 85.0 – 63.0
+Ours: Dual-Branch Gated Fusion (XLSR-53+CORES)
+Ours† Dev-OOD / ×97.6 4.910.4
+Table 4:Comparison with Kulkarni et al. [26] on MLAAD.
+OOD EER is standard EER (not EERc). †: Best checkpoint,
+∗: augmentation. Params. in millions (M).
+In-Domain Eval OOD Eval
+System Params Acc%↑F1%↑ Acc%↑EER%↓
+Baseline [35] 317.8 83.4 83.3 26.5 73.5
+S1. [26] 318.1 90.7 91.1 37.7 61.5
+S2. [26] 318.1 95.1 95.2 39.5 59.2
+S3. [26] 318.1 95.1 95.3 38.9 61.1
+S4. [26] 318.1 79.9 77.0 39.2 60.1
+S5. [26] 319.7 72.0 69.8 44.8 55.1
+E1: S2+S3 [26] – 95.695.7 38.0 61.9
+E2: S3+S4 [26] – 94.2 94.2 32.6 69.2
+E3: S3+S5 [26] – 94.6 94.6 38.0 61.3
+E4: S4+S5 [26] – 80.5 77.8 39.6 60.3
+Ours† 0.897 97.691.2 94.3 7.6
+ID accuracy, 4.9% EERc, and 10.4% FPR95 using only Dev-
+OOD auxiliary data and no copy-synthesis, an 83.5% rela-
+tive reduction in FPR95 over the reference system and a 2.8%
+relative improvement over the Klein et al. no-augmentation
+baseline [27]. This shows that the improvement stems from
+feature-level complementarity rather than model scale, achieved
+without fine-tuning any SSL weights. Moreover, we observe
+that the gate assigns¯α ssl=0.617for ID samples and shifts to
+¯αssl=0.587for OOD samples, consistent with our hypothesis
+that handcrafted features provide more stable cues under distri-
+bution shift.
+The gate behavior at convergence explains the robustness un-
+der OOD conditions. For ID samples, routing favors XLSR-53
+due to its stronger in-distribution discrimination. Under dis-
+tribution shift,¯αssl decreases modestly but consistently, with a
+corresponding rise in the handcrafted branch, providing artifact-
+sensitive coverage absent in SSL features outside the training
+domain. This asymmetric routing is not manually imposed but
+emerges from the gate diversity lossL gate, confirming comple-
+mentary rather than redundant roles.4 Table 4 provides a second
+axis of comparison with Kulkarni et al. [26], enabling direct
+efficiency analysis across architectures despite the absence of
+open-set FPR95/EERc metrics. Our model achieves 97.6% ID
+accuracy and 91.2% macro F1 with 0.9M parameters, outper-
+forming the 317.8M W2V2-AASIST baseline [35] by 14.2 pp
+in accuracy and 7.9 pp in F1, while approaching the best 318M
+XLSR-Conformer variants at over350×fewer parameters.
+4Adding ASVspoof5 as auxiliary OOD data degraded performance;
+excessive source diversity led to gate collapse toward a single branch,
+suppressing adaptive routing and reducing open-set gains.
+Figure 2:Ablation on MLAAD Eval. Single-branch and naive
+fusion baselines all fail OOD rejection (FPR95≥34%). Adap-
+tive gating resolves the ID/OOD conflict, achieving 87% rela-
+tive FPR95 vs. naive concatenation at no ID accuracy cost.
+On OOD Eval, we obtain 94.3% OOD accuracy and
+7.6% EER, surpassing all systems, including the OOD-focused
+XLSR-HYDRA (S5), by 49.5 pp in OOD accuracy and 47.5 pp
+in EER, while also exceeding S5 in ID accuracy by 25.6 pp,
+resolving the ID/OOD trade-off inherent to single-stream mod-
+els. This improvement stems from adaptive gating that routes
+OOD samples toward the artifact-sensitive handcrafted branch,
+combined with energy margin training that explicitly separates
+ID and OOD score distributions. Unlike prior systems, which
+treat OOD behavior as incidental, our open-set performance is
+a designed property achieved without sacrificing ID accuracy.
+3.3. Ablation: Why Gating Is Necessary
+Figure 2 isolates the contribution of adaptive fusion. An AA-
+SIST backend trained on SSL features alone achieves com-
+petitive ID accuracy (96.1%) but collapses at OOD rejection:
+FPR95=96.2%, confirming that the SSL energy landscape
+is flat across the seen/unseen boundary. HC-only training re-
+duces FPR95 to 34.7%, a 62 pp gain, but ID accuracy falls to
+78.3%, an unacceptable loss of classification power. Naively
+concatenating both branches with AASIST recovers ID accu-
+racy (95.8%) but leaves FPR95 at 82.3%: the 1024-d SSL
+embedding numerically dominates the 66-d handcrafted vec-
+tor, and the fused representation inherits the same overconfi-
+dence as SSL-only. Only the gated fusion with explicit en-
+ergy margin training and gate diversity regularization simulta-
+neously achieves strong ID accuracy and OOD rejection, reduc-
+ing FPR95 by 87% and EERc by 71% relative to naive concate-
+nation. This confirms the dominance effect described in Sec-
+tion 2.2: without input-conditioned weighting, gradient energy
+from the SSL branch overwhelms CORES regardless of projec-
+tion dimensionality.
+4. Discussion and Future Work
+Our results show that exploiting feature complementarity, rather
+than model scale, enables competitive open-set source tracing.
+Ablations confirm that neither SSL nor CORES alone, nor naive
+concatenation, resolves the ID/OOD trade-off; adaptive gating
+with energy margin training is essential. The consistent gate
+shift toward CORES under distribution shift further indicates
+that routing captures a genuine distributional property, offering
+a lightweight diagnostic for OOD detection without retraining.
+A key negative finding is that adding ASVspoof5 auxiliary data
+degraded performance due to gate collapse under high source
+diversity, indicating finite regularization capacity of the diver-
+sity loss. Curriculum-based auxiliary selection that gradually
+increases OOD diversity is a natural next step. Future work in-
+cludes parameter-efficient adaptation of XLSR-53 via low-rank
+adaptation (LoRA) to reduce the FPR95 gap without sacrificing
+the efficiency that distinguishes our approach. Second, extend-
+ing the framework to multi-label attribution, jointly predicting
+the acoustic model and the vocoder, would increase forensic
+granularity while retaining the open-set rejection capability.
+1050
+5. Use of Generative AI Disclosure
+Generative AI tools were used exc

@@ -1,0 +1,518 @@
+Dr. SHAP-A V: Decoding Relative Modality Contributions via Shapley
+Attribution in Audio-Visual Speech Recognition
+Umberto Cappellazzo♡, Stavros Petridis♡,♠, Maja Pantic♡,♠
+♡ Imperial College London, UK
+♠ NatWest AI Research, UK
+u.cappellazzo@imperial.ac.uk
+Abstract
+Audio-Visual Speech Recognition (A VSR) leverages both acous-
+tic and visual information for robust recognition under noise.
+However, how models balance these modalities remains un-
+clear. We present Dr. SHAP-A V , a framework using Shapley
+values to analyze modality contributions in A VSR. Through
+experiments on six models across two benchmarks and vary-
+ing SNR levels, we introduce three analyses: Global SHAP for
+overall modality balance, Generative SHAP for contribution dy-
+namics during decoding, and Temporal Alignment SHAP for
+input-output correspondence. Our findings reveal that mod-
+els shift toward visual reliance under noise yet maintain high
+audio contributions even under severe degradation. Modality
+balance evolves during generation, temporal alignment holds
+under noise, and SNR is the dominant factor driving modality
+weighting. These findings expose a persistent audio bias, motivat-
+ing ad-hoc modality-weighting mechanisms and Shapley-based
+attribution as a standard A VSR diagnostic.Project website:
+https://umbertocappellazzo.github.io/Dr-SHAP-AV
+Index Terms: Audio-Visual Speech Recognition, Shapley Val-
+ues, Modality Contribution
+1. Introduction
+Speech recognition systems are widely deployed across a range
+of real-world applications, yet they remain vulnerable to acous-
+tic noise, where background noise and competing speech can
+severely degrade recognition accuracy [1 –3]. Audio-Visual
+Speech Recognition (A VSR) [4–7] addresses this limitation by
+complementing acoustic signals with visual cues, most notably
+lip movements, which are inherently immune to acoustic cor-
+ruption. By exploiting the natural correlation between speech
+and the articulatory motion of the speaker’s lips, A VSR systems
+maintain robust recognition even when audio quality degrades.
+The development of A VSR has proceeded through several
+distinct research directions. Early approaches relied on modality-
+specific encoders and handcrafted fusion strategies [4,8,9], while
+the introduction of Transformer-based architectures [10] brought
+substantial performance improvements [5, 11]. A dominant
+line of research has since centered on self-supervised learn-
+ing [12], leveraging large-scale unlabeled audio-visual data to
+pre-train encoders that capture the intrinsic correlation between
+the two modalities, even with limited labeled data [13–16]. Other
+paradigms have also emerged, such as ASR-to-A VSR distilla-
+tion [7, 17], which uses pre-trained auditory speech recognition
+(ASR) models to automatically annotate large-scale audio-visual
+datasets, and cross-modal complementarity approaches [18, 19]
+that explicitly model the synergistic relationship between audi-
+tory and visual streams. More recently, the rise of Large Lan-
+guage Models (LLMs) and their multimodal extensions [20–24]
+0.5 1 2 5 10 20 50 100 200
+Word Error Rate (%)
+Omni-AVSR
+Llama-SMoP
+Llama-AVSR
+Auto-AVSR
+Whisper-Flamingo
+AV-HuBERT
+Task
+  ASR
+  VSR
+  AVSR
+Figure 1:WER comparison (↓) when ablating audio or video
+modalities across six state-of-the-art AVSR models in clean con-
+ditions. Note that the x-axis is displayed on a logarithmic scale.
+has opened a new frontier: several works have successfully
+aligned speech representations with LLMs for A VSR as well as
+the unimodal tasks ASR and visual speech recognition (VSR),
+attaining state-of-the-art recognition performance [25–32].
+While integrating visual lip information is clearly beneficial
+in noisy acoustic conditions, its contribution in clean conditions
+is far less evident. This can be attributed to the inherent asym-
+metry between the two modalities: audio directly encodes the
+full speech signal at high temporal resolution, whereas visual lip
+movements are captured at lower frame rates and carry intrin-
+sically more ambiguous information, as many phonemes share
+near-identical visual appearance. As a consequence, during joint
+training, models tend to latch onto the audio modality, which
+is easier and faster to learn, while the visual encoder receives
+comparatively weak gradient updates [33–35]. A telling symp-
+tom of this bias is observable in the performance reported by
+state-of-the-art A VSR models: when evaluated under clean con-
+ditions, the gap between ASR and A VSR systems is consistently
+marginal [7, 16, 17, 25].
+To directly quantify this modality reliance, we analyze six
+recent A VSR models by independently dropping all audio or
+video tokens at inference time, effectively reducing the model to
+either an ASR-only or VSR-only system, and compare against
+the full A VSR performance. The results are illustrated in Fig-
+ure 1. Across all models, removing video tokens while retaining
+audio (ASR condition) results in WER values that remain close
+to the full A VSR system, confirming that audio alone largely
+drives recognition in clean conditions. In contrast, removing
+audio tokens while retaining video (VSR condition) causes a dra-
+matic degradation across the board, with WER increasing by one
+to two orders of magnitude for most models. This asymmetry
+is particularly stark for the four models trained exclusively on
+the A VSR task (Llama-A VSR [25], Llama-SMoP [27], Whisper-
+Flamingo [17], and Auto-A VSR [7]), which, having never been
+3198
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-417
+explicitly trained to rely on visual input alone, collapse almost
+entirely when audio is absent. Interestingly, A V-HuBERT [13]
+and Omni-A VSR [28], both trained with a multi-task objective
+that includes the VSR task, exhibit comparatively stronger visual-
+only performance, suggesting that explicit VSR supervision is a
+key factor in encouraging models to extract meaningful informa-
+tion from the visual stream.
+These observations raise a fundamentalquestion:
+Research Question:
+How do A VSR models balance audio and visual con-
+tributions, and what factors shape this balance across
+acoustic conditions, the decoding process, and input
+characteristics?
+Developing a principled understanding of modality contri-
+bution in AVSR models is therefore the central goal of this work.
+In the literature, little effort has been devoted to studying
+modality contributions in A VSR, as most works have focused
+on reducing WER to achieve state-of-the-art performance. For
+example, Dai et al. [35] investigate why A VSR systems are
+sensitive to missing video frames, tracing the root cause to an
+excessive modality bias toward audio induced by dropout. Lin
+et al. [36] examine how A VSR systems exploit visual informa-
+tion through the lens of human speech perception, revealing that
+current methods do not fully leverage visual cues. Papadopoulos
+et al. [37] study how the visual modality contributes to A VSR by
+applying interpretability techniques to examine how visemes are
+encoded in A V-HuBERT. However, these works focus on indi-
+vidual models or provide empirical observations without formal
+mathematical frameworks, and none encompasses a comprehen-
+sive analysis across multiple state-of-the-art A VSR architectures.
+To address these limitations, we turn toShapley values
+from cooperative game theory [38], which provide a rigorous
+mathematical framework for quantifying modality contributions.
+Unlike heuristic analyses, Shapley values offer theoretically
+grounded attributions satisfying desirable properties such as ef-
+ficiency, symmetry, and fair credit assignment [39]. Crucially,
+they areperformance-agnostic: they quantify how models uti-
+lize inputs based solely on prediction behavior, not on whether
+the output is correct. This makes them ideally suited for ana-
+lyzing A VSR, where we aim to understand modality utilization
+regardless of transcription accuracy.
+Shapley-based attribution has recently gained traction in
+the multimodal learning community. Parcalebescu et al. [40]
+introduced MM-SHAP to measure how vision-language models
+utilize image and text modalities in encoder-based classification
+tasks. This framework was subsequently extended to autoregres-
+sive architectures: Parcalebescu et al. [41] applied Shapley-based
+attribution to vision-language decoders, while Morais et al. [42]
+investigated modality contributions in audio-based LLMs for
+music understanding. Building on these recent advances, we
+leverage Shapley values to systematically analyze audio-visual
+modality contributions in speech recognition.
+We presentDr. SHAP-A V, a comprehensive framework for
+DecodingRelative modality contributions viaSHAPley attribu-
+tion inAudio-Visual speech recognition. Our work extends prior
+Shapley-based approaches in several key directions:
+• Analysis Across Acoustic Conditions.Prior Shapley-based
+studies analyze modality contributions under fixed input con-
+ditions. In contrast, A VSR offers a natural testbed for ex-
+amining how models adjust their audio-visual balance when
+input quality varies. We systematically analyze contributions
+across SNR levels from clean speech to−10 dB, revealing
+how models adapt under acoustic degradation.
+• Extension to Cross-Attention-based Architectures.Prior
+Shapley-based analyses have been limited toLLM-based ar-
+chitectures [41, 42]. We extend this framework also tocross-
+attention-basedencoder-decoder models, which represent one
+of the dominant paradigms in A VSR.
+• Multi-Granularity Analysis.Beyond global modality con-
+tributions [40], we introduce two new metrics: Generative
+SHAP to track how modality reliance evolves during token gen-
+eration, and Temporal Alignment SHAP to examine the corre-
+spondence between input feature positions and output tokens.
+We also analyze how utterance duration, different acoustic
+noise types, and input difficulty affect modality weighting.
+Dr. SHAP-A V provides a unified analysis of modality be-
+havior in A VSR alongthree complementary axes:(i)modal-
+ity weighting under controlled SNR shifts,(ii)generation-time
+contribution dynamics during autoregressive decoding, and(iii)
+temporal alignment between input modalities and output to-
+kens. Together, these perspectives move beyond static attri-
+bution and offer a structured characterization of cross-modal
+behavior in modern A VSR systems. We conduct extensive exper-
+iments on six state-of-the-art models spanning encoder-decoder
+(A V-HuBERT [13], Auto-A VSR [7], Whisper-Flamingo [17])
+and LLM-based (Llama-A VSR [25], Llama-SMoP [27], Omni-
+A VSR [28]) architectures on the two main A VSR benchmarks
+LRS2 and LRS3. Our key findings are:
+Summary of Findings:
+1 A VSR models dynamically shift toward visual re-
+liance as audio quality deteriorates, yet maintain
+surprisingly high audio contributions (38-46%) even
+at−10 dB SNR, where substantially stronger visual
+dominance would be expected.
+2 Modality contribution evolves during generation:
+Whisper-Flamingo and Omni-A VSR progressively
+increase audio reliance as decoding proceeds, while
+A V-HuBERT maintains stable balance throughout.
+3 Both modalities maintain temporal alignment be-
+tween input features and output tokens, and this
+structure remains robust under acoustic degradation.
+4 Different noise types induce varying degrees of vi-
+sual reliance, with more challenging conditions pro-
+ducing larger shifts toward the visual modality.
+5 Utterance duration affects modality contributions dif-
+ferently across architectures, revealing no consistent
+pattern but rather model-specific trends shaped by
+architectural design.
+6 Acoustic conditions are the dominant factor driving
+modality balance, while recognition difficulty has
+minimal effect within each SNR level.
+Overall, our analysis provides actionable insights into how
+A VSR models integrate multimodal information, revealing both
+adaptive capabilities and persistent biases that motivate the de-
+velopment of explicit modality-weighting mechanisms and en-
+couraging future works to adopt Shapley-based attribution as a
+standard diagnostic for A VSR.
+3199
+2. Methodology
+In this section, we describeDr. SHAP-A V, our framework for
+DecodingRelative modality contributions viaSHAPley attribu-
+tion inAudio-Visual speech recognition. It builds on Shapley
+values from cooperative game theory [38], which provide a prin-
+cipled method for fairly attributing model predictions to input
+features. We organize this section as follows:1)we introduce the
+necessary background on Shapley values, then2)describe how
+we compute and adapt them to autoregressive A VSR models dur-
+ing inference, and finally3)present three complementary metrics
+to analyze modality contributions at different granularities.
+2.1. Background: Shapley Values for Feature Attribution
+Shapley values originate from cooperative game theory, pro-
+viding a principled method for fairly distributing a total payoff
+among contributing players [38]. In the context of machine
+learning, Shapley values have been widely adopted for feature
+attribution, where the “players” are input features or tokens and
+the “payoff” is the model’s prediction [39, 43–45].
+Given a model f:X →R and an input x=
+(x1,x 2,...,x n)∈X defined over a set ofn features (or tokens)
+F={1,...,n} , thecharacteristic function fx(C) represents
+the model’s expected prediction when only the features in the
+subsetC⊆Fare known [43]:
+fx(C) =E[f(X)|X C =xC], (1)
+where xC denotes the subset of values{xi :i∈C} . The char-
+acteristic function captures how the model’s prediction changes
+as different subsets of features are available. Features not being
+part of the subset are masked (i.e., set to 0). In particular, the dif-
+ferencefx(F)−f x(∅) quantifies the total change in prediction
+when all features are known versus when none are known.
+TheShapley value ϕi(fx) quantifies the contribution of fea-
+tureito the predictionf(x), and can bepositive(increases the
+model prediction) ornegative(decreases it) orzero(no effect).
+It is defined as the weighted average of marginal contributions
+across all possible coalitions [38]:
+ϕi(fx) =
+X
+C⊆F\{i}
+|C|!·(|F|−|C|−1)!
+|F|! [fx(C∪{i})−f x(C)].
+(2)
+The Shapley value is the unique attribution method satis-
+fying four desirable axioms:efficiency(contributions sum to
+the total payoff),symmetry(identical features receive identical
+attributions),linearity(additivity across games), andnull player
+(irrelevant features receive zero attribution) [38, 39]. Crucially,
+Shapley values areperformance-agnostic: they measure con-
+tribution to the model’s internal predictive distribution, not to
+correctness relative to ground truth. This makes them ideally
+suited for analyzing A VSR models, where we aim to understand
+how audio and visual modalities each contribute to token gen-
+eration, regardless of whether their fusion ultimately yields an
+accurate transcription.
+Computing exact Shapley values requires evaluating 2|F|
+coalitions, which becomes intractable for high-dimensional in-
+puts. Following [43] and [39], we approximate Shapley values
+usingPermutation SHAP, which samples random permutations
+π∈Π(F)and estimates each feature’s marginal contribution:
+ϕi(fx)≈ 1
+M
+MX
+m=1
+[fx(Pπm
+i ∪{i})−f x(Pπm
+i )], (3)
+where Π(F) is the set of all permutations of F,Pπ
+i denotes
+the set of features preceding i in permutationπ, andM is the
+number of sampled permutations. We also report results with
+Sampling SHAP[46, 47], which approximates the Shapley value
+sum via Monte Carlo sampling of feature coalitions. Both meth-
+ods provide unbiased estimates that converge to the true Shapley
+values. We set the number of sampled coalitions toM= 2000
+to ensure stable and fair attribution across modalities [40 –42].
+Both methods are implemented using theshaplibrary [39].
+2.2. Shapley Values for Audio-Visual Speech Recognition
+While [40] introduced MM-SHAP for vision-language en-
+coders, [41] recently extended this framework to autoregressive
+vision-language decoders by computing Shapley values for each
+generated token. We build upon their approach and adapt it
+to the audio-visual speech recognition domain. Notably, our
+work extends beyond LLM-based architectures. While recent
+A VSR models concatenate audio, visual, and text tokens into a
+single sequence fed to a large language model [25,26,28,30,48],
+the dominant paradigm in A VSR employsencoder-decoderar-
+chitectures [7, 13, 14, 16, 17, 49], where the audio and visual
+features are cross-attended by the decoder. We therefore extend
+the Shapley-based attribution framework to accommodate both
+architectural families, enabling a unified analysis of modality
+contributions across the A VSR landscape.
+Consider a pre-trained A VSR modelf that generates a se-
+quence ofT output tokens y= (y 1,...,y T ) given multimodal
+input features during inference. The input consists of:audio fea-
+tures xA = (xA
+1,...,x A
+NA), extracted from the speech signal,
+andvisual features xV = (xV
+1,...,x V
+NV ), extracted from lip
+video frames. We note thatpromptandspecial tokensarenot
+taken into account for our analysis.
+LetF=A∪V denote the complete set of input features,
+whereA={1,...,N A} indexes audio features,V={N A +
+1,...,N} indexes visual features, andN=N A +NV is the
+total number of features. For LLM-based models, these features
+correspond to audio and visual tokens after being projected into
+the LLM space; for encoder-decoder models, they correspond to
+the representations from the respective modality encoders.
+For each generated token yt, we define the characteristic
+functionft
+x : 2F→R as the expected log-probability of gener-
+atingyt when only features inC⊆Fare observed:
+ft
+x(C) =E[logp(y t|XC,y<t)|X C =xC], (4)
+where xC denotes features with indices inC, and features inF\C
+are masked. In practice, following [39–41, 43], we approximate
+this expectation by masking features and performing a single
+forward pass, rather than explicitly marginalizing over absent
+features. The Shapley value of featurei for output tokent is [41]:
+ϕi,t =
+X
+C⊆F\{i}
+|C|!·(N−|C|−1)!
+N!
+
+ft
+x(C∪{i})−f t
+x(C)
+
+.
+(5)
+Computing Eq. (5) for all features and tokens yields the
+Shapley matrix Φ∈R N×T with entries ϕi,t, capturing the
+contribution of each input feature i to each generated token t.
+This matrix serves as the foundation for all subsequent analyses.
+2.3. Dr. SHAP-A V: Three Levels of Analysis
+We propose three complementary analyses that operate on the
+Shapley matrix Φ at different levels of granularity, each address-
+3200
+Generated Tokens
+Visual Features
+Audio Features
+Generated Tokens
+ Generated Tokens
+Global Audio/Video-SHAP
+ Generative Audio/Video-SHAP Alignment Audio/Video-SHAP
+A-SHAP
+V-SHAP
+(3)
+A-SHAP
+(1)
+V-SHAP
+Figure 2:Overview of the three proposed SHAP-based analyses in Dr. SHAP-AV . From the Shapley matrix Φ, which captures the
+contribution of each input feature (rows) to each generated token (columns), we compute:(Left) Global SHAP , which aggregates
+contributions across all features and tokens to quantify overall modality balance;(Middle) Generative SHAP, which tracks modality
+contribution dynamics across token generation stages; and(Right) Temporal Alignment SHAP, which examines the correspondence
+between input feature positions and output token positions.
+ing a distinct research question about modality contributions in
+A VSR (see Figure 2 for a visual overview).
+2.3.1.Global SHAP
+Following [40, 41], we aggregate Shapley values across all fea-
+tures and tokens to quantify overall modality contributions. The
+global audio and visual contributions are defined as:
+A-SHAP=
+X
+j∈A
+TX
+t=1
+|ϕj,t|
+X
+j∈F
+TX
+t=1
+|ϕj,t|
+V-SHAP=
+X
+j∈V
+TX
+t=1
+|ϕj,t|
+X
+j∈F
+TX
+t=1
+|ϕj,t|
+. (6)
+We use absolute values|ϕj,t| following [40], as we are inter-
+ested in themagnitudeof each feature’s contribution regardless
+of whether it increases or decreases the prediction probability.
+It holds that A-SHAP = 1− V-SHAP. A-SHAP = 0.5 indi-
+cates balanced modality usage; A-SHAP>0.5 indicates audio
+dominance; A-SHAP<0.5indicates visual dominance.
+2.3.2.Generative SHAP
+While A/V-SHAP metrics provide a useful summary of over-
+all modality contributions, they collapses all information into
+a single scalar value, potentially obscuring important dynam-
+ics in how models utilize different modalities throughout the
+generation process. We therefore extend them to capture how
+modality contributions evolve across autoregressive decoding. A
+natural question arises:Does the model rely on audio and visual
+information uniformly across all generation stages, or does the
+balance shift as decoding progresses?
+To answer this, we introduce Generative SHAP, which ex-
+tends Global SHAP by tracking modality contributions across
+the generation process. Rather than analyzing individual tokens,
+which can be noisy and difficult to interpret, we group consecu-
+tive tokens into temporal windows. Specifically, we divide the
+generated sequence intoW (e.g,W= 3 in Figure 2) windows
+{T1,...,T W}, where each windowTw contains tokens corre-
+sponding to a fixed percentage of the output sequence. For each
+window, we compute the modality contributions:
+A-SHAP(w) =
+X
+j∈A
+X
+t∈Tw
+|ϕj,t|
+X
+j∈F
+X
+t∈Tw
+|ϕj,t|
+,(7)
+V-SHAP(w) = 1−A-SHAP (w). (8)
+Aggregating across all windows yields au-
+dio (A-SHAP(1),...,A-SHAP (W) ) and video
+(V-SHAP(1),...,V-SHAP (W) ) trajectories that reveal
+dynamic modality relianceduring token generation. These
+trajectories capture whether models rely more heavily on audio
+when generating initial versus final tokens, or whether visual
+features become more important at certain stages, reflecting
+how the temporal structure of speech maps onto the generation
+process.
+2.3.3.Temporal Alignment SHAP
+Finally, we propose Temporal Alignment SHAP to investigate
+whether temporal correspondence exists between input feature
+positions and output token positions. Specifically, we ask:Do
+early input features contribute more to early tokens, and late
+input features to late tokens?Such temporal alignment would
+suggest that the model preserves sequential structure from input
+to output, which is particularly relevant for speech recognition
+where the temporal ordering of phonemes and words should be
+reflected in the generated transcription.
+To enable comparison across samples with varying sequence
+lengths, we normalize both feature and token positions to per-
+centages. For each modality m∈ {A,V} , we group input
+features into K temporal bins{F (m)
+1 ,...,F (m)
+K } and output
+tokens into W temporal bins{T1,...,T W} (e.g., in Figure 2
+K=W= 3 ). We then compute, for each feature bin k, the
+3201
+proportion of its total contribution directed to each token binw:
+H (m)
+k,w =
+X
+j∈F (m)
+k
+X
+t∈Tw
+|ϕj,t|
+WX
+w′=1
+X
+j∈F (m)
+k
+X
+t∈Tw′
+|ϕj,t|
+. (9)
+Each row of H (m)∈R K×W sums to one, representing how
+the contributions of each group are distributed across the genera-
+tion. We analyze this at two levels ofgranularity: a fine-grained
+heatmap visualization, and a grouped analysis that partitions fea-
+tures into early, middle, and late segments. Temporal alignment
+manifests as diagonal patterns, where early features contribute
+predominantly to early tokens and late features to late tokens,
+while uniform distributions indicate no temporal structure.
+3. Experimental Setup
+3.1. Datasets
+We conduct experiments on LRS2 [50] and LRS3 [51] datasets.
+LRS2 includes 225 hours of footage from BBC programs. LRS3
+contains433hours of English video clips from TED talks.
+3.2. Models
+We analyze the modality contribution of six state-of-the-art
+A VSR models. We categorize them in two families:(1) LLM-
+based approaches, where the audio and visual inputs are pro-
+cessed by audio and visual pre-trained encoders, projected into
+the LLM space, and then fed to the LLM alongside the prompt
+tokens;(2) cross-attention-based, where the (attention-based)
+decoder processes the audio and visual embeddings via a cross-
+attention mechanism. We provide details about each model
+below. We point out that these models are used at inf

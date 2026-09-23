@@ -1,0 +1,401 @@
+Audio-Visual Feature Reconstruction Pretraining for Noise-Robust Emotion
+Recognition
+Ivan Halim Parmonangan ID 1,∗, Tharindu Fernando ID 1,∗,∗∗, Simon Denman ID 1
+1 Queensland University of Technology, Australia
+ivanhalim.parmonangan@hdr.qut.edu.au, t.warnakulasuriya@qut.edu.au, s.denman@qut.edu.au
+Abstract
+Audiovisual emotion recognition fuses speech and facial ex-
+pressions, yet real-world corruption such as background noise,
+reverberation, and dropped/frozen frames, can make the fusion
+fragile. A degraded input may dominate attention and suppress
+the clean input. Prior audiovisual pretraining solutions primar-
+ily optimize cross-modal alignment which can lose input de-
+tails and often rely on Transformers, where the quadratic cost
+hinders long sequences. We propose a Mamba2 state-space
+fusion network with a self-supervised denoising pretraining
+stage, where clean features are reconstructed from corrupted au-
+dio–visual inputs only during pretraining to learn noise-robust
+representations. When applied to a downstream emotion recog-
+nition task, the proposed multimodal feature-reconstruction pre-
+trained model delivers improvements under noisy audio and
+consistent gains over unimodal feature-reconstruction pretrain-
+ing across diverse noisy/clean video settings, demonstrating im-
+proved robustness with efficient sequence modeling.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Emotions shape human interactions through body language, fa-
+cial expressions, vocal, and textual cues [1]. In daily life, fa-
+cial expression and speech stand apart from other modes due
+to their intrinsic connection [2] and complementary nature [3].
+Many studies have exploited this, and shown that incorporating
+audio and visual inputs for emotion recognition can increase
+emotion recognition accuracy [4, 5, 6, 7], most recently via
+cross-attention-based fusion mechanisms [8, 9].
+In recent years, emotion recognition has been adopted in
+applications such as healthcare, customer service, education,
+and entertainment [10, 11, 12, 13]. Current emotion recognition
+systems can analyze and generate emotional responses, allow-
+ing machines to more meaningfully engage in human-computer
+interactions. However, in real-world conditions one or both
+modalities may be degraded, leading to a significant decline
+in performance [8]. Existing fusion approaches [8, 9] typi-
+cally assume that input modalities are reliable, and in such sce-
+narios the noise-affected features from one mode may disrupt
+clean features from the second, resulting in a decline in emo-
+tion recognition results despite the clean input [14, 15].
+While recent self-supervised audio–visual pretraining
+methods primarily focus on semantic correspondence, synchro-
+nization, or contrastive alignment across modalities to improve
+general representation quality, the lack of explicit cross-modal
+denoising limits robustness when transferring to affective tasks
+*These authors contributed equally.
+**indicates the corresponding author.
+operating under real-world noise conditions [16, 17]. In addi-
+tion, most existing methods rely on Transformer-based architec-
+tures, which have quadratic complexity, restricting scalability
+and noise-handling efficiency in long multi-modal sequences.
+Based on these limitations, we investigate whether ex-
+plicitly denoising noisy audio and visual features in a multi-
+modal pretraining setting can improve robustness to noisy au-
+dio while preventing noise-sensitive modalities from degrading
+more noise-robust modes. We propose a Mamba2-based mul-
+timodal fusion framework with cross-attention reconstruction
+pretraining, which leverages state-space sequence modeling for
+efficient temporal processing and learns modality-conditioned
+denoising from corrupted audiovisual inputs.
+The proposed approach is evaluated on an emotion recog-
+nition task by introducing realistic corruptions to audio and
+video modes, including background noise, room reverberation,
+chopped speech, and frozen frames. By varying corruption lev-
+els beyond those seen during pretraining, the model’s ability
+to maintain emotion recognition performance under both lower
+and higher noise conditions can be assessed.
+2. Datasets
+The main datasets used in this study are Lip Reading Sentences
+2 (LRS2) [18], and the Ryerson Audio-Visual Database of Emo-
+tional Speech and Song (RA VDESS)[19]. The former is used
+during model pretraining, while the latter is used to evaluate
+emotion recognition performance in the presence of noise and
+corruption. We use three different background noise and im-
+pulse response datasets to avoid overlap between pretraining
+and downstream settings, while simulating real-world corrup-
+tion. For background noise, we use FSDNoisy18K [20], WSJ0
+Hipster Ambient Mixtures (WHAM!) [21], and UrbanSound8K
+[22]. To simulate reverberation we use the IR-C4DM [23],
+Aachen Impulse Response (AIR) [24, 25], and Microphone Im-
+pulse Response Project (MicIRP) [26] datasets.
+2.1. Self-supervised Reconstruction Pretraining Dataset
+The LRS2 dataset contains thousands of spoken sentences taken
+from BBC television broadcasts. Each sample contains a syn-
+chronized audio-video record. Video is cropped around the
+speaker’s face and mouth, while the audio contains the corre-
+sponding speech. It captures natural speech with variations in
+lighting, pose, background noise, and speaking style.
+LRS2 consists of pretrain and main subsets, which contain
+more than96,000and48,000records respectively. Originally,
+the pretrain subset is intended for pretraining, while the main
+subset (which itself contains train, validation, and test sets) is
+intended for the datasets own supervised downstream task. In
+this study, we used the pretraining set to pretrain the proposed
+model in a self-supervised fashion, while the whole main subset
+is used for validation during pretraining.
+1822
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-605
+2.2. Emotion Recognition Dataset
+To evaluate the proposed method, we used RA VDESS.
+RA VDESS consists of audio-only samples, video-only samples,
+and audio-video samples, and is performed by 24 actors (12 fe-
+male and 12 male) aged 21-33 years. All actors speak English as
+their first language and talk in a neutral North American accent.
+There are 8 emotion classes in the dataset: happy, sad, angry,
+fearful, surprise, disgust, calm, and neutral. All emotions are
+performed at normal and strong intensities (though there is no
+strong intensity for the neutral emotion). There are only two
+sentences spoken: “Kids are talking by the door” and “Dogs
+are sitting by the door”. The statements are seven syllables
+in length and were matched in word frequency and familiarity.
+Each sentence is spoken as a normal sentence and sung (one ac-
+tor does not have sung-sentences records). Of the 24 actors, one
+actor only has 60 records while the rest have 104 records for the
+audio-only, video-only, and audio-video conditions.
+3. Methodology
+This section describes the key components of this work. First,
+we describe how noise is injected into clean audio and video,
+after which we outline the feature extraction process. Lastly, the
+architecture of the proposed model, including the pretraining
+and downstream evaluation processes, are presented.
+3.1. Data Augmentation
+We augment the audio and video with noise and other corrup-
+tions to simulate real-world conditions. We consider two groups
+of corruption: source corruption (applied first), and transmis-
+sion corruption. Source corruption includes background noise
+and room reverberation. Transmission corruption includes bi-
+trate drop, clipped audio, and chopped speech.
+3.1.1. Audio Augmentation
+Audio corruptions are set randomly for each sample with the
+following probabilities: Background noise0.4, reverberation
+0.2, bit-depth drop0.2, sound-clipping0.2, choppy-effect0.2.
+Background noise is added to samples at a level of 5-20 dB.
+Room reverberation (intensity set randomly between0.1−0.5)
+is applied by adding the original audio with a normalized wave-
+form convolved with the impulse-response. For chopped speech
+effects, we uniformly randomly select from dropout, stutter,
+and packet-loss effects. Dropout overwrites random segments
+of10ms−1swith zeros with random chance between0.01
+to0.1throughout the sample. Stutter copies a short segment
+to several consecutive segments (stutter length randomly set to
+100ms−2s). Packet loss copies a 20 ms clip which is repeated
+throughout the signal. For each segment, dropout is applied ran-
+domly, with a random chance of a sped-up signal at1.5−2
+times the original speed to the end of the segment. Bit-depth
+drop is done by randomly setting the bit-depth to between 4-
+24 bits throughout the sample (original bit-depth is 16-32 bit).
+Clipping clamps the maximum value of the waveform.
+For pretraining, the pre-train subset of LRS2 is aug-
+mented with the FSDNoisy18K noise dataset and AIR impulse-
+response dataset. The validation data for the pretraining stage
+used themainsubset of LRS2 dataset augmented with the
+WHAM! background noise dataset and IR-C4DM impulse-
+response dataset. For the downstream task, the RA VDESS au-
+dio data is augmented using UrbanSound8K background noise
+dataset and MicIRP impulse-response dataset.
+3.1.2. Video Augmentation
+Each video frame is corrupted randomly with the following
+probabilities: frozen frames0.3, compression artifact0.2, color
+distortion0.15, blur0.15, frame tearing0.1, and noise0.1.
+Each frame is handled individually and the corruptions ex-
+cept for frozen, tearing, and noise are done in patches (patches
+are randomly sampled and sized between50−150pixels
+square). Frozen frame corruption copies a frame to the next
+5−10consecutive frames. Frame tearing is applied vertically
+or horizontally at two random locations per frame. Noise is ap-
+plied by adding gaussian noise with0.05intensity to the whole
+frame. Compression artifacts drop the quality of1−5patches
+up to 30% of the original quality. Color distortion shifts the hue,
+saturation, and value (HSV) of1−3patches per frame. Hue
+is shifted±30, while the saturation and value are shifted±50.
+Blurring applies Gaussian blur to1−3patches per frame.
+3.2. Feature Extraction
+We use EAT-base [27] (pre-trained for 30-epochs on AudioSet-
+2M[28]) with a ViT-B backbone to extract audio features; and a
+Kinetics-400 [29] pretrained Timesformer[30] base-size model
+for video 1. Synthetic corruption is done at the raw signal-level
+identically across all compared methods. EAT and Timesformer
+are used only to extract latent features from clean and corrupted
+signals, and are hence kept frozen. The proposed reconstruction
+operates only on the resulting representations.
+Audio is resampled to 16 kHz and converted to mono, then
+transformed to a 128 frequency-bins Mel-spectrogram with a
+Hanning window of 25 ms, and 10 ms shift. Video samples are
+recorded at 25 fps. Frames are sampled from videos at 2 Hz or
+greater. To determine the number of frames sampled, the video
+length (in frames) is divided by12.5and rounded to the near-
+est8, and this number of frames are uniformly sampled. This
+ensures that for short videos (less than4s)8frames are uni-
+formly sampled, while longer videos will sample more frames,
+such that video is not undersampled relative to the audio.
+3.3. Pretraining
+For pretraining, we use the LRS2pretrainsubset while themain
+subset is used for validation. The proposed and downstream
+architectures are shown in Figures 1a and 1b respectively.
+There are three main parts to the proposed architecture.
+The first is the audio and video encoders, where separate
+pipelines handle audio and video features. We use 3 layers
+of Mamba2[32] for each. Following this, a linear layer con-
+verts features to a common size. Letx a ∈R B×Ta×Da and
+xv ∈R B×Tv×Dv denote the paired audio and video features
+extracted from EAT and Timesformer respectively whereBde-
+notes batch size,T a,v denotes the number of tokens andD a,v
+denotes the size of each token. Both features are normalized
+using LayerNorm[33] before being passed to the respective en-
+coder stack. Leth a =f a
+encA(xa)andh v =f v
+encV (xv)be the
+output of the audio and video encoders.
+Features from both modes are converted to a common di-
+mension,D c. In this work, we setD c = 768and normalise
+again using LayerNorm, before projecting into a shared lin-
+ear layer, such that audio and video features have a shape of
+¯za∈R B×Ta×Dc and¯zv∈R B×Tv×Dc.
+We subsequently apply cross-attention fusion. There are
+many fewer audio tokens compared to the video tokens (video
+includes spatial information). As such, we use two uni-
+directional cross-attention mechanisms; one updates audio to-
+kens conditioned on attention-pooled video tokens, and the
+other updates video tokens conditioned on audio tokens. The
+outputs of this step areu a =XAttn a←v(¯za, pv)wherep v is
+the pooled video tokens andu v =XAttn v←a(¯zv,¯za). As
+1Pretrained models used are available at HuggingFace [31]
+1823
+(a)Proposed pretraining architecture
+(b)Downstream classifier
+architecture
+Figure 1:The architecture used in this study. The proposed architecture for pretraining is illustrated in (a). The downstream classifica-
+tion architecture is illustrated in (b).
+cross-attention is order-agnostic, positional embeddingsP E a
+andP E vfor audio and video inputs respectively are added
+before the first cross-attention layer.
+After two cross-attention layers, tokens are projected back
+to their original shape,D a for audio andD v for video, by sepa-
+rate linear layers(BackP roj a,v), and passed to individual de-
+coders. Each decoder comprises three Mamba2 layers similar
+to the encoder. The reconstructed features from the denoised
+audio and video are given byˆx a =f a
+decA(BackP roj a(ua))
+andˆxv =f v
+decV (BackP roj v(uv))respectively.
+3.3.1. Pretraining Strategy
+There are two pretraining stages. For both the input is noisy
+audio and video features from the pretrained EAT and Times-
+former. The first stage trains only the encoder pipelines for 80
+epochs, allowing the encoders to learn to reconstruct clean fea-
+tures from modality-specific corruption. The second stage lasts
+200 epochs and freezes the encoders while training the cross-
+attention and decoder to fuse information from both modes to
+generate more robust features. For both steps we use Mean
+Squared Error (MSE) loss. In the first step, the loss is calcu-
+lated in a uni-modal fashion without weighting. Weighting is
+included in the second stage the loss equation becomes:
+L=w aLa(ˆxa, xa
+clean) +w vLv(ˆxv, xv
+clean)(1)
+wherew a,v are the weights andL a,v are the MSE loss of each
+mode. We initially setw a to 0.8 andw v to 1.2. We then ap-
+ply GradNorm[34] to dynamically tunewa,v during pretraining.
+Based on each modalities training rate, GradNorm will adjust
+wa,v on the cross-attention and decoder parameters. Weights
+are then renormalized to keep the total loss scale stable.
+3.4. Downstream Evaluation
+For downstream emotion recognition, a cosine classifier is used.
+This takes audio or video tokens as input which are normalized
+via LayerNorm. Normalized features are passed to an attention-
+pooling layer, then a linear layer with a GeLU [35] activation
+and dropout (probability of0.1). Finally, a cosine classifier[36]
+is used to perform classification, as this helps reduce sensitivity
+to feature norms and improves calibration.
+We consider audio and video features separately for clas-
+sification, and models for each mode use identical downstream
+architectures. Note however that features for individual modes
+have been enriched via the proposed cross-attention architec-
+ture. We train the downstream model with clean data and
+test with clean data and data at various noise levels (the noise
+level used during pretraining, and at noise levels obtained by
+varying the probability of each corruption types by±25%
+and±50%). For the downstream task, 80% of RA VDESS
+is used to train models, while the remaining 20% is used for
+testing. Splitting is performed using the random split func-
+tion in PyTorch with a seed to ensure reproducibility. Finally,
+we performed McNemar’s significance test to compare non-
+pretrained with encoder-only pretrained features, and encoder-
+only pretrained features with multimodal-fusion pretrained fea-
+tures, on both audio and video inputs under several noise levels.
+Encoder-only and multimodal-fusion models share the same
+frozen EAT/Timesformer features and the same Mamba2 en-
+coders, and differ only in the cross-attention fusion and de-
+coder stages. Excluding the frozen feature extractors, the shared
+Mamba2 encoders account for 46.4 M trainable parameters in
+the1 st phase of pretraining. The proposed model with cross-
+attention and the Mamba2-based decoder has 76 M parameters
+with 576 GFLOPs including the frozen encoder in the2nd phase
+of pretraining. While a comparable2 nd phase Transformer-
+based decoder has 73.4 M parameters with 591 GFLOPs.
+4. Results and Discussion
+We evaluate performance on RA VDESS using clean data and
+different levels of noise. For non-pretrained and encoder-only
+pretrained models, only clean and noisy accuracy per mode are
+compared as there is no interaction between modes. For the
+fused-pretrained models we consider four accuracies that result
+from the combination of both modalities and the different noise
+levels. In this work, modalities are evaluated separately.
+4.1. Baseline without Pretraining
+Figure 2a shows the downstream task when trained and tested
+using EAT and Timesformer features without pretraining. With-
+out pretraining, the clean audio input yields only77%accuracy,
+lower than clean video at93%; indicating that audio features
+from EAT are less discriminative than the Timesformer video
+features on the RA VDESS dataset. We observe a large gap in
+performance between clean and noisy inputs, especially with
+the audio where noisy audio accuracy drops to between39%
+and70%depending on the noise level. While both modalities
+degrade when noise is added, video is more stable under noisy
+conditions, where the accuracy remains between79%and89%.
+4.2. Uni-modal Pretrained Features
+Figure 2b shows downstream task performance when trained
+and tested using denoised EAT and Timesformer features us-
+ing the pretrained encoder. Here, features are not fused and
+representations are unimodal. Result shows the same trend
+as Section 4.1. Clean audio again performs worse than clean
+video, but there are improvements in both modalities in the pres-
+ence of noise. Noisy audio accuracy increases to between44%
+1824
+(a)Non-pretrained (EAT/Timesformer baseline)
+ (b)Unimodal encoder-only pretrained
+(c)Fused multimodal pretrained - Audio
+ (d)Fused multimodal pretrained - Video
+Figure 2:The results of the downstream emotion recognition task using (a) direct features from EAT and Timesformer, (b) features
+refined via unimodal pretrained encoders, and (c) and (d) features refined via pretrained multimodal-fusion. Each subfigure shows the
+accuracy of the downstream result under various noise-levels relative to that used in pretraining. In figure (c) and (d), as features are
+passed through cross-attention fusion there are four possible feature combinations: NANV denotes noisy audio with noisy video, CANV
+denotes clean audio with noisy video, NACV is noisy audio with clean video, and CACV is clean audio with clean video.
+and76%, and noisy video increases to between84%to90%.
+However, McNemar’s significance test shows that overall there
+is no significant improvement when using encoder-only pre-
+trained features over using non-pretrained features except for
+with noisy audio when the noise level is 25% lower than the
+level used in pretraining (p= 0.002, p <0.005).
+4.3. Multi-modal Pretrained Features
+Here, pretraining incorporates cross attention and there is an in-
+teraction between modalities. As such, results include different
+combinations of clean and noisy modes. Figure 2c shows emo-
+tion recognition performance when using denoised audio fea-
+tures. In this stage, a significant improvement in classification
+accuracy can be observed. Overall, accuracy is higher than the
+unimodal pretrained encoder and direct feature input without
+pretraining, indicating that pretraining noisy audio features with
+a more noise-tolerant modality such as video improves robust-
+ness. Using McNemar’s significance test, we find that fusing
+noisy audio features with clean video features (NACV) is sig-
+nificantly better compared to using noisy audio features from
+encoder-only pretraining(p= 0.045, p <0.05)at the same
+noise level used during pretraining, and when the noise level is
+increased by25% (p= 0.009, p <0.05). Using noisy audio
+with noisy video (NANV) also yields a significant improvement
+over using only noisy audio features from the encoder-only pre-
+trained model at both25%noise level increase(p= 0, p <
+0.05)and50%noise level increase(p= 0.048, p <0.05).
+Figure 2d shows downstream performance when trained
+and tested using denoised video features. For video, we see
+a slight decrease in performance compared to the unimodal-
+pretrained encoder, and we see fusing more robust features
+(video) with the noise-sensitive audio features can decrease ac-
+curacy. McNemar’s significance test shows that at the same
+noise level as pretraining, the features of combined clean au-
+dio with noisy video (CANV) using proposed pretrained model
+is significantly better than only using noisy-video features from
+unimodal encoder-only video features(p= 0.031, p <0.05).
+5. Conclusion
+In this study we proposed a Mamba2 state-space-model with
+cross-attention based multimodal reconstruction pretraining.
+Compared to using features from a unimodal encoder-only pre-
+trained model, we see improvements on the downstream emo-
+tion recognition task when using noisy audio (5.8% for NACV
+and 4.6% for NANV), while video performance is largely main-
+tained, showing only a slight decrease (2.1%-3.2% average drop
+across CACV , NACV , CANV , and NANV). The slight drop in
+video performance may be caused by baseline video perfor-
+mance being saturated due to its less noise-sensitive nature, and
+by inclusion of audio features which have lower accuracy even
+when clean. Future research will consider adaptive fusion to
+better identify when fusion is beneficial and avoid degradation.
+1825
+6. Generative AI Use Disclosure
+Generative AI tools were used for language editing and pol-
+ishing of the manuscript (e.g., grammar and wording) and for
+assisting with auxiliary code such as plotting scripts. No part
+of the scientific content, experimental design, results, or anal-
+ysis was generated by AI. All AI-assisted output was reviewed
+and validated by the authors, who take full responsibility and
+accountability for the work.

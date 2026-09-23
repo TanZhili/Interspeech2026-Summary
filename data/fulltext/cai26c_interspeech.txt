@@ -1,0 +1,428 @@
+Beyond Mimicry: Constrained Exploration with GRPO for Joint Multi-Talker
+ASR and Diarization under Unknown Speaker Counts
+Yunrui Cai1, Dingdong Wang1, Lingwei Meng1, Xixin Wu1, Zhiyong Wu1,2, Helen Meng1,∗∗
+1 The Chinese University of Hong Kong, Hong Kong SAR, China
+2 Shenzhen International Graduate School, Tsinghua University, Shenzhen, China
+{yrcai,ddwang,lmeng,wuxx,zywu,hmmeng}@se.cuhk.edu.hk
+Abstract
+Joint multi-talker ASR with speaker attribution and timestamps
+is particularly challenging when the speaker count is unknown
+and the output must follow a strict structure. We observe
+that Supervised Fine-Tuning (SFT)-only alignment of Speech-
+LLMs is brittle under dense overlaps, often leading to burst
+hallucinations and malformed speaker/timestamp tags. We
+propose a unified two-stage generative framework: (i) CoT-
+augmented SFT that infers the global speaker count before tran-
+scription, and (ii) GRPO-based constrained exploration guided
+by a Multi-dimensional Constraint-Aware Reward (MCAR)
+that directly optimizes permutation-invariant accuracy while
+enforcing counting, temporal, and structural constraints. On
+Libri3Mix and a Dynamic-Mix (2+3) set (speaker count un-
+known at test time), our model achieves 14.52%/9.24% cpWER
+and 1.95%/1.12% WDER, respectively, with GRPO yielding a
+35%/54% relative cpWER reduction over SFT+CoT.
+Index Terms: Speech-LLM, Multi-Talker Speech Recognition,
+Speaker Diarization, Reinforcement Learning
+1. Introduction
+The recent advancements in Speech Large Language Mod-
+els (SpeechLLMs), such as Qwen-Audio [1], SALMONN [2],
+and Kimi-Audio [3], have demonstrated unprecedented zero-
+shot capabilities in single-speaker automatic speech recogni-
+tion (ASR) and general audio understanding. However, the
+“cocktail party problem” [4], characterized by overlapping
+speech from multiple talkers, remains a fundamental challenge.
+Crucially, resolving this acoustic interference requires tack-
+ling the joint task of multi-talker ASR and speaker diariza-
+tion—simultaneously decipheringwhatwas said,whosaid it,
+andwhenit occurred.
+To explicitly model this joint task, traditional multi-talker
+systems often rely on complex, cascaded pipelines involv-
+ing speech separation, single-talker ASR, and clustering-based
+speaker diarization [5], which are highly susceptible to error
+propagation. To alleviate this, recent end-to-end models uti-
+lizing Permutation Invariant Training (PIT) [6] or Serialized
+Output Training (SOT) [7] have significantly simplified the
+modeling pipeline. Specifically, highly optimized architectures
+such as the SOT-Conformer [8], Whisper-Sidecar [9] and UME
+[10] have pushed the boundaries of these paradigms, achiev-
+ing remarkable transcription and diarization accuracy on over-
+lapping speech. While these specialized models excel within
+their designated frameworks, extending the powerful, reason-
+ing and generative capabilities of foundational SpeechLLMs to
+this complex scenario remains largely unexplored.
+**indicates the corresponding author.
+Fundamentally, off-the-shelf SpeechLLMs fail on overlap-
+ping speech due to severe acoustic interference. Recent pio-
+neering efforts (e.g., MT-LLM [11], CMT-LLM [12], JEDIS-
+LLM [13]) mitigate this by splicing specialized multi-talker au-
+dio front-ends into the LLM, typically aligning the modalities
+via parameter-efficient techniques like Low-Rank Adaptation
+(LoRA) [14]. To preserve end-to-end elegance, a natural al-
+ternative is direct Supervised Fine-Tuning (SFT) to sequential-
+ize overlapping signals via text-driven supervision. However,
+SFT exhibits critical flaws in dynamic scenarios with unknown
+speaker counts, and suffers from severe text hallucination [15]
+and illogical temporal boundaries [16]. These failures are diffi-
+cult to fix by further SFT: teacher forcing never trains the model
+on its own malformed generations, while the key objectives are
+sequence-level and non-differentiable. We therefore adopt re-
+inforcement learning to perform constrained, on-policy explo-
+ration over complete hypotheses and directly optimize these
+task-level constraints.
+To break this bottleneck, we propose a parameter- and data-
+efficient two-stage framework that aligns SpeechLLMs with the
+physical realities of overlapping speech 1. First we construct
+a carefully curated, fine-grained SFT dataset. Crucially, we
+introduce a Chain-of-Thought (CoT) reasoning prefix into the
+training target, prompting the model to explicitly estimate the
+speaker count before transcribing. Stage 2 introduces Group
+Relative Policy Optimization (GRPO) [17] to the multi-talker
+domain, which has recently been explored in simple ASR [18].
+Unlike data-hungry SFT, this phase relies on self-generated roll-
+outs and active exploration. We guide this exploration with
+a multi-dimensional reward mechanism that directly optimizes
+Permutation-Invariant WER, rewards CoT-accuracy, enforces
+structural logic, and penalizes hallucinations. This GRPO
+alignment effectively shifts the learning paradigm from passive
+mimicry to constrained exploration, enabling acoustic scene de-
+duction with limited overhead.
+Our main contributions are summarized as follows:
+• We are the first to successfully adapt and optimize
+SpeechLLMs for complex multi-talker scenarios—including
+2-speaker, 3-speaker, and challenging dynamic mix-
+tures—using a combined SFT and GRPO training paradigm.
+• We unify Multi-talker ASR and Speaker Diarization into a
+single end-to-end SpeechLLM reasoning process. Empow-
+ered by a fine-grained reward engine, we effectively miti-
+gate the severe hallucination and timestamp degradation is-
+sues prevalent in pure SFT models.
+• Experimental results demonstrate that our approach signifi-
+cantly expands the dense-overlap acoustic comprehension ca-
+pabilities of SpeechLLMs.
+1The code is available at https://github.com/caiyunrui/MT-GRPO.
+4587
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2297
+Figure 1:The overall architecture of our proposed two-stage generative framework.(a) Stage 1: Constraint-Aware SFTestablishes the
+output format.(b) Stage 2: GRPO with MCARshifts the paradigm to active exploration by evaluating multiple independent rollouts
+against a multi-dimensional reward engine to enforce semantic, temporal, and logical constraints.
+2. Methodology
+To tackle the complexities of dynamic multi-talker scenarios,
+we propose a two-stage adaptation and exploration framework.
+We first formulate the joint ASR and diarization task via a
+CoT reasoning mechanism, and subsequently adapt the Speech-
+LLM through SFT, followed by GRPO guided by a Multi-
+dimensional Constraint-Aware Reward (MCAR) engine.
+2.1. Problem Formulation
+Given a continuous overlapping speech signal, we extract the
+acoustic feature sequenceX∈R T×F , whereTandFdenote
+the frame length and feature dimension. The objective of our
+joint task2 is to generate a highly structured token sequenceY,
+which explicitly captures the dynamic speaker count, identities,
+temporal boundaries, and spoken transcripts. To prevent severe
+speaker confusion in dynamic mixtures, we introduce a CoT
+reasoning prefixCthat forces the model to estimate the active
+speaker countNbefore transcription.Yis defined as:
+Y=C⊕
+NM
+i=1
+h
+⟨spki⟩,t (i)
+s ,t (i)
+e ,W (i),⟨/spki⟩
+i
+(1)
+where⊕denotes sequence concatenation,Nis the dynamic
+number of speakers,t (i)
+s andt (i)
+e represent the start and end
+timestamps, andW (i) denotes the transcription for thei-th
+speaker.Nis unknown and varies per utterance.
+2.2. Model Architecture & LoRA Adaptation
+We build our framework upon a foundational SpeechLLM ar-
+chitecture (e.g., Qwen-Audio/Omni [1, 19] series), comprising
+an audio encoderE θ, a modality projectorP ϕ, and a large lan-
+guage modelM ψ. To break the physical limitations of acous-
+tic entanglement in overlapping speech without incurring pro-
+hibitive computational costs, we employ a universal Low-Rank
+Adaptation (LoRA) strategy. Distinct from conventional text-
+only alignment, we apply LoRA modules universally across
+2In the context of this work, speaker diarization refers strictly to
+speaker-attributed ASR and segment boundary detection within highly
+overlapped short utterances.
+all linear projections within the audio encoderE θ, the modal-
+ity projectorP ϕ, and the large language modelM ψ. This
+comprehensive, parameter-efficient adaptation ensures that fine-
+grained acoustic disentanglement is seamlessly achieved at the
+front-end, while strictly preventing catastrophic forgetting of
+the LLM’s inherent linguistic and CoT reasoning capabilities.
+2.3. Stage 1: Constraint-Aware Supervised Fine-Tuning
+In the first stage, the primary goal is to establish the fundamen-
+tal CoT logic and structural templates. To force the SpeechLLM
+to rely on acoustic features rather than spurious sequential bi-
+ases, we employPermutation-Invariant Prompting. For each
+audio sample withNspeakers, the transcription segments are
+randomly shuffled among theN!possible permutations. The
+model is optimized using the standard auto-regressive negative
+log-likelihood lossL SFT . While SFT successfully initializes
+the CoT format and XML-style tags, it intrinsically suffers from
+exposure bias. When confronted with variable speakers, pure
+SFT models exhibit continuous hallucinations, temporal degra-
+dation, and logical inconsistencies between the predicted CoT
+count and the actual generated segments.
+2.4. Stage 2: GRPO via Constrained Exploration
+To alleviate the hallucination avalanche and sequence-bias in-
+herent in teacher-forcing, we transition from passive imitation
+to active exploration via Group Relative Policy Optimization
+(GRPO), which eliminates the memory-intensive value model
+by estimating the baseline directly from a group of generated
+outcomes.
+For each audio queryq, the active policyπ θ samples a
+group ofGindependent rollouts{y 1,...,y G}. The GRPO ob-
+jective maximizes the expected relative reward using a clipped
+surrogate function, heavily regularized by the Kullback-Leibler
+(KL) divergence to the frozen SFT reference modelπref :
+ci(θ) =clip(r i(θ),1−ϵ,1 +ϵ)(2)
+J(θ) =E q,yi
+" GX
+i=1
+min
+
+ri(θ) ˆAi,ci(θ) ˆAi
+
+−βDKL(πθ||πref )
+#
+(3)
+4588
+wherer i(θ) = πθ (yi|q)
+πθold (yi|q) is the policy probability ra-
+tio, andϵis the clipping bound. The group-relative advantage
+ˆAi = Ri−mean(R)
+std(R) is derived from our customized MCAR re-
+wardR i, scaling the objective to favor above-average rollouts
+dynamically. Simultaneously, the KL penaltyβD KL anchors
+the policy, preventing catastrophic deviation from the linguistic
+and structural priors established during SFT.
+2.5. Multi-dimensional Constraint-Aware Reward
+The core innovation of our RL stage lies in the MCAR engine. It
+evaluates the dynamic multi-talker outputs through an exhaus-
+tiveN!permutation search and enforces five orthogonal physi-
+cal and logical constraints:
+1. CoT Counting Reward (Rcot):To stabilize exploration
+early in training, we provide a dense reward if the model cor-
+rectly deduces the acoustic complexity. We parse the integer
+Npred from the CoT prefixCand compare it against the ground
+truthNtrue. A substantial positive reward (+1.0) is granted for
+an exact match.
+2. Dynamic Semantic Fidelity (Rsem):Standard WER is
+highly ambiguous when speaker identities are permuted. We
+implement a dynamic Permutation-Invariant WER (PI-WER,
+equivalent to the evaluation metric cpWER) that traverses all
+N!combinations between the predicted and reference segments
+to find the optimal alignment path. To prevent gradient insta-
+bility from unbounded errors, PI-WER is mapped into an expo-
+nentially decaying reward surface:
+Rsem = exp(−γ·PI-WER N! (yi,Yref ))(4)
+3. Time-Aligned Accuracy (R time):Based on the op-
+timal alignment path discovered by PI-WER, we compute the
+absolute Time Error (TE) between the generated and reference
+timestamps. We tolerate minor deviations (τ= 0.2s) and re-
+ward temporal precision via:
+Rtime = exp(−max(0,TE−τ))(5)
+4. Fine-Grained Burst Penalty (Rburst):Acoustic mask-
+ing often triggers auto-regressive collapse in SpeechLLMs,
+causing cascading text hallucinations [20, 21]. Because stan-
+dard WER treats scattered and consecutive errors equally, it
+fails to penalize these localized avalanches. To suppress this,
+we trackL burst, the maximum contiguous length of insertion
+and substitution errors derived from the PI-WER alignment. We
+impose a severe penalty for ungrounded generation exceeding a
+tolerance thresholdτb:
+Rburst =−λ b·max(0,L burst−τb)(6)
+whereτ b (e.g.,τ b = 2) permits minor, acoustically plausi-
+ble misrecognitions, but aggressively penalizes rambling. This
+explicitly forces the policy to concisely close the speaker tag
+(⟨/spk⟩) when acoustic grounding is lost.
+5. Structural & Temporal Logic (R logic):We enforce
+strict adherence to the XML formatting and physical con-
+straints.R logic heavily penalizes missing tags, conversational
+verbosity outside tags, and logically impossible temporal inver-
+sion (ts≥t e). Furthermore, severe logical divergence—such
+as predictingN pred = 3in the CoT but generating only 2
+speaker tags—triggers a catastrophic penalty.
+The final scalar rewardR i is the weighted sum of these
+five components. This multi-dimensional formulation strictly
+guides the SpeechLLM to align its generative distribution with
+the complex, dynamic constraints of multi-talker overlapping
+speech.
+3. Experiments
+3.1. Experimental Setup
+3.1.1. Datasets
+We comprehensively evaluate our framework on the widely
+adoptedLibri2MixandLibri3Mixdatasets [22]. Formally,
+these datasets combine clean utterances from LibriSpeech [23]
+with WHAM! noise [24] to simulate realistic scenarios.
+To explicitly assess the model’s reasoning capacity on dy-
+namic, unknown speaker counts, we further construct a novel
+Dynamic-Mix (2+3)evaluation set by uniformly sampling and
+shuffling test utterances from both Libri2Mix and Libri3Mix.
+We use these benchmarks as controlled diagnostic settings to
+isolate dense overlap and unknown speaker-count reasoning.
+Finally, the GRPO policy is optimized on a heavily curated
+subset of 10,000 highly overlapped speech samples, which are
+strictly sampled from the official training splits.
+3.1.2. Implementation Details
+Our experiments are conducted on the Qwen2.5-Omni-7B foun-
+dational model using the MS-Swift framework. We apply Low-
+Rank Adaptation (LoRA) [14] universally across all linear lay-
+ers within the audio encoder, modality projector, and the LLM,
+setting rankr= 16,α= 32, and dropoutp= 0.05.
+During the SFT stage, the model is trained for 5 epochs with
+a global batch size of 128 and a learning rate of2×10 −5 . In
+the GRPO stage, the learning rate is decayed to1×10 −6 and
+βis set to0.04. For each audio query, the active policy samples
+G= 8independent rollouts, with the clipping parameterϵset
+to0.2. The decay factor in Eq. (4) is set toγ= 1.0. For the
+fine-grained burst penalty (R burst), we set the tolerance win-
+dowτ b = 2tokens and the penalty scaleλ b = 1.0. The five
+rewards are equally weighted to compute the total advantage.
+3.1.3. Evaluation Metrics
+To evaluate both transcription fidelity and diarization accuracy,
+we employ the following metrics:
+•cpWER (Concatenated minimum-Permutation WER):
+The primary joint metric for multi-talker ASR, computing
+the minimum Word Error Rate across allN!speaker-to-
+transcript permutations. Note that this cpWER is mathemati-
+cally equivalent to PI-WER utilized in ourRsem reward.
+•WDER (Word Diarization Error Rate):Traditional
+pipelines rely on frame-level Diarization Error Rate (DER).
+However, generative SpeechLLMs operate on discrete se-
+mantic tokens rather than continuous acoustic frames, mak-
+ing frame-level metrics highly susceptible to boundary quan-
+tization artifacts. WDER can evaluate text-level speaker con-
+fusion by calculating the percentage of correctly transcribed
+words assigned to incorrect speakers.
+•TE (Timestamp Error):The average absolute deviation be-
+tween the predicted and ground-truth temporal boundaries.
+•CoT-Acc (Chain-of-Thought Accuracy):Specifically for
+the Dynamic-Mix setting, measuring the exact-match accu-
+racy of the predicted speaker count prior to text generation.
+3.2. Main Results
+3.2.1. The Evolution of Generative Capability.
+Table 1 presents the progressive evolution of our SpeechLLM
+from zero-shot to the fully RL-aligned architecture. We analyze
+4589
+Table 1:Evolution of our unified SpeechLLM from Zero-Shot to SFT + CoT + GRPO. The evaluation covers standard 2- and 3-speaker
+mixtures, as well as the challenging Dynamic-Mix (2+3) setting. Evaluated by cpWER (%), WDER (%) ,TE (s) and CoT-Acc (%).
+Model Stage 2-Speaker (Libri2Mix) 3-Speaker (Libri3Mix) Dynamic-Mix (2+3 Speakers)
+cpWER WDER TE cpWER WDER TE cpWER WDER TE CoT-Acc
+Qwen2.5-Omni-7B 58.25 8.84 2.14 81.82 25.62 N/A ∗ 69.3 18.52 N/A ∗ 32.25
++ SFT 6.12 0.85 0.07 23.92 4.21 0.18 24.78 4.81 0.20 76.80
++ SFT + CoT 5.83 0.67 0.05 22.45 4.03 0.18 20.17 3.73 0.15 90.06
++ SFT + CoT + GRPO 4.45 0.48 0.04 14.52 1.95 0.10 9.24 1.12 0.08 99.72
+∗ TE for the zero-shot model is denoted as N/A because the model frequently hallucinates non-numeric characters or unformatted textual boundaries,
+rendering exact temporal alignment computationally infeasible.
+the results across transcription (cpWER), diarization (WDER),
+temporal grounding (TE), and dynamic reasoning (CoT-Acc).
+Zero-shot Qwen2.5-Omni-7B performs poorly under dense
+overlap, achieving only 32.25% speaker-count accuracy on
+Dynamic-Mix. While SFT injects the multi-talker paradigm,
+it struggles with complex mixtures. Introducing a Chain-of-
+Thought (CoT) prefix forces explicit speaker counting, demon-
+strating the necessity of structural scene deduction prior to au-
+toregressive generation.
+GRPO further improves all metrics, demonstrating the ef-
+fectiveness of RL alignment beyond passive teacher-forcing.
+On Libri3Mix, it reduces cpWER to 14.52% and WDER to
+1.95%. In Dynamic-Mix, CoT-Acc reaches a near-perfect
+99.72%. Driven by dense logical rewards, the model robustly
+resolves the global speaker-counting ambiguity before tran-
+scribing, driving cpWER down to9.24%.
+3.2.2. Comparison with State-of-the-Art Methods
+Table 2 compares our unified framework against specialized ar-
+chitectures and recent SpeechLLMs. Notably, existing gener-
+ative LLM baselines natively lack explicit speaker grounding,
+relying on text concatenation without temporal awareness. In
+contrast, our RL-aligned model naturally bridges this gap with-
+out external V AD modules. In terms of transcription, our model
+achieves a competitive cpWER of4.45%on Libri2Mix and
+14.52%on Libri3Mix, matching or outperforming heavily en-
+gineered joint architectures. This confirms that GRPO-aligned
+semantic deduction serves as a highly effective alternative to
+hard-coded acoustic components in dense overlaps.
+Table 2:Comparison with state-of-the-art models on LibriMix
+benchmarks. SD Err. refers to Speaker Diarization Error, where
+(∗) denote frame-level DER instead of text-level WDER. Our
+approach matches or exceeds specialized architectures without
+relying on external modules.
+Method Libri2Mix Libri3Mix
+cpWER SD Err. cpWER SD Err.
+Specialized Models
+Whisper-Sidecar [9] 4.66 - 16.79 -
+UME [10]∗ 6.4 1.37 15.9 2.29
+GEncSep [25] 6.6 - 13.1 -
+TS-ASR-AD [26]∗ 6.61 1.23 14.81 2.66
+SpeechLLM (Hybrid)
+SOT-LLM [27] 9.0 - - -
+CMT-LLM [12] 7.3 - - -
+SOP-LLM [28] 3.6 - 16.5 -
+Ours (Unified) 4.45 0.48 14.52 1.95
+3.3. Ablation Study on MCAR Constraints
+Table 3 isolates the contribution of each component within our
+MCAR reward engine on the Dynamic-Mix set. The removal of
+the CoT Counting Reward triggers the most catastrophic degra-
+dation. Coupled with the drop in CoT-Acc, this validates that
+explicitly rewarding global acoustic scene deduction is a prereq-
+uisite for accurate autoregressive transcription. Similarly, omit-
+ting the DynamicN!Evaluation disables permutation-invariant
+optimization, drastically corrupting speaker tracking and caus-
+ing the cpWER to surge to16.56%.
+Furthermore, disabling the Fine-Grained Burst Penalty de-
+grades cpWER to11.84%, confirming its critical role in sup-
+pressing localized hallucination avalanches and auto-regressive
+collapse. Finally, removing the Time-Aligned Accuracy or
+Structural Logic rewards yields minor but consistent regres-
+sions. This indicates that while they are not the primary drivers
+of semantic accuracy, these components act as essential regu-
+larizers, rigidly enforcing temporal formatting and preventing
+structural degradation during active RL exploration.
+Table 3:Ablation study of MCAR components on the Dynamic-
+Mix set. Metrics highlight the degradation when specific re-
+wards are removed.
+Reward Configuration cpWER WDER CoT-Acc
+Full CoT + GRPO (Ours) 9.24 1.12 99.72
+w/oCoT Counting Reward 18.02 3.13 91.67
+w/oFine-Grained Burst Penalty 11.84 1.32 98.50
+w/oTime-Aligned Acc 9.66 1.20 99.20
+w/oStructural Logic 9.85 1.17 99.67
+w/oDynamicN!Eval 16.56 2.84 99.17
+4. Conclusion
+In this paper, we introduced a two-stage generative framework
+that empowers SpeechLLMs to multi-talker overlapping speech
+tasks. By integrating Chain-of-Thought (CoT) reasoning with
+Group Relative Policy Optimization (GRPO), our model tran-
+sitions from passive text mimicry to active acoustic scene de-
+duction. Evaluated on the LibriMix and Dynamic-Mix bench-
+marks, this unified approach achieves competitive cpWER and
+diarization precision (WDER) without relying on external V AD
+or clustering modules. For future work, we plan to scale this
+RL paradigm to larger real-world conversational datasets like
+AMI and AliMeeting. We will also explore finer-grained re-
+ward mechanisms to enhance temporal resolution and extend
+this generative approach to broader tasks.
+4590
+5. Acknowledgements
+This study was supported by the Centre for Perceptual and Inter-
+active Intelligence, a CUHK-led InnoCentre under the InnoHK
+initiative of the Innovation and Technology Commission of the
+Hong Kong Special Administrative Region Government.
+6. Use of Generative AI Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools exclusively for the purpose of language editing
+and manuscript polishing to improve readability. These tools
+were not used to generate any core scientific ideas, experimen-
+tal data, or technical contributions. All authors have thoroughly
+reviewed and approved the final version of the manuscript, and
+assume full responsibility for the integrity and entirety of its
+content.

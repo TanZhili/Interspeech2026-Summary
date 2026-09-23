@@ -1,0 +1,465 @@
+Less can be More: What Aspects of Speech Drive End-of-Turn Detection
+Rini Sharon1, Manickavela A 1, Kadri Hacioglu1, Andreas Stolcke1
+1 Uniphore, India
+rini.sharon@uniphore.com, manickavela.arumugam@uniphore.com,kadri.hacioglu@uniphore.com,
+andreas.stolcke@uniphore.com
+Abstract
+In conversational AI, detecting when a speaker has finished
+talking is crucial for natural turn-taking. While recent work
+incorporates semantics, the relative contribution of different
+modalities remains unclear. We present a controlled ablation
+of acoustic, prosodic, and semantic signals for streaming end-
+of-turn detection using a lightweight trimodal classifier. Un-
+der identical training conditions, the acoustic–prosodic com-
+bination achieves the best balance of accuracy and latency,
+achieving utterance F1 of 0.93 with 7.8% false alarms at 400ms
+median latency. Adding text increases premature detections
+without improving performance. Feature space analysis con-
+firms that prosodic features have the strongest class separability,
+while text representations overlap substantially. These findings
+suggest that turn-taking is primarily conveyed through intona-
+tion and silence patterns rather than semantic completeness, en-
+abling faster and more reliable systems without expensive text
+inference.
+Index Terms: ASR, End-of-turn detection, prosody, multi-
+modal fusion, conversational AI, speech activity detection.
+1. Introduction
+In modern voice-driven AI systems, determining when a user
+has finished speaking is an important component that defines
+how natural an interaction feels. This end-of-turn (EOT) de-
+tection task presents a fundamental trade-off: reacting too early
+risks interrupting the user, while waiting too long creates unnat-
+ural delays that break conversational flow. Poor EOT detection
+degrades user experience, reduces task completion rates, and
+limits the usability of voice interfaces in real-world deployment.
+Historically, this challenge was addressed through silence
+detection, wherein systems relied on voice activity detec-
+tion (V AD) or blank ASR tokens to infer a turn end after
+a fixed-duration of silence [1, 2]. While simple and robust,
+silence thresholds must be set well above typical conversa-
+tional pauses [3, 4] to avoid premature interruptions, resulting
+in noticeable response delays. More critically, these systems
+treat all pauses equally, failing to distinguish brief hesitations
+and mid-utterance planning pauses, from genuine turn comple-
+tions [5, 6, 7].
+This limitation motivated broader research into characteriz-
+ing acoustic and linguistic properties of speech as it approaches
+a turn boundary. Studies have converged on four categories
+of signals: acoustic features derived from the speech signal,
+prosodic cues capturing intonation and temporal patterns, se-
+mantic information from transcribed words, and multimodal
+combinations thereof.
+Acoustic features:Acoustic approaches operate directly on
+signal-level representations. Neural V ADs such as Silero [8]
+and MarbleNet [9] apply convolutional and recurrent archi-
+tectures to Mel-spectrograms/MFCC to detect speech activity.
+More recent systems use large pretrained speech encoders as
+feature extractors that map raw audio directly to learned repre-
+sentations for EOT classification [10, 11, 12]. While these ap-
+proaches are language and speaker agnostic, they model signal
+presence rather than turn-taking intent unless explicitly tuned to
+do so. They capturewherespeech ends better thanwhetherthe
+speaker intends to yield the floor, since prosodic and semantic
+cues(significant to turn-taking) are not explicitly modeled.
+Prosodic features:The link between prosody and turn-taking
+is well established in phonetic research [7, 13, 3, 2]. Listeners
+rely on pitch contours, falling intonation, and final lengthen-
+ing as turn-yielding cues [14, 15], and can predict turn endings
+from prosodic signals alone even when lexical content is ab-
+sent [16]. Combining prosodic features with pause duration
+has been shown to improve prediction accuracy over single-
+signal baselines [6, 17, 18], with consistent gains when prosody
+is integrated with spectral representations [19]. Despite these
+benefits, they are hand-crafted and require per-speaker or per-
+domain normalization.
+Semantic features:Speakers often yield the floor at linguisti-
+cally complete boundaries [20]. Autoregressive language mod-
+els [21] predict turn-completion likelihood from partial ASR
+transcripts, while more recent text-only systems fine-tune com-
+pact language models on streaming transcripts for deployment
+in voice agents [22, 23]. Semantic features effectively capture
+linguistic completeness and are well suited to domain-specific
+vocabulary. However, they introduce ASR latency and error
+propagation, and speakers often produce syntactically complete
+units while intending to continue [13], and listeners frequently
+anticipate turn endings prior to semantic closure [18, 3].
+Multimodal fusion:Given that each modality carries turn-
+taking cues, combining them is a natural direction. Prior work
+explored early and late integration [1], while more recent sys-
+tems employ learned fusion mechanisms [24, 25, 26]. While fu-
+sion can capture complementary information across modalities,
+evidence from related tasks shows that added signals can yield
+diminishing or negative returns when they do not contribute in-
+dependent information [27, 28]. Whether and when this pattern
+arises for EOT detection remains only partially understood, un-
+derscoring the need for more systematic comparisons.
+Beyond input features, EOT systems differ along two axes.
+In terms of detection granularity, segment-level methods use
+V AD to isolate a speech segment and classify it as EOT or
+not [12, 29], while frame-level methods produce continuous
+per-frame predictions during active speech, enabling earlier re-
+sponse without waiting for a silence boundary [10, 30, 31].
+In terms of system integration, some approaches embed EOT
+within the ASR decoder, jointly optimizing recognition and
+7238
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1705
+Frozen
+Trainable
+Handcrafted
+Deterministic
+TEXT
+ACOUSTIC
+8 kHz Audio
+FBank
+80D @ 100 Hz
+RNN-T Decoder
+Joiner + Predictor
+Running Transcript
+MiniLM
+384D sentence emb.
+Text Projection
+384D → 96D
+Linear + LN + GELU
+Sinusoidal PE
+32D (frame index t)
+Zipformer2 Encoder
+Acoustic Projection
+768D → 128D
+Linear + LN + GELU
+PROSODIC
+Cached on Blank
+DW-Sep Conv
+Collapse 7f → 128D 
+7f
+Context
+A
+128D
+Concat
+DW-Sep Conv
+Collapse 7f → 128D 7f 
+Context
+Prosodic Projection
+5 → 16D
+Linear + LN + GELU
+DW-Sep Conv
+Collapse 7f → 16D 
+P
+16D
+T
+128D
+Fusion
+cat(128,128,16)=272D
+Classifier
+Lin(272→ 128), GELU, Dropout, Lin(128 → 1)
+EOT Probability
+p(EOT_t) = σ(logit)
+128D
+7f
+Context
+Prosodic Features +
+Smart Aggregation
+100 Hz → 25 Hz
+Figure 1:APT architecture
+endpointing [32, 30], while others operate as standalone mod-
+ules independent of any speech recognizer.
+Contributions.This work introduces a controlled multimodal
+architecture and evaluation protocol for streaming end-of-turn
+detection, with three main contributions.
+1) Architecture for controlled ablation.We design a tri-
+modal streaming EOT detector (Acoustic–Prosodic–Text, APT)
+whose lightweight fusion head enables controlled ablation by
+replacing the projected representation of any disabled modal-
+ity with a fixed zero-valued vector of matching dimensional-
+ity and blocking its gradients. This preserves input dimension-
+ality, parameter count, training data, and optimization across
+configurations, so that performance differences within a shared
+APT instance reflect the presence or absence of signals rather
+than changes in model capacity or training dynamics. Similar
+zero-masking mechanisms appear in work on modality dropout
+and incomplete-modality transformers [33, 34, 35], but, to our
+knowledge, they have not been applied to multimodal end-of-
+turn ablation frameworks.
+2) Systematic subset evaluation.Prior multimodal turn-
+taking models compare strong unimodal and multimodal sys-
+tems such as acoustic only versus acoustic plus text [24, 25]
+or selected combinations of acoustic, linguistic, and visual
+streams, but do not exhaustively evaluate all non-empty modal-
+ity subsets under matched conditions [36, 37, 38]. Building
+on APT, we instantiate and train all2 3−1 = 7non-empty
+subsets of{A,P,T}independently from scratch using identi-
+cal optimization settings, spanning the full design space from
+unimodal baselines to all multimodal combinations and reveal-
+ing when additional modalities genuinely improve performance
+beyond the best single-stream model.
+3) Signal understanding with modern encoders.Earlier
+studies showed that prosodic features alone can substantially
+improve EOT detection without speech recognition [6, 17, 19],
+but they predate modern neural encoders and do not analyze
+how acoustic, prosodic, and text signals are separated in con-
+temporary representation spaces. We complement our classi-
+fication ablation with a feature-space analysis that quantifies
+per-modality class separability independently of the classifier,
+providing a signal-centric view of what each stream contributes
+when built on frozen pretrained encoders.
+Taken together, these contributions let us revisit a basic ques-
+tion: while modalitiescanbe combined,shouldthey be, and
+under what conditions do additional modalities meaningfully
+improve EOT detection rather than simply adding complexity?
+2. Methodology
+Architecture Overview.APT is a trimodal streaming EOT de-
+tector that fuses acoustic representations from a frozen ASR
+encoder, handcrafted prosodic features extracted from the raw
+waveform, and semantic embeddings from a running ASR tran-
+script. Only a lightweight classification head (∼261K param-
+eters) is optimized, while the two pretrained components, a
+Zipformer encoder [39] and a MiniLM sentence encoder [40],
+remain frozen throughout training. This allows the system to
+leverage rich pretrained representations while keeping train-
+ing data requirements and compute costs minimal. All three
+streams operate at a unified 25Hz frame rate (40 ms per frame),
+each passing through an independent projection stage followed
+by a depthwise separable temporal convolution [41] over a 7-
+frame causal window (280 ms of context). The resulting rep-
+resentations are concatenated and processed by a shared fusion
+module that produces a per-frame EOT probability. APT is a
+frame-level, standalone detector that predicts turn completion
+continuously during active speech. The full architecture is il-
+lustrated in Figure 1.
+2.1. Input Streams
+Acoustic stream.A pretrained Zipformer2 encoder (70M pa-
+rameters, frozen), trained on 14k hours of conversational speech
+data, processes 80D log-mel filterbank features and produces
+25Hz frame representations via Conv2dSubsampling followed
+by strided max-pooling. For streaming inference, the encoder
+operates causally with a 64-frame chunk size and maintains
+context through recurrent attention and convolution caching.
+Prosodic stream.Five features are extracted per frame at
+100 Hz using librosa-based [42] pitch tracking and downsam-
+pled to 25 Hz via feature-specific aggregation over 4-frame win-
+dows (Table 1). The voiced and speech flags together pre-
+vent false triggers during unvoiced consonants (e.g., the /ts/ in
+“cats”), ensuring the model distinguishes vowel-to-consonant
+transitions from genuine silence. The silence accumulatord sil
+increments each non-speech frame and resets at speech onset,
+providing explicit silence duration without requiring the model
+to learn temporal counting internally. The 5D prosodic vector
+is projected to 16D before fusion.
+Text stream.The frozen Zipformer’s RNN-T decoder per-
+forms greedy decoding [43, 44] at each frame. Since 70–80%
+of frames emit blank tokens, the MiniLM sentence embedding
+is recomputed only when a new word is decoded and cached
+Table 1:Prosodic features and aggregation methods.
+Feature Type Aggregation Purpose
+f norm
+0 F0, z-normed median Pitch level
+∆f0 F0 derivative last−first Pitch fall
+voiced (v) binary max Phonation
+speech (s) binary (RMS>0.02) max Activity
+dsil counter, log-scaled last value Silence dur.
+7239
+Table 2:Modality ablation on 5,000 utterances.n tp: utterances
+with a valid detection.
+Config F1τFA% Miss% FA/uttn tp Med Lat (ms)
+A 0.927 0.86 9.24.40.196 4321 440
+P 0.828 0.80 25.6 3.7 0.327 3531 960
+T 0.292 0.40 74.8 8.1 5.416 853 640
+A+T 0.875 0.65 14.6 7.6 0.275 3891 460
+P+T 0.747 0.90 28.5 11.9 0.628 2980 640
+A+P0.9300.877.85.20.1444349 400
+APT 0.909 0.76 10.7 6.0 0.206 4166360
+otherwise. A sinusoidal positional encoding indexed by abso-
+lute frame position is concatenated with the projected embed-
+ding (Figure 1). Because the text embedding is static on blank
+frames while the positional encoding advances, the divergence
+within the causal window implicitly encodes elapsed time since
+the last decoded word, functioning as a learned silence cue for
+the text modality.
+2.2. Fusion and Classification
+The three stream outputs are concatenated and fused into a 272-
+dimensional vector per frame. A linear layer projects this joint
+representation to 128D, marking the first point at which the
+three streams interact. A final linear projection maps the rep-
+resentation to 1D, and applying sigmoid to the output logit pro-
+duces the per-frame EOT probability.
+To isolate modality contribution, disabled streams are
+replaced with fixed zero-valued tensors registered as non-
+trainable buffers using PyTorchregister buffer. This
+ensures that the classifier always receives an input of iden-
+tical dimensionality with consistent index ranges assigned to
+each modality, while preventing gradients from flowing through
+inactive streams and keeping the total parameter count un-
+changed. Each configuration is trained independently from
+scratch under identical hyperparameters, ensuring that perfor-
+mance differences arise from the available signal rather than ar-
+chitectural variation or model capacity.
+3. Experimental Setup
+We use a proprietary multi-domain English telephony corpus
+(banking, insurance, retail, telecommunications) of real human-
+to-human calls recorded at 8 kHz stereo. We extract single-turn
+segments where one speaker holds the floor continuously with
+opposing-channel activity below 10%. EOT timestamps are
+refined by reconciling WhisperX forced-alignment [45] word
+boundaries with V AD-detected speech endpoints, selecting the
+later when residual vocalization is detected between the two
+candidates. Each segment is extended up to 1.3s post-EOT with
+V AD-validated silence. Frame-level binary labels at 25 Hz mark
+0 before EOT and 1 from EOT onward. We sample 10K for
+training ( 33 hours), 2K for validation and 5k for test, split at
+the recording level to prevent speaker leakage.
+All models are trained with BCEWithLogitsLoss using pos-
+itive class weightw + = 5.6(accounting for class imbalance)
+and AdamW [46] (learning rate10 −4, weight decay10 −5, gra-
+dient clipping 5.0, dropout 0.2). Training runs up to 30 epochs
+with early stopping on validation F1 (patience 5). Linear layers
+are initialized fromN(0,0.02)with zero biases, while convo-
+lutional layers use Kaiming normal initialization [47]. Since
+all configurations share the same 5,000 test utterances, pairwise
+comparisons use McNemar’s test [48] on binary outcomes and
+the Wilcoxon signed-rank test [49] on latency and FA counts
+(α= 0.05).
+3.1. Evaluation Metrics
+To evaluate the system’s streaming performance, we apply a
+duration-aware thresholding rule where a positive EOT is de-
+clared only when the sigmoid output exceeds thresholdτfor
+d= 8consecutive frames (320 ms). The detection time is
+the last frame of this sustained crossing. The tolerance win-
+dow is asymmetric: detections up to 50 ms before the ground-
+truth boundary are true positives with zero latency; detections
+after the boundary are true positives with positive latency; de-
+tections more than 50 ms before the boundary are false alarms.
+This reflects the production asymmetry where late responses are
+preferable to premature interruptions.
+We report:F1(utterance-level detection decision), false
+alarms(FA%) (fraction of utterances where the first detection is
+premature),Miss%(fraction with no detection),FA/utt(mean
+count of premature triggers per utterance), andmedian detec-
+tion latencyover correct detections. FA% and FA/utt measure
+different failure modes: FA% captures whether the first trig-
+ger was wrong; FA/utt captures how often the model misfires
+throughout an utterance. We additionally report the FA% ver-
+sus latency trade-off curve [6] across the fullτsweep, enabling
+comparison beyond a single operating point.
+4. Results and Discussion
+All results use utterance-level evaluation as defined in Sec-
+tion 3.1. Table 2 reports all seven modality combinations at
+their respective best thresholds, and Figure 2 shows the FA%–
+latency trade-off across the fullτsweep from0.05to0.95, with
+axis boundaries constrained for visual clarity.
+4.1. Modality Ablation
+Acoustic stream.Among single-modality configurations, the
+acoustic-only model achieves the highest F1 and the lowest
+miss rate. It also operates at the highest thresholdτ= 0.86
+in the ablation, indicating temporally broad, well-calibrated ac-
+tivations near turn boundaries. This is consistent with prior evi-
+dence that neural speech encoders capture the spectro-temporal
+structure of turn endings across multiple frames [26], producing
+sustained high-confidence regions that survive the consecutive-
+frame filter.
+Prosodic stream.Adding prosodic features increases F1 in
+every combination: A+P over A (+0.003), APT over A+T
+(+0.034), and P+T over T (+0.455). The gains are driven pri-
+marily bysilence durand∆f 0, which encode accumulated
+Figure 2:FA% vs. mean detection latency across the fullτ
+sweep (d= 8, NVIDIA A10G). Circles: intersection with pro-
+duction budget lines (Grey). T (dashed): latency over 853/5,000
+utterances only.
+7240
+Figure 3:t-SNE feature discriminability. Acoustic post-projection (128D); prosodic and text raw pre-projection (35D, 800D). Text uses
+KDE because filament geometry obscures class density in scatter. Bar inset: raw vs. projected silhouette per modality. Violin insets:
+EOT vs. non-EOT forf0 delta,speech,silence dur.
+silence duration and pitch fall, two established turn-boundary
+cues [15, 14]. These features reduce FA/utt without increas-
+ing detection latency (consistent with literature [19, 50]), and
+A+P achieves the highest F1 and lowest false alarm rate over-
+all(McNemarp <0.001). However, the prosodic-only model
+exhibits the second-highest FA% in the ablation, and as Figure 2
+shows, its curve remains in a high-FA region across the fullτ
+sweep. Prosodic cues carry discriminative signal but require
+acoustic grounding to support reliable detection decisions.
+Text stream.The text-only model yields the lowest F1 and
+the highest FA/utt in the ablation, averaging over five premature
+triggers per utterance. Its reported median latency is computed
+only over the 853 utterances (of 5000) where a valid detection
+was made, so the estimate is optimistic and unreliable. This fail-
+ure follows from the structure of conversational speech, where
+a single turn typically contains multiple syntactically complete
+units before the speaker yields [20, 3], each producing a text-
+driven trigger. The effect is amplified in our corpus, where me-
+dian turn duration is 10–11s, providing more mid-turn semantic
+completions than shorter command-style utterances. This prob-
+lem is not confined to the unimodal case. Every text-containing
+configuration produces higher FA/utt than its text-free counter-
+part, with APT exceeding A+P, A+T exceeding A, and P+T ex-
+ceeding P. The FA% increase from A+P to APT is significant
+(McNemarp <10 −9), as is the increase in FA/utt (Wilcoxon
+p <10 −9). Although text-containing configurations(APT)
+achieve lower median latency, their F1 is also lower because
+the latency reduction comes at the cost of more frequent FAs.
+Operating-point analysis.In Figure 2, the A+P and APT oper-
+ating points (circles) fall within the real-time deployment con-
+straints (FA<10%, latency<500 ms). A and A+T satisfy both
+constraints marginally. P and P+T do not cross FA = 10% at any
+τ, and T satisfies neither constraint at any operating point.
+4.2. Feature Space Analysis
+Figure 3 shows t-SNE [51] embeddings of each modality, with
+silhouette scores (bar inset) [52] quantifying EOT versus non-
+EOT class separation. Prosodicrawfeatures are the most
+discriminative input (silhouette 0.301) despite having only 35
+dimensions, driven majorly bysilence dur(shows near-
+complete class separation in the violin inset). The acoustic pro-
+jection provides the largest silhouette gain (+0.158) over its
+raw input, extracting EOT-discriminative structure that is not
+present in the frozen ASR encoder’s output. This explains why
+the acoustic stream performs well despite using a frozen, task-
+mismatched encoder. Text representations form filament struc-
+tures in the t-SNE projection because the BERT embedding up-
+dates only at non-blank decoder emissions, leaving the repre-
+sentation unchanged across the majority of frames (only the po-
+sitional encoding changes). The resulting silhouette of 0.108
+reflects substantial overlap between EOT and non-EOT frames,
+consistent with the high false alarm rates observed when text is
+included in the fusion.
+4.3. Limitations and Future Work
+Results are limited to in-domain two-speaker English telephony
+and text may contribute more in domains with weaker acoustic
+EOT cues (low-resource languages or noisy conditions). Prior
+work supports this, text improves turn prediction on clean, pre-
+segmented utterances [21, 38], and combining prosody with a
+boundary-conditioned language model outperformed prosody
+alone [6]. The critical difference is that these approaches ap-
+ply semantic signal at word/pause boundaries, whereas our text
+stream caches the embedding between decoder emissions and
+fuses it at every frame, amplifying false alarms at each mid-turn
+syntactic completion. The text stream also operates on imper-
+fect transcripts (13.8% WER), and replacing the encoder with
+RoBERTa did not help, confirming a structural rather than ca-
+pacity limitation. APT’s 40 ms latency gain over A+P is par-
+tially offset by 30-60 ms of RNN-T/BERT inference overhead.
+Future work could explore using a language model tosup-
+pressacoustic detections at syntactically incomplete bound-
+aries, which may recover useful semantic signal without the
+false alarm cost of continuous fusion. Cross-lingual and cross-
+domain evaluation would establish whether A+P’s advantage
+generalises beyond English telephony.
+5. Conclusion
+We evaluated all seven non-empty subsets of acoustic, prosodic,
+and text modalities for streaming EOT detection under identical
+training and evaluation conditions. Acoustic features provide
+the primary detection signal and prosodic features add comple-
+mentary precision. Text features increase false alarms in every
+configuration they appear in, consistent with the feature space
+analysis showing higher class overlap for text representations.
+Only acoustic–prosodic and trimodal systems meet real-time
+deployment latency and false alarm constraints at their optimal
+operating points. Based on these findings, acoustic–prosodic
+modeling appears sufficient for deployment-grade EOT detec-
+tion in the conversational domain studied here. The additional
+inference cost of text integration is not recovered in accuracy
+when acoustic features are present, suggesting its inclusion
+should be carefully weighed in deployment scenarios.
+7241
+6. Generative AI Use Disclosure
+Generative AI tools were used for editing and polishing this
+manuscript.

@@ -1,0 +1,659 @@
+Echoes after Edits: Room Impulse Response Estimation for Geometry Update
+Swapnil Bhosale1,2, Yoshiki Masuyama1, Moitreya Chatterjee1, Christoph Boeddeker1,
+Julius Richter1, Gordon Wichern1, Jonathan Le Roux1
+1 Mitsubishi Electric Research Laboratories (MERL), Cambridge, USA
+2 University of Surrey, UK
+s.bhosale@surrey.ac.uk,{masuyama,chatterjee,boeddeker,richter,wichern,leroux}@merl.com
+Abstract
+Room impulse responses (RIRs) characterize sound propaga-
+tion in a scene, determined by its geometry and materials. Tra-
+ditional RIR estimation relies on acoustic simulation, while re-
+cent deep learning focuses on spatial interpolation. However,
+acoustic simulation requires material annotation of each object,
+and interpolation requires multiple RIRs whenever the scene is
+edited slightly (e.g., rearranging furniture). Both approaches
+are inefficient and impractical in everyday environments. In this
+paper, we introduce edit-conditioned RIR estimation, which up-
+dates a measured RIR to reflect geometry edits. To relate the ge-
+ometry edits to acoustic variation without material annotations,
+we simulate proxy RIRs from the room meshes before and af-
+ter the edit using predefined materials. We proposePG-RIR,
+which leverages these proxies to estimate the variation in the
+real RIR. Experiments show thatPG-RIRaccurately predicts
+RIRs under furniture rearrangement and removal.
+Index Terms: room impulse response, neural acoustic model-
+ing, geometry edits.
+1. Introduction
+Room impulse responses (RIR) characterize sound propagation
+in an indoor environment and determine distinctive auditory
+perception in each environment [1, 2]. RIRs capture not only
+the direct sound but also early reflections and late reverbera-
+tion, acting as a compact signature of how a scene’s geometry
+and surface materials shape sound propagation.
+Prior work in room acoustics has mainly focused on two
+tasks: RIR simulation [3–6] and sound field interpolation [7–9].
+Acoustic simulation can produce physically-precise RIRs given
+fine-grained 3D meshes and surface properties (e.g., absorption
+coefficients). These conditions are, however, not easy to ac-
+quire at scale in real-world environments. Sound field interpo-
+lation has recently advanced with neural fields (NFs) [10–15],
+which attempt to learn a continuous map from source-receiver
+positions to RIRs. NFs are typically trained for each scene sep-
+arately, demanding dense RIR measurements. To circumvent
+this expensive measurement process, cross-scene RIR model-
+ing has emerged [16–19]; this approach predicts RIRs within a
+new scene from a few reference RIRs and/or visual cues.
+Despite these recent advances, spatial interpolation is fun-
+damentally restricted to a static scene and requires a small set
+of reference RIRs for every scene. This assumption is highly
+restrictive in practical situations, where the indoor environment
+can be edited frequently (e.g., rearrangement and removal of
+furniture/objects). Even small geometric edits can produce sig-
+This work was done while S. Bhosale was an intern at MERL.
+Sofa
+Cupboard
+Cabinet
+🚪
+Bookshelf
+🚪
+🪟🪟
+ Simulator
+🚪🚪
+Sofa
+Bookshelf
+Cabinet
+(Hz)  | 125 | ... | 4000 |
+Wall 1 - | 0.02 | ... | 0.07 | 
+Sofa - | 0.44 | ... | 0.70 | 
+Cabinet - | 0.30 | ... | 0.05 | 
+...
+...
+Material annotations
+Reference 
+RIRs
+PG-RIR
+Simulator
+Globally
+uniform material
+assignment
+Pre-edit geometry Post-edit geometry
+x ₁
+x ₂
+x ₃
+x ₄
+h ₁
+h ₂
+h ₃
+h ₄
+h ₅
+h ₆
+h ₇
+h ₈
+h ₉
+y ₁
+y ₂
+RIR simulation Sound field interpolation
+Geometry-edit conditioned RIR estimation
+🪟🪟
+?
+SourceSource
+Requires
+exact
+material
+labels
+Requires post-
+edit RIR
+measurements
+No exact
+material labels
+or new RIR
+measurements
+(Hz)  | 125 | ... | 4000 |
+Wall 1 - | 0.08 | ... | 0.07 | 
+Sofa - | 0.08 | ... | 0.07 | 
+Cabinet - | 0.08 | ... | 0.07 | 
+...
+...
+Manual
+intervention
+Figure 1:RIR estimation under scene edits.Top: When a scene
+changes (G0→G 1), the RIR varies fromr 0 tor 1. Middle left:
+Acoustic simulation requires exhaustive human-annotated ma-
+terial coefficients for the edited scene. Middle right: Spatial in-
+terpolation requires capturing multiple reference RIR measure-
+ments insideG 1. Bottom: Our proposedPG-RIRpredicts the
+target response ˆr1 zero-shot by using the pre-edit observation
+r0 and homogeneous proxies simulated from the geometries.
+nificant changes in the acoustic reflection and scattering, neces-
+sitating re-measurement of RIRs [20–22].
+This motivates us to explore another task, RIR estimation
+under scene edits as illustrated in the top panel of Fig. 1. In
+particular, focusing on geometric edits, we aim to estimate the
+RIRr 1 measured after the edit from a prior RIRr 0 at the
+same source-receiver positions, by leveraging a representation
+of room geometry before and after the editsG 0 andG 1. This
+task must be addressed without a time-consuming acoustic mea-
+surement process, such as capturing new RIRs inG 1 or obtain-
+ing fine-grained material annotation for each object. Given that
+acquiring updated 3D meshes (G 0,G 1) is now highly practical
+using ubiquitous consumer depth sensors [23,24], a straightfor-
+ward approach is to train a neural network that directly predicts
+r1 from the triplet(r 0,G 0,G 1). However, such an approach
+would require enormous amounts of training data to learn the
+complicated physics of sound propagation.
+2958
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2514
+To mitigate this issue, we propose to leverage RIR sim-
+ulation with predefined materials as a proxy forG 0 andG 1.
+Specifically, we simulate RIRs using an identical, globally
+uniform surface material, describing how the geometric ed-
+its affect sound propagation without accessing scene-specific
+fine-grained material properties. The difference between the
+proxy RIRs forG 0 andG 1 provides an interpretable, physics-
+grounded cue to estimater 1. We then developPG-RIR, an RIR
+estimation network that predicts the difference betweenr 1 and
+r0 givenr 0 and a set of proxy RIRs. In our experiments on sim-
+ulated RIRs,PG-RIRachieves accurate estimation ofr 1. Fur-
+thermore,PG-RIRgeneralizes well to furniture-rearrangement
+situations while it is trained only on furniture removals.
+2. Methodology
+2.1. Problem Formulation
+LetG 0 denote a representation of room geometry andr 0 ∈
+RL denote the measured RIR for a given source and receiver
+pair inG 0, whereLis the number of samples. We consider a
+scenario where the scene undergoes edits (e.g., object removals
+or translations), leading to geometryG 1 and a corresponding
+target responser 1∈R L for the same source and receiver pair.
+Our objective is to predictr 1 fromr 0 without requiring access
+to explicit surface material annotations, while only assuming
+access to the room geometry (3D mesh) before and after the
+edit. We formulate this task as learning a parametric mapping:
+ˆr1 =f θ(r0,PG0,PG1),(1)
+whereP G is an RIR-related encoding of the pre-edit (G 0) or
+post-edit (G1) room geometry, andθdenotes the model param-
+eters. We expect that the model can combine the information
+about geometry-induced acoustic variation obtained fromP G0
+andPG1 with fine-grained material information implicitly cap-
+tured inr 0 in order to perform this transformation.
+Given a geometryG n, we utilize an established acoustic
+simulation to obtainP Gn. Specifically, for each geometry, we
+simulateMRIRs at the same source-receiver position withM
+predefined materials:
+PGn = (h(1)
+n ,...,h (M)
+n ),(2)
+wheren∈{0,1}is the geometry index, andh (m)
+n ∈R L de-
+notes the simulated RIR inGn with a predefined global material
+cm. Ash (m)
+0 andh (m)
+1 are computed with identical materi-
+als, their difference provides information about the geometry-
+induced acoustic variation under controlled absorption regimes.
+2.2.PG-RIR
+We proposePG-RIR, a proxy-guided RIR estimation network,
+to predict the scene-edit-induced RIR transformation fromr 0
+tor 1 in the time-frequency domain. As illustrated in Fig. 2,
+the proxy RIRs are converted to a log-magnitude spectrogram
+X(m)
+n ∈R F×T using the short-time Fourier transform (STFT),
+whereFandTare the number of frequency bins and time
+frames, respectively. We denote the log-magnitude spectrogram
+of the real pre-edit and post-edit RIRs (r 0 andr 1) asX (0)
+0 and
+X(0)
+1 , respectively. Following Liu et al. [25], each spectrogram
+is encoded to an acoustic feature using a shared ResNet-18 [26]
+encoder. Next, we introduce trainabletype embeddings(indicat-
+ing their association with the real pre-edit response, a pre-edit
+proxy, or a post-edit proxy) andmaterial embeddings(indicat-
+ing the specific proxy absorptionm). The sum of the corre-
+sponding embeddings is concatenated with each acoustic fea-
+ture and passed to a projection layer, resulting in fused latents
+z(m)
+n ∈R C, whereCis the embedding size.
+Context-Aware Queries:To summarize the geometry edit, we
+pool the fused latentsz (m)
+n by their input type. Specifically, the
+context-aware query is generated by concatenating type-wise
+embeddings and passing them to a multi-layer perceptronϕ:
+q=ϕ
+
+z(0)T
+0 , 1
+M
+MX
+m=1
+z(m)T
+0 , 1
+M
+MX
+m=1
+z(m)T
+1
+T
+.(3)
+We combine the reference RIRs using relevance weights,
+α(m)
+n =
+exp
+
+⟨q,z (m)
+n ⟩/
+√
+C
+
+P
+n′,m′ exp
+
+⟨q,z (m′)
+n′ ⟩/
+√
+C
+,(4)
+where⟨·,·⟩is the inner product.
+To model non-linear reverberation decay, we utilize a
+query-modulated hypernetwork [27]. To emphasize important
+acoustic information in the lower frequencies, we introduce
+Bfrequency bands mapped to the high-resolution STFT di-
+mensionFusing a base-2 octave progressionb(f). We com-
+pute sinusoidal positional encodings of the normalized time
+steps [25] and project them at each timetand for each fre-
+quency bandbintoβ(b,t)∈R C. Again for each bandb,
+we use the target query to generate a gating vectorg(b,q) =
+σ(Wg(b)q)∈R C, whereW g(b)∈R C×C for anyb,
+from which we compute a dynamically scaled temporal basis
+˜β(b,t;q) =β(b,t)⊙g(b,q)∈R C. For each reference
+(n,m)and frequency bandb, we compute temporal modulation
+weights asw (m)
+n (b,t) = ˜β(b,t;q)⊤z(m)
+n . The predicted resid-
+ual log-spectrogram is then formed by weighting the reference
+spectrograms (includingX (0)
+0 ):
+∆ ˆX(f,t) =
+X
+n,m
+α(m)
+n w(m)
+n (b(f),t)X (m)
+n (f,t).(5)
+We compute the final estimate as ˆX(0)
+1 =X (0)
+0 + ∆ ˆX, which
+is then converted to the time domain by inverse STFT with the
+phase ofr 0. PG-RIR shown in Fig. 2 has 11.9 M parameters.
+2.3. Learning Objectives
+We trainPG-RIRusing a sum of two common loss functions
+on the log-magnitude spectra of the predicted RIR ˆX(0)
+1 and the
+target RIRX (0)
+1 :
+L=λ s
+ ˆX(0)
+1 −X (0)
+1
+
+1 +λ d
+ˆE(0)
+1 −E (0)
+1
+
+1,(6)
+E(0)
+n (f,t) = 10 log 10
+ TX
+τ=t
+exp(X(0)
+n (f,τ)) 2
+!
+,(7)
+whereλ s = 1andλ d = 0.1are weights for the spectral and
+decay losses. The first term of (6) enforces fine-grained fidelity
+toX (0)
+1 in the time-frequency domain. Meanwhile, the second
+term is based on the band-wise energy decay curves [28], which
+enforces the natural decay of the RIR. We approximate the de-
+cay in the STFT domain as in (7).
+3. Dataset
+A core challenge in learning geometry-induced acoustic varia-
+tion is the lack of datasets and hence we construct a large-scale
+dataset of paired RIRs simulated before and after controlled ge-
+ometry edits.
+2959
+h(1)
+0 ...h (M)
+0
+(Pre-Proxies)
+RL
+r0 (Real)
+RL
+h(1)
+1 ...h (M)
+1
+(Post-Proxies)
+RL
+STFT
+Shared
+ResNet-18
+Encoder
+Shared
+ResNet-18
+Encoder
+Concat [·,·]
+& Linear
++
+Type
+Emb.
+RC
+Material
+Emb.
+RC
+Fused
+Latents
+z(m)
+n
+RC
+log(·)
+Pre-Edit Pooling
+1
+M
+∑ z(m)
+0
+Real Prior
+z(0)
+0
+Post-Edit Pooling
+1
+M
+∑ z(m)
+1
+Concat [·,·,·]
+& MLP (ϕ)
+Context
+Queryq
+RC
+Scaled Dot-Product
+Attention
+Gating
+MLP (σ) ⊙ Temporal Weights &
+Octave Mappingb(f) × ˆX(0)
+1
+RF×T
+Static Time Basisβ(t)
+RB×C
+g(q)
+[0,1] B×C
+˜β
+RB×C
+w(m)
+n (b(f),t)
+RF×T
+α(m)
+n
+[0,1]
+z(m)
+n
+RC
+X(m)
+n
+RF×T
+Figure 2:PG-RIR.An encoder extracts features from the reference and proxy responses, fusing them with type and material embeddings
+into structured latentsZ. Type-specific pooling generates a context queryqthat guides global attention (α (m)
+n ) and modulates (⊗) a
+temporal basis. The resulting weights modulate the reference log-spectrograms to synthesize the acoustic residual∆ ˆX.
+Scene edits:We use 14 indoor environments curated from the
+iGibson dataset [29], following [30], as the original scenesG 0.
+These scenes cover a diverse distribution of room scales and
+types (e.g., bedrooms, large living spaces, and kitchens). For
+each scene, we sample physically valid source and receiver po-
+sitions by voxelizing the navigable free space. In our training
+and primary evaluation sets, we sample multiple objects from
+G0 and remove them to obtainG 1. We also construct an ad-
+ditional evaluation set withtranslationedits, where objects in
+G0 are rearranged, to validate the generalization capability of
+PG-RIRunder unseen edits. We restrict edits to avoid changes
+to the background geometry (e.g., walls, ceilings), producing
+localized geometric edits.
+Acoustic Simulation:For each sampled source and receiver
+pair in an edit tuple(G 0,G 1), we render ground-truth RIRs
+(r0,r 1)using AcoustiX simulator [30] with the realistic,
+object-wise material properties provided by the iGibson assets.
+In addition, we simulateMproxy RIRs by overriding all sur-
+faces withMdifferent global material parameters. AcoustiX
+is based on ray tracing and synthesizes RIRs by tracking en-
+ergy paths and assigning stochastic phase shifts (e.g., random
+sign flips). This randomness prevents learning structured resid-
+uals. To mitigate this randomness, we enforce phase consis-
+tency across acoustic simulations inG 0 andG 1 by determin-
+ing phase assignment based on geometric properties1 (e.g., path
+length, coordinates, reflection angles).
+Dataset Statistics:To force the model to learn the relation-
+ship between the geometry edit and the acoustic variation, we
+discard source–receiver pairs with reverberation-time changes
+∆T60 >0.6s or clarity changes∆C 50 >10dB. The fi-
+nal dataset contains 143,455 valid source–receiver pairs across
+14 base geometries (G 0) and 264 edited variants (G 1). For
+analysis across edit magnitudes, we stratify samples into four
+tiers by ground-truth∆T 60. Typical domestic environments
+have baseT 60 values of 0.2 to 0.5 s. We thus define: Tier 1
+(High):∆T 60 >0.08s (often over 20% relative change); Tier
+2 (Moderate):0.05<∆T 60≤0.08s; Tier 3 (Subtle):0.03<
+∆T60≤0.05s; Tier 4 (Static):∆T 60≤0.03s. These tiers
+account for 26%, 13%, 21%, and 40% of the dataset, respec-
+tively. This tiering provides an interpretable axis of geometry-
+induced reverberation change, enabling targeted evaluation of
+the model’s sensitivity to both subtle and substantial edits.
+4. Experiments
+Experiments are conducted across 14 scenes using a leave-one-
+scene-out protocol, reporting average performance on the held-
+out runs. We evaluate the transformations by reporting standard
+1https://github.com/merlresearch/geometry-edit-rir
+Table 1:Leave-one-scene-out evaluation across 14 unseen
+scenes. Mean±standard deviation of absolute errors for each
+metric. Lower is better.
+MethodT 60↓C 50↓EDT↓
+Identity (r0) 0.0432±0.0073 2.034±0.518 0.032±0.0056
+xRIR (K=4) 0.0523±0.0053 3.548±0.414 0.045±0.0079
+xRIR (K=8) 0.0538±0.0058 3.147±0.493 0.036±0.0063
+PG-RIR0.0316±0.0076 1.407±0.435 0.022±0.0044
+Small Medium Large
+0.02
+0.03
+0.04
+0.05
+0.06
+0.07T60 Error (s)
+(a) By Room Size
+Tier 4 Tier 3 Tier 2 Tier 1
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+0.14
+(b) By Edit Magnitude
+PGRIR
+R0
+xRIR (K=8)
+Figure 3:Boxplots ofT 60 error under various conditions. (a)
+groups the results by room size, and (b) stratifies them by the
+amount of edit-induced acoustic deformation in terms ofT 60.
+room-acoustic metrics [12, 15, 19] computed between the pre-
+dicted ˆr1 and ground-truthr 1: reverberation time (T 60), early
+decay time (EDT), and clarity (C50).
+4.1. Results
+PG-RIRvs RIR Interpolation-based prior art:As edit-
+conditioned RIR estimation is a new task lacking a well-
+established task-specific baseline, we comparePG-RIRagainst
+xRIR [25], a cross-scene RIR interpolation model. Specifically,
+xRIR predicts a target RIR from sparse reference RIRs observed
+in the same scene as the target. We retrain an audio-only xRIR
+variant without vision-relevant components on their dataset and
+fine-tune it on our RIR dataset.
+From Table 1, we see thatPG-RIRachieves the lowest er-
+ror on all three metrics, outperforming both the identity baseline
+(r0) and the xRIR variants. Notably, xRIR lags behind iden-
+tity baseline although it accesses reference RIRs for multiple
+source-receiver positions in the edited geometryG 1, unlike our
+approach. These results show that the pre-edit RIR at the same
+source-receiver position,r 0, is an essential cue compared with
+sparse post-edit reference RIRs.
+Figure 3 provides comprehensive analysis across (a) differ-
+ent room size and (b) different amounts of acoustic variation in
+terms ofT 60. From the left panel, we observe thatPG-RIR
+2960
+Table 2:DiffRIR baseline on two representative scenes. #(S)
+represents the number of surface/material parameters.
+#(S) MethodT 60↓C 50↓EDT↓
+9
+Identity (r0) 0.0261 0.826 0.022
+DiffRIR 0.0878 1.731 0.027
+PG-RIR0.0135 0.459 0.012
+34
+Identity (r0) 0.0414 1.993 0.029
+DiffRIR 0.1826 7.160 0.092
+PG-RIR0.0315 1.615 0.021
+consistently outperforms the identity baseline and xRIR regard-
+less of room sizes. In the right panel, we group(r0,r 1)pairs by
+the aforementioned tiers in Section 3. The performance gap be-
+tweenPG-RIRand the baseline widens for moderate and high-
+magnitude edits, suggesting that the model successfully learns
+to compensate for the edit-induced acoustic variation.
+PG-RIRvs differentiable acoustic rendering:We addition-
+ally comparePG-RIRagainst DiffRIR [16], a differentiable
+acoustic rendering-based framework that can be adapted to ge-
+ometry editing via a two-stage procedure. First, given the room
+geometryG 0 and the original RIRr 0, DiffRIR performsin-
+verse renderingto estimate surface material parameters by min-
+imizing the reconstruction error of a differentiable acoustic ray
+tracer. The fitted parameters are then transferred to the edited
+geometryG 1, and aforward renderingpass synthesizes ˆr1.
+One limitation of DiffRIR is that it requires a computation-
+ally expensiveper-sceneinverse rendering step, which becomes
+inaccurate and impractical as the number of surfaces and ma-
+terial parameters grows. Naturally this fitting does not scale to
+our entire, diverse, cross-scene benchmark, and hence we report
+DiffRIR on two representative cases: (i) a simplifiedClassroom
+scene (9 surfaces) aligned with its intended setup [16], and (ii)
+Pomaria 2 intfrom our benchmark (containing 34 surfaces),
+which is representative of realistic indoor complexity.
+Table 2 shows that DiffRIR underperforms both the iden-
+tity baseline andPG-RIR, even in the simplified 9-surface set-
+ting. The gap widens substantially on the 34-surface scene,
+showing that the difficulty of inverse-rendering with many sur-
+face/material parameters limits the performance of DiffRIR.
+PG-RIRconsistently achieves the best performance even in the
+simple 9-surface scene, which is out of training data distribution
+(room meshes from the iGibson dataset).
+Beyond quantitative metrics, Fig. 4 illustrates the learned
+transformation ofPG-RIRfor a representative high-magnitude
+scene edit. As the model computes a linear combination in the
+log-magnitude spectral domain, its (signed) attention weights
+function as power-law exponents in the linear amplitude do-
+main. As shown, the network assigns negative weights to the
+prior observationr 0 and positive weights to the target proxies.
+Mathematically, this operates as adaptive subtractive equaliza-
+tion; the model actively divides out (suppresses) the reverber-
+ant energy ofr 0 while multiplying in the new acoustic signa-
+ture from the target proxies. Furthermore, this filtering has a
+non-uniform structure across frequency bins, confirming that
+PG-RIRtreats edits as complex, frequency-dependent defor-
+mations rather than global gain adjustments.
+4.2. Generalization to Translation Edits
+Although trained exclusively on object removals, real-world
+scenes frequently undergotranslationedits (e.g., sliding fur-
+niture). SincePG-RIRis conditioned by homogeneous prox-
+ies rather than strict geometric heuristics, it should naturally
+0 200 400
+Time Frames
+0
+20
+40
+60Octave-Band Bins
+Prior RIR (w(0)
+0 )
+0 200 400
+Time Frames
+Pre-Edit Proxies ( w(m)
+0 )
+0 200 400
+Time Frames
+Post-Edit Proxies ( w(m)
+1 )
+1.0
+0.5
+0.0
+0.5
+1.0
+Attention Weight
+(Blue=-, Red=+)
+0.00 0.05 0.10 0.15 0.20 0.25 0.30 0.35
+Time (s)
+60
+50
+40
+30
+20
+10
+0
+Energy Decay (dB)
+Input (r0)
+Target (r1)
+Prediction (r1)
+Figure 4:T op:Temporal weights applied to the real RIR (w (0)
+0 )
+and aggregated pre- and post-edit proxies (Pw(m)
+0 ,Pw(m)
+1 ).
+Red indicates positive mixing (energy addition); blue indicates
+negative mixing (spectral subtraction).Bottom:The resulting
+Energy Decay Curve (EDC) shows thatPG-RIRsuccessfully
+warps the pre-edit decay to match the physical target.
+Table 3:3-step sequential edit chain (G 0→T 1→T 2→G 0)
+Metrics are macro-averaged across three unseen scenes. The
+Identity baseline (rt−1) represents the physical magnitude of
+the acoustic change induced by the edit, whilePG-RIR( ˆrt)
+evaluates the model’s ability to track that change using its own
+prediction from the previous step.
+Edit Step MethodT 60↓C 50↓EDT↓
+Step 1 (G0→T 1) Identity (r0) 0.0755 4.214 0.056
+PG-RIR( ˆr1)0.0695 3.033 0.045
+Step 2 (T1→T 2) Identity (r1)0.07335.251 0.069
+PG-RIR( ˆr2) 0.07475.134 0.066
+Step 3 (T2→G 0) Identity (r2) 0.0746 5.721 0.067
+PG-RIR( ˆr0)0.0723 3.791 0.048
+generalize to unseen operations. We evaluate this using multi-
+step translation tuples (G 0 →T 1 →T 2 →G 0) across
+three scenes (Beechwood 0 int, Merom 1 int, Wainscott 0 int),
+whereT 1,T 2 are intermediate translated geometries. In this
+setup, the predicted RIR ˆrt is fed back into the network as the
+input prior for the subsequent stept+ 1.
+Table 3 tracks this 3-step chain. Step 1 demonstrates zero-
+shot generalization: despite the complete lack of translation
+samples in the training distribution,PG-RIRconsistently out-
+performs the identity baseline across all three unseen scenes.
+AlthoughPG-RIRfollows geometric shifts across consecutive
+edits, repeated forward passes through the network inevitably
+accumulate spectral smoothing, which gradually smears early-
+energy transients.
+5. Conclusions and Future Work
+We introduce the novel task of edit-conditioned RIR estima-
+tion to update a measured RIR following geometry edits. To-
+wards this end, we proposePG-RIR, which leverages simu-
+lated proxy RIRs from pre- and post-edit room meshes. Our
+experiments demonstrate thatPG-RIRrobustly predicts these
+acoustic updates across diverse room sizes and varying edit
+magnitudes. Additionally, the model demonstrates promising
+zero-shot generalization to unseen object translations and se-
+quential edit chains. Future work will focus on improving per-
+formance by incorporating a diverse mixture of translation se-
+quences via curriculum learning.
+2961
+6. Generative AI Use Disclosure
+The authors used generative AI to assist with language editing
+of the manuscript. All scientific content and conclusions were
+produced by the authors.

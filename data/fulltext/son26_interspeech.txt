@@ -1,0 +1,427 @@
+Teacher-Agnostic Temporal Knowledge Distillation for
+Resource-Efficient Sound Event Detection
+Gihun Son ID 1, Pil Moo Byun ID 2, Joon-Hyuk Chang ID 1,2,∗∗
+1 Department of Artificial Intelligence Application, Hanyang University, Seoul, Republic of Korea
+2 Department of Artificial Intelligence, Hanyang University, Seoul, Republic of Korea
+{gihunson, fordream0309, jchang}@hanyang.ac.kr
+Abstract
+Sound event detection (SED) needs frame-level detection, yet
+recent work has focused on high-capacity models, leaving
+resource-efficient SED relatively underexplored. We propose
+teacher-agnostic temporal knowledge distillation (TAT-KD), a
+knowledge distillation (KD) framework for SED that distills
+from any teacher architecture by using teacher logits as a com-
+mon distillation space. To transfer temporal context, we intro-
+duce a conformer-based temporal context projector that mod-
+els temporal dependencies during projection and a teacher-
+confidence-aware distillation loss that downweights ambigu-
+ous outputs via normalized confidence weights. On the do-
+mestic environment sound event detection benchmark, TAT-
+KD outperformed training from scratch and logit-/feature-based
+KD, achieving polyphonic sound detection score of 0.574 with
+4.548M parameters and 3.668G multiply–accumulate opera-
+tions, showing competitive performance with far fewer param-
+eters and computations than state-of-the-art models.
+Index Terms: sound event detection, knowledge distillation, ef-
+ficient deep learning
+1. Introduction
+Sound event detection (SED) aims to recognize which acous-
+tic events occur and to localize their temporal boundaries via
+frame-level activity predictions [1]. As a core task in the detec-
+tion and classification of acoustic scenes and events (DCASE)
+challenge [2–5], SED has been widely studied and adopted in
+applications such as smart homes, robotics, and smart cities
+[6–11]. Building on the convolutional recurrent neural net-
+work (CRNN) baseline [12], subsequent studies have enhanced
+SED models with improved convolutional representations while
+maintaining relatively lightweight architectures [13–19]. Nev-
+ertheless, under constrained parameter and compute budgets,
+compact models often fall short of state-of-the-art (SOTA)
+performance. Recent studies report SOTA performance with
+large-capacity models, including transformer-based architec-
+tures [20–24]. However, these accuracy gains often come with
+substantially larger model size and higher computational cost,
+making them less attractive under computational and memory
+constraints. As a result, bridging the accuracy–capacity gap re-
+mains a central challenge in resource-efficient SED.
+Knowledge distillation (KD) [25] is a framework for train-
+ing a compact student by transferring knowledge from a pow-
+erful teacher. In SED, however, teacher–student KD has been
+relatively underexplored, which is different from the mean
+teacher framework [26] widely adopted for semi-supervised
+learning. To the best of our knowledge, there is limited prior
+**indicates the corresponding author.
+work on KD for SED, and the reported performance gains re-
+main insufficient [27]. Distillation for resource-efficient SED
+is challenging: effective KD typically relies on strong teach-
+ers whose architectures often differ substantially from those
+used in resource-constrained students, making heterogeneous
+teacher–student pairs inevitable. In principle, most logit- and
+feature-based KD methods can be applied in such heteroge-
+neous teacher–student settings. However, heterogeneous distil-
+lation is often unstable, as teacher and student representations
+can differ substantially and contain architecture-specific redun-
+dancy, making standard KD approaches less effective [28, 29].
+These challenges call for a teacher-architecture-agnostic distil-
+lation interface that can reliably distill knowledge from teachers
+with arbitrary architectures into a student model, while account-
+ing for temporally structured, frame-level predictions in SED.
+In this work, we propose teacher-agnostic temporal knowl-
+edge distillation (TAT-KD), a distillation framework tailored to
+frame-level SED and robust across heterogeneous teachers. In-
+spired by one-for-all KD (OFA-KD) [28], TAT-KD uses teacher
+logits as a common distillation space and attaches stage-wise
+projectors to map student features into the logit space dur-
+ing training, which are removed afterward to preserve infer-
+ence efficiency. However, OFA-KD is formulated in image-
+classification settings, and directly adopting it for SED is non-
+trivial. SED requires frame-level transfer of temporally contex-
+tualized teacher knowledge to guide time-varying event activity
+and boundary localization. As a key component for frame-level
+temporal knowledge transfer, we introduce a temporal context
+projector (TCP) that aligns feature dimensions with the teacher-
+logit space and models temporal dependencies using a Con-
+former block [30]. We further propose a teacher-confidence-
+aware distillation (TCAD) loss that emphasizes reliable teacher
+predictions via normalized confidence weighting.
+Experiments on the domestic environment sound event de-
+tection (DESED) benchmark [2] show that TAT-KD delivers
+large gains over a student trained from scratch and consistently
+outperforms standard logit-based KD [25] and feature-based
+KD [31] for every teacher–student pair. In particular, a com-
+pact SE-CRNN student [19] achieves polyphonic sound detec-
+tion score (PSDS) [4] of 0.574 with only 4.548M parameters
+and 3.668G multiply–accumulate operations (MACs), showing
+competitive detection performance with substantially fewer pa-
+rameters and computations than SOTA models.
+2. Method
+The proposed TAT-KD framework in Figure 1 provides an ef-
+fective SED-oriented KD interface that enables distillation from
+teachers with heterogeneous architectures. Inspired by OFA-
+KD [28], TAT-KD leverages teacher logits as a common dis-
+7007
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-855
+Figure 1:Overview of TAT-KD framework for resource-efficient SED. A frozen teacher provides frame-level logits as distillation targets.
+The student attaches stage-wise TCPs to intermediate encoder stages to align hidden features with the teacher logit space, and TCAD
+loss is applied to each projected output and the final prediction. TCPs are employed only during training and omitted at inference.
+tillation space, which is typically less architecture-dependent
+than intermediate features for models trained on the same SED
+objective. To bridge the dimensional and semantic mismatch
+between teacher logits and student features, TAT-KD attaches
+stage-wise projectors during training and removes them at in-
+ference to keep the student lightweight.
+Unlike image classification, SED requires temporally con-
+sistent frame-level predictions to detect events and localize their
+boundaries. Thus, OFA-KD, designed and validated for image
+classification, is less effective when directly applied to SED, as
+KD for SED should transfer temporally contextualized teacher
+knowledge for activity prediction and boundary localization.
+Accordingly, we introduce the TCP that maps student features
+to the teacher-logit space while modeling temporal dependen-
+cies, and the TCAD loss that emphasizes confident teacher tar-
+gets and downweights ambiguous ones. We describe the TCP
+and the TCAD loss in the following sections.
+2.1. Temporal Context Projector
+The TCP is a conformer-based projector for KD in SED, de-
+signed to transfer temporal context from teacher outputs to stu-
+dent. In SED, temporal dependencies across frames are reflected
+in the temporal patterns of teacher logits, and capturing these
+dependencies is important for effective knowledge transfer.
+The TCP consists of three components. A single convolu-
+tional layer followed by a pooling layer first aligns the tem-
+poral resolution of the student hidden features with that of the
+teacher logits. A Conformer block then models temporal de-
+pendencies by jointly capturing short-range temporal patterns
+through convolution and long-range temporal relationships via
+self-attention. By incorporating both local and global tempo-
+ral context, the TCP facilitates effective frame-level knowledge
+transfer. Finally, a multi-layer perceptron (MLP) serves as a
+projection head that maps the temporally enriched features to
+the class dimension of the teacher logits, ensuring dimensional
+compatibility for distillation. Figure 1 depicts the detailed struc-
+ture of the TCP module.
+2.2. Teacher-Confidence-Aware Distillation Loss
+We introduce the TCAD loss, a confidence-weighted distilla-
+tion objective built on a binary cross-entropy (BCE) loss with
+normalized confidence scores. Compared to the standard BCE
+loss, which treats all teacher targets equally, the TCAD loss
+upweights reliable teacher predictions and downweights am-
+biguous ones, improving the quality of knowledge transfer. The
+teacher soft targetˆyT is obtained by applying the sigmoid func-
+tionσ(·)with a temperatureτto the teacher logitsz T :
+ˆyT =σ( zT
+τ ).(1)
+Usingτ <1sharpens the teacher outputs, increasing the con-
+trast between confident and uncertain predictions. We empiri-
+cally setτ= 0.5in our experiments. Usingˆy T , we define a
+confidence weight as
+w=
+
+2
+ˆyT−0.5
+
+γ
+,(2)
+where the operations are applied element-wise over all frames
+and event classes. We then normalize it over all frames and
+event classes as
+˜w= wP
+f,cwf,c
+,(3)
+where P
+f,c denotes summation over all frames and event
+classes. Here,2
+ˆyT−0.5
+ measures confidence as the nor-
+malized distance from the decision boundary, assigning larger
+weights to targets near0or1and smaller weights near0.5. The
+exponentγcontrols the focusing strength, with largerγempha-
+sizing high-confidence targets, and we empirically setγ= 2.
+As illustrated in Figure 1, we apply the TCAD loss to both
+intermediate representations and the final output. LetNdenote
+7008
+Table 1:Comparison of TAT-KD with logit- and feature-based KD across four teachers and SE-CRNN variants. PSDS is evaluated
+on the DESED real validation set. Bold indicates the best distillation performance for each teacher among KD methods. Underline
+indicates training from scratch, and†denotes results obtained using public checkpoints.
+Student Params
+(M)
+MACs
+(G)
+From
+Scratch
+Teacher
+MDFD-SED ATST-SED JiTTER MDFD-TAT
+Logit Feature TAT-KD Logit Feature TAT-KD Logit Feature TAT-KD Logit Feature TAT-KD
+SC32 4.548 3.668 0.439 † 0.477 0.4780.4850.520 0.5260.5340.541 0.5470.5630.550 0.5510.574
+SC16 1.150 0.931 0.408 0.475 0.4730.4780.511 0.5040.5230.531 0.5310.5570.542 0.5370.564
+SC8 0.299 0.243 0.375 0.452 0.4520.4710.473 0.4750.4980.495 0.4860.5260.503 0.5070.535
+SC4 0.084 0.068 0.326 0.396 0.4100.4270.411 0.4140.4390.427 0.4240.4660.431 0.4410.471
+the number of encoder stages, and leth S
+n denote the student
+feature at then-th stage. We define
+zS
+n = TCPn(hS
+n), n= 1,...,N,(4)
+whereTCP n(·)mapsh S
+n to the teacher-logit space. We define
+then-th intermediate TCAD loss as
+L(n)
+TCAD =
+X
+f,c
+˜wf,cℓBCE(zS
+n,f,c,ˆyT
+f,c), n= 1,...,N,(5)
+whereℓ BCE(·,·)denotes the BCE loss. Similarly, the final-
+output TCAD loss is defined as
+Lout
+TCAD =
+X
+f,c
+˜wf,cℓBCE(ˆyS
+f,c,ˆyT
+f,c),(6)
+whereˆyS denotes the student prediction probabilities obtained
+by applying the sigmoid function to the student logits.
+Empirically, the supervised loss did not yield consistent im-
+provements and may hinder matching the teacher-induced dis-
+tribution in the logit space. Thus, we use only the distillation
+objectiveL KD, defined by averaging the TCAD loss over theN
+intermediate layers to keep the overall loss scale independent of
+N, and adding the final-output TCAD loss:
+LKD = 1
+N
+NX
+n=1
+L(n)
+TCAD +L out
+TCAD.(7)
+3. Experimental Setup
+3.1. Dataset
+All experiments were conducted on the DESED benchmark,
+which serves as the official dataset for DCASE 2023 Chal-
+lenge Task 4 [2] and targets SED in domestic environments. The
+training set consisted of 10-second audio clips, including 1,578
+weakly labeled clips, 3,470 strongly labeled clips, 10,000 syn-
+thetic strongly labeled clips, and 14,412 unlabeled in-domain
+clips. We evaluated on the real validation set, which contains
+1,168 strongly labeled clips.
+3.2. Evaluation Metrics
+We evaluated the SED performance using PSDS. PSDS is
+commonly reported under two settings, PSDS 1 and PSDS 2,
+which emphasize different aspects of detection. PSDS 1 places
+a stronger emphasis on temporal localization, while PSDS 2 is
+more tolerant to cross-class confusions and less strict about
+event onset and offset boundaries. Following the DCASE chal-
+lenge evaluation protocol [32], we report results under the
+PSDS1 setting, which emphasizes temporal localization. For
+brevity, we refer to PSDS 1 as PSDS throughout the paper. In
+addition, we also reported model resource efficiency in terms of
+the number of parameters and MACs.
+Table 2:Teacher models used in our experiments. PSDS is eval-
+uated on the DESED real validation set. Tf denotes a Trans-
+former. Underline indicates training from scratch, and†de-
+notes results obtained using public checkpoints.
+Teacher Architecture Params
+(M)
+MACs
+(G)
+PSDS
+Encoder Context
+ATST-SED Tf & CNN RNN 86.6 23.4 0.583 †
+JiTTER Tf Tf 98.6 979.5 0.578
+MDFD-SED CNN RNN 18.2 19.7 0.467 †
+MDFD-TAT CNN RNN 18.2 19.7 0.577
+3.3. Implementation Details
+3.3.1. Student Models
+We adopted SE-CRNN [19] as a lightweight student for
+resource-efficient SED, offering competitive detection perfor-
+mance with a small footprint. To assess robustness across stu-
+dent model sizes, we built smaller SE-CRNN variants by re-
+ducing encoder and context-network channel widths while pre-
+serving the architecture. We refer to these variants asSCk with
+k= 32,16,8,and4, wherekdenotes the number of output
+channels in the first convolutional layer. Table 1 provides details
+of the student models, including parameter counts and MACs.
+All student models distilled with KD methods were trained
+for 400 epochs with a learning rate of5×10 −4. Each training
+batch was formed by combining real strongly labeled, synthetic
+strongly labeled, real weakly labeled, and real unlabeled data,
+with batch sizes set to 3, 3, 6, and 12, respectively.
+3.3.2. Teacher Models
+To demonstrate that TAT-KD enables effective distillation re-
+gardless of teacher architecture, we considered three teach-
+ers with distinct architectures, namely ATST-SED [22], JiT-
+TER [23], and MDFD-SED [18], as summarized in Table 2.
+ATST-SED leverages a Transformer as an extra encoder, while
+JiTTER builds on MAT-SED [24] as its baseline and improves
+the training strategy. CRNN-based models such as MDFD-SED
+often underperform large-capacity models on DESED, so we
+additionally included MDFD-TAT as a stronger CRNN-based
+teacher. MDFD-TAT was obtained by distilling JiTTER into
+MDFD-SED using our TAT-KD, and thus shares the same archi-
+tecture as MDFD-SED. Notably, MDFD-TAT achieved a com-
+petitive PSDS of 0.577 with minimal parameter count and com-
+putation among the teachers considered in this work, making it
+a strong CRNN-based teacher for our KD experiments.
+7009
+Table 3:Effect of different projector variants in TAT-KD, includ-
+ing MLP , CNN, RNN, and TCP , with MDFD-TAT as teacher.
+PSDS is evaluated on the DESED real validation set. Bold in-
+dicates the best result for each student.
+Student Teacher: MDFD-TAT
+MLP CNN RNN TCP
+SC32 0.562 0.562 0.5590.574
+SC16 0.550 0.552 0.5570.564
+SC8 0.506 0.507 0.5310.535
+SC4 0.439 0.440 0.4700.471
+3.3.3. KD Baselines
+We compared TAT-KD with two standard KD baselines, as
+KD methods specifically designed for SED remain largely un-
+explored. Logit-based KD [25] uses the BCE loss between
+the teacher and student logits along with the supervised loss.
+Feature-based KD [31] uses the mean squared error loss be-
+tween the teacher and student hidden features and the BCE loss
+between the teacher and student logits, both along with the su-
+pervised loss. For feature-based KD, the CRNN-based teachers
+in Table 2 and SE-CRNN have the same number of encoder
+stages, which allows stage-wise feature matching. In contrast,
+such stage-wise matching was not feasible for ATST-SED and
+JiTTER due to architectural differences, so we applied the fea-
+ture loss only to the final hidden representation.
+4. Results and Analysis
+4.1. Comparison with Other KD Methods
+Table 1 compares TAT-KD with the KD baselines across the
+four teacher models in Table 2. TAT-KD achieved the best re-
+sults for all teacher–student pairs, consistently outperforming
+the KD baselines and surpassing models trained from scratch.
+The gains were smaller when MDFD-SED was used as the
+teacher, likely due to its limited detection performance, but
+TAT-KD still improved over the KD baselines. Notably,SC 32
+distilled from MDFD-TAT reached PSDS of 0.574 with only
+4.548M parameters and 3.668G MACs, achieving competi-
+tive performance with substantially fewer parameters and lower
+computational cost than SOTA teachers in Table 2.
+Among the teachers, MDFD-TAT yielded the strongest
+overall distillation results, which we attributed to its architec-
+tural similarity to the student. In contrast, ATST-SED achieved
+the best PSDS among the teachers in Table 2 but yielded smaller
+distillation gains, suggesting that its post-processing-dependent
+outputs may be less suitable as soft targets. We further analyzed
+this effect in the ablation study.
+4.2. Effectiveness of TCP
+Table 3 summarizes the effect of different projectors in the TAT-
+KD framework. We fixed the teacher to MDFD-TAT, which
+yielded the strongest KD performance in Table 1, and replaced
+only the projector while keeping the rest of the framework
+unchanged. Across all student variants, the TCP consistently
+yielded the best distillation performance, outperforming MLP-
+and convolutional neural network (CNN)-based projectors that
+mainly focus on dimensional alignment. This result suggested
+that temporal dependency modeling in the projector is impor-
+tant for frame-level SED distillation, and that the TCP benefits
+Table 4:Effect of TCAD loss with MDFD-TAT as teacher. PSDS
+was evaluated on the DESED real validation set. Bold indicates
+the higher score between BCE and TCAD.
+Student
+Teacher: MDFD-TAT
+Logit TAT-KD
+BCE TCAD BCE TCAD
+SC32 0.5500.5590.5690.574
+SC16 0.5420.5590.5600.564
+SC8 0.5030.5320.5280.535
+SC4 0.4310.4670.4670.471
+from capturing both local and global temporal patterns.
+Furthermore, we evaluated a recurrent neural network
+(RNN)-based projector as a strong temporal-modeling baseline,
+motivated by the common use of RNNs as context networks
+in SED. Even with this recurrent temporal modeling, the TCP
+achieved higher performance across all student variants, sug-
+gesting that its conformer-based context modeling is more ef-
+fective for frame-level knowledge transfer.
+4.3. Empirical Validation of TCAD Loss
+We summarized the impact of the proposed TCAD loss in Ta-
+ble 4. To isolate its contribution, we conducted two compar-
+isons. First, we replaced the BCE loss in logit-based KD with
+the TCAD loss. Second, within the full TAT-KD framework,
+we substituted the TCAD loss with the BCE loss. In both
+cases, the TCAD loss yielded better performance, suggesting
+that confidence-aware weighting based on teacher predictions
+benefits knowledge transfer.
+Table 5:Effect of median filtering on teacher PSDS for JiTTER,
+ATST-SED, and MDFD-TAT. Bold indicates the PSDS decrease
+without filtering.
+Model w/ median w/o median
+ATST-SED 0.583 0.495 (−0.088)
+JiTTER 0.578 0.559 (−0.019)
+MDFD-TAT 0.577 0.562 (−0.015)
+4.4. Ablation Study
+As shown in Table 2, ATST-SED is the best-performing SED
+model among the considered teachers, but it was less effective
+for distillation than JiTTER and MDFD-TAT. Table 5 indicates
+that ATST-SED relies more heavily on median filtering, a post-
+processing technique commonly used in SED, with its PSDS
+dropping from 0.583 to 0.495, the largest decrease among the
+teachers. This suggested that ATST-SED produced less stable
+frame-level outputs, which can make KD more challenging.
+5. Conclusion
+We proposed TAT-KD for resource-efficient SED, enabling
+teacher-agnostic distillation via teacher logits as a common dis-
+tillation space. With the TCP and the TCAD loss, TAT-KD
+achieved the best performance across all evaluated teacher–
+student settings on DESED, outperforming training from
+scratch and standard KD baselines while preserving inference
+efficiency.
+7010
+6. Acknowledgments
+This work was supported by the National Research Foundation
+of Korea (NRF) grant funded by the Korea government (MSIT)
+(No. RS-2025-00557944).
+7. Generative AI Use Disclosure
+During manuscript preparation, the authors used ChatGPT
+(OpenAI) only for language editing and minor structural polish-
+ing. It was not used to generate research content, make scientific
+decisions, or fabricate references. All authors are responsible
+for the paper and consent to its submission.

@@ -1,0 +1,423 @@
+Speaker Separation via Audio Language Modeling
+Luca Lanzend¨orfer1,∗, Constantin Pinkl1,∗, Florian Gr¨otschla1, Roger Wattenhofer1
+1 ETH Z¨urich, Switzerland
+{lanzendoerfer, cpinkl, fgroetschla, wattenhofer}@ethz.ch
+Abstract
+We propose LlaSep, an autoregressive approach for speaker
+separation. LlaSep uses discrete audio tokens with a causal
+language model to generatively separate mixed speech sig-
+nals. Unlike existing methods that rely on continuous spec-
+tral representations and task-specific components our system
+operates entirely in the discrete token domain. LlaSep gen-
+erates per-speaker codec token streams in a single decoding
+pass, conditioned on the tokenized mixture and semantic fea-
+tures from a pretrained speech encoder. LlaSep is trained via
+supervised fine-tuning on ground-truth speaker tokens from a
+large-scale synthetic multilingual conversation dataset spanning
+seven languages and 15k hours. Evaluation on LibriCSS and
+CallHome demonstrates competitive separation and diarization
+performance and substantially higher audio quality compared
+to previous baselines, demonstrating that token-level language
+modeling is a viable paradigm for multi-speaker speech pro-
+cessing.
+Index Terms: speaker separation, diarization, multi-speaker,
+audio language model
+1. Introduction
+Speaker separation, the task of recovering individual speech sig-
+nals from a mixture, is a core problem in multi-speaker speech
+processing. Real conversations are highly intermittent, alternat-
+ing between silence, single-speaker regions, and overlapping
+speech, the latter of which remains a major failure mode for
+downstream tasks such as ASR [1]. Once clean per-speaker
+streams are available, speaker attribution (i.e., diarization) can
+be derived directly from the non-silent regions, making high-
+quality separation an interesting alternative for robust multi-
+speaker diarization and understanding.
+Historically, separation pipelines have operated on con-
+tinuous time-frequency representations, relying on special-
+ized components such as mask estimation networks [2],
+permutation-invariant objectives [3, 4], and clustering-based
+post-processing [5]. Methods such as Conv-TasNet [2] and
+SepFormer [4] have advanced the state-of-the-art on waveform-
+level separation, but remain bound to continuous signal repre-
+sentations and task-specific architectures.
+Recent progress in neural audio codecs provides an alter-
+native abstraction. Models such as SoundStream [6] and En-
+Codec [7] learn to compress audio into discrete token sequences
+via residual vector quantization, and current speech codecs
+offer compact, high-fidelity tokenizations that make speech
+amenable to large language model (LLM)-based sequence mod-
+eling [8, 9]. These discrete representations have already en-
+*These authors contributed equally.
+abled LLM-based approaches to speech synthesis [10, 11], mu-
+sic generation [12, 13], and audio understanding [14, 15] by
+treating audio tokens analogously to text tokens. However, de-
+spite promising results on single-stream generation tasks, ap-
+plying causal language models to multi-speaker separation re-
+mains largely unexplored.
+In this work, we cast multi-speaker separation as an autore-
+gressive token generation problem. Given a tokenized mixture
+of up toN=4speakers, a causal language model generates per-
+speaker token streams in sequence, performing speaker sepa-
+ration in a single decoding pass. The model is trained via su-
+pervised fine-tuning on ground-truth per-speaker codec tokens
+from a large-scale synthetic multilingual conversation dataset,
+using a pretrained multilingual speech language model as the
+backbone and semantic features from a frozen Whisper encoder
+as conditioning.
+Our contributions can be summarized as follows:
+• We introduce LlaSep, an autoregressive speaker separation
+model that operates entirely in the discrete token domain,
+generating per-speaker codec streams from a single tokenized
+mixture of up to 4 speakers.
+• To train LlaSep, we build MLSEE-Conversation, a synthetic
+dataset containing 15k hours of conversations built from the
+MLS [16], Emilia [17], and EuroSpeech [18] datasets.
+• To further research in autoregressive speaker separation, we
+open-source the codebase, model checkpoint, and MLSEE-
+Conversation dataset.
+2. Related Work
+2.1. Speaker Separation
+Speaker separation has progressed from deep clustering [19]
+and permutation invariant training (PIT) [20] to time-domain
+methods such as Conv-TasNet [2] and its dual-path extension
+DPRNN [21], as well as attention-based architectures such as
+SepFormer [4]. On the diarization side, the field has moved
+from clustering-based pipelines combining voice activity detec-
+tion, speaker embeddings, and agglomerative clustering [22] to
+end-to-end neural approaches that directly predict frame-level
+speaker activities [23, 24]. Because separation and diariza-
+tion share underlying structure, joint formulations such as TS-
+SEP [25] have been explored, conditioning mask estimation on
+speaker embeddings to produce both speaker activity estimates
+and separated signals. However, all of these methods operate
+on continuous spectral or waveform representations and rely
+on task-specific components. More recently, TokenSplit [26]
+demonstrated speech separation and recognition using discrete
+codec tokens within a single encoder-decoder Transformer, and
+TSELM [27] applied language models to target speaker extrac-
+4217
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2864
+whisper
+features xcodec2
+<spk 1>
+LlaSep
+Speech from speaker 1
+xcodec2 xcodec2
+<spk 2>
+Speech from speaker 2Speech mixture of speaker 1-4
+xcodec2
+<spk 3>
+Speech from speaker 3
+xcodec2
+<spk 4>
+Speech from speaker 4
+Figure 1:Architecture of LLaSep, a token-level language model for joint diarization and separation built directly on the LLaSA
+(LLaMA-based) architecture. Supporting up to 4 speakers but can be trained to support an arbitrary number of speakers. Speech
+snippets of up to four speakers are combined into one mixture signal during training. The mixture signal is embedded using features
+extracted from the Whisper encoder together with the Xcodec2 token sequence. The underlying LLaSA-1B backbone is teacher-forced
+on the purple output tokens during training. During inference the model generates the speech segments of each speaker autoregressively.
+tion over discrete representations. However, TokenSplit trains
+a task-specific model from scratch rather than leveraging a pre-
+trained language model, and TSELM requires a speaker enroll-
+ment embedding, limiting it to extracting one known speaker at
+a time.
+2.2. Neural Audio Codecs
+Neural audio codecs learn to compress waveforms into discrete
+token sequences via residual vector quantization (RVQ). Sound-
+Stream [6] introduced a convolutional encoder-decoder with
+RVQ paradigm, and EnCodec [7] extended it with improved
+training objectives and a lightweight Transformer for further
+compression. More recently, X-Codec [28] demonstrated that
+integrating semantic features from a pretrained self-supervised
+model such as WavLM [29] into the quantization pipeline yields
+tokens that better preserve content information, making them
+more suitable for downstream language modeling. Its succes-
+sor, XCodec2 [30], provides a single-codebook tokenization
+with a vocabulary of 65k entries at 50 tokens per second, bal-
+ancing reconstruction fidelity with a compact token sequence
+ideal for language models.
+2.3. Language Models for Audio
+The availability of high-quality discrete audio tokens has en-
+abled language-model-based approaches to speech generation.
+AudioLM [31] first showed that hierarchical token prediction
+over semantic and acoustic tokens can generate coherent speech
+continuations without any text supervision. V ALL-E [10] was
+the first to cast text-to-speech as conditional codec language
+modeling, demonstrating zero-shot speaker adaptation from a
+3-second prompt, with V ALL-E X [32] extending this to cross-
+lingual synthesis. LLaSA [30] simplified this further by using
+a single-layer scalar quantization codec (XCodec2) and a stan-
+dard Llama [33] architecture, showing that scaling both train-
+ing and inference compute yields consistent improvements in
+speech naturalness. Whisper [34], while not an audio genera-
+tive model, provides robust multilingual speech representations
+that have been widely adopted as conditioning features. Despite
+these advances in single-stream generation, applying causal
+language models to blind multi-speaker separation, where the
+model must disentangle all overlapping sources from a sin-
+gle tokenized mixture without enrollment, remains unexplored.
+Our work bridges this gap by recasting speaker separation as
+autoregressive token generation from a pretrained speech lan-
+guage model.
+3. Method
+3.1. LlaSep Architecture
+Overview.Our approach takes a multi-speaker audio mixture,
+encodes it into discrete tokens as well as continuous Whisper
+embeddings, and generates separated per-speaker token streams
+using a causal language model (cf. Figure 1). The pipeline con-
+sists of three components: (i) a discrete audio tokenizer, (ii) a
+semantic conditioning module using Whisper, and (iii) an au-
+toregressive language model.
+Audio Tokenization.We use XCodec2 as the audio tokenizer.
+Given a waveform sampled at 16 kHz, XCodec2 encodes it into
+a sequence of integer tokens drawn from a vocabulary of size
+V= 65 536at a framerate of 50 Hz. For an 8-second seg-
+ment, this yields a sequence of 400 tokens per source. Both
+the input mixture and individual speaker sources are tokenized
+independently. The XCodec2 decoder reconstructs waveforms
+from generated token sequences at inference time.
+Semantic Conditioning.To provide semantic guidance for
+separation, we extract embeddings from a Whisper-small en-
+coder and project them into the hidden dimension of the audio-
+language model via a learned linear projection:
+hsem =W proj·Whisper(x)(1)
+wherexdenotes the input audio signal. During training, the
+Whisper encoder receives the sum of clean source signals. Dur-
+ing inference, it receives the mixture signal directly.
+Language Model Backbone.We use LLaSA-1B-
+Multilingual [30], a causal decoder-only transformer, as
+the backbone. Since LLaSA already operates over XCodec2
+tokens, we only extend the embedding layer with special
+speaker delimiter tokens that mark per-speaker output regions.
+The Whisper projection embeddings are injected into the
+sequence at the corresponding positions before the speaker
+output regions. The model generates up toK= 4speaker
+token streams autoregressively, conditioned on the mixture
+tokens and semantic embeddings as a prefix.
+Training: Supervised Fine-Tuning.The model is trained with
+a standard cross-entropy loss on the ground-truth speaker token
+sequences. The loss is computed only over the speaker output
+tokens; mixture tokens and Whisper embeddings in the prefix
+are masked from the loss:
+LSFT =−
+KX
+k=1
+TX
+t=1
+logpθ(sk
+t|s k
+<t,c)(2)
+4218
+Table 1:Performance comparison on the LibriCSS benchmark across different overlap ratios. 0% overlap with short inter-utterance
+silence (0S) and 0% overlap with long silence (0L). The metrics cover diarization accuracy (DER), perceptual quality (DNSMOS), and
+separation fidelity (ScoreQ). We find that LlaSep overall outperforms previous approaches.
+Metric Model 0S 0L 10 20 30 40 A vg
+DER (%)↓
+PixIT 39.03 21.66 34.86 34.65 34.61 32.31 32.65
+SepFormer 138.98 160.03 120.07 109.43 95.46 83.98 117.99
+SepReformer 107.80 117.30 91.54 82.27 71.72 56.22 87.81
+LlaSep (ours)21.91 18.57 24.79 26.85 20.96 27.52 23.43
+DNSMOS-OVRL↑
+PixIT 2.59 2.50 2.49 2.57 2.65 2.58 2.56
+SepFormer 2.45 2.16 2.45 2.55 2.56 2.57 2.46
+SepReformer 2.66 2.45 2.66 2.72 2.69 2.74 2.65
+LlaSep (ours)3.12 3.06 3.11 3.14 3.17 3.19 3.13
+ScoreQ-NR↑
+PixIT 2.10 2.24 2.05 2.08 2.10 2.22 2.13
+SepFormer 1.90 1.74 1.83 2.07 1.87 1.84 1.87
+SepReformer 2.33 2.07 2.31 2.56 2.37 2.39 2.34
+LlaSep (ours)3.80 3.70 3.99 4.03 4.06 4.11 3.95
+ScoreQ-Ref↓
+PixIT 1.16 1.10 1.18 1.19 1.20 1.15 1.17
+SepFormer 1.10 1.10 1.16 1.10 1.17 1.21 1.14
+SepReformer 0.91 0.95 0.97 0.90 0.94 0.98 0.95
+LlaSep (ours)0.37 0.39 0.36 0.36 0.37 0.39 0.37
+wherecrepresents the conditioning context (mixture tokens and
+Whisper embeddings) andθdenotes the model parameters.
+3.2. MLSEE-Conversation Dataset
+To train LlaSep we construct MLSEE-Conversation, a large-
+scale synthetic multi-speaker conversation dataset derived from
+three multilingual speech corpora: MLS [16], Emilia [17], and
+EuroSpeech [18]. The dataset comprises approximately 6.9 mil-
+lion 8-second conversation samples, each tokenized into a fixed-
+length sequence of 400 XCodec2 tokens.
+Source Data and Languages.The MLS dataset contributes the
+large majority of source utterances (89.0%), with smaller contri-
+butions from Emilia (7.5%) and EuroSpeech (3.5%). Seven lan-
+guages are represented with roughly balanced coverage (cf. Fig-
+ure 2). Conversations are predominantly monolingual (98.9%)
+of samples have all speakers in the same language and the re-
+maining 1.1% form multilingual mixtures.
+Conversation Generation.Speakers are randomly sampled per
+conversation, and each sample is synthesized according to one
+of four generation methods that control conversational dynam-
+ics:
+•Normal(55.1%): Sequential turn-taking where each speaker
+is conditioned on the previous speaker’s offset, with gaus-
+sian distributed segment durations, producing naturally flow-
+ing conversations with realistic turn transitions.
+•Erlang(21.4%): Each speaker’s activity is sampled inde-
+pendently with Erlang-distributed segment durations, without
+conditioning on other speakers. This leads to more frequent
+overlap and a more balanced distribution of up to 4 speaker
+mixtures.
+•Main+interrupts(16.6%): One dominant speaker with ran-
+domly sampled interruptions from other speakers.
+•Full overlap(6.9%): All speakers active simultaneously,
+representing the most challenging separation scenario.
+Most conversations in the dataset feature 2 active speakers
+(69.3%), followed by 1 speaker (15.5%), 3 speakers (7.8%),
+0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5
+Percentage (%)
+Dutch
+Spanish
+Portuguese
+Italian
+German
+English
+French
+10.8%
+11.8%
+13.3%
+13.4%
+16.3%
+17.0%
+17.5%
+Figure 2:Language distribution across all speaker slots in
+MLSEE-Conversation.
+and 4 speakers (7.4%). Individual source waveforms are nor-
+malized to a target loudness via LUFS normalization, mixed
+at 16 kHz with smooth fade-in/out transitions, and peak-
+normalized. Sources are reordered by onset time to provide a
+canonical speaker ordering.
+Dataset Statistics.The final combined dataset (train & test
+set) contains over 15k hours split into 6.8M samples where 14k
+hours are in train split with 19k speakers and 1k hours in the
+test with 5k speakers split. The speaker sets of both splits are
+disjoint. Per-sample metadata includes XCodec2 tokens for the
+mixture and each source, per-speaker language labels, speaker
+identifiers, signal-to-noise ratios, and the generation method.
+4. Experiments
+4.1. Setup
+Evaluation Metrics.We evaluate along three axes: diariza-
+tion accuracy via diarization error rate (DER) [35], perceptual
+audio quality via DNSMOS [36], and separation fidelity via
+ScoreQ [37] in both no-reference (ScoreQ-NR) and reference-
+4219
+Table 2:Evaluation on the held-out test split of the MLSEE-
+Conversation dataset, restricted to samples with up to2 speak-
+ers. This subset allows for direct comparison against baselines
+with fixed output channels (SepFormer, SepReformer). LlaSep
+(ours) operates on the discrete token domain, while baselines
+operate on continuous representations.
+Metric PixIT SepRef. SepF . Ours
+DER (%)↓63.80 136.19 99.2128.11
+DNSMOS-SIG↑2.55 2.68 2.793.33
+DNSMOS-BAK↑3.27 3.32 3.414.02
+DNSMOS-OVRL↑2.23 2.30 2.413.04
+DNSMOS-P.808↑3.07 2.83 3.413.34
+ScoreQ-NR↑1.44 1.37 1.583.41
+ScoreQ-Ref↓1.21 1.09 0.980.42
+Table 3:Evaluation on MLSEE-Conversation test set with up
+to4 speakers. Comparison is restricted to PixIT, as the other
+baselines are limited to fixed two-speaker outputs.
+Metric PixIT Ours
+DER (in %)↓58.2243.79
+DNSMOS-SIG↑2.783.27
+DNSMOS-BAK↑3.594.03
+DNSMOS-OVRL↑2.452.99
+DNSMOS-P.808↑3.043.22
+ScoreQ-NR↑1.363.41
+ScoreQ-Ref↓1.180.56
+based (ScoreQ-Ref) modes.
+Benchmark.We compare against three baselines: PixIT [38],
+a joint diarization and separation pipeline, as well as SepRe-
+former [3] and SepFormer [4], both mask-based separa-
+tion models. Evaluation is conducted on three benchmarks:
+the held-out test split of our proposed MLSEE-Conversation
+dataset, LibriCSS [39], and the English and German subsets of
+CallHome.1 For CallHome, ground-truth source stems are not
+available, so we omit ScoreQ-Ref. All models operate on fixed-
+length audio chunks, segmented using SileroV AD [40] (8s for
+LlaSep, SepFormer, SepReformer, and 5s for PixIT).
+Implementation Details.The Whisper-small encoder is frozen
+and only a linear projection layer is trained alongside the LM
+parameters. We train with AdamW [41] on our MLSEE-
+Conversation dataset for 3 epochs. At inference, we generate
+20 samples and compute the mean to account for nondetermin-
+istic behavior of sampling-based audio language models.
+4.2. Results
+Evaluation on LibriCSS.Table 1 presents results across all
+overlap conditions. LlaSep achieves the lowest average DER
+(23.43%), outperforming PixIT (32.65%) and the mask-based
+baselines, which exceed 85% DER due to their fixed two-output
+design creating spurious streams when fewer speakers are ac-
+tive. LlaSep also leads on all perceptual quality metrics (DNS-
+MOS, ScoreQ-NR, ScoreQ-Ref). The large quality advantage
+1https://huggingface.co/datasets/talkbank/
+callhome
+Table 4:Zero-shot evaluation on CallHome (English and Ger-
+man subsets), representing real-world telephone conversations.
+ScoreQ-Ref is omitted due to the unavailability of clean ground-
+truth source signals for this dataset. Best results inbold.
+Metric PixIT SepRef. SepF . Ours
+DER (%)↓30.20 65.98 79.6124.84
+DNSMOS-SIG↑2.67 2.63 2.663.41
+DNSMOS-BAK↑3.09 3.03 2.943.97
+DNSMOS-OVRL↑2.26 2.17 2.143.09
+DNSMOS-P.808↑2.80 2.76 2.732.94
+ScoreQ-NR↑1.64 1.68 1.682.80
+reflects a fundamental difference in how the separated signals
+are produced. The baselines recover speaker signals by oper-
+ating on continuous representations of the original mixture, via
+time-frequency masking (SepFormer, SepReformer) or MixIT-
+based [42] source estimation (PixIT), which preserves the in-
+put waveform but can result in leaking residual interference and
+introducing processing artifacts. In contrast, LlaSep generates
+each speaker stream from scratch via the token stream which is
+then decoded, producing perceptually clean audio by construc-
+tion. The trade-off is that the generated speech is not a literal
+reproduction of the source, but content fidelity depends entirely
+on the codec’s reconstruction quality and the language model’s
+token accuracy.
+MLSEE-Conversations results.Tables 2 and 3 report results
+on held-out synthetic conversations. LlaSep leads across all
+metrics in both settings, though performance degrades with in-
+creasing speaker count: DER rises from 28.11% (2 speakers)
+to 43.79% (4 speakers). This is expected, as each additional
+speaker stream lengthens the output sequence and compounds
+error propagation during autoregressive decoding. Despite this
+degradation, LlaSep still outperforms PixIT in the 4-speaker
+setting, and unlike the mask-based baselines, does not require
+architectural changes to handle variable speaker counts.
+CallHome results.On real telephone conversations (cf. Ta-
+ble 4), PixIT achieves the second best DER (30.20%)
+with LlaSep outperforms with (24.84%), additonally, LlaSep
+produces substantially higher-quality separated audio (e.g.,
+DNSMOS-OVRL: 3.09 vs. 2.26). That LlaSep leads on both
+diarization accuracy and audio quality despite being trained
+exclusively on synthetic data suggests strong domain trans-
+fer from our MLSEE-Conversation dataset to real telephone
+speech. This is achieved using only synthetic training data,
+without exposure to any real conversational speech, further un-
+derscoring the quality of our synthetic dataset. Incorporating
+more naturalistic turn-taking during data generation could fur-
+ther widen this gap.
+5. Conclusion
+We presented LlaSep, an autoregressive speaker separation
+model capable of achieving high perceptual separation qual-
+ity and competitive diarization accuracy. A key practical ad-
+vantage of the autoregressive formulation is that speaker count
+is implicitly handled by the generation process, allowing it to
+easily extend to an arbitrary number of speakers and avoid the
+fixed-output limitation that can cause issues with mask-based
+methods.
+4220
+6. Generative AI Use Disclosure
+Generative AI tools were used to assist with polishing the
+manuscript, writing code for the experiments, and beautifying
+figures. All outputs were reviewed and verified by the authors,
+who take full responsibility for the content of this paper.

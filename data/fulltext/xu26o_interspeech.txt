@@ -1,0 +1,405 @@
+BACON: Boundary-Aware Convolution for Streaming Conformer Models
+Hainan Xu, Kunal Dhawan, Dongji Gao, Jagadeesh Balam
+NVIDIA Corporation
+hainanx@nvidia.com
+Abstract
+We proposeBoundary-Aware CONvolution(BACON), a drop-
+in replacement for causal convolution in streaming sequence
+tasks that leverage chunk-based Conformers. Streaming Con-
+formers typically pair chunked attention with causal convo-
+lution to prevent future information leakage. We show that
+causal convolution is unnecessarily restrictive: within a chunk,
+all frames are already available, so the convolution kernel can
+safely look ahead up to the chunk boundary without violat-
+ing the streaming constraint. BACON exploits this by splitting
+the depthwise convolution channels into a causal group and a
+boundary-aware bidirectional group, yielding a wider effective
+receptive field than the causal baseline while preserving param-
+eter count. Across single-speaker Automatic Speech Recogni-
+tion (ASR), multi-speaker ASR, and speech-to-text translation
+tasks with two model architectures, BACON improves model
+accuracy while maintaining comparable latency.
+Index Terms: streaming speech recognition, conformer,
+boundary-aware convolution, chunk-based processing
+1. Introduction
+Real-world speech applications (e.g., voice assistants, real-
+time captioning, and simultaneous translation) typically require
+streamingprocessing: instead of waiting for the complete in-
+put audio, the model produces outputs incrementally as audio
+arrives, within a bounded latency budget. Among streaming
+architectures,chunk-basedmodels [1] accumulate a short win-
+dow of frames before processing them as a unit, trading a small
+fixed delay for richer within-window acoustic context than fully
+frame-to-frame causal approaches.
+The Conformer [2, 3] is a prominent architecture in mod-
+ern speech models, combining self-attention [4] with depth-
+wise separable convolutions [5] which enables the model to
+capture both global dependencies and local temporal fea-
+tures. For chunk-based streaming, two standard modifications
+are typically applied: (1)chunked attention, which restricts
+each frame’s attention to prevent access to future chunks, and
+(2)causal convolution, which restricts the depthwise kernel to
+current and past frames only. Together, these modifications en-
+sure that model computation does not depend on future chunks.
+We argue that the second modification, i.e. the use of a
+causal convolution, is overly conservative. In a chunk-based
+system, all frames within a chunk are processed together; there-
+fore, a convolution kernel can look aheadwithin the chunkwith-
+out violating the streaming constraint, while causal convolution
+unnecessarily discards this available context. Some existing
+works try to improve on this aspect, e.g. DCConv [6] adapts
+convolutional context to the active chunk, while SSCFormer [7]
+introduces additional parameters to exploit the extra contexts.
+This work introducesBoundary-Aware CONvolution(BA-
+CON), which splits the depthwise channels into two groups: a
+causalgroup with full backward context, and abidirectional
+group whose right context is confined to the current chunk. For
+convolution with kernel sizek, the aggregate effective recep-
+tive field spans[−(k−1),(k−1)/2], strictly wider than the
+causal baseline’s[−(k−1),0], while using the same number of
+parameters. The key contributions of this work are:
+• We identify that causal convolution is unnecessarily strict
+in chunk-based streaming Conformers and that within-chunk
+look-ahead is streaming-safe.
+• We propose BACON, a split-channel design that widens
+the effective receptive field without breaking chunk-based
+streaming constraints and without adding parameters.
+• We demonstrate improvements across three tasks (single-
+speaker Automatic Speech Recognition (ASR), multi-
+speaker ASR, and speech-to-text translation) across two
+model families (CHATandRNN-T).
+2. Background
+2.1. Chunk-Limited Attention
+Typically conformers use standard self-attention, where each
+frame compares against all frames in the full input, which is
+incompatible with streaming. To adapt conformers for stream-
+ing,chunk-limited attention[1, 8] partitions the input into non-
+overlapping chunks and restricts each frame’s attention context
+to its own chunk and prior chunks. This avoids dependency on
+future chunks and enables chunk-wise streaming.
+2.2. Causal Convolution
+Standard streaming Conformers replace the symmetric depth-
+wise kernel with acausal convolutionthat sees only current and
+past frames. This guarantees no future chunk information is
+accessed and is therefore sufficient for streaming. However, it
+is stricter than the chunked streaming constraint requires: in the
+chunk-based setting, frames within the same chunk are all avail-
+able simultaneously, so right context within the chunk is already
+present at processing time. In contrast, BACON focuses on a
+parameter-neutral split-channel replacement for causal convo-
+lution that preserves full causal history in part of the channels
+while adding chunk-confined right context in the remainder.
+3. Method
+Our goal is to allow right-context convolution up to the chunk
+boundary. A straightforward approach is to replace causal con-
+volution with a fully symmetric bidirectional kernel (similar to
+[6]). However, near the right boundary of each chunk, the right
+6186
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1455
+half of the kernel window falls outside the chunk and must be
+masked out, reducing effective context size. For example, given
+a chunk size ofC=14and a kernel size ofk=9, the last four
+frames of each chunk operate with reduced context. To address
+this, we propose adual-context channel design.
+3.1. Dual-Context Channel Design
+We increase convolutional receptive field to the future whenever
+possible while preserving past receptive field. This is achieved
+with a split-channel design. Theddepthwise channels are di-
+vided into two equal groups with different padding strategies:
+•Causal group(d/2channels):
+Requires left zero-padding of lengthk−1only once at the
+beginning of the utterance. In all other places, it accesses full
+past context without chunk boundary restrictions.
+•Bidirectional group(d/2channels):
+Utilizes a mixed padding strategy withp= (k−1)/2. While
+its left context crosses chunk boundaries freely similar to the
+causal group; for right context,pzeros is padded at the end
+of each chunk, to be used for right context of convolutions
+without breaking chunk boundaries.
+Since depthwise convolution applies an independent kernel
+per channel, the two groups have fully separate learned weights
+despite residing in the same convolution module. No parameter
+sharing occurs between the causal and bidirectional channels.
+As a simple example, Figure 1 illustrates the dependency
+patterns for kernel size 3 across three chunks. Panel (a) shows
+causal convolution; panel (b) shows standard non-causal con-
+volution, where red dashed arrows mark dependencies crossing
+chunk boundaries into the future, which breaks the streaming
+constraint; panel (c) shows boundary-aware bidirectional con-
+volution, where left context crosses boundaries freely but right
+context is confined within each chunk; and panel (d) shows BA-
+CON’s combined dependency. Blue dashed arrows in (d) high-
+light the additional within-chunk right context contributed by
+the bidirectional group. Positions at the right chunk edge re-
+ceive no extra right context from the bidirectional group, but
+the causal group still provides full backward context there.
+4. Experiments
+We use NeMo [9] toolkit to conduct all our experiments. All ex-
+periments use a FastConformer encoder, where 8×subsampling
+is first performed on 80-dimension Mel-spectrogram features
+with causal subsampling; then the subsampled representation
+goes through 17 layers of Conformer blocks, withd model=512
+and convolution kernel sizek=9. The streaming chunk-size is
+C=14subsampled frames, equivalent to14×80 = 1120ms
+of speech. Chunked attention is configured so that each frame
+can attend to any frame in the current chunk as well as 5
+chunks in the past. These are all standard configurations
+for NeMo’s FastConformer-Large, with full details available
+atexamples/asr/conf/fastconformer/cache_
+aware_streaming/fastconformer_transducer_
+bpe_streaming.yamlin NeMo repository.
+We use two basic model architectures for training. 1. A
+standard RNN-T [10] model and 2. A Chunk-wise Attention
+Transducer (CHAT) [11]. For all models and datasets, we train
+and compare two models with identical architecture and hyper-
+parameters, except one with causal convolution in conform-
+ers, and the other with the BACON architecture. All mod-
+els are trained with fast-emit lambda=0.005. We evaluate on
+(a)
+1 2 3 4 5 6 7 8 9 10 11 12
+1 2 3 4 5 6 7 8 9 10 11 12
+Chunk 1 Chunk 2 Chunk 3
+(b)
+1 2 3 4 5 6 7 8 9 10 11 12
+1 2 3 4 5 6 7 8 9 10 11 12
+(c)
+1 2 3 4 5 6 7 8 9 10 11 12
+1 2 3 4 5 6 7 8 9 10 11 12
+(d)
+1 2 3 4 5 6 7 8 9 10 11 12
+1 2 3 4 5 6 7 8 9 10 11 12
+Figure 1:Input-to-output dependencies of a 1D convolution
+(kernel size 3, chunk size 4) for 12 frames across three chunks.
+(a)Causal convolution: each output depends only on cur-
+rent and past frames.(b)Standard non-causal convolution
+(not streaming-safe): red dashed arrows mark dependencies on
+frames from future chunks.(c)Boundary-aware bidirectional
+convolution: left context crosses chunk boundaries freely, right
+context is confined within each chunk.(d)BACON (union of (a)
+and (c)): solid arrows show the causal group’s dependencies;
+blue dashed arrows show the additional within-chunk right con-
+text contributed by the bidirectional group. Positions at right
+chunk edges (frames 4, 8, 12) receive no extra right context from
+the bidirectional group, but the causal group still provides full
+backward context at those positions.
+three tasks: speech recognition on LibriSpeech [12], speech-to-
+text translation on CoV oST [13] and MuST-C [14], and multi-
+speaker speech recognition on Fisher [15]. For all models, we
+average the five best checkpoints for evaluation. In all result ta-
+bles,pdenotes the two-sided significance of comparison, com-
+puted with a paired bootstrap test over the per-utterance outputs.
+4.1. Automatic Speech Recognition (ASR)
+We train our LibriSpeech model from scratch using the full 960-
+hour training set. For text tokenization, we train a Sentence-
+Piece [16] model with a vocabulary size of 1024.
+As shown in Table 1, on LibriSpeechtest-cleanBA-
+CON and Causal achieve similar accuracy—the small gains
+are not statistically significant forRNN-T—which is expected
+given the relatively clean conditions. On the more challeng-
+ingtest-otherset, BACON yields larger and statistically
+significant gains in both families, especially forCHAT, where
+it improves WER by 0.79 absolute over the causal baseline
+6187
+Table 1:WER (%) on LibriSpeech ASR.
+Family Test set Causal↓BACON↓p
+RNN-Ttest-clean 3.363.300.42
+RNN-Ttest-other 8.738.410.011
+CHATtest-clean 3.313.090.005
+CHATtest-other 8.477.68<0.001
+(8.47→7.68), a 9.3% relative WER reduction (p<0.001).
+4.2. Automatic Speech Translation (AST)
+We evaluate English-to-German speech-to-text translation
+across both families, reporting BLEU on MuST-C (MUST-C)
+and CoV oST 2 (COVOST) test sets. Models are trained on
+Mozilla Common V oice [17], Multilingual LibriSpeech [18],
+and V oxPopuli [19]. Encoders are initialized from checkpoints
+pre-trained for approximately 10k steps on LibriSpeech in the
+corresponding convolution mode. For tokenization, we use a
+SentencePiece model with a 16k vocabulary.
+Table 2:BLEU on English-to-German AST.
+Family Test set Causal↑BACON↑p
+RNN-T MUST-C24.6025.610.006
+RNN-T COVOST33.6434.98<0.001
+CHAT MUST-C28.0428.750.008
+CHAT COVOST36.4037.72<0.001
+As detailed in Table 2, BACON improves over the causal
+baseline on both evaluation sets in both families: +1.32 BLEU
+onCOVOSTforCHATand +1.34 forRNN-T, withMUST-Cgains
+of +0.71 and +1.01, respectively. All four improvements are
+statistically significant (p <0.01). The improvement is con-
+sistent across both families and both evaluation sets, confirming
+that the benefit derives from the wider receptive field rather than
+any architecture-specific interaction.
+4.3. Multi-Speaker ASR
+We further assess BACON on a two-speaker ASR task. Follow-
+ing [20], we insert special speaker tokens (<spk1>,<spk2>)
+at each speaker change to training text in order to model speaker
+turns explicitly. We use segment-level speaker annotations and
+train on Fisher, which contains approximately 2,000 hours of la-
+beled two-speaker conversational speech. Encoder parameters
+are initialized from checkpoints pre-trained for approximately
+10k steps on LibriSpeech in the corresponding training mode.
+We report concatenated minimum-permutation word error rate
+(cpWER) [21], the standard metric for multi-speaker ASR.
+Table 3:cpWER (%) on 2-speaker ASR.
+Conv. mode cpWER (%)↓
+Causal (baseline) 27.41
+BACON27.14
+Table 3 shows BACON reduces cpWER from 27.41% to
+27.14%. This gain is in the same direction as other tasks,
+though less significant (p= 0.19). We hypothesize that cpWER
+on this task is dominated by challenging conversational phe-
+nomena such as overlapping speech and speaker-attribution er-
+rors, and per-utterance variability is high, which makes a small
+acoustic-level improvement harder to establish as significant.
+Importantly, BACON does not hurt performance and trends
+slightly better, confirming that the method generalizes to the
+multi-speaker setting without any regression.
+5. Analysis
+5.1. Importance of dual-mode design
+A natural alternative to BACON’s split design is to apply
+the boundary-aware bidirectional convolution toalldepthwise
+channels rather than to only half of them. We refer to this vari-
+ant asall-bidir. It corresponds exactly to panel (c)—left context
+crosses chunk boundaries freely while right context is confined
+within each chunk. This comparison directly isolates the con-
+tribution of BACON’s dual-mode (split) design against the fully
+boundary-aware variant. Tables 4 and 5 compare all-bidir and
+BACON on LibriSpeech ASR and AST respectively.
+Table 4:All-bidir vs. BACON on LibriSpeech (WER %).
+Family Test set all-bidir↓BACON↓p
+CHATtest-clean 3.253.090.018
+CHATtest-other 8.217.68<0.001
+RNN-Ttest-clean 3.473.300.024
+RNN-Ttest-other 8.788.410.003
+Table 5:All-bidir vs. BACON on AST (BLEU).
+Family Test set all-bidir↑BACON↑p
+CHAT MUST-C28.4128.750.26
+CHAT COVOST36.3237.72<0.001
+RNN-T MUST-C24.8925.610.018
+RNN-T COVOST33.3834.98<0.001
+BACON consistently outperforms all-bidir, with significant
+gains on the more challenging conditions. On LibriSpeech
+test-other, BACON beats all-bidir by−0.53 WER for
+CHATand−0.37 forRNN-T. OnCOVOST, BACON leads by
++1.40 BLEU (CHAT) and +1.60 (RNN-T). Critically, forRNN-T
+on LibriSpeech, all-bidirdegradesrelative to the causal base-
+line (8.78% vs. 8.73%), whereas BACON improves it (8.41%).
+This is a direct consequence of chunk boundary effects: when
+all channels are bidirectional, positions at right chunk edges see
+fewer real inputs across every channel simultaneously, reducing
+the effective receptive field. The causal group in BACON acts
+as a boundary stabilizer, always providingkreal past inputs re-
+gardless of position within the chunk. For those comparisons,
+we conclude that the split design is not merely helpful but nec-
+essary for robust and consistent gains.
+5.2. Convolution Benefits from Right Context Indepen-
+dently of Attention
+In a chunk-based Conformer, both attention and convolution
+operate on the same frames, and within each chunk the atten-
+tion module already has bidirectional access up to the chunk
+6188
+boundary. One might therefore wonder whether the convolution
+module gains anything from right context that attention has not
+already captured. To test this, we construct an extreme upper
+bound: we train full-context Conformer-Transducers on Lib-
+riSpeech where self-attention iscompletely unrestricted, where
+every frame can attend to the entire utterance. In this setting,
+attention has strictly more context than in any streaming config-
+uration. We compare two otherwise identical models that differ
+only in convolution mode: causal vs. non-causal (symmetric).
+Table 6:LibriSpeech WER (%) achieved by Conformers with
+unrestricted attention and different types of convolutions.
+Convolution test-other↓
+Causal 8.16
+Non-causal7.23
+As shown in Table 6, even with full-utterance atten-
+tion, non-causal convolution reduces WER by 0.93 absolute
+(8.16%→7.23%, an 11.4% relative improvement). This
+demonstrates that convolution and attention capture comple-
+mentary structure: the convolution module extracts local acous-
+tic patterns that attention does not subsume, even when attention
+has access to the entire sequence. Restricting convolution to
+past-only context therefore leaves significant accuracy on the ta-
+ble regardless of how much context attention provides—directly
+motivating BACON’s design.
+5.3. Impact on Latency
+In chunk-based streaming, the encoder buffers input frames un-
+til a full chunk ofCframes has been accumulated before pro-
+cessing begins. Consequently, regardless of which frame within
+the chunk is responsible for a particular token emission, the to-
+ken can only be produced after the last frame of the chunk has
+arrived. The effective emission time of any token emitted dur-
+ing chunkiis therefore
+temit(i) = (i+ 1)·C·∆ +δ,(1)
+where∆is the frame duration andδis a processing delay shared
+across all models, which we assume is constant. The true la-
+tency for a token corresponding to wordjwith ground-truth
+timestampτ j isℓ j =t emit(ij)−τ j, wherei j is the chunk the
+token is emitted in. Averaging over allNemitted tokens:
+¯ℓ= 1
+N
+NX
+j=1
+
+(ij + 1)·C·∆ +δ−τ j
+
+= (C·∆)¯ı+ (C·∆ +δ)−¯τ,
+(2)
+where¯ı= 1
+N
+P
+jij is the average chunk-index of all emis-
+sions and¯τ= 1
+N
+P
+jτj the average ground-truth timestamp.
+When comparing two models A and B evaluated on the same
+utterances, the term¯τand the constant(C·∆ +δ)cancel:
+¯ℓA− ¯ℓB = (C·∆)(¯ıA−¯ıB).(3)
+Thus the difference in average emission chunk index between
+two models is proportional to their difference in average la-
+tency, with the proportionality constantC·∆determined solely
+by the chunk configuration. This allows us to compare latency
+across convolution modes without requiring time-stamped ref-
+erence transcripts: a lower¯ıdirectly implies lower latency.
+Table 7:Average emission chunk index (¯ı) on LibriSpeech
+test-other. Lower is earlier (lower latency).
+Family Conv. mode¯ı↓
+RNN-TCausal 4.07
+RNN-TBACON 4.05
+CHATCausal 4.16
+CHATBACON 4.13
+We measure the average emission chunk index of different
+models on LibriSpeechtest-other. Table 7 shows that BA-
+CON’s average emission chunk index is slightlylowerthan the
+causal baseline in both model families, indicating that BACON
+does not increase latency and in fact emits tokens marginally
+earlier on average. While the difference is small, it is consistent
+with BACON’s wider receptive field: by incorporating within-
+chunk right context, the encoder produces more informative
+frame representations and can emit tokens slightly earlier than
+the causal baseline. Combined with the accuracy gains reported
+in Sections 4.1–4.3, this confirms that BACON improves recog-
+nition quality while maintaining emission latency.
+6. Conclusion
+We show that causal convolution in chunk-based streaming
+Conformers is unnecessarily restrictive, and we propose BA-
+CON, which splits depthwise channels into a causal group and
+a boundary-aware bidirectional group. This widens receptive
+field without changing model architecture or parameter count.
+Across three tasks and two model families, BACON improves
+accuracy while maintaining (and in our measurements, slightly
+reducing) emission latency. For future work, we plan to apply
+BACON to larger-scale datasets and other speech-to-text tasks,
+including streaming speech LLM systems.
+7. Generative AI Use Disclosure
+Generative AI tools were used solely to assist with editing and
+polishing the writing of this paper (e.g., grammar, phrasing, and
+clarity). They were not used to generate any major part of the
+paper’s research content, including the ideas, methodology, ex-
+periments, analysis, or results. All AI-assisted text was manu-
+ally reviewed and verified by the authors to ensure its correct-
+ness and that it faithfully reflects the underlying work.

@@ -1,0 +1,557 @@
+AccentDrift: Real-time Streaming Accent Conversion
+via Sparse Speech Tokenization
+Sang-Hoon Lee ID 1, Heejin Choi ID 2, Joun Yeop Lee ID 2, Sangjun Park ID 2
+1 Department of Artificial Intelligence, Ajou University, Suwon, Korea
+2 Samsung Research, Seoul, Korea
+sanghoonlee@ajou.ac.kr,{hee jin.choi, jounyeop.lee, sj0.park}@samsung.com
+Abstract
+Although recent speech AI advances have enabled real-time
+speech understanding and generation, real-time accent conver-
+sion (AC) for second-language (L2) speakers in real-world in-
+teractions remains underexplored. In this paper, we present
+AccentDrift, a real-time streaming AC system that preserves lin-
+guistic content and speaker identity while transforming speech
+into a target accent with low latency. From an information bot-
+tleneck perspective, we adopt sparse speech tokenization to ex-
+tract linguistic information from continuous speech. An accent
+adapter injects accent style into sparse semantic tokens, fol-
+lowed by a timbre adapter that hierarchically generates speaker-
+specific acoustics. To support streaming, we adopt a cache-
+aware streaming architecture and parallel streams, achieving
+520 ms latency. AccentDrift outperforms prior parallel AC
+models, and demonstrates the feasibility of generating native-
+like accents for L2 speakers. Audio samples are available at
+https://accentdrift.github.io/demo/.
+Index Terms: accent conversion, streaming audio generation,
+real-time system, sparse speech tokenization
+1. Introduction
+The rapid advances in generative models such as language
+models and diffusion models have revolutionized speech under-
+standing systems including automatic speech recognition (ASR)
+[1, 2, 3, 4, 5, 6] and speech generation systems including text-
+to-speech (TTS) [7, 8, 9, 10, 11, 12] and voice conversion (VC)
+[13, 14, 15, 16, 17, 18]. Real-time streaming speech understand-
+ing and generation systems have also been actively investigated
+for real-world applications such as full-duplex spoken dialogue
+systems [19, 20, 21]. However, despite these advances, real-time
+streaming accent conversion (AC) systems have not yet been
+sufficiently explored. AC aims to preserve linguistic content and
+timbre while transforming speech into a target accent. In partic-
+ular, real-time streaming AC is crucial for second-language (L2)
+speakers in real-world interactive scenarios, where low latency
+and naturalness are essential for seamless communication.
+However, existing AC systems [22, 23, 24, 25, 26, 27, 28]
+suffer from several critical limitations: 1) a strong reliance on
+parallel datasets, which are costly to obtain; 2) parallel architec-
+tures that hinder real-time streaming interaction; 3) insufficient
+generative capability, resulting in degraded audio quality; 4)
+inflexible architectural designs that restrict fine-grained control-
+lability over accent and timbre.
+To address these limitations, we propose AccentDrift, a real-
+time streaming accent conversion system. First, we adopt sparse
+speech tokenization to extract only linguistic representations
+from speech. To this end, we analyze the conventional audio
+and speech tokenizers and carefully design a sparse semantic
+Table 1:Comparison of acoustic and semantic tokenizer
+Tokenizer Acoustic
+Tokenizer
+Dense
+Semantic
+Tokenizer
+Sparse
+Semantic
+Tokenizer
+Models EnCodec [33],
+DAC [34], Mimi [19]
+CosyV oice
+[35, 36, 31]
+Vevo-ContentVQ [37]
+StyleStream [38], Ours
+Acoustic✓ ✗ ✗
+Prosody✓ ✓ ✗
+Linguistic✓ ✓ ✓
+Reconstruction✓ ✗ ✗
+V oice Conversion✗ ✓ ✓
+Accent Conversion✗ ✗ ✓
+tokenizer using supervised learning and a sparse quantization-
+based information bottleneck. Then, we propose a hierarchical
+style adaptation framework that can separately adapt the accent
+and timbre in a hierarchical manner, as illustrated in Figure 1.
+For real-time streaming applications, AccentDrift is built
+upon fully causal networks including a cache-aware FastCon-
+former encoder, Transformer-based token predictor, causal DiT
+[29, 30, 31, 32], and causal vocoder. Without requiring accent
+labels and accent-paired datasets, AccentDrift successfully con-
+verts accent style while preserving speaker style (and optionally
+enables zero-shot timbre conversion together). We investigate
+robust streaming configurations by exploring dynamic chunk
+sizes and lookahead sizes. Experimental results demonstrate
+that AccentDrift achieves robust zero-shot accent conversion
+performance while supporting a minimal latency of 0.5s, which
+is faster than the previous streaming AC model [28] (0.8s).
+2. Speech Tokenization
+To convert the style of speech, disentangling speech attributes
+is essential. Typically, VC models have investigated effective
+speech disentanglement methods to extract linguistic information
+using information bottlenecks (IB) [13, 39, 40, 41] or informa-
+tion perturbation [ 42, 43, 44, 45]. In this work, we adopt an
+IB approach based on vector quantization (VQ) to disentangle
+speech representations. Following [13, 37, 38], we categorize the
+audio/speech tokenizers into acoustic and semantic tokenizers
+according to the objectives, and further subdivide the semantic
+tokenizer into dense and sparse variants based on the IB size.
+2.1. Acoustic Tokenizer
+In general, neural audio codecs can be viewed as acoustic tok-
+enizers. Most existing models, such as EnCodec [33] and DAC
+[34], are trained with self-reconstruction objectives including
+reconstruction losses and audio feature-based GAN losses. As a
+result, acoustic information inevitably leaks into the VQ-based
+codebooks, regardless of the IB size. SpeechTokenizer [46] and
+Mimi [19] leverage self-supervised representation (SSL) distil-
+lation to enhance semantic capacity. However, we observe that
+the reconstruction-based acoustic tokenizer fails to disentangle
+4639
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-710
+Accent Conversion 
+모델
+ 구조
+0
+Sparse
+Semantic
+Tokenizer 
+Accent
+Adapter
+Timbre
+Adapter Vocoder
+MelDense Semantic
+Token
+Sparse Semantic 
+TokenPhase 1
+Latency: +160ms Latency: +160ms Latency: +120ms Latency: +80ms
+Phase 2 Phase 3 Phase 4
+Timbre Rep. Linguistic Rep.Prosody Rep.
+Figure 1:Streaming Accent Conversion Framework of AccentDrift
+Accent Conversion 
+모델
+ 
+구조
+3
+Accent Embedding
+Information Bottleneck
+Streaming ASR Encoder
+CTC Decoder
+Phoneme (Text)
+Causal Transformer
+Stop-Grad. or GRL
+CTC loss
+Sparse Semantic Tokenizer
+CE loss
+Transposed Conv.
+Accent Encoder
+GT
+Accent Adapter
+Figure 2:Sparse Semantic Tokenizer and Accent Adapter
+speech attributes even under a narrow IB. Consequently, these
+representations are not suitable as input features for AC or VC.
+2.2. Semantic Tokenizer
+Unlike acoustic tokenizer, CosyV oice [35] first introduced a fi-
+nite scalar quantization (FSQ) [47]-based supervised semantic
+speech (S3) tokenizer. S3 tokenizer does not employ recon-
+struction objectives and instead relies solely on ASR-based text
+supervision to obtain semantic tokens. However, when config-
+ured with a relatively wide IB, the semantic tokens may contain
+unnecessary attributes. Although they intentionally preserve
+prosody to support robust downstream tasks, this design can hin-
+der style conversion. In our observations, suchdense semantic
+tokenizersare not well suited for AC. To address this limitation,
+we introduce asparse semantic tokenizerin the next section.
+3. AccentDrift
+3.1. Sparse Semantic Tokenizer
+Following [37, 38], we adopt a sparse semantic tokenizer with a
+narrower IB to suppress prosodic leakage. We identify several
+key conditions for achieving sparse linguistic representations: 1)
+high-level ASR or SSL representations, 2) highly compressed
+quantization, and 3) supervised learning.
+For streaming speech encoding, we adopt a pre-trained
+streaming ASR encoder from Nemotron Speech ASR1, which
+consists of the cache-aware [48] FastConformer [3] with 24 lay-
+ers. Specifically, the encoder employs feed-forward at 12.5 Hz
+from the downsampled representations of the Mel-spectrogram
+(100 Hz) and supports a flexible lookahead attention with dy-
+namic chunk sizes including 80ms, 160ms, 560ms, and 1,120ms.
+For an efficient real-time application, we investigate the repre-
+sentations across the encoder layer and prune the encoder layer
+to 17 layers.
+For IB, we adopt an iFSQ [49], which can guarantee both
+1https://huggingface.co/nvidia/
+nemotron-speech-streaming-en-0.6b
+optimal bin utilization and reconstruction precision by replacing
+the standard tanh of original FSQ with
+s(x) =A·σ(αx) +B(1)
+whereA= 2 ,α= 1.6 , andB=−1 to obtain a more uniform
+distribution. Then, we apply a quantization with a narrow IB.
+We utilize a phoneme CTC-based supervised learning to train
+the layers as illustrated in Figure 2.
+With a narrow iFSQ and supervised learning, sparse super-
+vised semantic tokens can obtain linguistic information with
+minimal paralinguistic detail. In addition, we introduce a hi-
+erarchical style adaptation framework for timbre preservation
+by adapting accent style and timbre in a hierarchical manner,
+unlike [38], which converts entire voice style from these sparse
+semantic representations. The detailed accent adapter and timbre
+adapter are described in the following subsections.
+3.2. Accent Adaptation
+To inject target accent characteristics while preserving the lin-
+guistic information of sparse semantic tokens, we introduce an
+accent adapter that reconstructs dense semantic tokens from
+sparse representations. As the target dense semantic tokens, we
+use CosyV oice 3 tokens that contain both linguistic and prosodic
+information. Accordingly, we apply a causal transposed convo-
+lutional layer to upsample the sparse semantic representation of
+the iFSQ outputs (12.5Hz) by a ratio of 2 to match the target
+resolution (25Hz). We concatenate the upsampled representa-
+tion with accent style embedding extracted by CommonAccent
+(XLS-R) [50] for accent adaptation. Then, the accent adapter
+predicts the target accent tokens.
+With the ASR encoder frozen, we jointly optimize the sparse
+semantic tokenizer (including the iFSQ layer and CTC decoder)
+and the accent adapter. The quantized representations are fed
+into the CTC decoder for phoneme-based supervised learning
+and into the accent adapter for dense semantic token prediction
+from sparse semantic tokens. The final objective combines the
+CTC lossl ctc and the cross-entropy lossl CE .
+However, it is critical to prevent the CE loss gradients from
+directly influencing the sparse tokens, as this may reintroduce
+prosodic information into the representations. To mitigate the
+potential information leakage, we further employ a gradient
+reversal layer (GRL) [51, 52] instead of a stop-gradient before
+the accent adapter, using a small reversal scale αgrl to avoid
+training collapse. The final objective isLctc +λ ceLce. We set
+λce = 1andα grl = 0.005for GRL.
+For streaming accent adaptation, we adopt a fully causal
+Transformer with rotary positional embeddings (RoPE) and a
+limited context window of 6 seconds. We further employ a looka-
+head convolutional layer to improve the robustness in streaming
+scenarios.
+4640
+Table 2:Accent conversion results.
+Task Method Streaming
+(Latency)
+Accent
+Conversion
+Timbre
+Preservation
+Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+SPK-SIM
+(↑)
+ACC-SIM
+(CA-XLSR↑)
+ACC-SIM
+(CA-ECAPA↑)
+WER
+(↓)
+UTMOS
+(↑)
+NMOS
+(↑)
+AMOS
+(↑)
+GT (Target) L1 speaker - - - 0.3 65.2 - - - - - - -
+GT (Source) L2 speaker - - - 80.0 5.0 - - - 2.96 4.11 3.98±0.02 3.87±0.05
+L2 Reconstruction CosyV oice 3 [31] - - - 77.6 9.3 0.88 0.39 0.38 3.35 4.05 - -
+VC (L2→L1) CosyV oice 3 [31] ✗ ✗ ✗ 44.9 5.0 0.26 0.50 0.48 4.38 4.19 - -
+AC+VC (L2→L1) Vevo-V oice [37] ✗ ✓ ✗ 6.3 56.9 0.07 0.57 0.57 14.7 3.94 3.92±0.02 3.95±0.05
+AC (L2→L1) Vevo-Style [37] ✗ ✓ ✓ 6.9 65.9 0.57 0.46 0.46 13.8 3.90 3.94±0.02 3.94±0.05
+AC (L2→L1) AccentDrift (Ours) ✓(0.5s) ✓ ✓ 10.6 60.1 0.72 0.58 0.58 6.27 4.10 3.97±0.02 3.96±0.05
+3.3. Timbre Adaptation
+After adapting the accent style, we subsequently adapt the tim-
+bre style following CosyV oice 3 [31] which generates a Mel-
+spectrogram using a causal diffusion Transformer (DiT) [ 53]
+conditioned on timbre embeddings extracted by CAM++ [54].
+First, the embedding of the predicted dense semantic tokens are
+fed to a lookahead convolutional layer with a lookahead size
+of 3 tokens (120ms) for robust streaming Mel-spectrogram gen-
+eration. The upsampled representations are concatenated with
+{xt,x ctx,s} before the DiT layers, where the noisy samplext
+is obtained via a linear interpolation between noisex0 and the
+target data point x1, xctx is a masked x1 as a prompt, and s
+denotes the timbre embedding. Then, DiT estimates the vector
+field, and we employ an Euler solver with 10 steps.
+The generated Mel-spectrogram chunks are fed into a causal
+neural vocoder for waveform synthesis. We use the pre-trained
+HiFTNet [55] of CosyV oice 3 which uses four-frame lookahead
+(80ms) for robust streaming waveform generation.
+4. Experiment and Result
+4.1. Dataset
+We utilize LibriTTS [56], VCTK [57], and GLOBE V3 [58] to
+learn diverse English accents. Although VCTK and GLOBE-V3
+provide accent labels for approximately 164 English accents,
+we do not rely on these potentially inaccurate annotations. In
+our preliminary experiments, we failed to transfer the accent
+style when using the predicted accent label. Instead, we leverage
+hierarchical style adaptation with accent embeddings to enable
+zero-shot AC without requiring explicit accent labels.
+4.2. Training
+We jointly train the sparse tokenizer and the accent adapter with
+a learning rate of 1×10−4 and a batch size of 64 for 1.1M steps
+(2 days) on eight NVIDIA A6000 GPUs. For efficient training,
+we filter the dataset up to 10 seconds and use a limited context
+windows of 6 seconds. We utilize the representations from the
+17th layer of NeMo-ASR for effective speech disentanglement.
+Also, we investigate the iFSQ configuration to find the optimal
+IB size. In addition, we explore the streaming configuration,
+including attention chunk sizes of 80ms, 160ms, 560ms, and
+1,120ms for FastConformer, lookahead sizes of 0, 1 (80 ms),
+2 (160 ms), and 3 (240 ms) for causal Transformer. For the
+ablation study, we train all models for 50k steps. For Whisper,
+Mimi, and NeMo-ASR, we train all models for 1.1M steps.
+4.3. Evaluation
+We conduct subjective evaluation using 480 samples of L2
+speakers (20 samples for each 24 non-native speaker) in the
+L2-ARCTIC [59]. The evaluation is performed by 20 listeners
+(Amazon Mturk) using 5-scale. Due to the limited target classes
+of CommonAccent, we evaluate objective metrics using 376 In-
+dian samples in the VCTK. We use the target accent embeddings
+extracted from the target L1 speakers (US) and use the target
+timbre embeddings extracted from the source L2 speakers to
+only convert the accent by preserving timbre style.
+Table 3:Analysis of ASR encoder layer representations. We fix
+the FSQ size of 256 dimensions and 9 scalars (d256s9).
+Encoder
+Layer
+Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+UTMOS
+(↑)
+6 55.5 15.9 5.35 0.82 4.06
+12 21.5 44.9 6.10 0.75 4.14
+16 17.0 44.9 6.39 0.74 4.13
+17 13.0 44.6 7.02 0.71 4.00
+18 10.9 55.5 11.2 0.68 4.08
+24 12.2 49.7 99.7 0.53 3.34
+We evaluate source and target accent accuracy (Src Acc. and
+Tgt Acc.) using CommonAccent ECAPA-TDNN. For accent
+similarity (ACC-SIM), we use CommonAccent w2v2-XLSR
+(CA-XLSR) and ECAPA-TDNN (CA-ECAPA). Word error rate
+(WER) is computed using Whisper-Large-Turbo [4] to assess
+the speech intelligibility. WavLM-Large [60] is used to evaluate
+source speaker timbre consistency. We also conduct UTMOS
+[61] evaluation to assess naturalness.
+4.4. Accent Conversion
+We compare our model with Vevo-Style, a publicly available
+AC model. Vevo 1.5 [62] requires text for conversion so we do
+not use it. As no open-source streaming AC model is currently
+available, we instead compare demo samples of [28].
+Table 2 demonstrates that our model achieves robust AC
+performance in terms of accent accuracy and similarity by pre-
+serving timbre information (SPK-SIM of 0.72). Our streaming
+model exhibits significantly lower WER of 6.27 than the paral-
+lel baseline Vevo-Style (WER of 13.8). Furthermore, despite
+operating in a streaming manner, our model has comparable
+performance in subjective evaluation including both naturalness
+MOS (NMOS) and accent similarity MOS (AMOS).
+In addition, sparsity in semantic tokens is critical for style
+conversion, whereas a dense semantic tokenizer (CosyV oice 3)
+fails to convert the accent. However, given that VC is primarily
+designed to preserve the source intonation, this observation does
+not necessarily indicate the overall superiority of the proposed
+model.
+4.5. Ablation Study
+4.5.1. Layer-wise Analysis of ASR Encoder Representations
+SSL representations such as Wav2Vec 2.0 [ 1, 42] have been
+shown to encode different types of information across layers.
+Specifically, earlier layers capture more acoustic information,
+middle layers primarily encode linguistic context, and later layers
+represent higher-level contextual information. We also conduct
+a representation comparison across NeMo-ASR encoder layers.
+Table 3 demonstrates a similar tendency in that earlier layers
+capture more acoustic information, such as accent, middle layers
+exhibit lower paralinguistic capacity that facilitates accent con-
+version, and the final layer fails to accurately predict the dense
+semantic tokens. We select the 17th layer representations as an
+input to the sparse semantic tokenizer, considering the trade-off
+between WER and AC performance.
+4641
+Table 4:Analysis of FSQ/iFSQ. d and s denote dimension and
+scale for FSQ, respectively. We fix the ASR encoder layer of 12.
+FSQ Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+UTMOS
+(↑)
+d8s9 6.9 60.9 98.6 0.57 3.83
+d16s9 9.8 47.0 27.2 0.65 3.80
+d32s9 8.7 52.1 12.3 0.68 4.09
+d64s9 13.0 51.3 9.15 0.70 4.05
+d128s9 18.3 44.4 7.51 0.74 4.10
+d256s9 21.5 44.9 6.10 0.75 4.14
+iFSQ Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+UTMOS
+(↑)
+d8s9 9.3 49.7 65.5 0.62 3.86
+d16s9 7.7 63.0 22.7 0.65 4.07
+d32s9 7.7 62.7 14.0 0.68 4.07
+d64s9 12.2 59.3 6.75 0.71 4.09
+d128s9 14.3 54.5 7.93 0.71 4.05
+d256s9 32.1 36.1 6.18 0.75 3.97
+Table 5:Analysis of supervised learning and adversarial dense
+semantic supervision. We fix the ASR encoder of 17 and the iFSQ
+size of 256 dimensions and 9 scalars.
+Method Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+UTMOS
+(↑)
+w/o Stop Grad. 73.1 10.9 3.58 0.86 4.10
+w/ Stop Grad. 13.0 44.6 7.02 0.71 4.00
+w/ adversarial dense semantic supervision
+λgrl = 0.05 10.9 53.7 25.5 0.65 3.79
+λgrl = 0.02 12.2 53.4 11.7 0.70 4.09
+λgrl = 0.01 11.9 55.0 7.33 0.71 4.02
+λgrl = 0.005 12.7 53.4 7.03 0.71 4.12
+λgrl = 0.001 13.0 57.4 6.65 0.71 4.07
+Table 6:Analysis of accent leakage across training steps.
+Layer (IFSQ) Step Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+12 (d64s9) 50k 12.2 59.3 6.75 0.71
+12 (d64s9) 500k 16.4 39.1 8.45 0.72
+17 (d128s9) 50k 12.2 55.3 9.41 0.69
+17 (d128s9) 500k 9.8 52.9 9.49 0.71
+17 (d128s9) 1100k 10.6 60.1 6.27 0.72
+17 (d256s9) 50k 12.7 53.4 7.03 0.71
+17 (d256s9) 500k 18.8 44.1 4.99 0.74
+4.5.2. FSQ and iFSQ
+Table 4 demonstrates that a narrower IB of FSQ and iFSQ re-
+duces paralinguistic capacity but also degrades speech intelli-
+gibility, whereas a wider IB enhances the speech intelligibility
+but tends to leak accent information. Furthermore, iFSQ shows
+better capacity under the same settings. We adopt iFSQ with a
+dimension of 128 and a scale of 9 (d128s9).
+4.5.3. Stop Gradient and GRL Layer
+It is essential to rely solely on supervised learning to prevent
+paralinguistic information leakage. Without the stop-gradient
+operation (Stop Grad.) applied before accent adapter, Table 5
+shows that accent leakage occurs in the quantized representations.
+Applying Stop Grad. blocks the gradients from audio-related
+objectives (dense semantic token prediction), mitigating accent
+leakage. Furthermore, applying GRL further reduces accent
+leakage, achieving better attribute disentanglement.
+4.5.4. Training Steps
+During training, the accent adapter is optimized with dense se-
+mantic token prediction. Due to the strong generative capacity of
+Table 7:Analysis of streaming chunk size for ASR encoder and
+lookahead size for accent adapter
+Streaming
+Chunk
+Lookahead
+Size Latency Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+[70,0]0 80ms 4.2 34.5 135.7 0.58
+[70,13]0 1120ms 6.3 38.0 137.1 0.57
+[70,0]1 80+80ms 8.7 52.1 21.2 0.67
+[70,1]1 160+80ms 5.3 55.8 14.0 0.67
+[70,0]2 80+160ms 15.1 54.5 10.2 0.71
+[70,1] 2 160+160ms 12.2 55.3 9.41 0.69
+[70,6]2 560+160ms 11.4 63.5 8.88 0.70
+[70,13]2 1120+160ms 9.3 59.8 7.02 0.69
+[70,0]3 80+240ms 8.5 63.0 9.87 0.69
+[70,1] 3 160+240ms 14.6 51.6 7.93 0.72
+Table 8:Analysis of different encoders
+Model Streaming Src Acc.
+(↓)
+Tgt Acc.
+(↑)
+WER
+(↓)
+SPK-SIM
+(↑)
+UTMOS
+(↑)
+Whisper-small✗ 3.4 66.4 6.20 0.65 4.14
+Mimi (First VQ)✓ 24.7 47.3 24.5 0.71 4.06
+Mimi (Pre-quant.)✓ 47.6 27.1 7.18 0.78 4.02
+NeMo-ASR✓ 10.6 60.1 6.27 0.72 4.10
+Transformer, the model may learn to reconstruct tokens directly
+from the representations rather than generating them conditioned
+on the accent embedding. When acoustic leakage occurs, AC per-
+formance may degrade as training progresses. However, narrow
+IB can prevent the acoustic leakage as in Table 6.
+4.5.5. Latency
+We evaluate the robustness under different latency using different
+ASR streaming chunk sizes and accent adapter lookahead sizes.
+Table 7 shows that the lookahead layer is essential for robust
+token prediction. We find that the ASR streaming chunk of
+[70,1] and the accent adapter lookahead of 2 tokens provide a
+good trade-off between latency and performance.
+4.5.6. Audio Encoder
+We compare our model using different front-end encoders, in-
+cluding a parallel ASR encoder (Whisper), a streaming acous-
+tic codec (Mimi), and a streaming ASR encoder (NeMo-ASR).
+When applying a strong FSQ of [5,5,3,3] to Whisper embed-
+dings, parallel encoder achieves strong speech intelligibility with
+robust AC. In contrast, an acoustic codec (Mimi) shows strong
+attribute entanglement resulting in accent leakage at both the first
+semantic VQ token and the pre-quantized representation (Pre-
+quant.). Considering both streaming feasibility and performance,
+we employ the NeMo-ASR in our proposed system.
+5. Limitations
+While our work achieves lower latency (0.5s) and a more efficient
+cache-aware structure compared to chunk-wise generation of
+[28] (0.8s latency), there is still room for improvement in real-
+time interaction. Decoder latency can be reduced by integrating
+the Mel decoder and vocoder via StreamFlow [29]. In addition,
+MeanFlow [63, 32] can be explored for one-step generation.
+6. Conclusion
+This work presents AccentDrift, a streaming AC system via
+sparse semantic tokenzation and a hierarchical style adaptation
+framework. We carefully leverage sparse semantic tokenization
+to prevent paralinguistic leakage, and analyze the effectiveness
+of supervised learning and the risk of audio-related objectives
+through the stop gradient operation and the GRL layer. Our
+model successfully achieves real-time streaming AC with a min-
+imal latency of 0.5s using efficient streaming architectures.
+4642
+7. Generative AI Use Disclosure
+We used generative AI (ChatGPT 5.2 and Grammarly) only for
+grammar checking and language polishing. We did not use them
+for content generation and reference generation.

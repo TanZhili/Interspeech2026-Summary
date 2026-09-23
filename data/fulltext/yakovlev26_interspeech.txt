@@ -1,0 +1,349 @@
+ReDimNet2: Scaling Speaker Verification via Time-Pooled Dimension
+Reshaping
+Ivan Yakovlev1, Anton Okhotnikov
+1 Palabra AI, London, United Kingdom
+i.yakovlev@palabra.ai, ant.okhotnikov@gmail.com
+Abstract
+We present ReDimNet2, an improved neural network architec-
+ture for extracting utterance-level speaker representations that
+builds upon the ReDimNet dimension-reshaping framework.
+The key modification in ReDimNet2 is the introduction of pool-
+ing over the time dimension within the 1D processing pathway.
+This operation preserves the nature of the 1D feature space,
+since 1D features remain a reshaped version of 2D features
+regardless of temporal resolution, while enabling significantly
+more aggressive scaling of the channel dimension without pro-
+portional compute increase. We introduce a family of seven
+model configurations (B0-B6) ranging from 1.1M to 12.3M
+parameters and 0.33 to 13 GMACs. Experimental results on
+V oxCeleb1 benchmarks demonstrate that ReDimNet2 improves
+the Pareto front of computational cost versus accuracy at every
+scale point compared to ReDimNet, achieving 0.287% EER on
+V ox1-O with 12.3M parameters and 13 GMACs.
+Index Terms: speaker recognition, speaker verification, speech
+processing, ReDimNet
+1. Introduction
+Speaker recognition is a specialized field aiming at identifying
+or verifying individuals through their distinct voice features.
+Deep neural networks have emerged as the dominant technol-
+ogy for extracting speaker embeddings used for Speaker Verifi-
+cation (SV) and related tasks. Extensive research has advanced
+the field through new datasets [1–4], architecture design [5–18],
+and loss functions [19, 20].
+A variety of architectures have emerged including 1D
+[5–7, 9, 10] and 2D [14–18] CNNs, their hybrids [8, 11, 13],
+and self-attention networks [12]. Each approach has distinct
+advantages: 1D models offer efficiency and direct temporal
+analysis, 2D architectures provide frequency translational in-
+variance [21], and hybrid systems aim to combine both. More
+recently, large self-supervised models such as WavLM [22] and
+W2V-BERT 2.0 [23,24] have achieved strong results but at sig-
+nificantly higher computational costs.
+ReDimNet [25] introduced a novel approach based on di-
+mensionality reshaping between 2D and 1D representations, en-
+abling seamless integration of both block types with residual
+connections throughout the network. Its compact and accurate
+speaker embeddings have since been adopted in diverse down-
+stream tasks: speaker conditioning for zero-shot text-to-speech
+synthesis [26], speaker similarity evaluation in speech enhance-
+ment and speech generation [27, 28], and as a compact speaker
+encoder for personal voice activity detection [29]. While ReD-
+imNet achieved state-of-the-art results, its design constraint of
+preserving time resolution throughout the network limited the
+scalability of the channel dimension: increasing channels with-
+100 101 102
+GMACs (log scale)
+0.6
+0.8
+1.0
+1.2
+1.4
+1.6Average EER (%)
+B0
+B1
+B2
+B3
+B4
+B5
+B6
+NeXt-TDNN
+(C=128)
+NeXt-TDNN-l
+(C=128)
+NeXt-TDNN
+(C=256)
+NeXt-TDNN-l
+(C=256)
+ECAPA
+(C=512)
+CAM++
+Gemini-
+DFResNet114
+ResNet293
+ECAPA2
+WavLM
+W2V-BERT
+2.0
+Computational Cost vs. Average EER
+ReDimNet
+ReDimNet2
+ECAPA
+ECAPA2
+CAM++
+ResNet
+NeXt-TDNN
+WavLM
+W2V-BERT-2.0
+Gemini-DFResNet
+Fig. 1 Computational Cost vs. Average EER.EER is aver-
+aged over V ox1-O, V ox1-E, and V ox1-H protocols. Marker area
+is proportional to parameter count, color indicates model fam-
+ily. Dashed line: ReDimNet, solid line: ReDimNet2. GMACs
+measured on 2-second input.
+out time reduction leads to quadratic growth in computation
+within the 1D pathway.
+In this paper, we present ReDimNet2, which addresses this
+limitation by introducing pooling over the time dimension in
+the 1D pathway. The key insight is that time-pooling does not
+fundamentally alter the 1D feature space - 1D features remain a
+reshaped version of 2D features, so the residual connection and
+dimension-reshape logic remain valid despite the reduced tem-
+poral resolution. This simple modification allows more aggres-
+sive channel scaling and yields consistently improved accuracy
+at every compute budget (Fig. 1).
+2. Model Architecture
+2.1. ReDimNet recap
+ReDimNet [25] is built around dimensionality reshaping be-
+tween 2D and 1D feature maps. The architecture constrains all
+2D feature maps to have a constant volumeV=C·F·T, where
+C,F,Tare channels, frequency bins, and time steps, respec-
+tively. This is achieved by (1) eliminating all strides over the
+time axis, and (2) synchronizing frequency strides with chan-
+nel growth rates across stages. Given constant volume, any 2D
+feature map(C i, Fi, T)can be reshaped to a common 1D rep-
+resentation(C i·F i, T) = (C 0·F 0, T), enabling residual con-
+nections between arbitrary stages. Joint 1D+2D blocks process
+features through interleaved 2D convolutional subblocks (basic
+ResNet blocks) and 1D time-contextual subblocks (ConvNeXt-
+4551
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1447
+Fig. 2 ReDimNet2 architecture overviewfor a single stage.Top:ReDimNet v1 processes 1d input through ato2dreshape operation,
+block2d(frequency stride only), ato1dreshape operation followed by ablock1d, and stage-wise weighted aggregation (“stack
+and weight”), preserving the time dimensionTthroughout.Bottom:ReDimNet2 applies an additional stride over the time axis inside
+the 2D block, halving bothFandT. The 1D block then operates on the shorter sequence (T /2), and an upsample-to-initial-Tstep
+restores the original temporal resolution before aggregation.
+Table 1 Feature map sizes for B3 v2 configuration.S f ,S t:
+frequency and time strides. Time-pool stages (3, 5) halveT
+without adjustingC, softly relaxing theC·F·Tconstraint.
+Block # In shape Sf St Channels Out shape V olume
+1 (C, F, T) 1 1 C (C, F, T) C·F·T
+2 (C, F, T) 2 1 2C (2C, F/2, T) C·F·T
+3 (2C, F/2, T) 1 2 2C (2C, F/2, T /2) C·F·T /2
+4 (2C, F/2, T /2) 2 1 4C (4C, F/4, T /2) C·F·T /2
+5 (4C, F/4, T /2) 1 2 4C (4C, F/4, T /4) C·F·T /4
+6 (4C, F/4, T /4) 2 1 8C (8C, F/8, T /4) C·F·T /4
+like 1D convolutions combined with multi-head attention), with
+Attentive Statistics Pooling [30] for utterance-level aggregation.
+We reuse the best-performing 1D and 2D block types identified
+through ablation studies in [25].
+2.2. ReDimNet2: time-pooled dimension reshaping
+The central modification in ReDimNet2 is the introduction of
+pooling over the time dimensionwithin the 1D processing
+pathway (Fig. 2). In the original ReDimNet, the time axisT
+is preserved at the input resolution throughout the entire net-
+work. While this preserves full temporal information, the com-
+putational cost of the 1D subblocks scales linearly with both
+channelsCand time stepsT, making large-Cconfigurations
+increasingly expensive.
+Pooling mechanism.ReDimNet2 applies time-pooling at
+intermediate stages using the same strided conv2d layer that im-
+plements frequency downsampling in the original architecture -
+the one that preserves spatial volume by doubling channels as
+Fis halved. When applied in the time direction, the channel
+dimension is not adjusted, which softly relaxes the constant-
+volume constraintC·F·T. Table 1 shows the resulting feature
+map shapes for the B3 configuration. Frequency-pool stages (2,
+4, 6) preserve the volume exactly, while time-pool stages (3, 5)
+reduceTby half without changingCorF.
+Residual connections.In the original ReDimNet, all stage
+outputs share the same 1D shape(B, C·F, T)whereBis the
+batch size, and can be directly aggregated via learned stage-
+wise weights. In ReDimNet2, stages produce 1D feature maps
+at different temporal lengths:(B, C·F, T),(B, C·F, T /2),
+(B, C·F, T /4), and so on. To maintain residual connectivity,
+we apply nearest-neighbor upsampling to all feature maps prior
+to the stage-wise weighted aggregation, aligning them to the in-
+put temporal resolutionT∗:
+[(B, C·F, T),(B, C·F, T
+2 ),(B, C·F, T
+4 ), . . .]
+→[(B, C·F, T ∗),(B, C·F, T ∗), . . .]
+whereT ∗ =T. Each stage still processes its own features at
+reduced temporal resolution; upsampling is applied only at the
+aggregation point, so the compute savings within each stage are
+preserved.
+Dual efficiency benefit.Time-pooling benefits both pro-
+cessing pathways. The 1D subblocks benefit directly from
+shorter sequences, reducing their cost proportionally. The 2D
+subblocks benefit even more: since the 1D-to-2D reshape pro-
+duces 2D feature maps whose spatial extent depends on the se-
+quence length, reducedTcompresses the 2D representations
+as well, compounding the savings. This dual reduction enables
+more aggressive scaling of the channel dimensionCwithin the
+same GMACs budget.
+The freed compute budget is reallocated to wider models
+(higherC), which empirically yields better speaker discrim-
+inability at matched computational cost.
+2.3. Model configurations
+Following [31], we define seven configurations B0–B6 bounded
+by computational complexity in GMACs:B0<0.5, B1≈0.5,
+B2<1.5, B3<3.0, B4<5.5, B5<10.0, B6>10.0.ReDim-
+Net2 scales from 1.1M params / 0.33 GMACs at B0 to 12.3M
+params / 13.0 GMACs at B6.
+4552
+Table 2 Evaluation results on VoxCeleb1 cleaned protocols (EER, %).All models trained on V oxCeleb2-dev unless noted. GMACs
+measured on 2-second segments. * = estimated values. Models from WeSpeaker or ECAPA2 repositories retested in our environment.
+† = trained on V oxBlink2 + V oxCeleb2.‡ = V oxCeleb2-only figures are the WeSpeaker [32] reproduction without score normalization
+(no AS-Norm/QMF), for protocol consistency with the cosine scoring used throughout; not the official numbers reported in [24].
+Model Params GMACs LM Vox1-O Vox1-E Vox1-H
+ReDimNet-B0 [25] 1.0M 0.43✓1.16 1.25 2.20
+ReDimNet2-B0 1.1M 0.33✓1.04 1.16 1.97
+NeXt-TDNN-l (C=128) [7]1.6M 0.29*✗1.10 1.24 2.12
+NeXt-TDNN (C=128) [7] 1.9M 0.35*✗1.03 1.17 1.98
+ReDimNet-B1 [25] 2.2M 0.54✓0.85 0.97 1.73
+ReDimNet2-B12.1M 0.56✓0.78 0.96 1.72
+ECAPA (C=512) [6, 17] 6.2M 1.04✗0.94 1.21 2.20
+NeXt-TDNN-l (C=256) [7] 6.0M 1.13*✗0.81 1.04 1.86
+CAM++ [11, 32] 7.2M 1.15✓0.71 0.85 1.66
+NeXt-TDNN (C=256) [7] 7.1M 1.35*✗0.79 1.04 1.82
+ReDimNet-B2 [25] 4.7M0.90✓0.57 0.76 1.32
+ReDimNet2-B2 3.6M0.95✓0.57 0.761.41
+ReDimNet-B3 [25]3.0M3.00✓0.50 0.73 1.33
+ReDimNet2-B34.1M2.70✓0.42 0.66 1.22
+Gemini-DFResNet114 [18] 6.5M 5.42✗0.77 0.91 1.60
+ReDimNet-B4 [25]6.3M4.80✓0.51 0.68 1.26
+ReDimNet2-B46.6M4.62✓0.37 0.58 1.07
+ReDimNet-B5 [25] 9.2M 9.87✓0.43 0.61 1.08
+ReDimNet2-B5 8.9M 9.62✓0.33 0.56 1.07
+ResNet293 [32, 33] 28.6M 28.10✓0.53 0.71 1.30
+ECAPA2 [13] 27.1M 187.0*✓0.44 0.62 1.15
+WavLM [22] 324M 26.53✓0.52 0.63 1.34
+W2V-BERT 2.0‡ [24] 587M 57.90✓0.380.511.06
+ReDimNet-B6 [25] 15.0M 20.27✓0.40 0.55 1.05
+ReDimNet2-B6 12.3M 13.05✓0.290.520.99
+Models trained on extended data (V oxBlink2 + V oxCeleb2):
+SimAM-ResNet34† [34] 25.2M 18.20 - 0.42 0.62 1.12
+SimAM-ResNet100† [34] 50.2M 57.24 - 0.23 0.46 0.87
+W2V-BERT 2.0† [24] 587M 57.90 - 0.14 0.31 0.73
+3. Experimental Setup
+We train ReDimNet2 on the V oxCeleb2 [1] using a two-stage
+training approach with thewespeaker[32] training pipeline.
+3.1. Pretraining stage
+Models are optimized using SGD with Nesterov momentum
+(m= 0.9) and weight decay of2×10 −5. We use 80-
+dimensional mean-normalized Mel filter bank log-energies with
+a 25 ms frame length and 10 ms shift. During pretraining,
+2-second segments are randomly cropped, and augmentations
+from the MUSAN [35] and RIR [36] datasets are applied fol-
+lowing [14]. Two-fold speed perturbation with factors 0.9 and
+1.1 is used. SphereFace2-C (SF2-C) [20] is used as the default
+loss function, with the margin scheduled from 0.0 to 0.2 over
+epochs 20–40, then held constant. Learning rate follows an ex-
+ponential decay schedule with 6-epoch warmup,lr max = 0.1,
+lrmin = 6×10−5. Each model configuration was trained with
+different GPU setup for maximum resources utilization. We
+found that multi-GPU training setup (8 x H100) gives better
+results for larger models due to the linear scaling of effective
+learning rate induced by large effective batch size.
+3.2. Large-Margin Finetuning stage
+For the LM finetuning stage [37], training utterance length is
+expanded to 6 seconds, speed perturbations are turned off, and
+the SF2-C margin is set to a constant 0.3. Learning rate is re-
+duced to10 −4 with exponential decay. This stage runs for 5
+epochs.
+4553
+Table 3 Out-of-domain evaluation (EER, %).All models
+trained on V oxCeleb2-dev. Baselines from [25].
+Model SITW VOiCES Vox1-B Avg
+CAM++ [11] 1.34 6.30 2.79 3.48
+ECAPA (C=1024) [6] 1.67 5.31 3.48 3.49
+ResNet293 [33] 1.67 5.14 2.23 3.01
+ECAPA2 [13] 3.64 13.26 1.81 6.24
+ReDimNet-B6 [25] 0.77 3.19 1.66 1.87
+ReDimNet2-B6 0.75 3.13 1.63 1.84
+3.3. Evaluation
+Performance is assessed using cleaned protocols of V oxCeleb1
+[38]: V ox1-O (Original), V ox1-E (Extended), and V ox1-H
+(Hard), employing the Equal Error Rate (EER). Models are
+scored with cosine similarity using full-length test utterances
+without score normalization. GMACs are computed using the
+thoplibrary with a 2-second raw waveform input at 16 kHz.
+4. Results
+Evaluation results for all ReDimNet2 configurations and base-
+lines are presented in Table 2 and visualized in Fig. 1. The B0–
+B6 scaling comparison constitutes the primary evidence for the
+effectiveness of time-pooling: almost at every matched com-
+pute budget, ReDimNet2 achieves lower EER than the cor-
+responding ReDimNet configuration. This seven-point com-
+parison across the full Pareto front provides strong evidence
+since GMACs are the predominant factor governing accu-
+racy in speaker verification. Removing all time strides from
+ReDimNet2-B3 (2.7 GMACs) would increase its compute to
+approximately 4.0 GMACs, directly comparable to ReDimNet-
+B4 at 4.8 GMACs - a comparison point present in Table 2. As
+all B0–B6 pairs are aligned in GMACs and parameter count,
+the seven paired-budget comparisons also constitute a complete
+cross-scale ablation.
+The gains are most pronounced at larger scales, where time-
+pooling enables more aggressive channel scaling. ReDimNet2-
+B6 achieves0.29%EER on V ox1-O - a 28% relative im-
+provement over ReDimNet-B6 - while requiring 36% fewer
+GMACs and 18% fewer parameters. Even at the smallest scale,
+ReDimNet2-B0 improves from 1.16% to 1.04% EER on V ox1-
+O, confirming that the benefit is consistent across all model
+sizes. Moreover, ReDimNet2-B6 outperforms WavLM (324M
+params) and approaches W2V-BERT 2.0 (587M params) while
+being 48×smaller in parameter count. Mid-range configura-
+tions are equally notable: ReDimNet2-B3 surpasses ECAPA2
+on V ox1-O at 69×fewer GMACs, and every configuration from
+B3 onwards exceeds ResNet293 (28.6M params).
+Out-of-domain generalization.We also evaluated
+ReDimNet2-B6 on out-of-domain test sets following the proto-
+col used in [25]: the SITW core-core set [39], the VOiCES eval-
+uation set [40], and the V oxCeleb1-B hard protocol [41]. Re-
+sults are shown in Table 3. ReDimNet2-B6 achieves lower EER
+than ReDimNet-B6 on all three out-of-domain sets, demonstrat-
+ing that time-pooling does not hurt generalization.
+Training stability.We observed that results for smaller
+models (B0–B3) are stable across random seeds, with
+mean±std EER of0.42±0.01% for B3 on V ox1-O. However,
+for larger models (B4–B6), we noticed increased variability: B6
+achieves0.32±0.05% EER on V ox1-O across multiple runs.
+This suggests that while the proposed architecture scales well,
+training larger models may benefit from additional regulariza-
+tion or careful hyperparameter tuning to ensure stability.
+5. Conclusions
+In this paper we presented ReDimNet2, an improved speaker
+embedding architecture that extends ReDimNet with time-
+pooling in the 1D processing pathway. We showed that time-
+pooling is compatible with the dimension-reshaping frame-
+work: the same volume-preserving conv2d layer used for
+frequency downsampling handles time pooling as well, and
+nearest-neighbor upsampling at the aggregation point maintains
+full residual connectivity. The resulting model family (B0–B6)
+achieves a better accuracy-efficiency trade-off than ReDimNet
+at every matched compute budget. In particular, ReDimNet2-
+B6 reaches 0.29% EER on V ox1-O and 0.99% on V ox1-H with
+only 12.3M parameters and 13 GMACs, while also preserving
+strong out-of-domain generalization. We conclude that time-
+pooling is a simple yet effective strategy for scaling dimension-
+reshaping architectures for speaker verification. Model code,
+training recipes, and pretrained weights are released athttps:
+//github.com/PalabraAI/redimnet2.
+6. Disclosure of AI Tool Use
+A generative AI assistant (Claude, Anthropic) was used for edit-
+ing and polishing the manuscript text. All scientific content, ex-
+perimental design, model architecture, and analysis were pro-
+duced entirely by the authors.

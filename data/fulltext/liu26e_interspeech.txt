@@ -1,0 +1,497 @@
+CTC-TTS: LLM-Based Dual-Streaming Text-to-Speech with CTC Alignment
+Hanwen Liu ID 1, Saierdaer Yusuyin ID 1, Hao Huang ID 1, Zhijian Ou ID 2,∗∗
+1 School of Computer Science and Technology, Xinjiang University, China
+2 Speech Processing and Machine Intelligence (SPMI) Lab, Tsinghua University, China
+huanghao@xju.edu.cn, ozj@tsinghua.edu.cn
+Abstract
+Large-language-model (LLM)-based text-to-speech (TTS) sys-
+tems can generate natural speech, but most are not designed
+for low-latency dual-streaming synthesis. High-quality dual-
+streaming TTS depends on accurate text–speech alignment and
+well-designed training sequences that balance synthesis qual-
+ity and latency. Prior work often relies on GMM-HMM based
+forced-alignment toolkits (e.g., MFA), which are pipeline-
+heavy and less flexible than neural aligners; fixed-ratio inter-
+leaving of text and speech tokens struggles to capture text–
+speech alignment regularities. We propose CTC-TTS, which
+replaces MFA with a CTC based aligner and introduces a bi-
+word based interleaving strategy. Two variants are designed:
+CTC-TTS-L (token concatenation along the sequence length)
+for higher quality and CTC-TTS-F (feature-dimension embed-
+ding stacking) for lower latency. Experiments show that CTC-
+TTS outperforms fixed-ratio interleaving and MFA-based base-
+lines on streaming synthesis and zero-shot tasks.
+Index Terms: dual-streaming TTS, CTC alignment
+1. Introduction
+In recent years, large language model (LLM)-based methods [1,
+2, 3, 4] that treat text-to-speech (TTS) as a language modeling
+task have gained widespread attention. These methods typically
+convert continuous speech signals into discrete token sequences
+with a neural audio codec (NAC) [5, 6, 7], predict the sequence
+using an LLM, and finally reconstruct the speech waveform via
+the NAC decoder.
+However, most LLM-based TTS systems are not designed
+for low-latency dual-streaming synthesis (simultaneous text in-
+put and speech output). [1, 2, 3]. High-quality dual-streaming
+TTS requires accurate text–speech alignment and well-designed
+training sequences that balance synthesis quality and latency.
+Prior work often relies on GMM-HMM based forced-alignment
+toolkits (e.g., Montreal Forced Aligner, MFA) [8], which are
+pipeline-heavy and less flexible than neural aligners. Mean-
+while, fixed-ratio interleaving of text and speech tokens strug-
+gles to capture alignment regularities between text and speech,
+making it more difficult for the model to learn reliable tempo-
+ral dependencies. Alignment-aware interleaving can alleviate
+this issue but still typically depends on MFA; existing methods
+adopt different alignment units such as words, Byte Pair Encod-
+ings (BPEs) [9], and phonemes and diverse sequence organiza-
+tions, as reviewed in Section 2.
+To address these limitations, we proposeCTC-TTS 1, a
+Connectionist Temporal Classification (CTC)-based [10] dual-
+**indicates the corresponding author.
+1Code is available athttps://github.com/thu-spmi/
+CTC-TTS.
+streaming TTS method that improves both alignment and se-
+quence organization. CTC alignment introduces a blank sym-
+bol and yields a robust structural correspondence without re-
+quiring frame-accurate phoneme boundaries. This level of
+alignment is sufficient for an autoregressive model to learn to
+map local phoneme groups to speech tokens, reducing learning
+complexity compared with fixed-ratio interleaving and avoid-
+ing the heavy pipeline of MFA. We constructbi-wordblocks:
+phonemes of the current word plus the separator and phonemes
+of the next word, followed by the speech tokens aligned to the
+current word.
+To balance synthesis quality and latency, we design two
+variants based on different interleaving implementations of
+phonemes and speech tokens for bi-words.CTC-TTS-Lcon-
+catenates text and speech tokens along the sequence length di-
+mension to enhance generation quality.CTC-TTS-Fstacks text
+and speech embeddings along the feature dimension, enabling
+synthesis to start from the first phoneme and thus reducing first-
+packet latency. Experiments show that CTC-TTS outperforms
+strong baselines on streaming synthesis and zero-shot tasks.
+Our main contributions are: (1) a lightweight CTC-based
+phoneme-speech alignment procedure for LLM-based TTS;
+(2) a bi-word interleaving strategy with compact look-ahead;
+(3) two variants (CTC-TTS-L/F) that realize different quality-
+latency trade-offs and improve streaming and zero-shot results.
+2. Related Work
+Early LLM-based TTS methods concatenate full speech tokens
+after the complete text input, leading to large first-packet la-
+tency (FPL) [1, 3]. Dual-streaming methods therefore construct
+interleaved text–speech sequences so that an autoregressive de-
+coder can generate speech tokens while text tokens arrives.
+Non-aligned interleaving.IST-LM [11], CosyV oice2 [4],
+and StreamMel [12] use fixed-ratio interleaving of text and
+speech. LLMV ox [13] stacks phoneme and speech embeddings
+in the feature dimension to reduce FPL.
+Aligned interleaving.SpeakStream [14] uses word-level
+forced alignment to pair chunked speech with a window of
+text words. SyncSpeech [15] applies MFA for speech–BPE
+[9] alignment and generates speech tokens per BPE token.
+ELLA-V [16] employs MFA for phoneme–speech alignment
+and aligned interleaving, outperforming the non-aligned V ALL-
+E [1].
+Interleaving design.Interleaving schemes reflect quality-
+latency trade-offs in streaming speech synthesis, by using dif-
+ferent amounts of look-ahead. SpeakStream trades latency for
+quality via the text-window size and speech hop. SyncSpeech
+introduces duration modeling, increasing model complexity.
+ELLA-V adopts global advance (prepending all phonemes for
+4736
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-653
+global context) and local advance (shifting phonemes forward
+for local context). In this paper, we adopt a bi-word interleav-
+ing unit to balance synthesis quality and latency.
+3. CTC-TTS
+3.1. Speech–phoneme alignment
+Given input speech features, a CTC-based automatic speech
+recognition (ASR) model outputs a posterior distribution over
+text labels2 at each frame. From this distribution, we obtain the
+maximum-probability alignment pathπ ∗ via the Viterbi algo-
+rithm [10]:
+π∗ = argmax
+π
+TY
+t=1
+P(π t|x t)(1)
+wherex t denotes the acoustic feature at framet,π=
+(π1,...,π T )is a frame-level alignment path over an extended
+alphabet (phonemes plus the blank symbol), andP(π t |x t)
+is the posterior probability at frametcomputed from the logits
+produced by the neural-network based acoustic model. In CTC,
+multiple consecutive frames may share the same label and blank
+labels may appear between phoneme labels; the standard col-
+lapse operation (merge repeats and remove blanks) maps a path
+to the corresponding phoneme sequence [10].
+In the pathπ ∗, phoneme labels usually lag their actual
+speech onset, and blank labels may correspond to silence or ad-
+jacent phoneme regions [17]. We therefore assign each blank
+label to its first subsequent phoneme. Ifπ ∗ ends with blank
+labels, these trailing blanks are assigned to the final phoneme
+label, yielding the refined path ˆπ. In our experiments, the CTC
+model converts speech into acoustic features at 25 frames per
+second, while the NAC converts speech into a discrete token
+sequencesat 75 frames per second, the length ratio between
+ˆπands= (s 1,...,s 3T )is 1:3. We thus map each phoneme
+label in ˆπto three corresponding speech tokens ins, such that
+thei-th phoneme ˆπi is aligned to the discrete speech tokens
+[s3i−2,s 3i−1,s 3i].
+Unlike GMM-HMM forced alignment, the CTC alignment
+used here is not intended to provide frame-accurate phoneme
+boundaries. Instead, it provides a stable structural alignment
+that is sufficient for constructing word-level phoneme–speech
+blocks and for learning the mapping from local phoneme groups
+to speech tokens.
+3.2. Interleaving schemes
+After aligning phonemes and speech, we derive the speech se-
+quence corresponding to the phonemes of each word. Since
+a word’s pronunciation depends on its context, we construct
+the sequence illustrated in Figure 1(a): after the phonemes of
+the current word, we append the word separator between the
+current and next word (space, comma, period, question mark
+and exclamation mark), together with the phonemes of the next
+word, followed by the speech tokens corresponding to the cur-
+rent word, and end with a block terminator⟨eob⟩. For thek-th
+word, we refer to this as a (bi-word) phoneme–speech blockbk.
+For the last word, which has no subsequent word, we insert an
+⟨eos⟩as a placeholder for the future word. Concatenating all
+phoneme–speech blocks yields the complete training sequence
+for an utterance:Y=b 1⊕b 2⊕···. The model trained
+2In this work, we use phonemes as text labels; exploring graphemes
+or subwords as alignment units is left for future work.
+p p sep... ...... eobp p...
+token
+embedding
+s ss s
+s...
+...
+...
+...
+...
+... word 
+separator
+speechs
+sep
+<eob>
+zero tensor0
+eob
+<pad>pad
+phonemep
+Interleaving
+Schemesphonemes of 
+current word
+phonemes of 
+next word
+speech of 
+current word
+(a) Splicing in length
+(b) Feature stacking
+0
+p p
+s
+sep
+s
+p
+s
+p
+s
+pad
+s
+pad
+0
+eob
+Figure 1:One bi-word block in the two text–speech interleaving
+schemes: (a) CTC-TTS-L and (b) CTC-TTS-F .
+on such text–speech sequences constructed by length-wise con-
+catenation is denoted asCTC-TTS-L(Figure 1a).
+CTC-TTS-L only starts generating speech tokens after re-
+ceiving phonemes for the first two words, which increases first-
+packet latency. To mitigate this issue, we follow LLMV ox [13]
+and instead stack phoneme and speech embeddings along the
+feature dimension (Figure 1b). For each block, we append⟨pad⟩
+tokens to the phoneme sequence so that its length matches the
+speech-token sequence length, then stack them along the fea-
+ture dimension. For initialization, the first phoneme of the ini-
+tial block and the⟨eob⟩token are both stacked with an all-zero
+tensor. During inference, the model can generate speech to-
+kens immediately after reading the first phoneme (stacked with
+zeros), which reduces first-packet latency. The model trained
+with feature-level stacking is denoted asCTC-TTS-F.
+3.3. Model architecture
+Figure 2 illustrates the CTC-TTS framework (shown for CTC-
+TTS-L); CTC-TTS-F is analogous and omitted for brevity.
+Since this paper adopts a single-codebook NAC, only one au-
+toregressive Transformer is used to predict speech tokens and
+the⟨eob⟩symbol. Let the training sequence be rewritten as
+Y=y 1,···,y |Y|, where|Y|denotes the sequence length.
+The training objective is to minimize the cross-entropy loss over
+speech tokens and⟨eob⟩:
+L=
+X
+t=1,···,|Y|;t /∈T
+−logP(y t|y<t;θ)(2)
+whereTdenotes the positions of text tokens (phonemes and
+⟨eos⟩) in the interleaved sequence, andθdenotes the model pa-
+rameters.
+For CTC-TTS-L, the model starts generating speech tokens
+after reading the phonemes of the current word and the next
+word. It keeps generating until emitting⟨eob⟩, which indicates
+the end of the current word’s speech block. Inference terminates
+after⟨eob⟩is emitted for the last word.
+For CTC-TTS-F, inference begins by receiving the first
+phoneme. Its embedding is stacked with an all-zero tensor along
+the feature dimension and fed into the model to generate one
+speech token. After each generated speech token, its embedding
+is stacked with the next phoneme embedding (or⟨pad⟩after the
+phonemes for two words are exhausted) and appended to the se-
+quence. When⟨eob⟩is emitted, the current word’s speech block
+ends; we then stack⟨eob⟩with zeros to generate the next speech
+token, and stack that token with the next word’s first phoneme
+to start the subsequent block. Inference terminates when⟨eob⟩
+is emitted for the last word. Following LLMV ox, we decode
+speech tokens to audio in chunks. For zero-shot dual-streaming
+4737
+Decoder-only Transformer 🔥
+Phonemes
+G2P ❄  NAC Encoder ❄
+Prompt Text
+p
+s
+Phoneme Tokens
+of One Word
+Speech Token
+s s s s
+ NAC Decoder ❄
+❄ Frozen Parameters
+🔥 Train Parameters
+s
+CTC Model ❄
+Alignment-and-Interleaving
+s s s s sp ......
+......
+p
+eob eob
+eob <eob> Token
+p p eobss sep... p p ...sep sep sep p pp
+sep Word Separator
+CTC-TTS
+Prompt Tokens Target Tokens Target Tokens
+Chunk-aware 
+Streaming Output
+Personalized Speech
+Prompt Speech Prompt Speech
+Logits Speech Tokens
+Figure 2:Overview of CTC-TTS-L. Components include: (1) a G2P model that converts text to phonemes; (2) a CTC-based ASR model
+for speech–phoneme alignment; (3) a decoder-only LM that models interleaved text and speech tokens; (4) a neural audio codec; and
+(5) an alignment-and-interleaving module implementing Sections 3.1–3.2. CTC-TTS-F shares the same components but uses feature-
+level stacking (Fig. 1b) and is omitted for brevity. No prompts are required in single-speaker settings.
+synthesis, the process is similar but conditioned on pre-aligned
+speech and text prompts (prompt tokens in Figure 2), which are
+typically reusable.
+4. Experimental Setup
+4.1. Pre-trained models and dataset selection
+We use a LibriSpeech-trained monolingual Whistle [18, 19] as
+the CTC model (115M parameters), which is a Conformer-
+based [20] ASR model with weak phonetic supervision.
+Phonetisaurus [21], a WFST-based [22] G2P toolkit, converts
+English text to IPA phonemes. WavTokenizer [5], a single-
+codebook NAC, enables a single autoregressive model to pre-
+dict all speech tokens. To obtain the speech–phoneme align-
+ment, we use theforced alignfunction in Torchaudio,
+which takes CTC posteriors as input and implements Eq. (1)
+via the Viterbi algorithm.
+Single-speaker streaming experiments. We evaluate
+dual-streaming generation with the two CTC-TTS variants
+against LLMV ox [13]. Following LLMV ox, we use the V oice-
+Assistant400K [23] single-speaker dataset (1750 h training, 50 h
+validation, 5 h test) after filtering untranscribable utterances via
+Phonetisaurus. We reproduce LLMV ox on this dataset for com-
+parison and adopt the same chunk-aware streaming speech out-
+put paradigm as LLMV ox.
+Multi-speaker zero-shot experiments. We compare our
+alignment and interleaving schemes with baselines on two tasks
+(continuation and cross-speaker). Different model are trained
+on the 960-hour LibriSpeech dataset. For evaluation, the con-
+tinuation task uses 4–10 s utterances fromtest-clean, while
+the cross-speaker task uses Seed-TTS [2]test-en. We repro-
+duce ELLA-V’s local-advance setting with the same backbone,
+NAC, and data splits for fair comparison.
+4.2. Training configuration
+We use 12 Transformer decoder layers with 16 attention heads,
+1024 embedding dimension, 4096 feed-forward dimension, and
+0.3 dropout. For CTC-TTS-F, text and speech embedding di-
+Table 1:Comparison between CTC-TTS and LLMVox. LLMVox
+interleaves text and speech at a fixed ratio and stacks embed-
+dings in the feature dimension. CTC-TTS-F stacks embeddings
+in the feature dimension, while CTC-TTS-L concatenates tokens
+along the length dimension. #Params refers to model parame-
+ters, and NA indicates not applied.
+Method #Params WER%↓CER%↓FPL-A↓UTMOS↑
+Ground Truth NA NA NA NA 4.27
+LLMV ox 31.5M 2.40 1.36 1674.15
+CTC-TTS-F 33.6M 1.80 1.04159 4.15
+CTC-TTS-L 34.7M1.50 0.792104.15
+mensions are 256 and 768. For single-speaker experiments,
+the parameters are adjusted to 4 decoder layers, 12 attention
+heads, 768 embedding dimension, 3072 feed-forward dimen-
+sion, 0 dropout, 256 text embedding dimension, and 512 speech
+embedding dimension. All models are trained on 4 RTX 3090
+GPUs with a total batch size of 32. We use the AdamW [24] op-
+timizer (β1 = 0.9,β 2 = 0.95,ϵ= 10 −6) and a cosine learning
+rate scheduler with warm-up to3×10 −4 in 25k steps. Train-
+ing steps are 320k for multi-speaker and 1M for single-speaker.
+The weight decay is set to 0.1. We use flash-attention [25] for
+fast training and KV-Cache for inference.
+4.3. Evaluation metrics
+Objective metrics. We use Word Error Rate (WER)
+and Character Error Rate (CER) to evaluate intelligibility.
+whisper-large-v3[26] and Conformer-Transducer 3 are
+used as ASR models for single- and multi-speaker experiments,
+respectively. Speech naturalness is measured by UTMOS [27].
+First-packet latency (FPL-A, assuming the full text is available
+for TTS) is reported for single-speaker experiments. Speaker
+similarity (SPK) is computed usingWavLM-Base-Plus-SV
+[28] embeddings.
+Subjective metrics. We conduct Mean Opinion Score (MOS)
+3https://huggingface.co/nvidia/stt_en_
+conformer_transducer_xlarge
+4738
+Table 2:Experimental results of different methods on the continuation task (bold: best, underline : second best).
+Group Method #Params WER%↓CER%↓SPK↑UTMOS↑MOS↑SMOS↑
+Ground Truth NA NA 1.92 0.69 NA 4.0864.28±0.060 4.60±0.048
+Our Method CTC-TTS-F 158.47M 5.20 2.680.9304.0134.31±0.057 4.58±0.050
+CTC-TTS-L 159.58M4.82 2.470.929 4.0504.33±0.061 4.60±0.049
+Ablation
+CTC+ELLA-V 159.58M 12.01 7.37 0.928 4.021 4.00±0.062 4.39±0.058
+MFA+ELLA-V 159.58M 10.98 6.99 0.928 4.021 3.94±0.066 4.44±0.056
+MFA+bi-word 159.58M 5.14 2.63 0.9304.0104.25±0.061 4.50±0.051
+Table 3:Experimental results of different methods on the cross-speaker task.
+Group Method #Params WER%↓CER%↓SPK↑UTMOS↑MOS↑SMOS↑
+Ground Truth NA NA NA NA NA 3.5274.18±0.068 4.14±0.072
+Our Method CTC-TTS-F 158.47M 8.02 4.200.8803.903 4.16±0.064 3.85±0.071
+CTC-TTS-L 159.58M6.33 3.210.878 3.9714.23±0.060 3.98±0.073
+Ablation
+CTC+ELLA-V 159.58M 20.86 11.73 0.869 3.8483.88±0.073 3.94±0.073
+MFA+ELLA-V 159.58M 34.89 19.58 0.872 3.8733.75±0.071 3.88±0.074
+MFA+bi-word 159.58M 7.53 3.99 0.874 3.8404.14±0.068 3.83±0.076
+for naturalness and Similarity MOS (SMOS) for speaker simi-
+larity. 30 samples are randomly selected per system and eval-
+uated by 20 listeners on a 1–5 scale, with results reported as
+mean scores with 95% confidence intervals.
+5. Experimental results
+5.1. Single-speaker streaming experiments
+Table 1 shows the results of LLMV ox and the two CTC-TTS
+variants using greedy search. Compared to LLMV ox, CTC-
+TTS-F achieves lower WER and CER while maintaining a
+shorter FPL-A (ms). The key difference lies in its adoption
+of CTC alignment and bi-word based sequences, demonstrat-
+ing the advantages of these two designs. Compared to CTC-
+TTS-F, CTC-TTS-L delivers even lower WER and CER with a
+slightly higher FPL-A. The two variants can be selected based
+on latency and quality requirements. All three methods have
+identical UTMOS scores (reflecting comparable naturalness),
+as UTMOS prioritizes speech naturalness over content.
+5.2. Multi-speaker zero-shot experiments
+For the multi-speaker experiments, we reproduce the ELLA-V
+setup on the zero-shot task using MFA alignment and ELLA-
+V’s training sequence, which we refer to as MFA+ELLA-V . We
+further conduct ablation studies with different alignment and
+training sequences: CTC alignment with ELLA-V’s sequence
+(CTC+ELLA-V), and MFA alignment with CTC-TTS-L’s se-
+quence (MFA+bi-word). Following ELLA-V , we use nucleus
+sampling in multi-speaker generation for more stable results.
+Continuation. Given a text segment and its corresponding
+3-second prefixed speech, the task aims to synthesize speech
+for the remaining text. Results are shown in Table 2. For meth-
+ods using bi-word sequences, CTC-TTS-F achieves competi-
+tive performance compared with MFA+bi-word, while CTC-
+TTS-L outperforms MFA+bi-word in all metrics except SPK—
+demonstrating the superiority of CTC alignment. For methods
+using CTC alignment, our methods outperform CTC+ELLA-V
+across the board, which may stem from the limited context pro-
+vided by ELLA-V’s local advance mechanism and further val-
+idates the advantage of the bi-word interleaving scheme. No-
+tably, CTC-TTS-L delivers near-optimal performance on the
+entire continuation task, highlighting the merits of combining
+CTC alignment, bi-word training sequences, and length-wise
+token concatenation.
+Cross-speaker.Given about 3 seconds of speech and its
+transcribed text as a prompt, this task synthesizes speech for
+another utterance. Results are shown in Table 3. Due to the out-
+of-domain testing, all results are slightly worse than in the con-
+tinuation task, but the overall trends are similar. As in the con-
+tinuation task, CTC-TTS-L achieves near-optimal performance
+on the cross-speaker task. CTC-TTS-F is slightly worse than
+MFA+bi-word; however, CTC-TTS-F uses feature-level stack-
+ing, whereas MFA+bi-word uses length-wise concatenation, so
+they are not directly comparable. Overall, combining CTC
+alignment with bi-word sequences achieves strong performance
+in this out-of-domain setting. When using ELLA-V’s train-
+ing sequence, both CTC+ELLA-V and MFA+ELLA-V yield
+poor performance, highlighting the limitations of ELLA-V’s
+sequence organization. Notably, CTC+ELLA-V outperforms
+MFA+ELLA-V in WER and CER, whereas MFA+ELLA-V
+is better on the in-domain continuation task. This indicates
+that MFA alignment performs well for in-domain continuation,
+while CTC alignment generalizes better to out-of-domain cross-
+speaker scenarios.
+6. Conclusion
+This paper presents CTC-TTS, an LLM-based dual-streaming
+TTS method that derives phoneme–speech correspondence via
+CTC alignment and trains on bi-word interleaved sequences.
+Two variants, CTC-TTS-L and CTC-TTS-F, implement bi-word
+interleaving along the length and feature dimensions respec-
+tively, offering a practical quality–latency trade-off. Experi-
+ments show that CTC-TTS outperforms fixed-ratio interleav-
+ing and MFA-based baselines on streaming and zero-shot tasks.
+Future work includes adopting neural G2P models such as the
+CTC-based one in JSA-SPG [29], and leveraging neural forced
+alignment to obtain more precise boundaries.
+4739
+7. Generative AI Use Disclosure
+Generative AI tools are used in this work only for language edit-
+ing, polishing, and formatting of the manuscript. They are not
+used to generate any core content, research ideas, experimental
+designs, results, or major textual parts of the paper. All scien-
+tific contributions, including model design, experiments, analy-
+sis, and conclusions, are completed by the authors.
+8. Acknowledgements
+This work was supported by the National Natural Science Foun-
+dation of China (Grant No. 62466055)
+9. References
+[1] S. Chen, C. Wang, Y . Wu, Z. Zhang, L. Zhou, S. Liu, Z. Chen,
+Y . Liu, H. Wang, J. Li, L. He, S. Zhao, and F. Wei, “Neural
+codec language models are zero-shot text-to-speech synthesizers,”
+IEEE/ACM Trans. Audio, Speech, Language Process., vol. 33, pp.
+705–718, 2025.
+[2] P. Anastassiou, J. Chen, J. Chen, Y . Chen, Z. Chen, Z. Chen,
+J. Cong, L. Deng, C. Ding, L. Gao, M. Gong, P. Huang, Q. Huang,
+Z. Huang, Y . Huo, D. Jia, C. Li, F. Li, H. Li, J. Li, X. Li, X. Li,
+L. Liu, S. Liu, S. Liu, X. Liu, Y . Liu, Z. Liu, L. Lu, J. Pan,
+X. Wang, Y . Wang, Y . Wang, Z. Wei, J. Wu, C. Yao, Y . Yang,
+Y . Yi, J. Zhang, Q. Zhang, S. Zhang, W. Zhang, Y . Zhang, Z. Zhao,
+D. Zhong, and X. Zhuang, “Seed-TTS: A family of high-quality
+versatile speech generation models,”arXiv:2406.02430, 2024.
+[3] Z. Du, Q. Chen, S. Zhang, K. Hu, H. Lu, Y . Yang, H. Hu,
+S. Zheng, Y . Gu, Z. Ma, Z. Gao, and Z. Yan, “CosyV oice: A
+scalable multilingual zero-shot text-to-speech synthesizer based
+on supervised semantic tokens,”arXiv:2407.05407, 2024.
+[4] Z. Du, Y . Wang, Q. Chen, X. Shi, X. Lv, T. Zhao, Z. Gao, Y . Yang,
+C. Gao, H. Wang, F. Yu, H. Liu, Z. Sheng, Y . Gu, C. Deng,
+W. Wang, S. Zhang, Z. Yan, and J. Zhou, “CosyV oice 2: Scal-
+able streaming speech synthesis with large language models,”
+arXiv:2412.10117, 2024.
+[5] S. Ji, Z. Jiang, W. Wang, Y . Chen, M. Fang, J. Zuo, Q. Yang,
+X. Cheng, Z. Wang, R. Li, Z. Zhang, X. Yang, R. Huang, Y . Jiang,
+Q. Chen, S. Zheng, and Z. Zhao, “WavTokenizer: An efficient
+acoustic discrete codec tokenizer for audio language modeling,”
+inProc. International Conference on Learning Representations
+(ICLR), 2025.
+[6] N. Zeghidour, A. Luebs, A. Omran, J. Skoglund, and
+M. Tagliasacchi, “SoundStream: An end-to-end neural audio
+codec,”IEEE/ACM Trans. Audio, Speech, Language Process.,
+vol. 

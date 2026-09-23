@@ -1,0 +1,510 @@
+Phy-VC: Physics-Informed V oice Conversion for Privacy-Preserving Pathological
+Speech
+Suhita Ghosh ID 1,∗∗, Y amini SinhaID 2, Melanie JouaitiID 3, Tim
+W ansiedlerID 1, Kim P atrick HakenbergID 1, Julian KarcherID 1, Ingo Siegert ID 2,4, Sebastian StoberID 1
+1 Artificial Intelligence Lab, Otto-von-Guericke-University, Magdeburg, Germany
+2 MDS-IIKT, Otto-von-Guericke University, Magdeburg, Germany
+3 School of Computer Science, University of Birmingham, England
+4 Department of Psychosomatic Medicine and Psychotherapy, Magdeburg, Germany
+{suhita.ghosh,yamini.sinha,ingo.siegert,stober}@ovgu.de, m.jouaiti@bham.ac.uk
+Abstract
+Speech anonymisation aims to conceal the speaker’s identity
+while retaining task-relevant information. Existing methods
+struggle with acoustic patterns rarely seen during training, such
+as dysfluencies in pathological speech. This fragility arises from
+purely data-driven spectral envelope estimation without physical
+constraints. We introduce Phy-VC, a voice conversion method that
+enforces articulatory-acoustic coupling as an inductive bias through
+a differentiable vocal tract resonance model. Trained on standard
+speech, Phy-VC improves intelligibility, prosody, and naturalness
+over state-of-the-art baselines on diverse speech patterns, including
+stuttering, dementia, elderly, and emotion datasets, while achieving
+effective anonymisation. Expert assessment confirms significant
+preservation of clinically relevant speech attributes. Further, the
+articulatory representation enables interpretable, systematic control
+of speaker variation.
+Index T erms: speech anonymisation, voice conversion, DDSP
+1. Introduction
+Speech-based digital biomarkers are increasingly used for health
+assessment [1], particularly in neurological conditions such as
+dementia [2, 3] and affective monitoring [4, 5]. Progress in this
+area requires sharing clinical speech data. However, speech carries
+intrinsic speaker identity cues and is susceptible to voice cloning
+and re-identification attacks [6]. Speech anonymisation addresses
+this by removing the sensitive identity cues while retaining linguistic
+and other acoustic features relevant for downstream tasks. In clinical
+settings, anonymisation must preserve diagnostic cues, such as
+dysfluencies, unnatural pauses, and voice quality attributes (e.g.,
+tremor). However, existing methods often alter the degree of these
+clinical attributes or generalise poorly to atypical articulation in
+pathological and elderly speech [7].
+V oice conversion (VC) has emerged as a practical anonymi-
+sation strategy [8], concealing the source speaker’s identity by trans-
+forming their speech to resemble atargetspeaker while preserving
+linguistic content. Earlier non-neural methods, including Gaussian
+mixture model-based methods [9, 10], and signal processing tech-
+niques such as McAdams coefficient shifting [11], achieved limited
+speaker similarity and naturalness. Consequently, the field largely
+gravitated towards data-driven deep learning (DL) methods [8].
+Among the DL approaches, one family learns speaker em-
+beddings and conditions the synthesised speech on them to trans-
+form timbre between the source and target. V ariational autoencoder
+(V AE)-based methods [12, 13] learn to disentangle speaker identity
+**indicates the corresponding author.
+from content in a shared latent space. The KL regularisation in V AEs
+tends to penalise encoding of rapid, irregular acoustic events. This of-
+ten leads to over-smoothed outputs [14], which can suppress phona-
+tion irregularities important in clinical speech. Generative adversarial
+network (GAN)-based methods [15] improve naturalness through
+speaker-conditioned adversarial losses, but risk leaking the target
+speaker’s emotion [16], which is problematic when source emotion
+is a diagnostic signal. Emo-StarGAN [17] addresses this by penalis-
+ing energy and spectral deviations from the source, while EASY [18]
+disentangles speaker, content, and emotion through domain-
+adversarial training. Diffusion-based VC [19] improves fidelity,
+but its iterative denoising remains computationally expensive for
+real-time clinical use. A separate paradigm, KNN-VC [20], replaces
+learned transformation withK-nearest-neighbour (KNN) mapping,
+where self-supervised features (WavLM [21]) from the source are
+matched directly to a target speaker’s feature pool. Critically, most
+of these frameworks rely on a separate neural vocoder (e.g., HiFi-
+GAN [22]), a pain point for atypical speech. V ocoders trained on
+standard data often suppress diagnostic markers, while training on
+clinical data conflates pathological cues with recording noise [7].
+Beyond feature-space transformation and mapping-based
+paradigms, differentiable digital signal processing (DDSP) [23]
+integrates interpretable digital signal processing components, such
+as oscillators and filters, into neural network training. This is
+particularly beneficial for pathological speech, where parametrising
+excitation and spectral shaping separately may help to preserve
+irregular phonation patterns that black-box vocoders tend to nor-
+malise. DDSP-QbE [7] is a mapping-based VC framework which
+adapts the DDSP framework for atypical-speech anonymisation.
+It uses a subtractive synthesiser [24], which decomposes speech
+into harmonic and stochastic components. However, it predicts
+spectral shaping directly without physical constraints, which may
+lead to implausible resonance drift in difficult cases, such as syllable
+repetitions in stuttering and voice instability in elderly speech.
+Thus, we proposePhy-VC 1, which integrates physical
+principles of speech production through aphysics-informed
+vocal tract bottleneck. In this framework, synthesis is driven by
+articulatory-to-acoustic modelling rather than unconstrained spectral
+estimation, motivated by the physical principle that articulatory
+gestures (e.g., jaw and tongue movements) shape a vocal tract with
+coupled resonances. To the best of our knowledge, Phy-VC is the
+first VC method to incorporate a differentiable vocal tract geometry
+model for speech anonymisation, particularly for pathological
+speech. In addition, we introduce target-pool prosodic feature
+1Code and audio samples are available athttps://github.com/
+suhitaghosh10/phy-vc.git.
+4334
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-378
+y'h yh 
+PROSODY
+ENCODER
+ys 
+CONVERSION
+CONFORMER
+EXCITATION
+SOURCE
+PHONETIC
+ENCODERGLOTTAL BRANCH
+VOCAL TRACT BRANCH
+VOICING ( )
+VOCAL TRACT 
+ FILTERINGKNN
+KNN
+WavLM6
+E (f,t)
+VOICE BLENDING
+WavLM12
+1 · MAPPING 2 · FUSION 4 · SYNTHESIS Baseline pathway/
+components
+Proposed changes
+3 · PHYSICS-INFORMED
+BOTTLENECK
+NOISE
+FILTERING
+ORIGINAL
+UTTERANCE
+Not trainable
+Figure 1:Phy-VC overall architecture. Modules 1–4 show the pipeline from source utterance to converted speech. Red shading and arrows
+indicate components new to Phy-VC over the DDSP-QbE baseline. Prosodic feature mapping (in Module 1) is new over DDSP-QbE. In DDSP-
+QbE, the source prosodic embeddings (Wemo) is directly passed to the Fusion module. NormalisedF0 and loudness features are also input to
+the Fusion module together with prosodic embeddings, following DDSP-QbE, but omitted for clarity, along with intermediate excitation signals.
+x
+A · ARTICULATORY PREDICTION B · VOCAL TRACT GEOMETRY C · FORMANT EXTRACTION
+ Conv1D
+(b1)
+Conv1D
+(b2)
+Conv1D
+(b3)
++
+1 x 1 Conv Fusion
+Pool
+D · FILTER 
+CONSTRUCTION
+Lorentzian
+Sum × 
+E (f,t),
+VTL WARP
+Self-Attention
+MLP
+MLP
+sigmoid
+PHYSICS-INFORMED BOTTLENECK
+[ ]
+Area Function A(t)Smooth  STORY-MAEDA TRANSFORM
+[NON-LEARNABLE](FROM MAPPING) (TO SYNTHESIS)
+tanh
+Figure 2:Physics Bottleneck. P anels A-D show articulatory prediction, vocal tract geometry, formant extraction through a differentiable W ebster
+surrogate, and filter construction. The dashed VTL-warp branch shows inference-time controllability ofα6: the parameter is always predicted
+by the model but can be externally adjusted to modify effective vocal tract length and thus perceived speaker size.
+mapping to mitigate source-speaker leakage through the emotion
+pathway. Therefore, our contributions are: (i) a physics-informed
+vocal tract bottleneck that generates physically consistent resonance
+patterns, improving robustness to out-of-distribution speech;
+(ii) interpretable speaker control via vocal tract length manipulation,
+enabling systematic speaker diversification beyond the training pool;
+and (iii) expert clinical evaluation by speech-language pathologists
+confirming preservation of pathological attributes after anonymi-
+sation. Phy-VC consistently outperforms state-of-the-art baselines
+across diverse datasets, including dementia and stuttering speech.
+2. Method
+In this work, we build upon DDSP-QbE [7], which was designed for
+anonymisation of pathological and elderly speech. Figure 1 presents
+the complete Phy-VC architecture, where the red-shaded blocks
+highlight the proposed additions over DDSP-QbE. We design the
+physics module to be directly compatible with neural vocoders.
+DDSP-QbE performs voice conversion in three stages. First,
+phoneticWphon and emotionWemo representations are extracted us-
+ing the 6th and 12th layers of WavLM respectively. Second,Wphon is
+matched to the target speaker’s phonetic poolPphon (built from 6th-
+layer features) through KNN, to produceˆWphon that carries source
+content in the target speaker’s voice [7, 20]. Unlike DDSP-QbE,
+which passesWemo directly to the Fusion module, we additionally
+match it to the emotion poolPemo, built from 12th-layer features from
+the target speaker’s utterances. This prevents source-speaker leakage
+through the prosodic features. Finally, the Fusion module processes
+ˆWemo and ˆWphon through separate Prosody and Phonetic Encoders,
+whose outputs are summed and passed to a Conformer [25] that pre-
+dicts fundamental frequencyˆF0, harmonic (Ψh) and noise (Ψs) filter
+coefficients, driving a differentiable subtractive synthesiser [24].
+During training, the source and target are the same speaker
+(self-reconstruction). At inference, matching to a different speaker’s
+pool performs voice conversion.
+2.1. Physics-Informed Bottleneck
+We introduce a physics-informed bottleneck (refer to Figure1) that
+replaces the unconstrained spectral envelope with one grounded in
+vocal tract acoustics, receivingˆWphon from the mapping stage and
+producing the spectral filterE(f,t) for synthesis. Figure 2 details
+each stage: articulatory prediction (A), vocal tract geometry (B),
+formant extraction (C), and filter construction (D).
+2.1.1. Articulatory Prediction
+In the first stage, we predict eight control trajectoriesα(t)∈[−1,1]8,
+from the mapped phonetic features ˆWphon, following Maeda’s
+low-dimensional articulatory model [26, 27]. Each dimensionαi(t)
+corresponds to a dominant articulatory degree of freedom: jaw
+opening (α0), tongue-body position (α1), tongue-body shape (α2),
+tongue tip (α3), lip aperture (α4), lip protrusion (α5), larynx height
+(α6), and velopharyngeal port (α7). The controls α0−5 capture
+segmental articulatory gestures [27]. In contrast,α6 controls vocal
+4335
+tract length (VTL), andα7 models nasal coupling, where both
+reflect global anatomical and resonance characteristics that vary
+more slowly than phoneme-level articulation. [28, 29].
+To predict α(t) from ˆWphon, we first smooth it with a
+Conv1D layer to reduce jitter from KNN matching, then apply
+self-attention to capture long-range articulatory dependencies. A
+feedforward network (MLP) then projects to 8 dimensions, with
+the outputs passed throughtanh to yield α(t)∈[−1,1]8, where
+αi=0 represents a neutral configuration and±1 the extremes (e.g.,
+anterior/posterior tongue).
+2.1.2. V ocal Tract Geometry
+In this stage, we transform the predicted α(t) into a physical
+shape of the vocal tract, essentially a tube of varying width running
+from the vocal folds to the lips. Following Story’s parametric
+framework [30], we discretise this tube into N cross-sectional
+area segments along a normalised coordinatex∈[0,1] , yielding a
+time-varying area functionA(t). Since nasal sounds involve airflow
+through both the mouth and the nose, we represent the tract as two
+parallel channels:
+A(t)=[Aoral(t),Avp(t)]∈R 2×N,(1)
+where Aoral(t)∈R N describes how wide the oral tract is at each
+point, andAvp(t)models coupling to the nasal cavity.
+Oral Geometry:We start from a resting tract shapeA0(x) that
+models a relaxed vocal tract with its two natural cavities, the
+pharynx (throat) and mouth [31]. Each articulator then widens or
+narrows the tract at its anatomical location. We model this as a
+multiplicative perturbation:
+Aoral(x,t)=A0(x)
+5Y
+i=0
+Mi(x;αi(t)),(2)
+Mi(x;αi)=exp
+ 
+ci·αi·G(x;µi,σ2
+i )
+
+,(3)
+whereG is a Gaussian kernel localised at each articulator’s position
+µi, andci controls whether the articulator widens or narrows the
+tract. The multiplicative structure reflects the physical reality that
+articulators jointly reshape the vocal tract, and the exponential form
+guarantees strictly positive areas. The resulting area is bounded to a
+physiologically plausible range through softplus saturation. Larynx
+height (α6) is excluded from the product, as it applies a global
+tract-length scaling rather than a local deformation.
+Nasal Coupling:The velum controls airflow between the oral
+and nasal cavities, opening during sounds like /m/ or /n/, which
+introduce characteristic nasal resonances. We model this with a
+single scalarsvp(α7) =a·α 7 +b (a,b>0), which scales a fixed
+Gaussian distribution centred at the velar region:
+Avp(x,t)=svp(α7(t))·G(x;µvp,σvp).(4)
+The Gaussian parameters (µi,σi) for each articulator arenot
+learnedduring training. They are derived from the anatomical
+positions reported in Maeda [27] and Story [30] and are adapted
+to the normalised coordinate systemx∈[0,1].
+2.1.3. F ormant Extraction
+Given the vocal tract geometry from the previous stage, we now
+extract its resonance properties. Webster’s equation [32] models
+sound propagation in a variable-area tube and is widely used
+as an acoustic approximation of the vocal tract [ 33]. Instead
+of estimating formants directly from audio (which is unreliable
+for pathological speech and unvoiced regions), we derive
+them from vocal tract geometry through a bottleneck mapping
+α(t)→A(x,t)
+Webster
+− −−− →(ˆF,ˆB), where ˆF and ˆB denote predicted
+formant frequencies and bandwidths, respectively. This biases
+predictions toward physically consistent formant patterns, including
+coherent shifts under changes in vocal tract length.
+Using the normalised coordinatex∈[0,1] from Sec. 2.1.2,
+acoustic pressurep(x,t)satisfies [32]:
+∂2p(x,t)
+∂t2 = c2
+A(x,t)
+∂
+∂x
+
+A(x,t)∂p(x,t)
+∂x
+
+,(5)
+where c≈350 m s−1 is the speed of sound. Treating the geometry as
+quasi-stationary within short frames and seeking harmonic solutions
+ψ(x)ejωt yields a Sturm–Liouville eigenvalue problem [34]:
+− 1
+A(x)
+d
+dx
+
+A(x)dψ(x)
+dx
+
+=λψ(x), λ=
+ω
+c
+2
+(6)
+The eigenvalues{λi} depend deterministically onA(x), producing
+formant frequenciesFi = c
+2π
+√λi. In practice, energy is lost
+through friction along the tract walls and sound radiation at the lips,
+so each resonance spreads over a range of frequencies rather than
+occurring at a single point, captured by the bandwidthBi. Crucially,
+both formants and bandwidths are predicted from the same area
+function, encouraging the surrogate to learn coupled resonance
+shifts consistent with vocal tract geometry changes.
+Webster Surrogate:Solving the Sturm–Liouville problem exactly
+is computationally expensive and non-differentiable, preventing
+end-to-end neural network training. Instead, a lightweight CNN
+surrogatePWB maps the two-channel area input to formant frequen-
+cies and bandwidths:(ˆF(t),ˆB(t))=PWB(A(t)). The two-channel
+design separates oral geometryAoral(t) from nasal couplingAvp(t),
+encouraging the network to distinguish nasal effects (primarily
+bandwidth changes) from tract-length changes (formant shifts).
+The surrogate is jointly trained with the rest of the differentiable
+pipeline. It uses a multi-scale CNN to capture coarse tract
+geometry for low formants and fine local constrictions for high
+formants. Three parallel Conv1D branches with increasing
+kernel sizes (b1<b 2<b 3) capture these different spatial scales:
+htotal = Concat [Convb1(A),Convb2(A),Convb3(A)]. Each
+branch comprises two Conv1D layers, each with GroupNorm
+and ReLU. GroupNorm is preferred over LayerNorm to preserve
+absolute scale information relevant to acoustics. The concatenated
+features are fused via 1×1 convolutions, then globally pooled
+to a compact descriptor z(t), with pooling deferred until after
+fusion to preserve fine spatial cues needed for higher formants.
+An MLP mapsz(t) to formant frequencies and bandwidths, each
+sigmoid-scaled to physiologically plausible ranges [ 31], with
+bandwidths predicted in the log domain to ensure positivity.
+The surrogate thus producesbaseformantsˆF base
+i reflecting the
+oral and nasal geometry shaped byα0–5 andα7. The remaining
+parameter,α6 (larynx height), does not enter the area function but
+instead controls effective vocal tract length. We model this as an
+exponential warp applied after the surrogate, shown in panel C of
+Figure 2:
+ˆFi = ˆF base
+i exp(−lα6), ˆBi = ˆBbase
+i exp(−lα6),(7)
+wherel>0 controls scaling strength andα6 is bounded to prevent
+numerical instability. Modifyingα6 shifts all resonances coherently,
+providing explicit perceived speaker-size control for anonymisation
+without retraining.
+4336
+2.1.4. F ormant Filter Construction
+The Webster-predicted formants and bandwidths definewhere
+resonances occur. To convert these into a spectral filterE(f,t) for
+synthesis, we model each formant as a Lorentzian peak [31, 29]:
+Lm(f,t)=
+"
+1+
+ 
+f− ˆFm(t)
+ˆBm(t)+ϵ
+!2#−1
+(8)
+whereϵ is a small constant for numerical stability. TheM formant
+peaks are summed to form the spectral envelope:
+E(f,t)=
+MX
+m=1
+Lm(f,t)(9)
+This produces a smooth, fully differentiable filter that reflects the su-
+perposition of vocal tract resonances. The resulting filter is integrated
+into the DDSP synthesis pipeline described in the next section.
+2.2. Synthesis
+We adopt and extend the subtractive DDSP synthesiser from
+DDSP-QbE, which decomposes speech into harmonic and
+stochastic components.
+Harmonic Path:The Fusion module predicts the fundamental
+frequency ˆF0(t), which drives the Excitation Source (refer to
+Figure 1) through phase accumulation:
+ϕ(t)=
+ 
+ϕ(t−1)+
+ˆF0(t)
+fs
+!
+mod 1, y ′′
+h(t)=2ϕ(t)−1,(10)
+with Polynomial-based Band-limited Step (PolyBLEP) correc-
+tion [35] to suppress aliasing. A glottal source filter ψh(f,t)
+predicted by the Fusion module then shapes y′′
+h(t) into y′
+h(t),
+modelling source characteristics such as spectral tilt. Finally, the
+physics-based vocal tract filterE(f,t) from Sec. 2.1.4 is applied to
+y′
+h(t), yielding the harmonic signalyh(t). This two-stage design sep-
+arates source characteristics from vocal tract resonances by applying
+a learned source filter followed by a physics-constrained tract filter.
+Stochastic path and voicing blend:The Fusion module also
+predicts a noise filterψs(f,t) and a voicing maskψv(t)∈[0,1] .
+White noise filtered through ψs(f,t) produces the stochastic
+componentys(t). The harmonic and stochastic components are
+blended usingψv(t)as:
+y(t)=ψv(t)·yh(t)+(1−ψv(t))2·ys(t)(11)
+The squared term(1−ψv(t))2 suppresses noise leakage into voiced
+regions.
+2.3. T raining Objectives
+The KNN mapping is non-differentiable, while the remaining dif-
+ferentiable components are trained jointly end-to-end. In addition to
+the spectral andF0 losses of DDSP-QbE [7], we introduce losses to
+supervise voicing, formants, bandwidths, and vocal tract geometry.
+Formant and Bandwidth Supervision:Formant frequencies are
+supervised in linear space (LF ), and bandwidths in log-space (LB)
+for perceptual scaling. We use the Praat [36]-extracted formants
+and bandwidths as the ground truth, and compute the losses as:
+Lξ =
+P
+t,imt,i
+ˆξi(t)−ξi(t)
+
+1Pmt,i
+, ξ∈{F,logB}(12)
+whereξ denote the ground truth andˆξ the predictions. The mask
+mt,i =1(F 1>0∧F 2>0)·1(F min
+i ≤Fi≤F max
+i ) activates only
+for voiced frames with plausible formant values, to reduce noisy
+supervision.
+V oicing supervision:The voicing lossLv is computed as the binary
+cross-entropy between the predicted voicing maskΨv and the
+pseudo-ground-truth derived from the extractedF0 contour, where
+a frame is labelled voiced ifF0(t)>F 0,min.
+Expressiveness floors:Without constraints, articulatory parameters
+can collapse to near-neutral values, while spectral loss is com-
+pensated for by the learned source filter, producing weak formant
+modulation. We enforce minimum variability for phonetic and nasal
+parameters separately, as they can collapse independently:
+Lep=ReLU(τphon−Std(α0:5))2 (13)
+Len=ReLU(τnasal−Std(α7))2 (14)
+whereStd(·)is computed over batch and time.
+Identity stability:The larynx height control α6 is treated as
+a quasi speaker-level parameter that varies more slowly than
+phonetic articulation [37]. We therefore penalise its intra-utterance
+variation, encouraging it to reflect inter-speaker geometry rather
+than frame-level dynamics:
+Lα6 =Vart(α6(t))(15)
+T otal Loss:
+L=L DDSP+wvLv+wFLF +wBLB+wepLep+wenLen+w6Lα6
+(16)
+whereL DDSP includes the multi-resolution spectral andF0 losses.
+3. Experiment Protocol
+3.1. Baselines
+We evaluate our method against three representative baselines:
+(i) Emo-StarGAN [17] (denoted asEmo), an emotion-preserving
+GAN-based method; (ii) KNN-VC [20], a mapping-based approach;
+and (iii) DDSP-QbE [7], the direct predecessor to Phy-VC and
+the state-of-the-art on pathological speech anonymisation. For
+a fair comparison, we also provide DDSP-QbE with mapped
+prosodic features ˆWemo (using the same target pool), so that
+performance differences reflect the physics module rather than the
+feature-mapping strategy.
+3.2. Datasets and Splits
+Datasets:We use 5 English speech corpora, all resampled to16 kHz:
+• LibriSpeech[38]: Read speech from audiobooks. We use the
+train-clean-100 subset.
+• ESD[ 39]: Emotional speech with five classes (neutral, happy,
+sad, angry, surprise).
+• ADReSSo[ 40]: Elderly speech from healthy controls and
+dementia-diagnosed speakers. We filter silent, multi-speaker
+(per provided annotations), and low-quality recordings by manual
+inspection to remove remaining noisy clips, yielding 2,729
+utterances from 293 speakers.
+• Sep-28k[41] andFluency Bank[ 42]: Both datasets comprise
+stuttered speech, and have been annotated for five dysfluency
+types: prolongations, blocks, interjections, word repetitions and
+sound repetitions. A sample is labelled dysfluent only if at least
+two annotators agree. Blocks co-annotated as ‘Natural Pause’ by
+two or more annotators are excluded. Recordings containing both
+host and guest audio are discarded to avoid confounding equal
+error rate (EER) computation. Speaker identities are obtained
+from the extended dataset [43] yielding 16,135 recordings from
+419 speakers.
+4337
+• VCTK[ 44]: Multi-accent read speech, used only for target
+speakers (Scottish and Welsh accents) to evaluate cross-accent
+robustness.
+We definestandard(SD) speakers as those drawn from LibriSpeech
+and ESD, which we treat as neurotypical with no diagnosed speech,
+language, or cognitive impairment, in contrast to the clinical
+populations in SEP-28k, Fluency Bank, and ADReSSo.
+T raining and Evaluation:All models are trained and evaluated on
+identical train/validation/test splits for fair comparison. Speaker and
+target selection are randomised with gender balancing. All models
+are trained exclusively on standard (non-pathological) speech
+comprising 50 speakers from LibriSpeech (≈15 h) and 5 speakers
+from ESD (≈8 h , all emotions), with an 80/20 train/validation
+split. This design intentionally excludes clinical data to evaluate
+out-of-domain robustness to pathological speech, reflecting realistic
+deployment scenarios where clinical corpora are scarce.
+For evaluation, we randomly sample approximately 10% of
+recordings

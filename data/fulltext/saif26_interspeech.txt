@@ -1,0 +1,482 @@
+BELLA: Efficient Bilevel Learning with LoRA for Multilingual ASR
+A F M Saif1,∗∗, Xiaodong Cui2, Brian Kingsbury2, Tianyi Chen3,1
+1 Rensselaer Polytechnic Institute, USA
+2 IBM, USA, 3 Cornell Tech, USA
+saifa@rpi.edu, cuix@us.ibm.com, bedk@us.ibm.com, chentianyi19@gmail.com
+Abstract
+Multilingual automatic speech recognition (ASR) faces chal-
+lenges due to diverse linguistic structures and resource dispari-
+ties. We propose an efficientBilEvelLearning withLoRAfor
+Multilingual Speech Recognition (BELLA), a framework that
+couples a pre-trained ASR encoder with a large language model
+(LLM) decoder via a trainable bridge to align speech represen-
+tations with the LLM token space. The decoder incorporates
+mixture-of-experts LoRA (MoE-LoRA) modules for language
+specialization, guided by a router. Training is formulated as a
+bilevel program: the upper level optimizes router and expert
+LoRA modules for task performance, while the lower level up-
+dates the bridge and shared adapter for alignment. We develop
+an efficient single-loop, value-function-free penalty solver with
+practical updates. BELLA is parameter-efficient, scalable, and
+reduces cross-language interference. Experiments on five CoV-
+oST 2 languages show consistent gains over strong multilingual
+ASR baselines.
+Index Terms: Multilingual speech recognition, bilevel opti-
+mization, large language model, mixture of experts, parameter-
+efficient fine-tuning
+1. Introduction
+Automatic speech recognition (ASR) aims to transcribe spoken
+audio into text, addressing variations across speakers, acous-
+tic conditions, and languages. This task becomes particularly
+complex in multilingual settings, where robust performance is
+required across diverse linguistic structures, vocabularies, and
+phonetic inventories. Recent advancements have sought to en-
+hance ASR by integrating large language models (LLMs) as de-
+coders. LLMs leverage contextual reasoning and text generation
+capabilities honed from extensive pre-training [1–4]. A preva-
+lent approach pairs a pre-trained speech encoder with a frozen or
+lightly tuned LLM decoder, connected via a lightweight bridge
+that maps speech features into the LLM’s embedding space,
+often supported by prompt engineering [5–7].
+While this encoder-LLM framework simplifies deployment
+and capitalizes on pre-trained components, it predominantly
+targets monolingual or bilingual scenarios. Extending it to mul-
+tilingual ASR introduces challenges, notably cross-language
+interference, where high-resource languages can dominate train-
+ing, impairing performance on low-resource ones. This issue
+stems from shared decoder parameters struggling to reconcile
+conflicting linguistic patterns without extensive fine-tuning, lim-
+iting scalability.
+**indicates the corresponding author.
+This work was supported by IBM through the IBM-Rensselaer Fu-
+ture of Computing Research Collaboration, and by the National Science
+Foundation Projects 2532653 and 2532349.
+To overcome these limitations and enable efficient multilin-
+gual ASR without full LLM retraining, we propose a decoder-
+side mixture-of-experts with LoRA adapters (MoE-LoRA) [8].
+In MoE-LoRA, selected decoder blocks contain a small bank
+of LoRA “expert” adapters plus a single shared adapter that is
+always active. A lightweight router dynamically selects rele-
+vant LoRA experts per utterance, fostering language-specific
+specialization while preserving parameter efficiency. However,
+this design reveals a critical interdependence: the router depends
+on bridge-generated features for gating, where poor speech-text
+alignment may cause unstable routing (e.g., leading to mode
+collapse or bias toward dominant languages). Conversely, the
+chosen adapters influence gradients back to the bridge, creating
+a bidirectional coupling that requires careful management.
+This bidirectional dependency indicates that a more struc-
+tured approach is needed to manage the interaction. Thus, we
+propose to address this challenge with a bilevel optimization
+framework that separates alignment from prediction while pre-
+serving their interaction through the gating mechanism. The
+lower level optimizes cross-modal alignment via the bridge and
+a shared adapter, ensuring accurate feature mapping. The upper
+level refines task-specific performance by tuning the router and
+LoRA experts to reduce recognition errors and promote balanced
+language representation. Our contributions are: (i) We formal-
+ize multilingual encoder-LLM ASR as a bilevel optimization
+problem, with the upper level managing next token prediction
+(router and LoRA experts) and the lower level handling align-
+ment (bridge and shared adapter). (ii) We explicitly model the
+coupling by linking the router’s gating to bridge outputs, en-
+abling alignment to guide expert selection while allowing feed-
+back via decoder losses. (iii) We implement this using a Whisper
+encoder and Qwen-family decoder, integrating next-token pre-
+diction with alignment and distillation objectives [9,10]. (iv) We
+develop an efficient single-loop training algorithm that alternates
+alignment and specialization, avoiding costly inner loops and
+aligning with existing encoder-LLM paradigms [5–7].
+2. Related Work
+Motivated by the powerful reasoning ability and long-context
+handling of LLMs, recent work has explored integrating LLMs
+into ASR systems. Some efforts fine-tune or extend LLMs
+end-to-end for speech-centric applications [11, 12]. Given the
+computational cost of full-model updates, a practical alternative
+is to keep the LLM largely frozen and insert a lightweight bridge
+or adapter to map speech encoder outputs into the LLM input
+space, sometimes complemented by prompt-based conditioning
+[6,7,13]. Related lines of work also consider parameter-efficient
+or modular adaptation inside the decoder to better leverage pre-
+trained capacity while controlling footprint [14].
+2125
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2771
+LLM Decoder, 𝑭𝚯
+ASR Encoder
+(Whisper)
+ℎ = 𝐸(𝑠)
+Bridge 
+Network
+𝑧𝜓 = 𝐵𝜓 ℎ
+Router
+𝑔𝜙 
+1st LoRA
+2nd LoRA
+nth LoRA
+.
+.
+.
+Upper-Level: Router + Expert LoRAs
+(prediction-driven)
+Shared Adapter
+Bridge + Shared Adapter
+(alignment-driven)
+Lower-Level:
+Fig. 1. The model architecture of BELLA. The main components
+include an ASR encoder, a frozen LLM decoder, and trainable
+modules: bridge network, router, and adapters.
+Most encoder–LLM ASR work focuses on a single or a
+few languages, leaving cross-language interference and scaling
+underexplored. We address multilingual ASR with multiple low-
+rank adapters in the decoder and a lightweight router that selects
+experts per utterance, trained in a bilevel manner: alignment
+(bridge plus shared adapter) at the lower level and ASR-oriented
+next token prediction (router plus adapters) at the upper level,
+coupled through the router’s gating on bridge outputs. This
+design complements existing encoder–LLM pipelines [6, 7].
+Bilevel optimization models hierarchical learning problems
+in which an upper-level leader optimization problem depends on
+the solution of a lower-level follower optimization problem. It
+has been widely studied in hyperparameter optimization, meta-
+learning, and neural architecture search [15 –17]. Recent ad-
+vances enable scalable training in deep networks via implicit
+differentiation and single-loop penalty-based approximations
+that avoid explicit inner solves [18]. In ASR, however, the use of
+bilevel optimization remains limited; recent efforts have applied
+it to joint self-supervised training and to improving BEST-RQ
+pretraining [19–21].
+3. Model Architecture
+We adopt the architecture shown in Fig. 1 formultilingual ASR,
+where each training example is denoted as (s,ℓ,t)∈D train,
+where s represents a speech waveform in language ℓ, and
+t= (t 1,...,t U) is its corresponding transcript with length
+U over a vocabularyV. A pre-trained ASR encoder E trans-
+forms the speech into frame-level featuresh=E(s)∈R Te×de,
+whereTe is the number of acoustic frames and de the feature
+dimension. A trainable bridgeBψ, parameterized byψ, converts
+these features into a sequence of continuous prefix embeddings
+zψ =B ψ(h)∈R Tb×dLLM, where Tb is the (possibly sub-
+sampled) sequence length and dLLM is the LLM embedding
+dimension. This bridge serves as a critical link, projecting raw
+speech representations into a space compatible with the decoder.
+The decoder is a frozen LLM FΘ with base weights Θ, en-
+hanced by learnable MoE-LoRA for adaptability. We introduce
+K expert adapters{∆k}K
+k=1, inserted into selected LLM layers,
+alongside a shared adapter ∆0 that is always active. A routergϕ,
+parameterized byϕ, generates mixture weights by processing a
+summary vector u constructed from the speech prefix embed-
+dings and language identity. In practice, u is obtained by mean
+pooling the bridge outputs zψ and concatenating the result with
+a learned language embedding for ℓ. The weights are defined
+asw=g ϕ(u),wherew∈R K, wk≥0, PK
+k=1wk = 1.
+which lies on the probability simplex over K experts. Each
+adapted LLM layer applies the adapter mixture:
+A(w) = ∆0 +
+KX
+k=1
+wk∆k.
+4. Problem Formulation
+We prepend prompt tokens, including a language token forℓ, and
+feed zψ as a continuous prefix into LLM FΘ. Training of the
+model in Fig.1 involves optimizing prediction-driven objectives
+and alignment-driven objectives, respectively. In this work, we
+formulate it as a bilevel optimization problem which has the
+prediction-driven objectives as a leader (a.k.a upper) problem and
+alignment-driven objectives as a follower (a.k.a lower) problem.
+Denote the LLM next-token distribution as
+pΘ(·|context;x,y)
+where the decoder is augmented with the aforementioned
+adapters and router. We group theupper-levelparameters as
+x:={ϕ,w,∆ 1:K} (prediction-driven components) and the
+lower-levelparameters as y:={ψ,∆ 0} (alignment-driven com-
+ponents). Note thatw depends on both the router parametersϕ
+and the bridge parametersψ (viazψ), establishing a key coupling
+between the upper and lower optimization levels.
+4.1. Upper level losses
+The primary ASR objective is the negative log-likelihood of the
+next token, given by
+LASR(x,y;s,ℓ,t) =−
+UX
+u=1
+logp Θ(tu|t <u,zψ,ℓ;x,y).(1)
+This loss is a proxy for transcription accuracy. To regularize
+the router, we include a load-balancing term Lbal(ϕ) [22], a
+small entropy penaltyLent(ϕ) [23], and an optional language-
+ID supervision lossL LID(ϕ;ℓ).
+4.2. Lower level losses
+For alignment between speech and text prefixes, we use two
+regularization terms: an embedding regression loss and a distil-
+lation loss. The embedding loss, computed using a frozen text
+encoderetext(t) and a learned projection Π, averages the squared
+distance over time:
+Lemb(y;s,t) = 1
+Tb
+TbX
+i=1
+∥zi −Π(e text,i(t))∥2
+2 (2)
+wherei indexes the time steps of the bridge output, andetext,i(t)
+denotes thei-th hidden state of the text encoder given transcript
+t. This encourages zψ to match text-derived embeddings. In ad-
+dition, we have a teacher-student distillation loss that compares
+decoder distributions in the embedding alignment:
+LKD(x,y;s,ℓ,t) =
+KL
+
+pΘ(·|e text(t),ℓ;x,y)
+pΘ(·|z ψ(s),ℓ;x,y)
+
+(3)
+where the text-conditioned teacher guides the speech-
+conditioned student to align the embeddings. We also apply
+weight decay to the shared adapter, Lwd(y) =∥∆ 0∥2
+2. Note
+thatLemb depends only on y (viaψ and ∆0), whileLKD de-
+pends on both x and y through the decoder, including ∆(w)
+linked tow=g ϕ(u(zψ,ℓ)).
+2126
+4.3. Bilevel objectives and coupling
+The expectedupper-levelobjective for the leader problem, fo-
+cusing on prediction performance, is defined as
+f(x,y) =E (s,ℓ,t)
+h
+LASR(x,y;s,ℓ,t) +λ balLbal(ϕ)
++λ entLent(ϕ) +λ LIDLLID(ϕ;ℓ)
+i
+.
+(4)
+The expectedlower-levelobjective for the follower problem,
+emphasizing acoustic and text token embedding alignment, is
+defined as
+g(x,y) =E (s,ℓ,t)
+h
+αembLemb(y;s,t)
++α KDLKD(x,y;s,ℓ,t) +α wdLwd(y)
+i
+.
+(5)
+The overall bilevel optimization problem is given by
+min
+x
+f(x,y ⋆(x))(6)
+s.t.y ⋆(x)∈arg min
+y
+g(x,y).(7)
+For fixed upper level parameters x, the lower level
+problem optimizes y to find an optimum y⋆(x)∈
+arg minyg(x,y) , while the upper level minimizes the value
+functionF(x) :=f(x,y ⋆(x)). The interdependence of the up-
+per and lower levels arises becausew=g ϕ(u(zψ,ℓ)) tiesf to
+y (viazψ in u, affectingw and ∆(w)) andg tox (via ∆(w) and
+decoder distributions inLKD). This coupling balances alignment
+and prediction in a hierarchical fashion.
+5. Optimization
+To avoid expensive inner solves or implicit differentiation, we
+use a single-loop, value-function-free penalty-based gradient
+descent method [24]. Consider the penalized objective as
+˜Fγ(x,y) =f(x,y) +γ
+
+g(x,y)−min
+z
+g(x,z)
+
+,γ >0,(8)
+and alternate one update ofy (primarily minimizingg) with one
+update ofx, minimizingfusing the updatedy.
+Given the current parameters (xt,yt), sample a mini-batch
+of training examples. Let gt(xt,yt) andft(xt,yt) denote the
+stochastic mini-batch evaluations of the objectives in (5) and (4),
+respectively. We first perform a lower-level gradient update:
+yt+1 =y t−ηy
+
+γ−1∇yft(xt,yt) +∇ygt(xt,yt)
+
+,(9)
+with stepsizeηy >0 . In practice, we often setγ−1≈0 , making
+(9) predominantly alignment-driven viaLemb,LKD, andLwd.
+Note that when computing gradients with respect toy (the bridge
+and shared adapter), we must backpropagate through the router’s
+gating. In other words, becausew=g ϕ(u(zψ,ℓ)) depends on
+zψ (which in turn depends on y viaBψ and ∆0), the gradient
+∇y of both gt and ft will flow through this coupling. This
+means updates toy implicitly affect the router’s inputs and thus
+its expert-selection decisions. We highlight this gradient path to
+emphasize the intertwined nature of the two levels: changingy
+influencesw (and thereby the upper-level loss) even thoughy is
+optimized for the lower-level objective.
+With yt+1 fixed, sample a mini-batch to estimate
+ft(xt,yt+1)from (4) and update
+xt+1 =x t−ηx∇xft(xt,yt+1),(10)
+with stepsize ηx >0 . This minimizes the ASR loss (1) and
+router regularizers, specializing experts by language while con-
+trolling usage entropy and (optionally) supervising language-
+ID. Straight-through top-1 gating or a smooth relaxation (e.g.,
+Gumbel-Softmax) can be used; any bias is absorbed into the
+Algorithm 1:BELLA Training Algorithm
+Input:Frozen encoderE, decoderF Θ, bridgeBψ,
+experts{∆k}K
+k=1, shared adapter ∆0, routergϕ,
+penaltyγ, stepsizesη x,ηy
+Initializex 0 ={ϕ 0,∆ 1:K,0},y 0 ={ψ 0,∆ 0,0}
+fort= 0,...,T−1do
+Sample mini-batchesB g
+t,Bf
+t ⊂D train
+// Lower level (alignment)
+Computegt(xt,yt):
+gt(xt,yt)← −Lemb,LKD,Lwd
+Computeft(xt,yt):
+ft(xt,yt)← −LASR,Lbal,Lent,LLID
+yt+1 =y t−ηy
+ 
+γ−1∇yft(xt,yt)+∇ygt(xt,yt)
+
+// Upper level (prediction):
+Computeft(xt,yt+1):
+ft(xt,yt)← −LASR,Lbal,Lent,LLID
+xt+1 =x t−ηx∇xft(xt,yt+1)
+end
+returnxT,yT
+stochasticity offt.
+6. Experimental Setup
+In this section, we describe the implementation details, experi-
+mental setup, and results of BELLA.
+6.1. Implementation
+Setup.We instantiate the encoder as Whisper (E), the decoder as
+Qwen2.5 7B (FΘ with frozen base Θ), the bridgeBψ and shared
+adapter ∆0 as lower-level modules, and theK MoE-LoRA ex-
+perts{∆k} with routergϕ as upper-level modules (Fig. 1). As
+in Sec. 4, we denotex={ϕ,∆ 1:K} andy={ψ,∆ 0}, and use
+the explicit objectivesf(x,y)andg(x,y)in (4)–(5).
+Alternating procedure.Based on Sec. 5, training alternates
+lower- and upper-level updates forT outer iterations. In iteration
+t, we (approximately) solve the lower-level problem for the
+currentxt using (9), then update the upper level using (10) at
+the resulting yt+1. For multilingual training, one can shard
+data by language and run several inner (lower) steps per shard
+before aggregating gradients for the upper step; the coupling via
+w=g ϕ(u(zψ,ℓ))remains in effect in both updates.
+Initialization and practicalities.Initialize E and FΘ from
+their available checkpoints. Initialize ∆1:K and ∆0 near zero
+(standard LoRA practice) and optionally warm-start the bridge
+Bψ with a brief alignment-only phase usingLemb. A soft gating
+scheme (e.g., temperature-controlled) can stabilize early routing
+before switching to hard/top-1 gating if desired. Label smoothing
+forL ASR and moderateγvalues in (8) are common choices.
+Remarks.Setting γ−1=0 recovers purely alignment-driven
+lower updates; using γ−1>0 allowsf to weakly influence y
+in (9). The coupling path x↔y is explicit through w=
+gϕ(u(zψ,ℓ))and through the decoder terms in (3).
+6.2. Experiments
+We evaluate on COVOST 2 [25] using English, Portuguese,
+Spanish, Russian, and Swedish. These languages were selected
+to cover a range of language families and resource conditions
+– for instance, English (Germanic) and Spanish (Romance) are
+high-resource languages, Russian (Slavic) has a different script
+2127
+Fig. 2. MoE-LoRA expert selection probabilities by language.
+Table 1. WER (%) on CoV oST 2 using Whisper-Base.
+Language Base BO SL MLBELLA
+English 26.8 26.2 25.925.325.5
+Spanish 31.2 30.8 30.729.829.9
+Russian 36.2 36.1 35.930.435.5
+Portuguese 30.4 30.1 30.0 29.729.4
+Swedish 47.9 47.7 47.6 47.447.1
+and moderate resources, while Swedish (Germanic) represents
+a smaller-resource case. This diversity allows us to assess
+BELLA’s performance across varied linguistic and data scarcity
+scenarios. The sampling rate is 16kHz and the duration is capped
+at 30s. Clips shorter than 0.5s are removed. During training, we
+apply a light random concatenation augmentation that stitches
+multiple utterances (up to 30s).
+Our acoustic encoder is Whisper [10] (base and large-v2). A
+segment-level Q-Former (80 queries, 2 blocks, 8 heads) connec-
+tor [6] projects encoder features to the LLM token embedding
+space. The decoder is Qwen-2.5 7B [9] adapted with LoRA (rank
+16). We adapt the query and key in the attention module in each
+decoder layer. A multilingual router mixes five expert projec-
+tions over the speech prefix, conditioned on pooled Q-Former
+outputs and a learned language embedding.
+The lower-level alignment mapping is trained with
+αemb=0.1, αKD=0.05 and αwd=1e-4. The upper-level pre-
+diction is trained with λbal=0.01, λent=0.01 and an optional
+λLID=0.1. Two auxiliary heads (first-token and prefix prediction)
+are trained with warm-up weights (λfirst=0.003,λprefix=0.003).
+A conservative token-drop schedule (warmup 8k steps, ramp 8k
+steps, max drop probability 0.03, keep fraction 0.95) stabilizes
+long prefixes. Optimization uses AdamW, gradient clipping at
+1.0, batch size 16 with accumulation 2, and up to 500 epochs
+with early stopping. We apply separate learning rates: 2×10−4
+for upper-level parameters (router, experts, auxiliary heads) and
+5×10−5 for lower-level parameters (encoder, Q-Former, shared
+LoRA). We prepend a short prompt:“Transcribe the speech:”.
+Decoding uses beam search (beam size 3).
+6.3. Results
+We compareBELLAagainst matched Whisper backbones at the
+base and large scales together with three intermediate baselines:
+Whisper+LLM with bridge only (BO), Whisper+LLM with a
+single shared LoRA module (SL), and a multilingual LoRA
+baseline (ML) that assigns a predefined LoRA adapter to each
+Table 2. WER (%) on CoV oST 2 using Whisper-Large.
+Language Large BO SL MLBELLA
+English 14.8 14.1 13.813.113.5
+Spanish 12.1 11.7 11.510.911.0
+Russian 9.9 9.6 9.48.99.1
+Portuguese 10.6 10.2 10.1 9.89.7
+Swedish 14.7 14.4 14.2 14.013.8
+language. Results on five CoV oST 2 languages are shown in
+Tables 1 and 2.
+Across most languages and backbone sizes, BELLA
+achieves the lowest or highly competitive WER, indicating that
+the proposed bilevel routing mechanism provides gains beyond
+simple model scaling. The improvements are consistent rather
+than isolated to particular languages, suggesting that the routing
+mechanism provides systematic benefits for multilingual ASR.
+Comparing toWhisper-base, BELLA reduces WER by
+roughly 2–4% relative to the vanilla backbone and consistently
+outperforms BO and SL. This demonstrates that routed expert
+specialization improves performance even when backbone ca-
+pacity is limited. The ML baseline performs competitively and
+slightly outperforms BELLA for some high-resource languages,
+which is expected since ML provides explicit language-specific
+specialization when language identity is known. However, ML
+requires maintaining separate adapters for each language and
+relies on explicit language selection at inference time, which
+is not scaling friendly. In contrast, BELLA learns specializa-
+tion dynamically through router-based expert selection con-
+ditioned on speech representations, enabling language-aware
+adaptation without predefined language modules. With the
+strongerWhisper-Largebackbone, overall WER decreases,
+while BELLA continues to deliver consistent improvements
+over the baseline Whisper system. These gains persist even
+when backbone capacity is high, indicating that BELLA com-
+plements model scaling rather than merely compensating for
+weaker encoders. Overall, the results demonstrate robustness
+across languages and model sizes. The consistent gap between
+SL and BELLA confirms the benefit of routed multi-expert adap-
+tation over a single shared LoRA module. Moreover, the stability
+of gains across backbone scales suggests that the bilevel formula-
+tion effectively balances global alignment with language-aware
+specialization, mitigating cross-language interference in multi-
+lingual ASR.
+Figure 2 (test-set average) shows a clear tendency for indi-
+vidual experts to specialize to particular languages, with small
+off-diagonal probabilities. This indicates stable routing behavior
+and non-collapsed MoE-LoRA specialization under BELLA.
+7. Conclusion
+We studied multilingual ASR with an LLM decoder through
+a bilevel training formulation that separates alignment and
+language-specific specialization. The lower level learns cross-
+modal alignment via the bridge and shared adapter, while the
+upper level optimizes router-driven expert adaptation for predic-
+tion performance. This structure allows alignment and special-
+ization to remain coupled through the routing mechanism while
+avoiding full decoder fine-tuning. Experiments across multiple
+languages and Whisper backbones show consistent reductions in
+WER relative to strong baselines, indicating that the proposed
+bilevel formulation effectively improves multilingual robustness.
+2128

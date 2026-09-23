@@ -1,0 +1,522 @@
+Segment-level Tree Search for Long Meeting Document Summarization
+Sangwon Ryu1, Heejin Do3, Jun Seo1, Daehui Kim4, Yunsu Kim5, Gary Geunbae Lee1,2,
+Jungseul Ok 1,2
+1 GSAI, POSTECH 2 CSE, POSTECH
+3 ETH Zurich, ETH AI Center 4 Agentic AI Lab, KT 5 LILT
+{ryusangwon, sjin4861, gblee, jungseul}@postech.ac.kr, heejin.do@ai.ethz.ch,
+daehui.kim@kt.com, yunsu.kim@lilt.com
+Abstract
+Meeting documents are challenging to summarize due to their
+length and complex conversational structure. Existing ap-
+proaches typically adopt multi-stage pipelines that extract in-
+formation prior to summarization; however, these approaches
+often suffer from cumulative error propagation without inter-
+mediate validation, a limitation further amplified by short and
+low-quality reference summaries. We propose s egment-level
+summarization via Monte Carlo Tree S earch (S3), a training-
+free framework that constructs a final summary by composing
+segment-level summary candidates. S3 partitions a long docu-
+ment into segments and generates multiple summary candidates
+per segment, forming nodes of a search tree. The best-scoring
+combination is selected via self-reward-guided tree search and
+refined into the final output. Despite using a 7B model, S3
+achieves performance comparable to larger 72B models while
+producing length-appropriate summaries.
+Index Terms: natural language generation, abstract spoken
+document summarization, tree search
+1. Introduction
+Meeting summaries are widely used to help both attendees and
+non-attendees understand and recall prior discussions. In prac-
+tice, overly short summaries are often insufficient, as they fail to
+convey the context and detailed information underlying key de-
+cisions and outcomes. However, existing meeting summariza-
+tion datasets predominantly provide short reference summaries,
+implicitly encouraging models to generate overly compressed
+outputs and offering limited supervision for generating compre-
+hensive summaries. This mismatch between real-world needs
+and available data hinders the development of systems capa-
+ble of producing informative summaries. Moreover, important
+decisions and rationales in long meetings are often dispersed
+across unstructured conversational transcripts, where key infor-
+mation is sparsely distributed rather than concentrated, making
+effective summarization challenging.
+Existing approaches to long meeting summarization typi-
+cally rely on multi-stage pipelines that extract salient informa-
+tion prior to summarization [1, 2, 3, 4, 5, 6] due to the limited
+context window of encoder-decoder models. Although this ap-
+proach alleviates context length constraints, such pipelines of-
+ten suffer from cumulative error propagation, as mistakes in-
+troduced at early stages cannot be corrected in later steps due to
+the lack of intermediate validation. This problem is amplified in
+meetings, where conversational noise and frequent topic shifts
+increase the impact of early-stage errors.
+Recent large language models (LLMs) have substantially
+expanded context windows, with context lengths exceeding
+100K tokens [7, 8, 9]. While longer context windows make
+end-to-end processing of entire meeting transcripts feasible, our
+preliminary analysis suggests that increased input length alone
+is insufficient to effectively handle globally dispersed informa-
+tion in long meetings.
+To address these challenges, we propose segment-level
+summarization via Monte Carlo Tree Search (S3), a training-
+free framework that constructs a final summary by composing
+segment-level summary candidates. S3 first partitions a long
+meeting document into segments and generates multiple can-
+didate summaries for each segment, forming the nodes of a
+search tree. A self-reward–guided Monte Carlo Tree Search
+(MCTS) then selects an optimal combination of segment-level
+summaries. Finally, a refinement step removes redundant or
+generic expressions across segments to enhance global coher-
+ence in the final assembled summary. By explicitly reason-
+ing over combinations of segment-level summaries, S3 captures
+globally distributed important information while maintaining
+structural consistency and appropriate summary length.
+We evaluate S3 on the QMSum [10], meeting summariza-
+tion benchmark, using LLMs capable of processing long inputs.
+Summary quality is assessed using G-Eval [11] across multiple
+dimensions, includingcoherence,consistency,fluency, andrel-
+evance. In addition, we analyze model performance across dif-
+ferent input-length bins. Experimental results demonstrate that
+S3 with a 7B model substantially outperforms baseline models
+with the same backbone and achieves performance compara-
+ble to that of much larger 72B model. Notably, S3 consistently
+achieves the strongest performance across all input-length bins,
+with the largest gap on the longest documents.
+2. Related work
+The unstructured and conversational nature of meeting tran-
+scripts poses significant challenges for summarization, often re-
+sulting in missing key information, redundancy, hallucinations,
+and incoherent outputs [12, 13, 14, 15, 16, 17]. To handle long
+inputs, prior work has primarily relied on multi-stage strategies
+such as extract-then-generate [3] or divide-and-conquer [2, 4].
+However, these approaches are prone to cumulative error prop-
+agation and often depend on short, low-quality reference sum-
+maries for supervision. Moreover, evaluation has largely relied
+on ROUGE [18], which may not adequately capture summary
+quality in long-form meeting settings [13, 19]. Recent advances
+in long-context language modeling [7, 8, 9], supporting input-
+length exceeding 100K tokens, enable more fine-grained model-
+ing and evaluation of extended conversations. Building on these
+developments, we explore the potential of LLMs for long meet-
+ing summarization and propose S3 framework that constructs
+summaries without relying on reference summaries.
+3474
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3011
+𝑠!
+! 𝑠!
+"
+𝑠#
+! 𝑠#
+# 𝑠#
+"
+⋮
+𝑠$
+#
+𝑠!
+!
+𝑠#
+#
+𝑠$
+#
+⋮
+Final 
+Summary
+Document Segment 1
+Document Segment 2
+Document Segment N
+Summary Segment 1
+Summary Segment 2
+Summary Segment N
+⋮ ⋮
+Split
+(1) Generating Segment-level Summary Candidates Stage
+R
+{𝑠!
+!,𝑠!
+#,⋯,𝑠!
+"}
+{𝑠#
+!,𝑠#
+#,⋯,𝑠#
+"}
+⋮
+{𝑠$
+!,𝑠$
+#,⋯,𝑠$
+"}
+(2) Segment-level MCTS Stage (3) Refinement Stage
+Meeting
+Document Summarizer
+Selected node
+Visited node
+Select
+Backpropagation Refinement⋯
+⋯
+Figure 1:Overall framework of S3. (1) The meeting document is first divided into segments, and multiple summary candidates are
+generated for each segment. (2) These candidates form a search tree, where segment-level combinations are explored using MCTS with
+self-evaluation. (3) The selected segment-level summaries are concatenated and refined to produce the final coherent summary.
+3. Method: S3
+We propose segment-level summarization via Monte Carlo Tree
+Search (S3) to generate informative summaries for long meeting
+documents in which important information is distributed across
+the entire conversation. S3 first divides a long document into
+fixed-length segments and generates multiple summary candi-
+dates for each segment through sampling. To improve infer-
+ence efficiency in MCTS-based summarization [20], all candi-
+date summaries are generated in advance and used to construct
+the search tree offline, where each segment corresponds to a
+depth level. We then apply self-reward-based MCTS to identify
+an optimal combination of segment-level summaries and con-
+catenate them into a single draft summary. Finally, a refinement
+step is performed to remove redundancy across segments and
+improve coherence, producing the final summary. The overall
+framework is illustrated in Figure 1.
+3.1. Segment-level Sampling
+We divide a long meeting document into overlapping seg-
+ments using a sliding-window strategy with window sizew
+and strider. This produces a sequence of text segments
+{t1,t 2,···,t n}. For each segmentt i, we generatekcandi-
+date summaries{s 1
+i,s 2
+i,···,s k
+i}, resulting in the candidate set
+{{s1
+1,···,s k
+1},{s 1
+2,···,s k
+2},···,{s 1
+n,···,s k
+n}}. Candidate
+summaries are generated via nucleus sampling [21] or diverse
+beam search (DBS) [22] to encourage diversity across segment-
+level outputs. Since each candidate summary is generated from
+a localized document segment rather than the entire long docu-
+ment, the model can focus on a narrower context and produce
+more reliable and detailed summaries [23]. The use of over-
+lapping segments further mitigates issues such as coreference
+resolution errors and missing information near segment bound-
+aries [4], helping preserve important content that spans consec-
+utive segments.
+3.2. MCTS
+After generatingkcandidate summaries for each document seg-
+ment, we construct a search tree by organizing the segment-
+level summaries according to their corresponding depth. Each
+depthdin the tree corresponds to a document segmentt d, and
+the available actions at that depth are the pre-generated sum-
+mary candidates{s 1
+d,s 2
+d,···,s k
+d}. LLM serves as the pol-
+icyπ, and each action corresponds to selecting one candidate
+summary segment at the current depth. S3 sequentially selects
+one summary candidate from{s 1
+d,s 2
+d,···,s k
+d}at each depthd,
+gradually constructing a complete summary path from the root
+to a leaf node. The depth of the tree is set to the number of doc-
+ument segmentsn, and the width at each depth is determined
+by the number of sampled candidatesk.
+3.2.1. Selection
+During the selection phase, starting from the root node, we re-
+cursively select child nodes according to the UCT [24] criterion
+until reaching a node that is not fully expanded or corresponds
+to a terminal state. At each states, we select an actionaby
+maximizing:
+a∗ = arg max
+a∈A(s)
+ 
+Q(s,a) +c
+s
+log(N(s) + 1)
+N(s,a) + 1
+!
+,
+whereN(s)denotes the visit count of states,N(s,a)is the
+number of times actionahas been selected froms, andcis an
+exploration constant that balances exploration and exploitation.
+The termQ(s,a)represents the average accumulated reward
+obtained by taking actionaat states.
+3.2.2. Expansion
+When a leaf node is reached during the selection phase, we
+expand the node by attaching its corresponding segment-level
+summary candidates as child nodes. Specifically, at depthd, we
+retrieve the pre-generated candidate set{s 1
+d,s 2
+d,···,s k
+d}and
+add each candidate as a separate child node. Each child node
+represents selecting one summary candidate for the current doc-
+ument segment, thereby extending the partial summary path by
+one depth level. This expansion process continues until the tree
+reaches depthn, which corresponds to the total number of doc-
+ument segments.
+3475
+Table 1:Comparison of models on on the QMSum dataset.Boldindicates the best performance within each baseline model.
+Model Granularity # of Params Coherence Consistency Fluency Relevance Average ROUGE-1
+Reference summary - - 2.62 3.00 4.02 2.87 3.13 -
+Qwen2.5-Instruct Summary-level 7B 4.01 4.22 4.90 4.36 4.37 0.287
+w/ Refine Summary-level 7B 4.00 4.18 4.93 4.34 4.36 0.285
+w/ S2 Segment-level 7B 4.10 4.33 4.91 4.55 4.47 0.174
+w/S3 Segment-level 7B 4.22 4.43 4.94 4.65 4.56 0.148
+Gemma-3 Summary-level 12B 4.07 4.31 4.92 4.41 4.43 0.254
+w/ Refine Summary-level 12B 4.14 4.27 4.96 4.48 4.46 0.242
+w/ S2 Segment-level 12B 4.41 4.66 4.974.834.72 0.152
+w/S3 Segment-level 12B 4.47 4.68 4.98 4.83 4.74 0.151
+Qwen2.5-Instruct Summary-level 72B 4.19 4.43 4.95 4.58 4.54 0.256
+0%
+1%
+2%
+3%
+4%
+5%
+6%
+7%
+3.8
+4
+4.2
+4.4
+4.6
+4.8
+< 5K 5K - 10K 10K - 15K 15K - 20K 20K <
+Base S3
+Figure 2:Performance comparison across five length bins us-
+ing Qwen2.5-7B. Bars represent relevance scores, while dashed
+lines indicate summary length ratios (%). The performance gap
+widens as input length increases, with S3 remaining robust on
+longer inputs.
+3.2.3. Evaluation
+Once a complete summary path{s 1,s 2,···,s n}is formed by
+selecting a candidate at the final depth, the full summary is ob-
+tained by concatenating the selected segment-level summaries.
+The constructed summary is then self-evaluated to compute a
+scalar rewardz. Specifically, we evaluate the summary across
+four commonly used dimensions in summarization [11, 25, 26]:
+Coherence,Consistency,Fluency, andRelevance. Each dimen-
+sion is rated on a Likert scale from 1 to 5. The scores are lin-
+early normalized to the range[−1,1]and averaged to produce
+the final reward, defined as:
+˜ri = 2· ri−1
+4 −1, z= 1
+4
+4X
+i=1
+˜ri.
+This reward reflects the overall summary quality and guides
+the tree search toward higher-quality summary combinations.
+3.2.4. Backpropagation
+After each simulation, we update the statistics of all nodes along
+the selected search path. Specifically, for each visited state–
+action pair(s t,a t), we increment the visit count and accumu-
+late the rewardzobtained from the self-evaluation step:
+N(s t,a t)←N(s t,a t) + 1,
+W(s t,a t)←W(s t,a t) +z.
+Q(st,a t) = W(s t,a t)
+N(s t,a t).
+During backpropagation, the value estimates of segment-
+level summary combinations along the search path are updated
+based on the obtained reward. Over multiple simulations, ac-
+tions that consistently yield higher-quality summaries accumu-
+late larger Q values, guiding the search toward actions with
+higher estimated value.
+3.3. Refinement
+After completing the simulations, we construct the draft sum-
+mary by traversing the search tree from the root to a leaf, se-
+lecting the child with the highest Q value at each depth. The
+resulting segment-level summaries are concatenated to repre-
+sent the entire meeting. We then apply a refinement stage to im-
+prove global coherence and reduce redundancy. Since LLMs of-
+ten begin with generic high-level phrases (e.g., “This document
+discusses ...”) regardless of the segment depth, such expres-
+sions are unnecessary for intermediate segments. As a result,
+directly concatenating segment-level summaries may introduce
+redundant discourse markers and weaken structural coherence.
+The refinement stage addresses these issues, producing a non-
+redundant and well-structured final summary.
+4. Experimental Setup
+4.1. Datasets
+We conduct experiments on QMSum [10], a multi-domain
+dataset for long meeting summarization. It includes transcripts
+from diverse sources such as the ICSI [27] and AMI [28] meet-
+ing corpora, as well as parliamentary proceedings from the
+Welsh and Canadian Parliaments. Its length and complexity
+make it well-suited for evaluating long meeting summarization.
+4.2. Models
+We evaluate the effectiveness of S3 by comparing it against
+various LLM families and model sizes. In particular, we
+select models that are capable of processing long meeting
+documents from the QMSum dataset, including Qwen se-
+ries (Qwen-2.5-7B-Instruct, Qwen-2.5-72B-Instruct) [8], and
+Gemma-3-12b-it [29]. For each backbone model, all compo-
+nents of S3—including segment-level summarization, MCTS,
+and refinement—are performed using that same backbone.
+We compare S3 with both summary-level and segment-
+level baselines. For summary-level baselines, we consider (1)
+a zero-shot model that generates the entire summary in a sin-
+gle pass (Base), and (2) a refinement-based variant that per-
+forms an additional refinement step on the generated summary
+(Base + Refine). For the segment-level baseline, (3) we generate
+3476
+Table 2:Length statistics of summaries on QMSum (Test). Ra-
+tio denotes the average word count divided by the average doc-
+ument word count.
+Text
+# Sentences # Words Ratio
+Avg Min Max Avg Min Max (%)
+Document 734.3 265 1.6K 10.4K 2.3K 23.9K -
+Reference 3.4 1 10 64.7 14 188 0.62
+Qwen2.5-7B 10.2 1 37 162.9 24 448 1.56
+Qwen2.5-72B 14.5 2 48 238.8 41 725 2.29
+S3-7B 23.3 3 53 486.9 72 884 4.66
+a single summary segment for each document segment without
+sampling multiple candidates, followed by a refinement step;
+we denote this variant as S2.
+4.3. Metrics
+We use G-Eval [11] as our primary evaluation metric, as it cor-
+relates strongly with human judgment and does not rely on ref-
+erence summaries. Specifically, G-Eval evaluates summaries
+along four dimensions—coherence,consistency,fluency, and
+relevance—capturing key error types such as missing infor-
+mation and hallucinations. Reference-based metrics such as
+ROUGE [18] and BERTScore [30] are widely used in summa-
+rization, but they primarily measure lexical overlap and embed-
+ding similarity with the reference summary. However, refer-
+ence summaries in existing meeting datasets are typically short
+and highly compressed, which may penalize informative out-
+puts and underestimate content coverage. As a result, these
+metrics may not adequately reflect the overall quality and com-
+prehensiveness of long, information-rich meeting summaries.
+Moreover, model-based evaluation frameworks such as QuestE-
+val [31] and UniEval [32] evaluate summaries by jointly consid-
+ering the input document and the generated summary; however,
+they are typically constrained by input length limitations, mak-
+ing them unsuitable for long meeting transcripts.
+4.4. Hyperparameters
+In our experiments, we partition each document using a sliding
+window with window sizew= 2048tokens and strider=
+256tokens. We set the sampling size tok= 5. The number
+of simulations is fixed at 30, and the exploration constantcin
+MCTS is set to 1.0. For candidate generation, we consider two
+decoding strategies. In the nucleus sampling setting, we use
+p= 0.9with a temperature 1.1. In the DBS setting, we set the
+diversity penalty to 0.8. For S2, we use greedy decoding. A
+repetition penalty of 1.1 is applied in all generation settings.
+5. Results
+5.1. Main results
+As shown in Table 1, the experimental results show that S3 con-
+sistently outperforms all comparison models across LLM fam-
+ilies. Notably, S3 with a 7B model even surpasses the 72B
+summary-level baseline, demonstrating the effectiveness of our
+search-based segment composition strategy. Furthermore, the
+segment-level S2 approach outperforms the summary-level re-
+finement baseline. This suggests that although modern LLMs
+can process long inputs, generating summaries in smaller, local-
+ized units followed by refinement leads to better overall quality.
+These findings highlight the limitations of direct long-context
+Table 3:Comparison of models by different decoding strategies.
+Model Coh. Con. Flu. Rel. Avg.
+Qwen2.5-Instruct (7B) 4.01 4.22 4.90 4.36 4.37
+w/S3 (DBS) 4.15 4.36 4.93 4.60 4.51
+w/S3 (Nucleus sampling) 4.22 4.43 4.94 4.65 4.56
+summarization and underscore the importance of structured,
+segment-wise composition for long meeting summarization.
+5.2. Performance across input length bins
+To analyze model behavior under varying input lengths, we par-
+tition the test set into five bins based on source document length
+(in 5,000-token increments) and report the G-Evalrelevance
+scores (Figure 2), which measure alignment with the key dis-
+cussions of the meeting. While the Base model degrades as in-
+put length increases, S3 remains stable, with the gap widening
+in the longest bin. For inputs over 10K tokens, the Base model
+generates summaries shorter than 1% of the source document
+length, whereas S3 maintains substantially longer and more in-
+formative outputs. These results suggest that although modern
+LLMs can handle long contexts, preserving discussion align-
+ment becomes increasingly challenging as input length grows,
+particularly without structured long-context strategies.
+5.3. Summary length statistics
+As shown in Table 2, the reference summaries in QMSum ac-
+count for only 0.62% of the source document length, represent-
+ing an extreme compression ratio for long-form meeting tran-
+scripts. Such a high compression rate likely limits content cov-
+erage and provides weak supervision for generating informa-
+tive summaries. In contrast, S3 produces summaries whose av-
+erage length corresponds to 4.66% of the original document,
+substantially increasing informational coverage while remain-
+ing concise. Although the 72B summary-level baseline gener-
+ates longer summaries (2.29%) than the 7B baseline (1.56%),
+both remain far shorter than S3 and appear insufficient to cap-
+ture the full scope of long meeting discussions.
+5.4. Candidate generation strategies
+We measure the performance of S3 under different candidate
+generation strategies (Table 3). We observe that nucleus sam-
+pling consistently outperforms DBS in the segment-level tree
+search setting. We attribute this to the greater structural di-
+versity induced by stochastic sampling, which allows the tree
+search to explore a broader combination space. In contrast,
+DBS tends to generate high-probability yet structurally similar
+candidates, which limits the effectiveness of subsequent search.
+6. Conclusion
+In this paper, we proposed S3, a training-free segment-level
+summarization framework based on Monte Carlo Tree Search
+for long meeting documents. By exploring combinations of
+segment-level summaries through structured search, S3 en-
+ables an effective global composition of dispersed informa-
+tion. Experiments show that S3 consistently outperforms strong
+summary-level and segment-level baselines across multiple
+LLM families, highlighting the importance of structured com-
+position over model scale or context length alone.
+3477
+7. Acknowledgments
+This work was supported by the IITP(Institute of Informa-
+tion & Coummunications Technology Planning & Evaluation)-
+ITRC(Information Technology Research Center) grant funded
+by the Korea government(Ministry of Science and ICT)(No.
+IITP-2026-RS-2024-00437866) (45%) ; by Culture, Sports and
+Tourism R&D Program through the Korea Creative Content
+Agency grant funded by the Ministry of Culture, Sports and
+Tourism in 2025 (No. RS-2025-02413038, Development of
+an AI-Based Korean Diagnostic System for Efficient Korean
+Speaking Learning by Foreigners) (45%) ; and by Institute of
+Information & communications Technology Planning & Evalu-
+ation (IITP) grant funded by the Korea government(MSIT) (No.
+RS-2019-II191906, Artificial Intelligence Graduate School Pro-
+gram (POSTECH)) (10%).
+8. Use of Generative AI Disclosure
+ChatGPT was used for grammar correction and Codex was used
+as a coding assistant. All experimental design, analysis, inter-
+pretation, and research ideas were developed and validated by
+the authors.
+9. References
+[1] M. Galley, K. R. McKeown, E. Fosler-Lussier, and H. Jing,
+“Discourse segmentation of multi-party conversation,” inPro-
+ceedings of the 41st Annual Meeting of the Association for
+Computational Linguistics. Sapporo, Japan: Association for
+Computational Linguistics, Jul. 2003, pp. 562–569. [Online].
+Available: https://aclanthology.org/P03-1071/
+[2] Y . Zhang, A. Ni, Z. Mao, C. H. Wu, C. Zhu, B. Deb, A. Awadal-
+lah, D. Radev, and R. Zhang, “Summ n: A multi-stage summa-
+rization framework for long input dialogues and documents,” in
+Proceedings of the 60th Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers). Dublin,
+Ireland: Association for Computational Linguistics, May 2022,
+pp. 1592–1604.
+[3] Z. Mao, C. H. Wu, A. Ni, Y . Zhang, R. Zhang, T. Yu, B. Deb,
+C. Zhu, A. Awadallah, and D. Radev, “DYLE: Dynamic latent ex-
+traction for abstractive long-input summarization,” inProceedings
+of the 60th Annual Meeting of the Association for Computational
+Linguistics (Volume 1: Long Papers). Dublin, Ireland: Associa-
+tion for Computational Linguistics, May 2022, pp. 1687–1698.
+[4] J. Vig, A. Fabbri, W. Kryscinski, C.-S. Wu, and W. Liu, “Explor-
+ing neural models for query-focused summarization,” inFindings
+of the Association for Computational Linguistics: NAACL 2022.
+Seattle, United States: Association for Computational Linguistics,
+Jul. 2022, pp. 1455–1468.
+[5] H. Kim, M. Cho, and S.-H. Na, “ExplainMeetSum: A dataset
+for explainable meeting summarization aligned with human
+intent,” inProceedings of the 61st Annual Meeting of the
+Association for Computational Linguistics (Volume 1: Long
+Papers), A. Rogers, J. Boyd-Graber, and N. Okazaki, Eds.
+Toronto, 

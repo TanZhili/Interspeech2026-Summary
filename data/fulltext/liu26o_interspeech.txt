@@ -1,0 +1,456 @@
+WhisperVC: Decoupled Cross-Domain Alignment and Speech Generation for
+Low-Resource Whisper-to-Normal Conversion
+Dong Liu ID 1,2, Juan Liu3,1, Wei Ju4, Yao Tian4, Ming Li ID 2,3,∗∗
+1 School of Computer Science, Wuhan University, Wuhan, China
+2 School of Artificial Intelligence, The Chinese University of Hong Kong, Shenzhen, China
+3 School of Artificial Intelligence, Wuhan University, Wuhan, China
+4 AI Center, OPPO, Beijing, China
+dong.liu@whu.edu.cn
+Abstract
+Whispered speech lacks vocal-fold excitation, making the
+intelligible conversion challenging. We proposeWhisperVC,
+a three-stage framework for low-resource Whisper-to-Normal
+(W2N) conversion that decouples cross-domain alignment from
+speech generation. Stage 1 uses limited paired whisper–normal
+data with a content encoder and a Conformer-based variational
+autoencoder (V AE) with soft-DTW alignment to learn domain-
+invariant semantic representations. Stage 2, trained only on
+normal speech, employs a Length–Channel Aligner and a two-
+stage speaker-conditioned mel generator for timbre and prosody
+modeling. Stage 3 fine-tunes a HiFi-GAN vocoder for wave-
+form synthesis. Experimental results on AISHELL6-Whisper
+show competitive quality (DNSMOS 3.07,UTMOS 2.83,CER
+16.93%) and WavLM speaker similarity (0.95). The framework
+also supports privacy-preserving communication as well as non-
+vocal communication and a rehabilitation tool for post-surgical
+vocal-fold patients. Samples are available online1.
+Index Terms: whisper-to-normal conversion, voice conversion,
+domain alignment, variational autoencoder, flow matching
+1. Introduction
+Whispered speech lacks vocal-fold excitation and exhibits re-
+duced energy and shifted formant frequencies, leading to se-
+vere degradation in intelligibility and naturalness. Converting
+whispered speech into normal voiced speech—referred to as
+whisper-to-normal(W2N) conversion—can benefit individuals
+with voice disorders or users who must speak quietly in noise-
+sensitive environments.
+W2N remains challenging due to the absence of F0, large
+spectral mismatch between whisper and normal speech, and
+temporal inconsistencies across speaking styles. Moreover, par-
+allel whisper–voiced speech corpora are scarce, motivating non-
+parallel and robust modeling strategies.
+Existing approaches are predominantly data-driven. Early
+neural models employ adversarial or sequence-to-sequence ar-
+chitectures to directly map whispered acoustic features to
+normal-speech representations. For example, attention-guided
+GANs [1] and modified Transformer networks [2] predict
+mel-spectrograms that are subsequently synthesized by neu-
+ral vocoders, while comparative studies further demonstrate
+the effectiveness of GAN-based frameworks [3]. To allevi-
+ate the reliance on strictly parallel data, non-parallel meth-
+ods based on auxiliary classifier V AEs [4] and cycle-consistent
+**indicates the corresponding author.
+1Demo url: https://demo-whispervc.github.io/demo-whispervc/.
+GANs [5] have been proposed, treating W2N as a cross-domain
+style transfer problem. More recently, lightweight and zero-
+/one-shot pipelines leveraging self-supervised speech represen-
+tations have been explored, such as WESPER [6] and Dis-
+tillW2N [7]. In contrast, model-driven approaches explicitly
+exploit interpretable speech production mechanisms, including
+MFCC inversion [8] and source–filter-based excitation recon-
+struction [9]. While these methods provide interpretability, ac-
+curately restoring natural voicing and prosody remains difficult.
+Most existing W2N systems adopt a single-stage acoustic
+mapping framework that jointly learns whisper–normal align-
+ment, speaker conditioning, and acoustic generation. How-
+ever, the large spectral and temporal mismatch between whisper
+and normal speech makes stable voicing reconstruction difficult
+with limited training data and often lack robustness when ex-
+tended to broader voice conversion (VC) tasks.
+To address these limitations and inspired by [10], we pro-
+poseWhisperVC, a decoupled coarse-to-fine framework for
+W2N conversion. Moreover, WhisperVC separates cross-
+domain alignment from normal-speech generation, enabling
+unified modeling of W2N and conventional VC within a single
+architecture. Our contributions are threefold:
+•Whisper-specific domain alignment.We introduce a con-
+tinuous dual-encoder V AE with soft-DTW regularization
+built upon content encoder representations to model cross-
+domain alignment between whispered and normal speech,
+providing stable inputs for downstream generation.
+•Decoupled coarse-to-fine residual generation.We adopt
+a two-stage generation strategy where a deterministic de-
+coder first predicts a coarse mel representation, followed by
+an optimal-transport conditional flow matching (OT-CFM)
+module that models the residual between the coarse predic-
+tion and the ground-truth mel, enabling coarse-to-fine refine-
+ment of the acoustic representation. A gated dual-path rout-
+ing mechanism further enables whispered inputs to undergo
+domain alignment while allowing normal inputs to bypass
+this stage, unifying W2N and conventional VC within a sin-
+gle framework.
+•Vocoder adaptation for distribution consistency.We fine-
+tune HiFi-GAN on generated mel-spectrograms to reduce the
+train–test distribution mismatch between predicted and real
+acoustic features.
+By combining explicit cross-domain alignment, gated dual-
+path routing, and residual flow-based refinement, WhisperVC
+provides a unified framework for whisper-to-normal conversion
+while preserving normal-speech voice conversion capability.
+4827
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2002
+Component3Component2Component1
+SpeechMel
+Content
+Encoder
+Conformer-
+basedVA E Length-
+Channel
+Aligner Converted
+SpeechMel
+Vo c o d e r
+Converted
+Speech
+SpeakerEmbedding
+Coarse 
+Generator
+ResidualCFM
+~ +
+WhisperInput
+ NormalInput
+FrozenGatedRouting~
+Figure 1:Overview of the proposed whisper-to-normal voice conversion framework.
+Content
+Encoder
+Conformer-based
+Decoder
+Conformer-basedVA E
+WhisperSpeech
+NormalSpeech
+Conformer-based
+Encoder
+𝜇𝜎!
+𝑁(0,1)
+Conformer-based
+Encoder
+𝜇𝜎!
+𝑁(0,1)
+Paired
+Content
+WhisperFeat NormalFeat MSELoss soft-DTWLoss
+Frozen
+Figure 2:Overview of the proposed Conformer-based VAE module.
+2. Methods
+2.1. Framework Overview
+WhisperVC consists of three sequential components: (1) a
+whisper-specific domain alignment module, (2) a coarse-to-
+fine mel generation framework operating in the normal-speech
+space, and (3) a neural vocoder for waveform synthesis.
+Given an input utterancex(whispered or normal), our
+goal is to generate a natural 22.05 kHz waveformˆywhile pre-
+serving linguistic content and speaker timbre. The final mel-
+spectrogram is formulated as
+ˆM=M c + ˆR,(1)
+whereM c denotes a coarse mel representation capturing
+global acoustic structure, and ˆRis the residual predicted by the
+refinement module to model fine-grained acoustic details.
+During inference, whispered inputs first undergo domain
+alignment before mel generation, while normal inputs bypass
+the alignment stage through a gated routing mechanism.
+2.2. Whisper-Specific Domain Alignment
+We adopt a pretrained content encoder (Whisper-large V3),
+fine-tuned on a Mandarin whispered–normal corpus [11], to ex-
+tract 1280-d content representationsCfrom 16 kHz audio.
+Due to representation and temporal mismatch between
+whispered and normal content features, we introduce a
+Conformer-based continuous variational autoencoder (V AE) to
+model cross-domain alignment.
+The V AE consists of dual encoders and a shared decoder.
+Given paired content featuresC w (whisper) andC n (normal),
+the encoders produce latent posteriors:
+qw(z|Cw) =E w(Cw), q n(z|Cn) =E n(Cn).(2)
+Latent samplesz w andz n are then decoded to reconstruct
+aligned features:
+ˆCw =D(z w), ˆCn =D(z n).(3)
+The training objective is
+LV AE=λ KL [KL(qw||N(0,I)) + KL(q n||N(0,I))]
++λ rec∥ ˆCn−Cn∥2
+2 +λ DTWsoftDTW( ˆCw,Cn).(4)
+The soft-DTW [12] loss aligns reconstructed whisper fea-
+tures with normal features under temporal flexibility, encourag-
+ing alignment toward the normal-speech space.
+2.3. Coarse-to-Fine Residual Generation
+Length–Channel Alignment (LCA).
+The content encoder operates on 16 kHz audio, while mel-
+spectrograms used for HiFi-GAN synthesis are extracted at
+22.05 kHz. This results in a length mismatch between encoder
+features and mel frames. To bridge this gap without introducing
+explicit duration modeling, we linearly interpolate the encoder
+features to match the mel length.
+Given encoder featuresC∈R Tenc×d, we obtain length-
+aligned features ˜Cvia interpolation, followed by a convolu-
+tional projection to map features into the acoustic decoder di-
+mension.
+Coarse Mel Generation.
+A feed-forward Transformer-based acoustic decoder predicts a
+deterministic coarse mel-spectrogram:
+Mc =G coarse( ˜C,s),(5)
+wheresdenotes a 256-dimensional speaker embedding ex-
+tracted using a SimAM–ResNet34 encoder [13] pretrained on
+V oxBlink2 [14] and fine-tuned on V oxCeleb2 [15].
+The coarse generator is trained with anℓ 1 reconstruction
+loss:
+Lcoarse =∥M c−M∥ 1.(6)
+Residual OT-CFM Refinement.
+To improve acoustic fidelity, we model the residual between the
+ground-truth mel-spectrogramMand the coarse predictionM c:
+R=M−M c.(7)
+Instead of directly generating the full mel-spectrogram, the
+residual distribution is modeled using optimal-transport condi-
+tional flow matching (OT-CFM). Specifically, Gaussian noise
+z∼N(0,I)is transported to the residualRalong a linear in-
+terpolation path
+yt = (1−t)z+tR, t∼U(0,1).(8)
+The flow networkfθ predicts the velocity field conditioned
+on the interpolated statey t, the time stept, the length-aligned
+4828
+content feature ˜C, and the speaker embeddings. Training min-
+imizes the velocity matching objective
+LCFM =E R,z,t
+fθ(yt,t, ˜C,s)−(R−z)
+
+2
+2
+
+.(9)
+This coarse-to-fine formulation separates global structure
+modeling from stochastic detail refinement, improving stability
+under cross-domain mismatch.
+Gated Dual-Path Routing
+To enable unified modeling of W2N and conventional VC,
+we introduce a lightweight sigmoid classifier that predicts a
+domain indicator and determines whether the V AE alignment
+module is applied.
+Given content featuresC, the routing module produces
+aligned features
+˜C=
+(
+D(Ew(C)),if classified as whisper,
+C,otherwise. (10)
+The classifier is trained using paired whisper-normal su-
+pervision. This selective alignment corrects cross-domain mis-
+match while preserving normal-speech representations.
+2.4. Vocoder Adaptation
+We adopt HiFi-GAN [16] as the neural vocoder. To re-
+duce train–test mismatch introduced by residual refinement, the
+vocoder is fine-tuned on predicted mel-spectrograms.
+3. Experimental Results
+3.1. Experimental Setup
+WhisperVC consists of three components: (1) Whisper-Specific
+Domain Alignment, (2) Coarse-to-Fine Residual Generation,
+and (3) V ocoder Adaptation. The components are trained se-
+quentially and jointly used during inference.
+Mandarin (Primary Evaluation).All three components
+are trained on the AISHELL6-Whisper corpus [11], which con-
+tains paired whispered-normal Mandarin speech with approxi-
+mately 30 hours.
+Component 1 learns cross-domain alignment between
+whispered and normal speech features. Component 2 performs
+normal-speech acoustic modeling using a coarse mel predictor
+with OT-CFM-based residual refinement. Component 3 fine-
+tunes HiFi-GAN to adapt waveform synthesis to the recon-
+structed mel distribution.
+W2N performance is evaluated on whispered test utter-
+ances2 to measure reconstruction quality.
+To further verify that the gated architecture preserves
+speaker-conditioned generation capability, we additionally eval-
+uate normal speech VC on AISHELL6-Whisper. In this setting,
+normal speech serves as input while a target speaker embedding
+is provided, examining whether the unified framework main-
+tains standard VC functionality alongside W2N conversion.
+Since no prior W2N systems have been reported on
+AISHELL6-Whisper, we include Seed-VC as a representative
+generic VC baseline. For W2N evaluation, whispered speech
+is directly used as input to Seed-VC, reflecting whisper–normal
+mismatch. For VC evaluation, normal speech is used following
+the standard VC protocol. Seed-VC is not specifically trained
+for whisper-to-normal conversion.
+2All training and testing files are released on the demo page.
+English (Additional Evaluation).The three components
+are trained on separate corpora to evaluate the effectiveness of
+the decoupled training strategy.
+Component 1 is trained on the paired whispered–normal
+corpus wTIMIT [18]. Component 2 is trained on LibriTTS-
+clean [19], which contains only normal speech, following the
+normal-speech-only generation paradigm. Component 3 is op-
+timized using LibriTTS-clean together with wTIMIT normal
+speech to improve robustness to domain variation.
+To ensure rigorous zero-shot evaluation, wTIMIT is strictly
+partitioned at the speaker level into disjoint training, validation,
+and test sets 3. Validation and test speakers are completely un-
+seen during training, forming an unseen-speaker evaluation pro-
+tocol that prevents speaker leakage. All data are organized as
+paired normal–whisper utterances to maintain consistent super-
+vision during alignment training and evaluation.
+Evaluation is conducted on the wTIMIT whispered test
+set. We compare with whisper-oriented systems (WESPER [6],
+DistillW2N [7]) and representative generic VC models (Seed-
+VC [17], FreeVC [20]) applied in a zero-shot manner to illus-
+trate the limitation of generic VC under the W2N task.
+The content encoder operates at 16 kHz, while acoustic
+modeling and waveform synthesis are performed at 22.05 kHz.
+3.2. Evaluation Metrics
+We evaluate WhisperVC from four perspectives:
+Naturalness.DNSMOS (ovrl/sig/bak/p808) [21], UT-
+MOS [22], WVMOS [23], and NISQA [24] estimate perceptual
+quality and signal fidelity, providing a comprehensive approxi-
+mation of human listening experience.
+Intelligibility.Character Error Rate (CER) is computed us-
+ing OpenAI Whisper-largeV3-turbo [25]. These metrics mea-
+sure phonetic reconstruction accuracy and content preservation.
+Speaker similarity.We report SECS (Resemblyzer cosine
+similarity) and WavLM [26] cosine similarity.
+Semantic consistency.SpeechBERTScore [27] measures
+high-level semantic alignment between converted and reference
+speech.
+3.3. Mandarin W2N Results and Ablation Analysis
+To evaluate W2N conversion performance, we conduct experi-
+ments on AISHELL6-Whisper, with results reported in Table 1.
+Compared with whispered input, WhisperVC substantially
+improves perceptual quality and intelligibility (DNSMOS ovrl:
+1.102→3.072; CER: 22.937%→16.932%), demonstrating
+that the proposed framework effectively reconstructs natural
+voiced speech from whispered inputs.
+Directly applying a general voice conversion model (Seed-
+VC) to whispered speech results in severe intelligibility degra-
+dation (CER 46.423%), indicating that generic VC systems can-
+not properly handle the large acoustic mismatch between whis-
+pered and normal speech.
+Effect of Component 2 (Coarse-to-Fine Residual Gen-
+eration).Using only the deterministic coarse mel generator
+(Coarse-only) already improves intelligibility (CER 18.729%),
+showing that the acoustic generator can recover normal-speech
+structure from the aligned representations produced by Compo-
+nent 1. However, perceptual quality remains limited due to the
+deterministic prediction.
+Introducing OT-CFM refinement further improves mel re-
+construction. The residual formulation outperforms full-mel
+3File lists are available at the demo page.
+4829
+Table 1:W2N performance and ablation results on AISHELL6-Whisper testing set. Best results are highlighted in bold.
+Naturalness / Quality↑ Intelligibility↓ Speaker Similarity↑ Semantic↑
+Model DNSMOSovrl DNSMOSsig DNSMOSbak P808 UTMOS WVMOS NISQA CER SECS WeSpeaker WavLM SBERT
+Whispered input 1.102 1.155 1.195 2.703 1.308 -0.067 1.900 22.937 0.582 0.498 0.784 0.673
+Seed-VC [17] (zero-shot) 2.868 3.255 4.031 3.740 2.467 2.814 3.088 46.423 0.851 0.772 0.952 0.758
+Ablation studies
+Coarse-only 2.716 3.338 3.343 3.258 2.797 3.186 2.418 18.729 0.529 0.638 0.943 0.761
++ OT-CFM (Full) 2.548 3.178 3.188 3.398 2.170 2.716 2.935 19.576 0.515 0.613 0.930 0.744
++ OT-CFM (Residual) 2.652 3.253 3.313 3.425 2.795 3.139 2.830 18.266 0.528 0.650 0.944 0.760
+OT-CFM (Residual) w/o V AE 1.830 3.218 1.632 2.755 1.729 1.519 2.233 40.155 0.511 0.557 0.898 0.712
+WhisperVC (Proposed) 3.072 3.5063.720 3.5622.831 3.3523.164 16.932 0.816 0.675 0.945 0.785
+Ground Truth 3.141 3.552 3.795 3.680 2.868 3.129 3.395 - 1.000 1.000 1.000 1.000
+Table 2:VC results on AISHELL6-Whisper testing set. Best
+results are highlighted in bold.
+Naturalness↑ Content↓ Speaker↑
+Model DNSMOSOVRL UTMOS CER SECS WavLM
+Seed-VC [17] 3.033 2.755 4.392 0.8940.727
+WhisperVC 3.0922.850 3.331 0.7780.743
+w/o Gate (Equa 10) 3.0782.859 4.333 0.793 0.717
+modeling, indicating that learning structured residual correc-
+tions on top of the coarse mel prediction is more stable than
+directly modeling full mel trajectories.
+Effect of Component 1 (Whisper-Specific Domain
+Alignment).Removing the V AE alignment module (OT-CFM
+Residual w/o V AE) leads to drastic performance degradation
+(CER 40.155% and large quality drops across MOS predictors).
+This confirms that our V AE-based cross-domain alignment be-
+tween whispered and normal speech representations is essential
+for reliable W2N generation.
+Effect of Component 3 (Vocoder Adaptation).Fine-
+tuning HiFi-GAN on predicted mel-spectrograms further im-
+proves perceptual quality and intelligibility (DNSMOS ovrl:
+2.652→3.072; CER: 18.266%→16.932%), showing that re-
+ducing the mismatch between predicted mel distributions and
+vocoder training data improves waveform synthesis quality.
+These results demonstrate that the three components jointly
+improve W2N performance: V AE enables cross-domain align-
+ment, Component 2 provides coarse-to-fine acoustic reconstruc-
+tion, and finetuning HiFi-GAN improves waveform synthesis
+robustness.
+3.4. Voice Conversion Capability (Mandarin)
+To verify that the proposed framework maintains standard voice
+conversion capability, we evaluate normal-to-normal VC on
+AISHELL6-Whisper, with results reported in Table 2.
+Compared with the strong baseline Seed-VC, WhisperVC
+achieves comparable perceptual quality while improving con-
+tent preservation, reducing CER from 4.392 to 3.331.
+We further analyze the effect of the gated architecture by
+removing the Gated Dual-Path Routing mechanism. Although
+perceptual quality remains similar, content preservation de-
+grades noticeably (CER 3.331%→4.333%), indicating that the
+gate helps stabilize generation by adaptively routing informa-
+tion between whisper-oriented and normal-speech pathways.
+These results demonstrate that WhisperVC preserves voice
+conversion capability while simultaneously supporting whisper-
+to-normal reconstruction within a unified framework.
+3† Results obtained using the official pretrained model from the
+authors’ GitHub repository ( https://github.com/rkmt/wesper-demo,
+https://github.com/tan90xx/distillw2n ) on our test set.
+Table 3:W2N performance on the wTIMIT testing dataset. Best
+results are highlighted in bold.
+Naturalness↑ Content↓ Speaker↑
+Model DNSMOSovrl UTMOS CER SECS WavLM
+FreeVC [20] 2.657 2.643 26.534 0.702 0.885
+Seed-VC [17] 3.108 3.321 16.709 0.839 0.926
+WESPER [6]† 3.202 3.496 30.724 0.531 0.543
+DistillW2N [7]† 3.012 1.894 36.028 0.642 0.806
+WhisperVC 2.894 3.276 11.389 0.594 0.724
+3.5. English W2N Evaluation
+To evaluate the generalization ability of WhisperVC across lan-
+guages, we train the same framework on the English wTIMIT
+and LibriTTS-clean datasets and report W2N results in Table 3.
+WhisperVC achieves the best intelligibility among all com-
+pared systems, with a CER of 11.389%. Compared with
+whisper-oriented baselines (WESPER and DistillW2N), the
+proposed method substantially reduces content recognition er-
+rors, demonstrating effective whispered-to-normal reconstruc-
+tion on English speech.
+Generic voice conversion models (Seed-VC and FreeVC)
+show limited effectiveness when directly applied to whispered
+inputs. Although these systems can synthesize perceptually
+plausible speech, their intelligibility remains inferior to Whis-
+perVC (CER 16.709% and 26.534%), indicating that generic
+VC systems cannot fully resolve the acoustic mismatch between
+whispered and normal speech.
+These results suggest that the proposed alignment and
+acoustic generation framework generalizes well across lan-
+guages when trained on the target-language data.
+4. Conclusion
+This paper presented WhisperVC, a unified coarse-to-fine
+framework for whisper-to-normal (W2N) conversion that ad-
+dresses whisper-normal domain mismatch through whisper-
+specific representation alignment, residual acoustic generation,
+and vocoder adaptation. Experiments on AISHELL6-Whisper
+demonstrate substantial improvements in perceptual quality and
+intelligibility over whispered input and generic VC baselines,
+while additional results on wTIMIT show that the framework
+generalizes beyond Mandarin. Future work will explore im-
+proving model efficiency and enabling real-time whisper-to-
+normal conversion.
+5. Acknowledgement
+This research is funded in part by the National Natural Sci-
+ence Foundation of China (62571223) and Yangtze River Delta
+Science and Technology Innovation Community Joint Research
+Project (2024CSJGG01100) and OPPO. Many thanks for the
+computational resource provided by the Advanced Computing
+East China Sub-Center.
+4830
+6. Generative AI Use Disclosure
+Large Language Models (LLMs) were used solely for
+manuscript polishing (e.g., rephrasing and grammar checks) to
+improve clarity and readability. The LLMs were not used for
+ideation, methodology, experimental design, data analysis, or
+result interpretation. All scientific content was produced and
+verified by the authors.

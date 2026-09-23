@@ -1,0 +1,438 @@
+RT-Tango: Real-Time Distributed Binaural Speech Enhancement for
+Low-Power Hearing Aid Devices
+Zahra Benslimane ID 1,2, Pierre Chouteau1, Martyna Poreba ID 1, Fabrice Auzanneau ID 1, Michal
+Szczepanski ID 1, Fabian Chersi ID 1, Romain Serizel ID 2
+1 Universit´e Paris-Saclay, CEA, List, F-91120 Palaiseau, France
+2 Universit´e de Lorraine, CNRS, Inria, LORIA, F-54000 Nancy, France
+zahra-hafida.benslimane@cea.fr
+Abstract
+Real-time binaural speech enhancement is constrained by la-
+tency, computational cost, and inter-device communication,
+yet existing efficient solutions predominantly address single-
+channel settings. In this paper, we introduce RT-Tango, a
+real-time distributed binaural speech enhancement framework
+designed for streaming on resource-constrained platforms and
+specifically for hearing aids. RT-Tango relies on a two-stage
+distributed architecture combining perceptually motivated ERB
+feature compression, lightweight grouped recurrent mask es-
+timation, and temporal sparsification to reduce computational
+cost. Stringent latency constraints are addressed by decoupling
+spectral resolution from algorithmic delay using an asymmet-
+ric STFT, together with causal recurrent inference and online
+estimation of spatial statistics. Experimental results show that
+RT-Tango achieves competitive speech enhancement while sig-
+nificantly reducing MACs operations and functioning at ultra-
+low latencies as low as 8 ms.
+Index Terms: speech enhancement, distributed, binaural, low-
+latency, real-time, hearing aid
+1. Introduction
+Real-time speech enhancement (SE) in bandwidth-limited bin-
+aural and distributed systems, such as hearing aids, must operate
+under strict latency and computational constraints. Each device
+processes audio locally, exchanging only minimal information,
+which places strong limitations on model complexity and com-
+munication. Addressing SE under these joint constraints is es-
+sential for practical on-device deployment.
+One line of research focuses on reducing the computational
+cost of on-device SE through neural model compression, typi-
+cally combining structured pruning and quantization to reduce
+memory use and computational complexity [1, 2, 3]. Hardware-
+oriented studies further show that not only the model’s spar-
+sity level but also its structure critically impact the throughput-
+memory-quality trade-off on embedded platforms [4]. How-
+ever, SE models are particularly sensitive to aggressive quan-
+tization due to their regression-based objectives, which ampli-
+fies quantization noise and hinders full integer deployment [5].
+This has motivated the search for alternative solutions, such as
+hardware-aware mixed-precision inference [6] or distillation-
+based training strategies [7]. Complementary research explores
+architectural efficiency: designing compact models that inher-
+ently require fewer operations. Grouped processing is attractive
+for SE, where feature maps are partitioned into small groups and
+This research was carried out with the support of the French Na-
+tional Research Agency as part of the REFINED project, “REal-time
+artiFicial INtelligence for hEaring aiDs” (ANR21-CE19-0043).
+processed in parallel by tiny sub-networks that periodically ex-
+change information [8, 9]. Other works reduce input dimension-
+ality by sub-sampling [10] or using an Equivalent Rectangular
+Bandwidth (ERB)-scaled filterbank to compress the frequency
+representations, as in GTCRN [11].
+Despite these advances, most efficiency-driven approaches
+focus on single-microphone SE. In contrast, efficient multi-
+microphone methods remain comparatively underexplored,
+even though they can effectively exploit spatial cues for im-
+proved noise reduction. Recent works have begun to ad-
+dress this gap by proposing computationally efficient multi-
+microphone architectures, either by decoupling spatial and
+spectral processing [12] or by employing lightweight atten-
+tion mechanisms to model spatial dependencies [13]. Never-
+theless, these approaches typically incur higher computational
+cost than ultra-lightweight monaural models and often assume
+a centralized processing with access to all microphone signals.
+In practical binaural hearing-device systems, microphones are
+distributed across physically separated nodes, and centralized
+processing would require continuous high-bandwidth wireless
+transmission, which is infeasible under severe energy and band-
+width constraints. To address this limitation, fully distributed
+fusion-center-free signal processing frameworks have been ex-
+plored to balance SE performance with bandwidth-efficient
+inter-device communication [14, 15].
+While prior work has demonstrated the feasibility of
+reduced-bandwidth distributed binaural SE [16], jointly achiev-
+ing low latency and low computational complexity remains an
+open challenge. To the best of our knowledge, no existing
+approach combines the required design elements within a dis-
+tributed binaural framework under explicit real-time latency and
+computational constraints. This paper addresses this gap by in-
+troducing RT-Tango, a binaural SE framework specifically de-
+signed for real-time deployment on resource-constrained hear-
+ing devices. Concretely, our framework relies on the following
+efficiency-driven design choices:
+• Perceptually motivated feature compression using an ERB-
+scaled filterbank, reducing input dimensionality while pre-
+serving speech-relevant cues.
+• Lightweight grouped recurrent mask estimation, enabling
+parallel and partitioned processing to reduce computational
+cost in distributed binaural settings.
+• Decoupled frequency resolution and algorithmic latency re-
+duction through an asymmetric STFT configuration tailored
+for streaming operations.
+• Temporal sparsification for real-time inference, including
+both learned skip-RNN gating and fixed-rate frame reuse to
+reduce recurrent updates.
+3027
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3301
+2. Methodology
+RT-Tango revisits the Tango framework [16] from a system-
+level perspective. This redesign is motivated by the stringent
+constraints of hearing aids, where strict causality, ultra-low la-
+tency, limited memory, and low-power embedded hardware are
+critical requirements. Rather than introducing isolated opti-
+mizations, RT-Tango adopts complementary architectural and
+algorithmic design principles detailed in the following sections.
+2.1. Baseline
+Tango serves as our baseline due to its two-stage distributed ar-
+chitecture (illustrated in Figure 1) and proven effectiveness in
+spatially unconstrained microphone configurations [16]. Each
+ear-node independently estimates speech and noise masks using
+a Single-Node DNN (SN-DNN) and computes a Speech Distor-
+tion Weighted Multichannel Wiener Filter (SDW-MWF) [17].
+This produces an ear-specific compressed signal, which is trans-
+mitted to the contra-lateral ear-node. Then, a Multi-Node DNN
+(MN-DNN) refines the masks using both local signals and ex-
+changed representations, from which a final SDW-MWF gener-
+ates the enhanced binaural output. In its original formulation,
+however, the baseline imposes no latency or complexity con-
+straints.
+2.2. Lightweight neural mask estimation
+To reduce the computational cost of this distributed binaural
+processing, RT-Tango improves the efficiency in neural mask
+estimation by means of perceptually driven feature compres-
+sion, grouped modeling of localized spectral dependencies, and
+temporal sparsification, while preserving the characteristic two-
+stage distributed spatial filtering framework of Tango.
+2.2.1. Feature compression
+The ERB representation is used as the front-end for both neu-
+ral mask estimation networks (indicated as SN-DNN and MN-
+DNN in Figure 1). This perceptually motivated transformation
+reduces spectral resolution at high frequencies, where human
+auditory sensitivity is coarser, while preserving finer resolution
+at lower frequencies that carry most speech energy and cues. By
+aligning the features with perceptual frequency scaling, ERB
+compression reduces the input dimensionality of the mask es-
+timators, lowering the number of parameters and operations in
+subsequent layers. The estimated masks are then mapped back
+to the linear-frequency domain using an inverse ERB transfor-
+mation to restore the spectral resolution required for filtering.
+2.2.2. Grouped RNN mask estimation
+The mask estimation networks of RT-Tango implement a
+grouped recurrent neural network (GRNN) to reduce compu-
+tational complexity while preserving modeling capacity [18].
+This choice is motivated by the localized nature of spectral
+dependencies in speech signals and the need to control re-
+current computational complexity. Localized recurrent mod-
+eling within frequency sub-bands is consistent with common
+SE assumptions as spectral dependencies are typically stronger
+within nearby frequency regions. Since the computational
+cost of recurrent layers scales approximately quadratically as
+O(H 2)with the hidden state dimensionH, partitioning the
+feature space intoGgroups of sizeH/G, the total recurrent
+complexity becomesG·O((H/G) 2) =O(H 2/G), making
+it significantly lower compared to a full-band RNN. Although
+Out R
+SDW-MWF
+ERB Features
+SN-DNN
+GRNN+FC
+Inv ERB
+STFT
+STFT
+SDW-MWF
+SN-DNN
+ERB Features
+GRNN+FC
+Inv ERB
+STFT
+STFT
+MN-DNN
+ERB Features
+GRNN+FC
+Inv ERB
+MN-DNN
+ERB Features
+GRNN+FC
+Inv ERB
+Stage 1
+Out LStage 2
+Rear R
+Front R
+Rear L
+Front L
+iSTFT iSTFTSDW-MWF SDW-MWF
+Figure 1:Block diagram of RT-Tango. It preserves Tango’s two-
+stage processing scheme while introducing additional or mod-
+ified modules focused on efficiency (highlighted in yellow) and
+low-latency streaming (in italics).
+the processing is performed independently within each group,
+cross-band dependencies are captured through a representation
+rearrangement mechanism [18], enabling cross-band informa-
+tion exchange and global spectral modeling.
+2.2.3. Temporal sparsification
+To further reduce the computational load of high-rate real-time
+streaming, RT-Tango exploits temporal redundancy in the in-
+put signal using skip inference strategies. Instead of perform-
+ing a neural inference at every frame, the mask estimation net-
+works reuse previously estimated masks when the input signal
+exhibits limited temporal variation. This temporal sparsifica-
+tion reduces the mask’s update frequency and thus the overall
+computational cost during streaming inference. In RT-Tango,
+we define Fixed-Rate Skipping (FRS), as a strategy that ex-
+ecutes the mask estimator at a predefined interval and reuses
+previously estimated masks in between. We compare this with
+learned skip gates [3, 19], where a gating mechanism dynami-
+cally decides whether to update the recurrent state at each frame
+(see Section 3.2.2).
+2.3. Low-latency streaming
+To support low-latency streaming, we use an asymmetric STFT
+configuration [20, 21]. We use a long analysis window (aW)
+that preserves the frequency resolution and a shorter synthe-
+sis window (sW) to reduce the reconstruction latency, enabling
+low-latency real-time streaming. The spatial covariance matri-
+ces (SCM) required by the SDW-MWF are updated online using
+a recursive exponential moving average (EMA). Under these
+streaming constraints, the system operates as RT-Tango-OS.
+3028
+Table 1:Model comparison with left/right ear scores. Computational cost is reported in MMACs/s and decomposed into DNN and
+SDW-MWF components. A hop size of16 mscorresponds to≈62STFT frames/s, while4 mscorresponds to≈250STFT frames/s.
+SI-SAR is not reported for the unprocessed mixture, where no processing artifacts are present.
+STFT MMACs/s ↓ SI-SIR↑ SI-SDR↑ SI-SAR↑ STOI↑ PESQ↑
+Model Hop Total DNN SDW-MWF L R L R L R L R L R
+Unprocessed− − − −0.0−4.0−0.6−4.6− −0.68 0.56 1.14 1.10
+Tango16 ms 605.98 604.5 1.48 20.8 24.1 4.2 4.4 4.7 4.7 0.83 0.84 1.61 1.64
+GTCRN16 ms 48.98 48.98−16.1 14.1 5.6 3.7 6.4 4.5 0.76 0.69 1.47 1.34
+GTCRN4 ms 197.5 197.5−16.6 13.8 6.0 4.0 6.7 5.0 0.79 0.71 1.52 1.36
+Tango-RNN16 ms 67.20 65.72 1.48 21.6 25.0 4.7 5.0 5.2 5.2 0.84 0.85 1.66 1.70
++ GRNNSN=8
+MN=2 ⋆16 ms 18.22 16.74 1.48 21.3 24.8 4.5 4.8 5.1 5.0 0.84 0.84 1.66 1.70
+RT-Tango(ours)4 ms33.4128.08 5.33 20.8 24.6 4.4 4.7 5.0 5.0 0.84 0.84 1.66 1.71
+RT-Tango-OS(ours)4 ms35.1428.08 7.01 20.5 24.7 2.9 3.8 3.4 4.0 0.80 0.82 1.54 1.63
+3. Experiments
+3.1. Experimental setup
+Models were trained on a simulated binaural dataset follow-
+ing the protocol of Monir et al. [22], which utilized a four-
+microphone hearing aid configuration with two microphones
+per ear. Clean speech from LibriSpeech [23] was mixed with
+speech-shaped noise and real-world environmental noise. Eval-
+uation was conducted on a subset of the BinauRec 1 binaural
+dataset [24], comprising 1,200 mixtures generated using mea-
+sured room impulse responses (RIRs) acquired using a portable
+hearing laboratory (PHL) [25] with behind-the-ear hearing aids
+mounted on a dummy head. We considered configurations
+where the target speech source was located in front and the noise
+positioned at45◦ and90◦ to the right of the target, respectively.
+This results in a lower SIR at the right ear than at the left ear.
+Dry signals are mixed at input SNRs of−5,0, and5dB, before
+being convolved with the RIR.
+Enhancement performance was evaluated using scale-
+invariant objective metrics (SI-SDR, SI-SIR, and SI-SAR), re-
+ported in dB [26], together with perceptual measures PESQ [27]
+and STOI [28]. Processing cost is reported in terms of MACs
+either per second or per frame, measured for one processing
+node. Reported MACs include the DNN mask estimators, ERB
+and inverse-ERB transformations, and SDW-MWF processing,
+while FFT and iFFT operations are excluded.
+Alongside the original CNN-based Tango implementation,
+we consider a causal variant, Tango-RNN, in which both the
+SN-DNN and MN-DNN are implemented using two stacked
+stateful RNN layers with 128 hidden units, followed by a fully
+connected layer. We also include a lightweight neural baseline
+by adapting GTCRN [11] to the distributed setting, deploying
+one instance per node. Each instance processes the four mi-
+crophone signals as input and applies its estimated mask to the
+local reference channel, preserving a distributed per-node archi-
+tecture.
+Models were implemented in PyTorch and trained with an
+Adam optimizer (lr =10 −3), by minimizing the mean squared
+error between the estimated time–frequency mask and the target
+ideal ratio mask. Training audio used a 32 ms STFT analysis
+window with a 16 ms hop for grouped ablations, FRS, and RT-
+Tango/RT-Tango-OS. For learned skipping and GTCRN (4 ms),
+the hop was reduced to 4 ms to match RT-Tango’s frame rate.
+RT-Tango replaces the recurrent layers in Tango-RNN with
+1Online: https://zenodo.org/records/7256984
+GRNNs to reduce its computational cost. We useG= 8groups
+for the SN-DNN andG= 2groups for the MN-DNN. Tempo-
+ral sparsification is implemented using FRS, with update rates
+of1/4for the SN-DNN and1/2for the MN-DNN, correspond-
+ing to one inference every four and two frames, respectively.
+All results, except those obtained for RT-Tango-OS, were
+computed using SCMs estimated over entire utterances. RT-
+Tango-OS instead uses recursive SCM updates with a forget-
+ting factorα= 0.995, applied every 8 frames at the 4 ms input
+rate, resulting in an effective update interval of 32 ms (≈31
+updates/s). As online SCM estimation requires an adaptation
+period, RT-Tango-OS was evaluated in steady state by repeat-
+ing each mixture a sufficient number of times to allow for con-
+vergence. The metrics are computed on the final repetition (see
+Section 3.2.4).
+Table 2:Ablation study on grouping strategies. The reported
+MMACs per frame are computed exclusively for the DNNs.
+DNN (SN+MN) SI-SDR SI-SAR
+Model MMACs / frame L R L R
+Tango-RNN1.06 4.7 5.0 5.2 5.2
++ GRNNSN=2 0.69 4.7 4.9 5.2 5.2
++ GRNNSN=8 0.59 4.7 4.9 5.1 5.1
++ GRNNMN=2 0.74 4.7 4.9 5.2 5.1
++ GRNNMN=8 0.64 3.8 4.1 4.2 4.3
+3.2. Results
+In Table 1, we report the results of RT-Tango and its streaming
+variant RT-Tango-OS, and compare them to the Tango baseline,
+Tango-RNN, and GTCRN. Compared to GTCRN, both Tango
+and Tango-RNN achieve consistently higher PESQ, STOI, and
+SI-SIR scores across both ears. Although GTCRN slightly out-
+performs them in SI-SDR and SI-SAR on the less noise-affected
+left node, Tango-based approaches show a more balanced left-
+right behavior due to their two-stage mechanism. This interau-
+ral balance is particularly desirable in hearing-aid applications
+for stable spatial perception and listening comfort.
+Tango-RNN reduces Tango’s complexity to 67.2 MMAC/s,
+while RT-Tango reaches 33.4 MMAC/s despite operating at a
+higher frame rate. Under identical conditions, RT-Tango is
+nearly six times more efficient than GTCRN (197.5 MMAC/s).
+This robustness to compression stems from its hybrid architec-
+3029
+Table 3:Temporal sparsification in the SN-DNN of (⋆): per-
+formance and per-frame cost for updated (w/o skip) and non-
+updated (w/skip) frames.
+MMACs / frame SI-SDR SI-SAR
+Model w/o Skip w/ Skip L R L R
+SN-DNN of (⋆)0.09−4.5 4.8 5.1 5.0
+(⋆) + FRS 1/20.09 0 4.4 4.7 5.1 5.0
+(⋆) + FRS 1/40.09 0 4.3 4.6 5.0 4.9
+(⋆) + SkipRNN [19]0.09 0.01 4.4 4.3 5.0 4.6
+(⋆) + TinyLSTM [3]0.12 0.09 4.3 4.4 5.0 4.7
+Table 4:Temporal sparsification in the MN-DNN of (⋆): per-
+formance and per-frame cost for updated (w/o skip) and non-
+updated (w/skip) frames.
+MMACs / frame SI-SDR SI-SAR
+Model w/o Skip w/ Skip L R L R
+MN-DNN of (⋆)0.18−4.5 4.8 5.1 5.0
+(⋆) + FRS 1/20.18 0 4.4 4.8 5.1 5.1
+(⋆) + FRS 1/40.18 0 4.3 4.8 4.8 5.0
+(⋆) + SkipRNN [19]0.18 0.02 3.8 4.7 4.5 5.0
+(⋆) + TinyLSTM [3]0.21 0.07 3.3 4.6 3.9 4.8
+ture, where neural networks guide the spatial filter rather than
+directly reconstructing the signal.
+RT-Tango-OS enables strictly causal streaming with an al-
+gorithmic latency of 8 ms, through the asymmetric STFT and
+online SDW-MWF updates, resulting in a slight but expected
+performance degradation relative to offline RT-Tango. RT-
+Tango-OS requires 0.49 MMACs per frame (0.27 MMACs
+for the DNN and 0.22 MMACs for the SDW-MWF update).
+With the proposed temporal sparsification, it corresponds to
+35.14 MMACs/s at≈250 frames/s. Without sparsification
+(not reported here), the computational cost would reach 124
+MMACs/s. The RT-Tango-OS configuration results from the
+progressive design choices described in Section 2, whose indi-
+vidual contributions are analyzed in the ablation studies below.
+3.2.1. Impact of Grouped Recurrent Modeling
+Grouping applied independently to SN-DNN and MN-DNN re-
+veals different behaviors (Table 2). Grouping the SN-DNN sig-
+nificantly reduces cost with negligible impact on quality. Us-
+ing 8 groups on SN-DNN lowers the total DNN (SN+MN)
+complexity from 1.06 to 0.59 MMAC/frame while maintaining
+SI-SDR at 4.7/4.9 dB and preserving PESQ/STOI. In contrast,
+MN-DNN is more sensitive to grouping. While MN=2-GRNN
+preserves performance, MN=8-GRNN degrades SI-SDR and
+SI-SAR by around 0.8-1 dB. These results justify the combined
+grouping strategy (SN=8, MN=2), marked with (⋆) in Table 1.
+3.2.2. Effect of temporal sparsification via skip inference
+Tables 3 and 4 evaluate temporal sparsification for the SN-
+DNN and MN-DNN stages. For SN-DNN, FRS preserves per-
+formance within 0.2 dB of the baseline for both 1/2 and 1/4
+configurations while eliminating computation on non-updated
+frames. Learned skipping relies on a gating mechanism that
+must be evaluated at every frame, introducing additional MACs.
+Learned skipping achieves an effective skip ratio of 80%, but
+Table 5:Effect of window length and type on enhancement per-
+formance, evaluated using RT-Tango.
+SI-SDR SI-SAR
+aW sW Window L R L R
+32 32sqrtHann4.4 4.7 5.0 5.0
+32 8sqrtHann1.2 1.8 1.4 1.9
+32 8asyHann3.7 4.3 4.3 4.5
+32 4asyHann3.4 4.0 3.9 4.1
+still introduces minor degradation, primarily on the right chan-
+nel. The MN-DNN is more sensitive to learned skipping; it
+reduces SI-SDR from 4.5 dB to 3.8 dB (SkipRNN [19]) and
+3.3 dB (TinyLSTM [3]) on the left channel, whereas FRS main-
+tains performance within 0.2 dB of the baseline. Given its sta-
+bility and predictable computational savings, FRS is adopted in
+the RT-Tango configuration (SN 1/4, MN 1/2), corresponding
+to 75% frame skipping in the SN-DNN and 50% in the MN-
+DNN. At a 4 ms hop rate, this reduces the DNN cost from 67.5
+MMACs/s without sparsification to 28.08 MMACs/s.
+3.2.3. Analysis of the latency-quality trade-off
+Table 5 analyzes the impact of reducing the synthesis window
+while keeping the analysis window fixed at 32 ms. These re-
+sults are computed with batch (offline) SCMs to isolate the ef-
+fect of the STFT configuration from online SCM estimation.
+Standard square-root Hann windows degrade rapidly at short
+synthesis lengths. In contrast, the asymmetric Hann [21] con-
+figuration maintains better SI-SDR and SI-SAR at low laten-
+cies. An 8 ms synthesis window offers the most favorable com-
+promise between delay and SE quality. Reducing the synthesis
+window to 4 ms further decreases latency but results in perfor-
+mance degradation. We therefore select the 8 ms asymmetric
+Hann synthesis window for RT-Tango-OS.
+3.2.4. Online SCM matrix estimation and convergence
+As can be seen in Table 1, RT-Tango-OS achieves an SI-SIR
+comparable to the offline RT-Tango. However, due to the con-
+straints imposed by low-latency streaming, the SI-SDR and SI-
+SAR show a slight decrease. This performance gap is first intro-
+duced by the asymmetric STFT configuration (Section 3.2.3),
+and is then amplified by the requirements of online SCM esti-
+mation. Despite this, RT-Tango-OS maintains STOI and PESQ
+values close to GTCRN at the same high frame rate, while still
+being significantly more computationally efficient. This indi-
+cates that although strictly online SCM estimation affects re-
+construction, the resulting speech intelligibility and perceived
+quality remain competitive with our baselines.
+4. Conclusions
+This paper introduced RT-Tango, a distributed binaural SE
+framework designed to satisfy the stringent real-time, latency,
+and computational constraints of modern hearing devices. By
+revisiting the Tango architecture through complementary archi-
+tectural and signal-processing optimizations, RT-Tango signifi-
+cantly reduces computational complexity while preserving en-
+hancement performance and interaural balance. In addition, RT-
+Tango-OS, its strictly causal streaming variant, operates with an
+algorithmic latency of 8 ms, makes RT-Tango particularly well
+suited for practical deployment in modern binaural hearing aids.
+3030
+5. Generative AI Use Disclosure
+The authors used AI tools solely for language editing and clar-
+ity improvement. All scientific ideas, content, and results were
+developed and verified by the authors.

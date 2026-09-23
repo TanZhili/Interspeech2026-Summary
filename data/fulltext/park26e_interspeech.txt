@@ -1,0 +1,434 @@
+Pushing the Boundaries of Streaming Multi-Speaker ASR:
+A Systematic Study of Architectural Trade-offs
+Taejin Park ID 1, Ivan Medennikov ID 1, Kunal Dhawan ID 1, Weiqing Wang ID 1, Jagadeesh
+Balam1, Boris Ginsburg1
+1 NVIDIA, Santa Clara, CA, United States
+taejinp@nvidia.com, kdhawan@nvidia.com, imedennikov@nvidia.com,
+weiqingw@nvidia.com, jbalam@nvidia.com, bginsburg@nvidia.com
+Abstract
+Streaming multi-speaker ASR is a challenging task that
+must balance accuracy, latency, and efficiency while han-
+dling overlapping speech and maintaining coherent long-
+context modeling over extended conversations in an on-
+line fashion. We present a unified framework that cate-
+gorizes streaming multi-speaker ASR into four architec-
+tural strategies based on how diarization and ASR are
+integrated. Using a shared pair of open-source stream-
+ing ASR and diarization models as a common foundation,
+we derive four multi-speaker ASR systems that differ in
+whether they employ multiple model instances, fine-tuning,
+or both. We evaluate these systems across multi-speaker ac-
+curacy, single-speaker accuracy degradation, memory foot-
+print, and training complexity. Through this systematic ar-
+chitectural analysis, we clarify the design space for stream-
+ing multi-speaker ASR and provide practical guidance for
+selecting the most suitable approach under diverse deploy-
+ment constraints.
+Index Terms: automatic speech recognition, speaker di-
+arization, multispeaker ASR, streaming ASR
+1. Introduction
+The demand for multi-speaker (or multi-talker) automatic
+speech recognition (ASR) has been rising dramatically,
+driven by applications such as voice agents powered by du-
+plex models and speech-to-speech (S2S) systems [1]. In
+particular, interactive voice agent systems typically require
+low-latency streaming ASR, or a speech encoder integrated
+with an S2S model, in order to enable responsive conversa-
+tional flow and deliver a seamless user experience.
+While numerous studies have investigated multi-
+speaker ASR, the majority of prior work has focused on
+offline settings. Early systems [2, 3] employed multiple en-
+coders or attention heads to separate and recognize over-
+lapping speech. More recent advances introduced end-to-
+end multi-speaker ASR based on Serialized Output Train-
+ing (SOT) [4], which reformulates overlapped speech into a
+serialized sequence, allowing the multi-head self-attention
+mechanism [5] to more effectively align acoustic streams
+with token sequences. Building upon this foundation,
+subsequent studies proposed several enhanced variants of
+the SOT framework [6, 7, 8]. More recently, token-level
+SOT [9] has been developed, enabling multi-talker ASR in
+streaming scenarios.
+In addition, the integration of speaker diarization mod-
+els has led to highly modular architectures. A common
+approach is to employ a speaker diarization system that
+identifies and separates each speaker’s speech stream. The
+resulting segments are then processed by a single-speaker
+ASR model for transcription [10], where input features
+Figure 1:Trade-offs: Error Rate vs. Engineering Cost and
+Memory F ootprint.
+are masked to ensure that each ASR instance transcribes
+only one speaker at a time. Furthermore, approaches such
+as guided source separation (GSS) [11] are often applied
+on top of diarization systems to estimate spectral masks,
+thereby improving the quality of the separation process.
+Although these systems have demonstrated strong per-
+formance in challenge evaluations and under constrained
+experimental conditions, a comprehensive study quantify-
+ing the trade-offs between different architectural choices
+has not been thoroughly explored in the multi-speaker ASR
+community. When deploying streaming multi-speaker ASR
+systems in real-world scenarios, users encounter a wide
+range of practical constraints, including limited availability
+of training or fine-tuning data, restricted access to model
+parameters, and memory limitations. We identify the need
+for a systematic investigation of such trade-offs to enable
+researchers and practitioners to better tailor multi-speaker
+ASR systems to their specific requirements.
+The contributions of this work are as follows:
+• We present a unified framework that systematically cat-
+egorizes streaming multi-speaker ASR into four archi-
+tectural paradigms, all derived from the same pair of
+open-source streaming ASR and diarization models, en-
+abling the first controlled comparison across these design
+choices in the multi-speaker ASR community.
+• We propose a transcription-to-token alignment algorithm
+that resolves the label-permutation ambiguity between
+diarization timestamps and SOT [9] transcripts, remov-
+ing a key obstacle to scalable SOT-style streaming multi-
+speaker ASR training data preparation.
+• Through systematic evaluation on real-world conversa-
+tional benchmarks—where, unlike prior work [12] that
+predominantly reports on simulated mixtures such as
+LibriCSS [13] or operates in offline settings, we oper-
+ate under strict streaming constraints on naturally occur-
+ring multi-speaker recordings—we quantify the trade-
+offs across multi-speaker word error rate, single-speaker
+316
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2005
+Figure 2:Cascaded approach: The two ASR and diariza-
+tion systems do not have any interaction.
+accuracy degradation, memory footprint, and training
+complexity, and demonstrate that our best configuration
+achieves competitive accuracy while our alignment al-
+gorithm opens a viable path for scaling end-to-end SOT
+approaches.
+2. Architectural Trade-offs
+We categorize streaming multi-talker ASR systems into
+four representative architectural paradigms, distinguished
+by their use of multiple model instances and retraining re-
+quirements. We use the following open-source models: for
+the pretrained streaming ASR model, we use Nemotron
+Speech streaming ASR [14, 15], which is based on the Re-
+current Neural Network Transducer (RNN-T) and FastCon-
+former [16] encoder; for the streaming diarization model,
+we use streaming Sortformer v2.1 [17, 18].
+2.1. Cascaded ASR and Diarization
+Fig. 2 depicts the cascaded architecture, where diariza-
+tion and ASR operate independently. Speaker attribution is
+achieved by mapping ASR word timestamps to diarization
+logits, assigning the speaker with the highest logit value to
+each word.
+•Pros:Minimal engineering overhead and no retraining
+of either diarization or ASR models, making it practical
+when only API-level access to the recognizer is avail-
+able. Strong modularity and compatibility with existing
+production systems, especially those built around stan-
+dard streaming ASR APIs.
+•Cons:Limited ability to transcribe overlapping speech,
+since segments are handled independently and typically
+assume single-speaker dominance. In addition, inaccu-
+rate word timestamps can cause boundary misalignment,
+leading to speaker assignment errors.
+2.2. Diarization Masked Input Architecture
+Fig. 3 shows the masked input architecture, where speaker-
+dependent masks derived from diarization outputs are ap-
+plied to the acoustic features to enable parallel, multi-
+instance decoding for each speaker.
+•Pros:Improved transcription of overlapping speech via
+masked feature streams that partially separate concur-
+rent speakers. Reduced boundary misalignment since
+the method does not rely directly on ASR-generated
+timestamps for segmentation. No retraining is required,
+enabling the reuse of single-speaker ASR models and
+making the approach attractive for data-sparse languages
+while improving overlapping-speech recognition.
+•Cons:Overlap recognition can still lag behind systems
+explicitly fine-tuned for harsh multi-speaker conditions.
+The parallel, multi-instance setup may increase compu-
+Figure 3:Masked Input Approach: Diarization information
+is provided at the audio feature input level.
+tational and memory costs as the number of speakers
+grows.
+2.3. Serialized Output Training (SOT)
+The Serialized Output Training (SOT) [4] approach paved
+the way for a fully end-to-end paradigm in which multi-
+speaker recognition leverages the attention mechanism to
+flexibly learn the alignments between acoustic and text se-
+quences.
+•Pros:By serializing the multi-speaker transcriptions,
+SOT approaches show competitive performance while
+relying on only a single instance.
+•Cons:Despite the success of SOT [4] and t-SOT [12],
+there have been only a limited number of SOT-based
+streaming end-to-end ASR architectures [12, 19], and
+these approaches have not demonstrated performance on
+real-world long-form audio streams. The primary rea-
+son is that end-to-end ASR training limits the ability to
+handle sequences longer than the training data (e.g., 12 s
+audio segments in LibriCSS [13]), making it challenging
+to generalize. In other words,the Train-Short Infer-Long
+problem exists and is difficult to overcome with simple
+t-SOT and RNNT-based approaches.
+To address long-form audio constraints, we propose a
+streaming word-level (WL)-SOT modelthat integrates a
+speaker cache from a streaming diarizer. By ground-
+ing speaker prediction in anArrival-Order Speaker Cache
+(AOSC)[18], the model can maintain speaker supervi-
+sion over indefinite durations. As illustrated in Fig. 4, di-
+arization predictions are embedded into the ASR encoder
+state via the speaker kernel mechanism introduced in [20].
+However, training on short segments (10–60 s) extracted
+from long conversations presents a significant challenge:
+speech from previous turns often overlaps or spills over
+into the target segment. This results in a misalignment
+between speaker tokens and diarization timestamps (typi-
+cally in Rich Transcription Time Marked, or RTTM, for-
+mat), thereby hindering the model’s ability to generalize
+from short training clips to long-form inference.
+To address this, we introduce the Permutation-Invariant
+Dynamic Time Warping (PI-DTW) algorithm, which uses
+dynamic programming to align speakers and words simul-
+taneously. Because DTW can struggle when word counts
+are imbalanced between speakers, we also incorporate a
+speaker frequency cost function. These two functions work
+together: DTW excels when speaking times are similar,
+while the frequency cost provides a clear distinction when
+one speaker dominates the conversation.
+2.3.1. PI-DTW Preliminaries: Notation and Local Cost
+LetNbe the number of speakers,Tthe number of frames,
+andKthe number of words.A∈ {0,1} T×N is the
+speaker activity matrix from RTTM files withA t,j =
+317
+Figure 4:Serialized Output Training Approach: A single
+ASR instance and a streaming diarization model support
+long-term speaker cache management.
+Figure 5:Example of speaker segment spill-over and
+transcription-RTTM mismatch. Applying arrival-time or-
+dering can cause label mismatches.
+1if and only if speakerjis active at framet.s=
+(sk)K
+k=1,s k ∈ {0,...,N−1}is the (per-word) speaker
+index sequence, andw= (w k)K
+k=1 are the words.π:
+{0,...,N−1}→{0,...,N−1}maps text speakerito
+RTTM columnπ(i); define ˜Aπ
+t,i =A t,π(i).
+The local cost at grid cell(k,t)measures the mismatch
+between the text speaker one-hot vector and the permuted
+activity, normalized by the total activity at frametto ac-
+count for overlapping speech:
+cπ(k,t) = 1−
+˜Aπ
+t,π(sk)
+max(1,PN−1
+j=0
+˜Aπ
+t,j)
+.(1)
+The denominatorP
+jAt,j counts the number of simul-
+taneously active speakers at framet. When exactly one
+speaker is active and it matches (A t,π(sk) = 1), the cost
+is 0. When two speakers overlap and the text speaker is one
+of them, the denominator is 2, so the cost is1− 1
+2 = 0.5.
+When the text speaker is inactive, the cost is 1.
+We apply inverse-frequency weighting so that each
+speaker contributes equally to the total cost. Letn i denote
+the number of words attributed to speakeri. The weight
+for wordk(whose speaker iss k) isω k =K/n sk, where
+Kis the total word count. Under this scheme, the aggre-
+gate weight for all words of speakeriisn i·(K/ni) =K,
+ensuring uniform speaker contribution. The weighted local
+cost becomes:ˆcπ(k,t) =ω k·cπ(k,t).
+2.3.2. Cost Calculation Mechanisms
+The DTW cost is defined via a cumulative sum:
+Dπ(k,t) = ˆcπ(k,t) + min
+
+
+
+Dπ(k−1,t)
+Dπ(k−1,t−1)
+Dπ(k,t−1)
+(2)
+with boundaryD π(k,0) =∞for allk >1. The
+three allowed transitions capture distinct alignment sce-
+narios:V ertical(k−1,t)→(k,t)where multiple words
+Figure 6:Diarization Conditioning Approach: Multiple in-
+stances of the ASR model are conditioned on diarization
+information.
+align to the same frame (overlapping speech);Diagonal
+(k−1,t−1)→(k,t)for one-to-one alignment; andHori-
+zontal(k,t−1)→(k,t), where one word spans multiple
+frames. The normalized DTW cost for permutationπis:
+LDTW(π) = Dπ(K,T)
+K+T .(3)
+For computational efficiency, the DTW cost is computed
+for allP=|Π|candidate permutations simultaneously us-
+ing batched computation. The outer loops overkandtre-
+main sequential due to the dynamic programming (DP) data
+dependencies, but allPpermutations are processed in a sin-
+gle vectorized pass. The total computational complexity is
+O(P·K·T).
+In addition to the DTW algorithm, we also summarize
+each side (text vs. RTTM) by anN-dimensional speaking-
+time vector, with one dimension per speaker. Letf text ∈
+RN denote the normalized speaking-time ratios implied by
+the text speakers, estimated using character counts as a
+proxy for duration. Similarly, letf rttm∈R N denote the nor-
+malized speaking-time ratios derived from the RTTM files.
+Under a candidate permutationπ(mapping text speaker in-
+dexito RTTM column indexπ(i)), we measure the mis-
+match by theL 1 distance between these two vectors after
+permuting the RTTM entries:
+Lfreq(π) =
+N−1X
+i=0
+ f text
+i −f rttm
+π(i)
+.(4)
+This cost is minimized when the permutation perfectly
+aligns the speaking-time ratios of text speakers with the
+RTTM columns. Finally, the optimal permutationπ∗ is de-
+termined by minimizing the total cost, defined as the sum
+of the DTW and frequency costs:
+π∗ = arg min
+π∈Π
+n
+LDTW(π) +L freq(π)
+o
+,(5)
+whereΠis the set of all possible permutations.
+2.3.3. Model Training
+For data preparation, we adopt the data cleaning methodol-
+ogy described in [20] to generate short utterances contain-
+ing one to four speakers. Our training corpus comprises the
+AMI Corpus [31] (including Headset mix, Lapel mix, and
+the first channel of the Microphone array), the ICSI [32]
+dataset, the DipCo dataset [33], and the Fisher English Cor-
+pus [34].
+We initialize the FastConformer [16] encoder using the
+checkpoint from [14], while the RNN-T decoder is ran-
+domly initialized. Training proceeds in two stages on a sin-
+gle node with 8×NVIDIA Tesla A100 GPUs: first, we train
+318
+Table 1:cpWER(%) across previous studies and four paradigms.
+Type System Metric CH109 Mixer6 AMI IHM AMI SDM A vg
+oracle diar oracle diar oracle diar oracle diar oracle diar
+Offline
+Kanda et al. [21]
+cpWER
+– – – – – – – 21.2 – –
+Park et al. [22] – 26.23 – – – 26.97 – – – –
+Cornell et al. [23] – – – – – – 21.1 24.5 – –
+VibeV oiceASR [24]† – 19.21 – 18.46 – 25.50 – 42.19 – 26.34
+DiCOW-v3.2[25, 26]† – 10.89 – 14.43 – 14.94 – 20.19 – 15.11
+Streaming
+(Ours)
+Cascaded
+cpWER
+38.9 30.72 39.19 39.97 49.56 43.54 53.33 54.83 45.25 42.27
+Masked Input 23.49 24.27 34.22 35.39 26.36 30.66 36.18 48.75 30.06 34.77
+WL-SOT 31.17 32.29 29.65 28.58 23.8 31.38 30.02 41.60 28.66 33.46
+SSA (Diar. Cond.) 14.212.6915.0118.7515.2222.120.2739.9116.18 23.36
+Streaming Diarizer [18]DER5.09 20.34 16.67 20.57 14.33
+†Evaluated under identical settings (audio and ground-truth) as our proposed systems; results may differ from the cited article.
+Table 2:WER (%) on Hugging Face OpenASR leaderboard datasets [27].
+Type Model Latency Size AMIEarnings GigaSpeechLS-clean LS-other SPGI Tedlium V oxpopuli A VG
+Offline
+Canary-Qwen2.5 [28] ∞ 2.5B 10.19 10.45 9.43 1.61 3.1 1.92.715.66 5.63
+Whisper-Large-v3 [29] ∞ 1.55B 15.95 11.29 10.02 2.01 3.91 2.94 3.86 9.54 7.44
+VibeV oice ASR [24] ∞ 9B 19.33 13.03 9.75 2.16 5.51 3.822.568.08 8.03
+Streaming
+DSM-ASR [30] 2.50s 3B 12.211.0 9.8 1.7 4.3 2.0 3.4 6.8 6.4
+Nemotron Speech ASR 1.04s 0.6B 11.5812.48 11.45 2.31 4.75 2.62 4.5 7.57 7.16
+SSA 1.04s 0.6B 11.62 14.68 11.49 2.19 4.76 2.68 4.65 7.45 7.44
+WL-SOT 1.04s 0.6B 14.64 37.25 15.51 9.31 18.72 15.31 7.55 17.3 16.95
+on short segments (8–12 s) for 50k steps; subsequently, we
+fine-tune for 20k steps with a learning rate of2×10 −4 us-
+ing variable-length utterances (10–55 s) truncated from the
+same datasets. All other training configurations follow the
+specifications detailed in the SSA [35] paper.
+2.4. Diarization-Conditioned Multi-Instance Schemes
+The diarization-conditioned architecture [25, 26] employs
+a parallel, multi-instance configuration where ASR mod-
+els are explicitly conditioned on diarization embeddings
+or speaker representations. In this work, we adopt Self-
+Speaker Adaptation (SSA) ASR [35], a streaming-capable
+implementation built upon the pretrained Nemotron Speech
+streaming model [14]. We categorize SSA as a diarization
+conditioning approach because it directly ingests diariza-
+tion predictions to spawn multiple ASR instances, each
+dedicated to transcribing a specific speaker.
+•Pros:Delivers superior performance on overlapping
+speech; maintains negligible regression in single-speaker
+ASR accuracy due to the speaker-specific decoding strat-
+egy.
+•Cons:Requires specialized fine-tuning to integrate
+speaker conditioning mechanisms; exhibits a larger
+memory footprint due to the multi-instance approach; in-
+curs high computational costs when transcribing sessions
+with a large number of speakers.
+2.4.1. Model Training
+We closely follow the training methodology presented
+in [35], though our model also incorporates a single-
+speaker dataset from Granary [36]. In addition to the train-
+ing datasets used in [35] (Fisher English Corpus [34] and
+LibriSpeechMix [4, 37]), we augment our training data
+with the AMI Corpus [31], ICSI [32], and NOTSOFAR-
+1 [38] datasets. All training configurations—including to-
+kenizers, optimizers, learning rate schedulers, and hard-
+ware specifications—are identical to those detailed in the
+SSA [35] study.
+3. Experiments and Results
+To evaluate the impact of these architectural choices, we as-
+sess the four paradigms on several conversational datasets:
+CH109, a two-speaker subset (109 files) of the Call-Home
+American English Dataset [39]; Mixer6 [40]; and the
+AMI Meeting Corpus [31] under both Individual Headset
+Mix (IHM) and Single Distant Microphone (SDM) condi-
+tions.
+Table 1 presents the concatenated minimum permu-
+tation word error rate (cpWER) [41] across these four
+datasets. We include results from recently published multi-
+speaker ASR systems to benchmark our proposed methods.
+For open-source models such as VibeV oiceASR [24] and
+the latest DiCoW-v3.2 [25, 26], we perform evaluations us-
+ing identical audio files and annotations to ensure a fair
+comparison. Theoraclecolumns report the performance of
+our proposed systems using ground-truth diarization, effec-
+tively removing degradation caused by diarization errors.
+Consistent with our earlier observations, the SSA approach
+(diarization conditioning) achieves the best performance.
+The WL-SOT model slightly outperforms the masked input
+approach, while the cascaded method yields the lowest ac-
+curacy for multi-speaker ASR. Table 2 reports the WER on
+theHugging Face OpenASR leaderboard[42] datasets. No-
+tably, while the WL-SOT model exhibits significant degra-
+dation in single-speaker accuracy, SSA largely preserves
+the performance of the Nemotron Speech ASR [14] base
+model.
+4. Conclusion
+In this work, we formalize the architectural trade-offs in
+streaming multi-talker ASR and introduce the PI-DTW al-
+gorithm to resolve label alignment for WL-SOT training.
+While specialized diarization conditioning currently holds
+the accuracy advantage, resolving SOT’s alignment bottle-
+neck enables future exploration into true end-to-end joint
+optimization models. Future work will focus on scaling the
+WL-SOT training data and supporting speaker-tagging na-
+tively in Attention-based Encoder-Decoder models.
+319
+5. Generative AI Use Disclosure
+In the preparation of this manuscript, the authors used gen-
+erative AI services solely for technical assistance, including
+refining English grammar, correcting LaTeX syntax, and
+formatting data tables. All substantive content, original re-
+search, and interpretations were produced by the authors.
+The authors have reviewed and edited all AI-assisted out-
+puts and take full responsibility for the accuracy and in-
+tegrity of the final work.

@@ -1,0 +1,479 @@
+GACA-DiT: Diffusion-based Dance-to-Music Generation with Genre-Adaptive
+Rhythm and Context-Aware Alignment
+Jinting Wang1, Yan Rong1, Chenxing Li2, Li Liu1,∗∗
+1 The Hong Kong University of Science and Technology (Guangzhou), China
+2 Tencent AI Lab, China
+jwang644@connect.hkust-gz.edu.cn, chenxingli@tencent.com, avrillliu@hkust-gz.edu.cn
+Abstract
+Dance-to-music (D2M) generation aims to compose music that
+is rhythmically and temporally aligned with dance. Prior meth-
+ods rely on coarse rhythm embeddings (e.g.,global motion fea-
+tures or binarized joint rhythms), which discard fine-grained
+motion cues and weaken alignment. In addition, temporal
+mismatches introduced by feature downsampling further im-
+pair synchronization. We proposeGACA-DiT, a diffusion
+transformer-based framework for rhythm-consistent and tem-
+porally aligned music generation. It contains two key mod-
+ules: (1) a Genre-Adaptive rhythm extraction module that inte-
+grates multi-scale temporal–spatial analysis with adaptive joint
+weighting to capture fine-grained, genre-aware rhythm patterns;
+and (2) a Context-Aware temporal alignment module that lever-
+ages learnable queries to align music latents with relevant dance
+rhythms. Experiments on AIST++ and TikTok demonstrate
+consistent improvements over state-of-the-art methods in both
+objective metrics and human evaluation 1.
+Index Terms: Dance-to-Music Generation, Cross-Modal
+Learning, Diffusion Transformer, Temporal Alignment,
+Rhythm Representation
+1. Introduction
+Recent advances in multimodal learning have enabled signifi-
+cant progress in generating images [1, 2, 3], videos [4, 5, 6],
+and audios [7, 8, 9]. Among these tasks, music generation
+has emerged as a key area of interest. In particular, dance-
+to-music (D2M) generation has gained increasing attention on
+short video platforms, where it can automatically produce mu-
+sical accompaniments for user-uploaded dance videos.
+D2M aims to generate music that is both temporally syn-
+chronized and rhythmically coherent with dance videos. This
+task is challenging due to two key issues: (1) the difficulty of
+modelingfine-grained rhythmic patternsacross diverse dance
+genres and (2) the need for precise frame-leveltemporal align-
+ment. To tackle thefirst issue, as illustrated in Figure 1(a),
+early studies [10, 11, 12, 13, 14] typically employ motion en-
+coders such as ST-GCNs [15] to extract global motion fea-
+tures as rhythm representations. While effective at capturing
+overall motion semantics, these methods encode rhythm only
+implicitly, often resulting in coarse-grained tempo correspon-
+dence and limited rhythmic consistency. To obtain more explicit
+rhythmic cues, subsequent works such as RhythmicNet [16],
+LORIS [17], Text-Inv [18], and MotionComposer [19] compute
+first-order differences of keypoints to model motion velocities.
+Although these approaches provide more direct rhythm signals,
+**indicates the corresponding author.
+1Project Page: https://anonymous.4open.science/w/GACA-DiT/.
+Global feature
+time
+Binarized value
+Coarse rhythm 
+embedding
+Rhythm
+Consistency
+(a)
+Dance pose
+Dance pose
+⋯Rhythm embedding
+𝑇 × 𝐷
+Music
+⋯
+Music latent
+𝑇𝑚 × 𝑑
+Temporal
+Alignment
+(b)
+Temporal
+mismatch
+Figure 1:Illustration of key problems in existing D2M methods:
+coarse rhythm embeddings and temporal misalignment.
+they mainly rely on shallow short-term dynamics, making them
+sensitive to noise and less robust across diverse dance styles.
+As for thesecond issue, we observe that temporal mis-
+matches between dance rhythm embeddings and music latents,
+caused by downsampling during feature encoding, constitute a
+critical bottleneck, as visualized in Figure 1(b). As far as we
+know, this issue has received little attention in prior studies,
+leaving the alignment between dance and music inadequately
+addressed.
+To overcome these limitations, we proposeGACA-DiT, a
+diffusion transformer-based framework with two core innova-
+tions for rhythmically consistent and temporally aligned D2M
+generation.First, agenre-adaptive rhythm extraction mod-
+ulejointly leverages multi-scale temporal wavelet analysis and
+spatial phase histograms as complementary perspectives for
+rhythm modeling. By incorporating adaptive joint weighting
+and temporal attention, it produces discriminative rhythm em-
+beddings that capture fine-grained motion dynamics across di-
+verse dance genres.Second, acontext-aware temporal align-
+ment modulealigns dense rhythm representations with down-
+sampled music latents using learnable queries guided by contex-
+tual information, yielding temporally consistent representations
+that preserve rhythmic cues for high-fidelity music generation.
+Our main contributions are summarized as follows:
+• We propose GACA-DiT, a novel diffusion transformer-based
+framework for D2M generation that enhances rhythmic con-
+sistency and temporal alignment.
+• We develop a genre-adaptive rhythm extraction module and
+a context-aware temporal alignment module to capture fine-
+grained rhythms and resolve cross-modal temporal mis-
+matches.
+• Extensive experiments on two dance datasets show that
+GACA-DiT outperforms state-of-the-art (SOTA) D2M meth-
+5006
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2348
+Semantic
+Encoder
+⋯
+Dance Encoding
+Genre-Adaptive Rhythm
+Extraction Module
+Feature Encoding
+𝑇!×𝐷
+𝑇!×%𝑇𝑇!
+×𝐷𝑇×𝐷
+Alignedrhythm
+feature segment
+Context Query
+⋯𝑇!×𝐷
+Context-Aware Temporal 
+Alignment Module
+Magnitude
+Motion
+Adaptive joint 
+Weighting
+⋯
+Temporal Attention
+Multi-scale Histogram
+Multi-scale Wavelet 
+Transform
+⋯
+⊗
+Music
+Encoder
+⋯
+Noise
+⊕⋯MLP
+~
+Attn
+Attn
+Attn
+Attn
+⋯⋯
+Music
+Video
+Pose
+Time embedding
+Music Generation
+Input Embedding 
+Layer Norm
+Self-Attention
+⊕
+Layer Norm
+FFN
+⊕×𝑵
+⋯
+Music 
+DecoderMultiplication ⊕⊗ Addition
+⋯⋯
+⋯
+Music
+Rhythm 
+feature 
+Video feature 
+Music latent
+𝑇!×𝑑 DiT block
+Noised latent
+𝒕
+Time step
+Figure 2:Overview of the proposedGACA-DiTframework. It comprises a genre-adaptive rhythm extraction module, a semantic
+encoder, a context-aware temporal alignment module, and a Transformer-based diffusion model with music encoder–decoder.
+ods in both objective and subjective evaluation.
+2. Method
+2.1. Overview
+Figure 2 illustrates the pipeline of GACA-DiT. Given a dance
+video and corresponding pose sequences, a genre-adaptive
+rhythm extraction module encodes fine-grained rhythmic pat-
+terns intoR∈R T×D , while an I3D-based semantic encoder
+extracts video featuresV∈R T×D v . The rhythm featuresR
+are then temporally aligned to the music latent via a context-
+aware temporal alignment module, producing ˜R∈R Tm×D.
+Both ˜RandVare then used as conditioning inputs to a diffu-
+sion transformer, which generates a music latent that is finally
+decoded into a waveform rhythmically consistent and semanti-
+cally aligned with the input dance.
+2.2. Genre-Adaptive Rhythm Extraction
+Accurate rhythm modeling is critical for generating music that
+is temporally aligned with dance motion. To this end, we pro-
+pose aGenre-AdaptiveRhythmExtraction (GARE) module,
+which explicitly encodes fine-grained rhythmic cues from dance
+poses.
+As illustrated in Figure 2, given a dance pose sequenceP∈
+RT×J×C withTframes,Jjoints, andCcoordinates, we first
+compute the frame-wise motion:
+Mt =P t+1−Pt, t= 1,...,T−1,(1)
+and derive the motion magnitude for each joint:
+Mmag
+t,j =∥M t,j∥2.(2)
+To capture fine-grained dance rhythms, we model the mo-
+tion from complementarytemporalandspatialperspectives.
+For temporal modeling, we extract multi-scale wavelet features
+[21]:
+Wt,j,s = (M mag
+:,j ∗tψs)t, s= 1,...,S,(3)
+where∗ t denotes 1D convolution along the temporal axis and
+ψs is the Gabor wavelet kernel at scales.
+To emphasize joints that are more informative for rhythm
+in each dance genre, we compute joint-adaptive weights at each
+time step:
+wt =softmax
+
+MLP
+ 
+[Mmag
+t ,Wt]
+
+,(4)
+whereM mag
+t andWt denote the motion magnitude and wavelet
+features, respectively. These weights are then applied to obtain
+the weighted motion magnitude and the weighted wavelet fea-
+tures:
+˜Mmag
+t =w t⊙M mag
+t , ˜Wt =w t⊙Wt,(5)
+where⊙denotes element-wise multiplication along the joint
+dimension. The weighted motion magnitude ˜Mmag
+t is further
+used to compute multi-scale phase histograms that capture the
+spatialdistribution of motion:
+ht,k,s =
+X
+j
+˜Mmag,(s)
+t,j I
+h
+atan2
+ 
+My,(s)
+t,j ,M x,(s)
+t,j
+
+∈bin k
+i
+,
+(6)
+whereM x,(s)
+t,j andM y,(s)
+t,j are the motion components at scale
+s, bink denotes thek-th phase bin, andI[·]is the indicator func-
+tion. Finally, the histogram features and the weighted wavelet
+features are fused via a temporal attention module to produce
+the rhythm embedding:
+Rt =α t⊙Linear
+
+ht,
+X
+j
+wt,jWt,j
+
+,(7)
+whereαt is obtained from an attention MLP, andP
+j wt,jWt,j
+represents the weighted wavelet features. The final rhythm em-
+beddingR∈R T×D is obtained by repeating the last frame to
+match the sequence length, withDembedding dimensions.
+5007
+Table 1:Quantitative comparison on AIST++ and TikTok datasets. The best results are highlighted in bold.
+AIST++
+Method
+Params
+(M) BCS↑CSD↓BHS↑HSD↓F1↑ CE↑CU↑PC↑PQ↑FAD↓
+D2M-GAN [10] 63.63 89.09 14.05 88.95 22.23 88.84 4.76 6.65 5.13 6.33 49.49
+CDCD [20] 428.09 92.18 14.66 80.50 21.16 84.95 2.59 4.96 2.71 5.30 89.57
+LORIS [17] 780.16 92.13 9.94 91.71 9.69 92.05 5.41 5.50 4.23 6.44 83.64
+MotionComposer [19] 731 95.84 9.89 95.09 16.09 96.45 6.29 6.73 5.59 7.03 40.52
+GACA-DiT (Ours) 56.06 98.13 8.15 98.72 9.93 98.47 6.32 6.96 6.21 7.16 20.14
+TikTok
+Method
+Params
+(M) BCS↑CSD↓BHS↑HSD↓F1↑ CE↑CU↑PC↑PQ↑FAD↓
+D2M-GAN [10] 63.63 82.55 28.03 87.07 24.62 84.22 3.89 5.41 4.82 5.64 22.68
+CDCD [20] 428.09 84.46 25.95 87.95 23.27 86.45 2.92 5.91 3.42 5.94 40.55
+LORIS [17] 780.16 88.02 24.14 85.25 18.72 87.43 5.46 6.12 5.03 6.32 53.18
+MotionComposer [19] 731 89.09 17.95 90.02 17.35 89.50 5.94 6.15 5.16 6.43 30.61
+GACA-DiT (Ours) 56.06 91.55 15.82 91.73 15.56 91.21 6.24 6.32 5.92 6.46 23.78
+In summary, the GARE module captures fine-grained
+rhythmic patterns by encoding both multi-scale temporal and
+spatial dynamics, enabling temporally aligned music generation
+conditioned on dance motion.
+2.3. Context-aware Temporal Alignment
+To address the temporal mismatch between the rhythm embed-
+ding (temporal lengthT) and the music latent (downsampled
+lengthTm), we propose aContext-AwareTemporalAlignment
+(CATA) module.
+As shown in Figure 2, given rhythm embeddingR∈
+RT×D from the GARE module, we first split it intoTm tempo-
+ral segments, denoted asS i∈R (T/T m)×D fori= 1,...,T m.
+We then employ a set of learnable context queries [22]Q=
+[q1,...,qT m]∈R Tm×D, where each queryq i∈R D is de-
+signed to aggregate contextual information from its correspond-
+ing segmentSi through query-guided attention pooling:
+˜Si =
+X
+j
+softmax
+
+r⊤
+j qi/
+√
+D
+
+rj,(8)
+wherer j represents thej-th frame feature within segmentS i.
+This process yields the aligned rhythm representation ˜R=
+[ ˜S1,..., ˜STm ]∈R Tm×D, which achieves temporal consis-
+tency with the music latents while preserving perceptually im-
+portant motion dynamics.
+2.4. Conditional Music Generation
+We formulate D2M generation within a conditional flow match-
+ing framework [23], implemented via a diffusion transformer
+(DiT)[24]. The model is conditioned on three inputs: the tem-
+porally aligned rhythm feature ˜R, the video featuresV, and the
+time stept. It learns a velocity fieldv θ(Zt,t| ˜R,V)that trans-
+forms a simple priorp 0(Z)into the target distributionp 1(Z)
+via the ODE dZt
+dt =v θ(Zt,t| ˜R,V), withZ 0∼p 0(Z)and
+Z1∼p 1(Z). The model is trained by minimizing the condi-
+tional flow matching loss:
+LCFM(θ) =E t,Z0,Zt
+vθ(Zt,t| ˜R,V)−(Z 1−Z 0)
+
+2
+.(9)
+As shown in Figure 2, during training, ground-truth music
+waveforms are first encoded into a latent representationZ m∈
+RTm×d using a pre-trained V AE based music encoder. Gaus-
+sian noise is added to obtain the noised latentZt, which is then
+concatenated with the conditioning features{ ˜R,V,t}and fed
+into the DiT to predict the velocity field.
+3. Experiment
+3.1. Experimental Setup
+Datasets.We evaluate GACA-DiT on two music–dance
+datasets: AIST++ [25] and TikTok [10], following the standard
+protocols of prior works [20, 12] for a fair comparison.
+Implementation Details.We employ a pre-trained I3D model
+[26] (trained on ImageNet [27]) as the semantic encoder to ex-
+tract video features from video frames, and a pre-trained V AE
+from DiffRhythm [28] to encode and reconstruct audio wave-
+forms. The conditional DiT comprises 8 transformer blocks,
+each with a 512-dimensional hidden size and 10-head self-
+attention. Experiments use 5-second music clips at 44,100 Hz,
+and 2D pose skeletons are obtained via DWpose [29]. We train
+with a batch size of 4 for 100 epochs using the Adam optimizer
+(β1 = 0.9,β 2 = 0.95) with a learning rate of1×10−4. The dif-
+fusion process uses a 32-step Euler ODE solver, and classifier-
+free guidance [30] with a scale of 4 is applied during inference.
+Table 2:Ablation study of different components. The best results
+are highlighted in bold.
+Method BCS↑CSD↓BHS↑HSD↓F1↑
+Video Feature 96.19 13.07 81.97 21.86 88.51
++ M-Wav 96.74 10.21 97.14 14.53 96.46
++ M-His 97.27 9.51 97.42 12.41 97.23
++ A-W (GARE) 97.52 8.19 97.71 10.02 97.51
++ CATA98.13 8.15 98.72 9.93 98.47
+M-Wav: multi-scale wavelet representation in GARE; M-His: multi-
+scale phase histogram modeling; A-W: joint adaptive weighting mech-
+anism.
+5008
+MotionComposer
+GACA-DiT (Ours)
+Ground truth
+Figure 3:Visualization of generated music spectrogram.
+Evaluation Metrics.Forobjective evaluation, following [17],
+we assess the alignment between musical rhythms and dance
+patterns using Beats Coverage Score (BCS), Beats Hit Score
+(BHS), their F1 score, and the standard deviations of BCS
+and BHS (denoted as CSD and HSD). To evaluate the aes-
+thetic quality of the generated music, we adopt Meta Audiobox-
+aesthetics [31], which measures four dimensions: Production
+Quality (PQ), Production Complexity (PC), Content Enjoyment
+(CE), and Content Usefulness (CU). We further employ the
+Fr´echet Audio Distance (FAD) [32] to quantify the distribu-
+tional similarity between generated music and ground-truth au-
+dio. Forsubjective evaluation, we conduct a Mean Opinion
+Score (MOS) study to assess both the overall quality of the gen-
+erated music and its rhythmic consistency with the dance video.
+Participants rate each sample on a 5-point scale, ranging from 1
+(poor) to 5 (excellent).
+3.2. Comparison with State-of-the-Art Methods
+We evaluate the effectiveness of GACA-DiT by comparing
+it with several representative dance-to-music (D2M) methods:
+D2M-GAN [10], CDCD [20], LORIS [17], and MotionCom-
+poser [19]. Table 1 reports the quantitative results on AIST++
+and TikTok datasets. GACA-DiT consistently outperforms all
+baselines across both rhythm alignment and music quality met-
+rics. In particular, it achieves the highest BCS and BHS scores,
+reflecting superior beat consistency and harmonic synchroniza-
+tion, while attaining the lowest CSD and HSD values, indicat-
+ing improved temporal alignment and reduced rhythmic devi-
+ation. Moreover, GACA-DiT demonstrates better performance
+on aesthetic metrics (CE, CU, PC, PQ) and lower FAD, suggest-
+ing that it generates music that is both perceptually pleasing and
+closer to ground truth.
+We also provide a qualitative comparison between the mu-
+sic generated by our method, GACA-DiT, and the MotionCom-
+poser [19] in Figure 3. The results demonstrate that our gener-
+ated music exhibits better rhythmic alignment with the ground
+truth. Additional comparisons can be explored on our demo
+page, illustrating the effectiveness of our method.
+3.3. Ablation Analysis
+Model Components.We conduct ablation studies to evaluate
+the effectiveness of each component in GACA-DiT, as listed
+in Table 2. Comparing the baseline using only video features,
+incorporating the multi-scale wavelet features (M-Wav) signif-
+icantly improves beat consistency and reduces temporal devia-
+tion. Adding multi-scale phase histograms (M-His) further en-
+hances both beat and harmonic synchronization, indicating that
+harmonic distribution modeling complements rhythmic cues.
+The joint adaptive weighting mechanism (A-W) brings consis-
+tent gains across all metrics, highlighting the benefit of dynami-
+cally balancing rhythm and harmony information. Finally, inte-
+grating the CATA module achieves the best performance on all
+metrics, confirming its effectiveness in refining temporal align-
+ment and improving overall cross-modal coherence.
+Table 3:Ablation study of different rhythm features.
+Method BCS↑CSD↓BHS↑HSD↓F1↑
+ST-GCN [15] 96.87 12.32 95.26 15.82 95.69
+prior rhythm [17] 97.75 10.43 96.91 11.08 97.26
+GARE (Ours)98.13 8.15 98.72 9.93 98.47
+Rhythm Feature.Table 3 compares the impact of different
+rhythm features on GACA-DiT. The proposed GARE mod-
+ule outperforms both ST-GCN [15] and the rhythm extraction
+method used in LORIS [17], demonstrating its superior ability
+to capture fine-grained rhythmic cues and achieve more accu-
+rate dance-to-music alignment.
+Figure 4:Violin plots of MOS results for subjective evaluation.
+3.4. User Study
+We further conduct a user study to evaluate the subjective qual-
+ity of the generated music. Twenty volunteers were invited to
+rate 30 test samples from the AIST++ dataset generated by the
+five D2M methods. As illustrated in the violin plots in Figure 4,
+GACA-DiT consistently achieves higher median scores and ex-
+hibits more concentrated distributions for both rhythmic consis-
+tency and overall quality. This indicates that our method not
+only generates music that is well-aligned with the input dance
+motions but also maintains stable and high-quality audio output
+across samples.
+4. Conclusion
+In this paper, we introduced GACA-DiT, a diffusion-based
+framework for dance-to-music generation that improves both
+rhythmic consistency and temporal alignment. Our approach
+integrates a genre-adaptive rhythm extraction module to cap-
+ture fine-grained rhythmic patterns and a context-aware tem-
+poral alignment module to mitigate cross-modal temporal mis-
+matches. Extensive experiments on the AIST++ and TikTok
+datasets show that GACA-DiT consistently surpasses SOTAs,
+achieving superior performance in both objective metrics and
+perceptual quality.
+5009
+5. Acknowledgments
+This work was supported by the National Natural Science
+Foundation of China (No. 62471420), GuangDong Basic and
+Applied Basic Research Foundation (2025A1515012296), and
+2025 Tencent AI Lab Rhino-Bird Program.
+6. Generative AI Use Disclosure
+In this work, we used generative AI tools solely for language
+polishing and minor formatting. All scientific content, experi-
+mental design, and conclusions were developed and verified by
+the authors. The authors take full responsibility for the content
+of this paper.

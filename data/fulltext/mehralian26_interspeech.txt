@@ -1,0 +1,450 @@
+Predict-Then-Adapt: Inferring Coordinates from Speech for Continuous
+Geo-Conditioned Dialectal ASR
+Pouya Mehralian∗∗, Hugo Van hamme
+Department of Electrical Engineering (ESAT-PSI), KU Leuven, Belgium
+pouya.mehralian@kuleuven.be, hugo.vanhamme@kuleuven.be
+Abstract
+Geo-conditioned adaptation can improve dialectal ASR, but
+most methods assume speaker coordinates are available at in-
+ference. We remove this dependency by inferring location
+from speech at test time and conditioning on the predicted
+coordinates. We attach a lightweight Coordinate Regression
+Head (CRH) to a frozen encoder and train it to regress lati-
+tude/longitude from utterance-level representations. Inference
+uses two passes: (i) predict coordinates with geo-conditioning
+disabled, then (ii) decode with geo-conditioning enabled con-
+ditioned on the prediction. CRH adds<0.1%parameters
+and increases inference latency by<3%. On Dutch dialects,
+CRH achieves 15–25 km mean great-circle error using 10–
+30 s of speech, and the GLoRIA method is robust to errors
+in this range. As a result, CRH+GLoRIA outperforms rank-
+matched LoRA and approaches oracle-coordinate adaptation
+performance, while preserving GLoRIA interpretability via an-
+alyzable coordinate-gated low-rank components.
+Index Terms: Automatic Speech Recognition, Dialectal
+Speech, Parameter Efficiency, Speech-based Location Estima-
+tion, Geo-Conditioned Adaptation
+1. Introduction
+ASR performance on dialectal speech remains limited despite
+large pre-trained models, due to systematic phonetic/lexical
+variation and scarce annotated dialectal data. Geographic in-
+formation is a particularly effective and interpretable signal in
+dialect-rich settings, since regional varieties often exhibit strong
+spatial structure [1, 2]. Recent work showed that condition-
+ing on continuous coordinates can improve generalization com-
+pared to discrete dialect labels [3].
+GLoRIA [4] is a parameter-efficient, interpretable geo-
+conditioned adaptation method that extends LoRA [5] by modu-
+lating low-rank update directions with coordinate-driven gates.
+While effective, such coordinate-conditioned approaches as-
+sume access to speaker coordinates at inference, which is often
+unavailable, noisy, or undesirable to use in practice.
+This paper removes that dependency by inferring loca-
+tion from speech at test time and applying geo-conditioning
+with the inferred coordinates. We attach a lightweight Co-
+ordinate Regression Head (CRH) on top of a frozen encoder
+to regress latitude/longitude from utterance-level representa-
+tions, and perform two-pass inference: first predict coordi-
+nates with geo-conditioning disabled, then decode with geo-
+conditioning enabled conditioned on the predicted location. Ex-
+periments on Dutch dialects show that CRH attains tens-of-
+kilometers localization accuracy from short segments, that geo-
+**indicates the corresponding author.
+conditioning is robust to coordinate errors in this range, and
+thatCRH+GLoRIAoutperforms rank-matched LoRA while
+approaching oracle-coordinate performance.
+2. Related Work
+2.1. Dialectal ASR
+Dialect-heavy ASR is commonly addressed via (i)dialect-
+specificmodels, which can be effective but require maintaining
+multiple systems and substantial compute [6, 7], and (ii)uni-
+fiedmodels that incorporate dialect information during train-
+ing or decoding. Unified approaches typically condition on
+categorical dialect labels or embeddings injected into the en-
+coder/decoder [8–10], use mixture-of-experts or hierarchical
+routing to specialize subnetworks [6, 11], or apply multi-task
+learning with auxiliary dialect classification objectives [10, 12].
+While effective provided enough data is available per dialect
+class, this is an approximation of the dialectal variation contin-
+uum, with strongest errors in the transition regions.
+2.2. Continuous geo-conditioning for ASR
+To better reflect gradual geographic variation, recent work
+leveragescontinuouscoordinates rather than discrete dialect
+IDs, enabling smooth interpolation across regions and improved
+robustness to unseen varieties [3]. GLoRIA follows this line
+by performing parameter-efficient, interpretable adaptation with
+coordinate-driven gates that modulate low-rank update direc-
+tions. A practical limitation shared by geo-conditioned methods
+is the assumption that coordinates are available (and reliable) at
+inference time.
+2.3. Speech-based coordinate inference
+Predicting location from speech has been studied in related
+tasks such as geolocating speakers and geolocation-aware lan-
+guage identification. Foley et al. [13] introduce a large-scale
+speech geolocation setup and show that geolocation models can
+serve as useful proxy tasks for LID. Wang et al. [14] propose
+geolocation-aware spoken LID by predicting geolocation as an
+auxiliary signal and conditioning intermediate representations
+on the predicted vectors to improve robustness to accents and
+dialectal variation. For dialectology, [15] studies audio-based
+Austrian dialect classification and geographic regression.
+In contrast to these works, the goal here is not geolocation
+per se, but enabling geo-conditioned ASR when metadata is
+missing: a lightweight coordinate regression head predicts co-
+ordinates from the utterance, which are then used to activate
+the same coordinate-gated adaptation mechanism, preserving
+the interpretability of the underlying geo-conditioning.
+2645
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3333
+3. Dataset
+All experiments are performed using the GCND corpus [16] 1,
+comprising 411 hours of spontaneous Dutch dialect speech
+recorded in Belgium, the southern Netherlands, and French
+Flanders. Each recording segment is manually transcribed and
+annotated with accurate geographical coordinates correspond-
+ing to the interview location. Speakers were selected based on
+strong local attachment, having lived most of their lives in their
+respective villages, thereby ensuring the presence of stable and
+representative regional dialects. Sessions contain an average of
+3.8 speakers and span a wide range of informal conversational
+topics. These characteristics make GCND a suitable resource
+for geographically informed ASR adaptation.
+4. Pretrained Model
+The backbone of the system is the Cascaded Encoder Dual
+Features framework [17, 18]. The model follows an en-
+coder–decoder architecture with a 12-layer Conformer [19] en-
+coder and a 6-layer Transformer decoder. Model training uses
+a hybrid objective that integrates weighted cross-entropy and
+CTC losses [20, 21]. It was trained on 14k hours of Dutch
+speech data and further fine-tuned for five epochs on dialectal
+Dutch. The Dutch-only instantiation contains 180M parameters
+and achieves superior performance on dialectal Dutch compared
+to Whisper large-v3 [22] and OWSM-CTC-V4 1B [23], while
+using fewer parameters.
+5. Method
+We extend GLoRIA to the setting where geographical coordi-
+nates are unavailable at inference time by inferring a speaker
+location from the speech signal and then applying the standard
+geo-conditioning using the inferred coordinates. Concretely,
+given an utterancexand transcripty, training data provides a
+locationc∈R 2, while at test timecis unknown. We there-
+fore estimateˆc=ϕ(x)and decode with the geo-conditioned
+modelp(y|x,ˆc). The proposed solution adds a lightweight
+Coordinate Regression Head (CRH) on top of the encoder and
+performs inference in two passes: (i) predictˆcwith GLoRIA
+disabled, and (ii) enable GLoRIA and decode conditioned onˆc.
+5.1. Recap: GLoRIA
+GLoRIA performs parameter-efficient adaptation via
+coordinate-conditioned rank-rupdates. For an encoder
+weight matrixW∈R dout×din, the adapted weights are
+W′ = W + AEB = W +
+rX
+i=1
+γi aib⊤
+i , (1)
+whereA= [a 1,...,a r]∈R dout×r andB=
+[b1,...,b r]⊤ ∈R r×din are trainable low-rank factors. The
+diagonal matrixE∈R r×r contains coordinate-dependent gat-
+ing coefficients,E= diag(γ(c)), withγ(c) = [γ 1,...,γ r]⊤
+produced by a lightweight gating network conditioned on the
+locationc∈R 2. Following the original GLoRIA design,γ i is
+constrained to be non-negative to promote interpretability of the
+rank-1 contributions. During adaptation, the backbone parame-
+ters remain frozen and only{A,B}and the gating network are
+updated.
+1https://hdl.handle.net/10032/tm-a2-z8
+Figure 1:Proposed two-pass geo-conditioned ASR without co-
+ordinate metadata during inference.
+5.2. Coordinate Regression Head (CRH) + GLoRIA
+We attach a lightweight Coordinate Regression Head (CRH) on
+top of the frozen encoder to infer speaker location directly from
+speech. LetH= [h 1,...,h T ]∈R T×D denote the encoder
+output sequence. CRH mapsHto a coordinate estimate ˆc∈R 2
+using multi-head attentive pooling followed by an MLP regres-
+sor. The pooling mechanism follows attentive (statistics) pool-
+ing used for utterance-level representation learning [24].
+5.2.1. CRH
+Given encoder outputs H, CRH forms an utterance-level vector
+viaK-head attentive pooling (padding masked). For each head
+k, the time weights are obtained by a masked softmax and re-
+normalized over valid frames, yieldingα t,k with PT
+t=1αt,k =
+1. The utterance-level representation is then formed via at-
+tentive mean pooling,µ k = PT
+t=1αt,kht, and concatenation
+v= [µ 1;...;µ K]. Finally, coordinates are regressed with a
+compact MLP, ˆc= MLP(v), using atanhoutput and training
+targets scaled to[−1,1]. During CRH training (separate from
+GLoRIA), the shared encoder is frozen to avoid disrupting the
+ASR-learned representations. Only the CRH parameters are up-
+dated using the SmoothL1 robust regression loss [25].
+5.3. Two-pass inference with inferred coordinates
+5.3.1. Pass 1: coordinate inference (GLoRIA off).
+We disable GLoRIA contributions in the encoder (i.e., bypass
+low-rank updates or equivalently set the gates to zero) and com-
+pute encoder outputsH. CRH then predictsˆc=ϕ(H).
+5.3.2. Pass 2: geo-conditioned ASR (GLoRIA on).
+We enable GLoRIA, provideˆcto the gating networks, and run
+the ASR forward pass to decode the transcription using the geo-
+conditioned encoder.
+This design adds only one extra encoder pass and the small
+CRH; since the computationally dominant decoder/beam search
+runs once, measured two-pass inference latency overhead re-
+mains below 3%. Fig. 1 depicts the training and inference.
+6. Experimental Setup
+6.1. Dataset and Dialect Partitioning
+The corpus contains nine dialect regions. Dialects with≥50
+recordings are split 80/10/10 into train/validation/test; smaller
+regions are excluded from training and contribute 10% of
+their data to test only. Training dialects are Brabants, Frans-
+Vlaams, Oost-Vlaams, Oost-Vlaams>Brabants, and West-
+Vlaams. Test-only dialects are Limburgs, Limburgs>Brabants,
+2646
+Vlaams>Zeeuws, and West-Vlaams>Oost-Vlaams. The splits
+are strictly disjoint to prevent data leakage, with no shared
+speakers or coordinates across train, validation, and test sets.
+Figure 2:Mean great-circle error of CRH coordinate predic-
+tions vs. utterance length. Shaded bands show±1std.
+6.2. Model and Training Configuration
+Audio is resampled to 16 kHz. We extract 80-dim mel fil-
+terbanks with 3 pitch features (25 ms window, 10 ms shift),
+apply utterance-level normalization. SpecAugmentation [26]
+is applied with time warping (window=5, bicubic interpola-
+tion), two frequency masks (width range 0–30), and two time
+masks (width range 0–40). Models are implemented in ESP-
+net [27]. The encoder is a 12-layer Conformer(d model = 512,
+df f = 2048, 8 heads, kernel size 31) with 6-layer Conv2d sub-
+sampling and relative positional encoding. The decoder is a
+6-layer Transformer (8 heads,d f f = 2048, dropout 0.1). A
+2-layer subtitle encoder shares the same dimensions. GLoRIA
+is applied to conformer feed-forward layers and cross-attention
+modules. GLoRIA’s Gate-MLPs are two-layer networks (hid-
+den size 32) with GeLU activation and Softplus output. The
+CRH uses 2 attention heads and an MLP with hidden size 64
+with relu hidden activation.
+Training uses gradient accumulation of 128. LoRA, GLo-
+RIA and CRH run for 50 epochs. New parameters use Xavier
+uniform initialization; gate-MLPs are zero-initialized. Opti-
+mization uses Adam (lr=0.001) with WarmupLR (variant of the
+Noam warmup followd by an inverse square-root decay sched-
+ule [28]) and 1500 warmup steps.
+7. Results
+7.1. Utterance length vs. great-circle accuracy of CRH
+We begin by analyzing how much speech is required for reliable
+coordinate inference. Fig. 2 and Tab. 1 show a clear duration
+effect: CRH great-circle error drops sharply as utterances grow
+from a few seconds to∼20–30 s, after which gains saturate. The
+same trend holds across splits, with consistently higher error
+under dialect shift (held-out dialects) than on training dialects.
+To disentangle geographic support effects from dialect
+identity, we further distinguishinterpolationandextrapolation
+ranges. Interpolation—where evaluation locations lie within
+the spatial support of training coordinates—achieves markedly
+lower errors and saturates early (≈15.44 km at 30 s). In con-
+trast, extrapolation remains consistently harder (≈38.17 km at
+30 s), and the gap persists across durations. This indicates that
+CRH operates reliably within the trained coordinate manifold,
+whereas projecting beyond it is substantially more challenging
+even with longer speech segments.
+Table 1:Mean great-circle localization error (km) of CRH as a
+function of utterance duration.
+Region 3s 10s 20s 30s 60s
+Brabants 36.33 21.63 18.18 16.33 16.10
+Frans-Vlaams 62.58 31.98 19.28 13.93 16.03
+Oost-Vlaams 24.64 21.75 13.51 15.30 11.92
+OV>B 29.29 23.70 19.02 19.13 12.41
+West-Vlaams 43.45 30.22 20.11 16.69 17.36
+seen avg 39.25 25.85 18.02 16.27 15.85
+Limburgs 107.48 69.27 63.90 50.30 50.97
+Limburgs>B 80.71 49.51 44.06 38.74 42.23
+Vlaams>Zeeuws 42.45 30.34 24.02 27.22 21.31
+WV>OV 21.56 17.46 14.63 15.94 13.40
+unseen avg 63.05 41.64 36.65 33.05 31.97
+Overall avg 49.82 32.86 26.30 23.72 23.01
+Interpolation 36.30 24.45 17.45 16.22 15.44
+Extrapolation 76.88 49.70 43.99 38.75 38.17
+To contextualize the plateau around 20–30 s, we quan-
+tify the spatial granularity of the reference set via (i) nearest-
+neighbor spacing between speaker coordinates and (ii) acover-
+age distance(expected great-circle distance from a uniformly
+random location in the study area to its closest reference coor-
+dinate). The dataset has mean (median) nearest-neighbor spac-
+ing of 3.45 km (3.14 km) and mean (median) coverage distance
+of 6.04 km (3.56 km). Despite this relatively dense geometric
+sampling, localization errors at 30 s remain above 10 km, sug-
+gesting that the observed ceiling is not primarily caused by ref-
+erence sparsity but instead reflects alinguistic resolution limit:
+within the Belgian Dutch dialect continuum, cues vary gradu-
+ally and include transition zones, making fine-grained micro-
+localization inherently ambiguous once coarse regional identity
+is identified [29].
+To relate the aggregate great-circle errors to the spatial
+shapeandspreadof the inferred coordinates, Fig. 3 visualizes
+ground-truth versus predicted locations for test utterances from
+the Brabants region across different utterance lengths. While
+Brabants is treated as a single region label, sub-regional vari-
+ation is known to be perceptually salient (e.g., the Antwerp
+area is distinguishable from other Brabantine varieties [30,31]).
+With only 3 s of speech, CRH already captures the coarse re-
+gional identity, but predictions exhibit high uncertainty and a
+clear regression-to-the-mean behavior: the horizontal spread is
+poorly resolved and many estimates collapse toward the cen-
+tral area; a fraction of utterances also spill into neighboring
+Oost-Vlaams. At 10 s, the dispersion decreases, yet predic-
+tions remain diffuse. At 20–30 s, the predicted coordinates
+become noticeably more structured and concentrate into sev-
+eral coherent clusters, roughly aligned with major urban areas
+(Antwerp, Brussels, and Leuven), suggesting that CRH begins
+to exploit finer-grained acoustic cues that differentiate sub-areas
+within the broader Brabantine region. At 60 s, these clusters
+sharpen further and outliers reduce. Overall, the maps corrob-
+orate a trend: increasing duration not only reduces average er-
+ror, but also yields predictions whose spatial organization better
+matches established dialect geography at a sub-regional level.
+7.2. Robustness to coordinate perturbations
+We evaluate how sensitive GLoRIA is to imperfect coordinates
+at inference. We generate perturbed coordinates˜csuch that
+thedataset-meangreat-circle displacement from ground truth
+equals a target radiusR(while keeping˜cinside Belgium). For
+each itemiwith coordinatec i, we sample a positive raw radius
+ρi and compute a feasibility capρ max
+i implied by the in-bounds
+2647
+Figure 3:Qualitative localization in the Brabants region test set: ground-truth (triangles) and CRH-predicted (circles) coordinates for
+utterance lengths 3–60 s, showing reduced spread and sharper sub-regional clustering with longer speech.
+Figure 4:∆WER vs. coordinate perturbation radius at infer-
+ence, showing local robustness (≤25 km) and rapidly increas-
+ing degradation for larger displacements.
+constraint. We then apply an iterative capped rescaling: choose
+a global scalesso that 1
+N
+P
+isρi =R, clamp anysρ i >ρ max
+i
+toρ max
+i , remove clamped items, and re-solve forson the re-
+maining items until all constraints are satisfied. Finally, we
+sample a random bearingθ i∼Unif(0,2π)and move fromc i
+by a great-circle arc of lengthρ i (haversine-consistent); if the
+new point leaves Belgium, we resampleθ i until it is in-bounds.
+Figure 4 shows that∆WER grows rapidly withR, but re-
+mains small for realistic noise: on average, the impact is neg-
+ligible up to 15 km and stays below 1 WER point at 25 km.
+Beyond 50 km, degradation becomes substantial and increases
+steeply at 75–100 km. Limburgs is an exception, where moder-
+ate perturbations can slightly improve WER. Because Limburgs
+lieseast of the training coordinate support(an extrapolation
+range), oracle conditioning can place the gates in a poorly sup-
+ported region; in-bound perturbations shift coordinates inward
+toward better-supported areas, yielding more stable gating. Cru-
+cially, the scale at which GLoRIA remains stable aligns closely
+with the localization accuracy achieved by CRH. As shown in
+Sec. 7.1, CRH attains mean great-circle errors of approximately
+25 km with 10 s of speech and improves to around 16 km with
+30 s. Figure 4 indicates that coordinate mismatches within this
+15–25 km range incur at most a sub-1 WER-point degradation
+on average. In other words, the typical localization error of
+CRH falls well inside the robustness range of GLoRIA.
+7.3. ASR without coordinates: CRH+GLoRIA vs. LoRA
+We next compare our proposed CRH+GLoRIA pipeline against
+a rank-matched LoRA baseline. Both methods adapt the same
+180M-parameter backbone with comparable parameter effi-
+ciency: LoRA and GLoRIA update just under 10% of the pre-
+trained parameters during adaptation, while CRH introduces
+only∼150k additional parameters (<0.1%of the backbone).
+Importantly, CRH+GLoRIA uses only the speech signal (10 s
+segments in this experiment), making the comparison with
+LoRA fair in terms of test-time inputs.
+Table 2 reports WERs across dialect regions. Despite op-
+erating without oracle coordinates, CRH+GLoRIA consistently
+outperforms LoRA across regions, yielding a3.05%absolute
+WER improvement on average. Moreover, CRH+GLoRIA ap-
+proaches the oracle-coordinate upper bound closely: the av-
+Table 2:WER (%) on 10 s test utterances. CRH+GLoRIA uses
+no coordinate metadata at inference.
+Region Oracle LoRA CRH+GLoRIA Whisper OWSM
+Brabants24.6528.35 25.06 71.69 78.32
+Frans-Vlaams38.8243.54 40.33 75.11 83.65
+Oost-Vlaams27.4230.19 28.35 68.30 80.54
+OV>B28.3132.12 29.50 68.04 78.19
+West-Vlaams24.4527.73 25.06 62.91 76.25
+Limburgs 46.90 49.7444.4668.56 76.78
+Limburgs>B35.4940.54 36.62 62.07 76.01
+Vlaams>Zeeuws32.5735.10 33.79 61.37 75.43
+WV>OV29.8233.70 30.41 71.60 83.61
+Average 32.04 35.67 32.6267.74 78.75
+erage gap to oracle GLoRIA is only0.58%absolute WER,
+indicating that the coordinate inferred from speech is suffi-
+ciently accurate to recover most of the geo-conditioning gains.
+Since the method retains the original GLoRIA gating mecha-
+nism, it also preserves interpretability (rank-wise, coordinate-
+conditioned contributions) while removing the dependency on
+coordinate metadata at inference.
+For context, Table 2 also includes Whisper large-v3 and
+OWSM-CTC v4 (1B), both substantially larger models, whose
+WERs remain markedly higher on this dialectal setting, high-
+lighting the difficulty of the task.
+8. Conclusion and Discussion
+We addressed a key limitation of geo-conditioned ASR: the re-
+liance on coordinate metadata at inference. We removed GLo-
+RIA’s reliance on coordinate metadata at inference by infer-
+ring speaker location from speech. A lightweight Coordinate
+Regression Head (CRH) is trained on frozen encoder repre-
+sentations to predict coordinates, which are then used to acti-
+vate GLoRIA geo-conditioning in a two-pass inference scheme.
+This retains GLoRIA’s parameter efficiency and interpretability
+while requiring only the input utterance at test time.
+CRH localization improves with utterance duration and sat-
+urates around 20–30 s, reaching 15–25 km mean error. GLo-
+RIA is robust within this range: perturbations up to 15 km have
+negligible impact and remain below 1 absolute WER point at
+25 km, with degradation increasing rapidly beyond that. Thus,
+CRH accuracy lies well within GLoRIA’s tolerance to coor-
+dinate mismatch. In the no-metadata setting (10 s segments),
+CRH+GLoRIA improves over rank-matched LoRA by 3.05%
+WER on average and remains within 0.58% WER of oracle geo-
+conditioning, while large general-purpose ASR models exhibit
+substantially higher error rates on this dialectal task.
+Future work should target extrapolation by incorporating
+uncertainty-aware conditioning (e.g., top-k or distributional co-
+ordinates). In addition, it should conduct a component-level
+analysis of GLoRIA to understand what each gated low-rank
+rank component is doing—how these updates capture dialect
+shifts—and whether the cues driving those adaptations align
+with the cues CRH uses for coordinate inference.
+2648
+9. Acknowledgment
+This research was supported by the Flemish Government under
+“Onderzoeksprogramma AI Vlaanderen”
+10. References
+[1] P. Trudgill,The Dialects of England, 2nd ed. Oxford, UK: Black-
+well, 1999.
+[2] J. K. Chambers and P. Trudgill,Dialectology, 2nd ed. Cam-
+bridge, UK: Cambridge University Press, 2003.
+[3] P. Mehralian and H. Van hamme, “Leveraging Geographic Meta-
+data for Dialect-Aware Speech Recognition,” inInterspeech 2025,
+2025, pp. 1153–1157.
+[4] P. Mehralian, M. Farasyn, A. Breitbarth, A.-S. Ghyselen,
+and H. V . hamme, “GLoRIA: Gated Low-Rank Interpretable
+Adaptation for Dialectal ASR,” 2026. [Online]. Available:
+https://arxiv.org/abs/2603.02464
+[5] E. J. Hu, Y . Shen, P. Wallis, Z. Allen-Zhu, Y . Li, S. Wang,
+L. Wang, W. Chenet al., “Lora: Low-rank adaptation of large
+language models.”ICLR, vol. 1, no. 2, p. 3, 2022.
+[6] S. Yoo, I. Song, and Y . Bengio, “A highly adaptive acoustic model
+for accurate multi-dialect speech recognition,” inProc. ICASSP,
+2019, pp. 5716–5720.
+[7] R. Dorn, “Dialect-specific models for automatic speech recog-
+nition of African American Vernacular English,” inProceedings
+of the Student Research Workshop Associated with RANLP 2019,
+2019, pp. 16–20.
+[8] B. Li, T. N. Sainath, K. C. Sim, M. Bacchiani, E. Weinstein,
+P. Nguyen, Z. Chen, Y . Wu, and K. Rao, “Multi-dialect speech
+recognition with a single sequence-to-sequence model,” inProc.
+ICASSP, 2018, pp. 4749–4753.
+[9] T. Toyama, A. Kai, Y . Kamiya, and N. Takahashi, “Adapting
+large-scale pre-trained models for unified dialect speech recog-
+nition model.”Acta Physica Polonica: A, vol. 146, no. 4, 2024.
+[10] R. Imaizumi, R. Masumura, S

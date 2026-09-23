@@ -1,0 +1,506 @@
+Non-Autoregressive Minimum Bayes’ Risk Decoding
+for Fast Speech Recognition
+Hiroyuki Deguchi ID 1, Takatomo Kano ID 1, Katsuki Chousa ID 1, Marc Delcroix ID 1
+1 NTT, Inc., Japan
+hiroyuki.deguchi@ntt.com, takatomo.kanou@ntt.com,
+katsuki.chousa@ntt.com, marc.delcroix@ntt.com
+Abstract
+Non-autoregressive (NAR) decoding generates output tokens
+in parallel, making speech recognition faster than autoregres-
+sive decoding, which generates them sequentially from left to
+right. However, the recognition performance is degraded be-
+cause NAR decoding cannot resolve uncertainty by condition-
+ing on previously generated tokens. To address this issue, we
+propose a novel NAR decoding framework based on minimum
+Bayes’ risk (MBR) decoding, termed NAR-MBR decoding, that
+maximizes the expected utility calculated from samples drawn
+from the output probability of an NAR model rather than max-
+imizing the output probability. Notably, by leveraging the na-
+ture of NAR models, multiple samples are obtained efficiently
+with a single forward computation. Our experiments across
+LibriSpeech, Switchboard, AMI, and web presentation corpus
+demonstrated that our NAR-MBR decoding outperformed pre-
+vious NAR decoding and ran faster than AR decoding.
+Index Terms: automatic speech recognition, decoding, non-
+autoregressive, minimum bayes risk
+1. Introduction
+Decoding speed in automatic speech recognition (ASR) is chal-
+lenging in real-world scenarios, especially when processing
+long speech signals. Most of the recent state-of-the-art ASR
+models that have achieved low word error rates (WER) gener-
+ate transcriptions in a left-to-right manner, called autoregressive
+(AR) decoding, which takes computational time proportional to
+the number of output tokens [1–4]. Non-autoregressive (NAR)
+decoding addresses the limitations of AR decoding by introduc-
+ing an independence assumption and removing the dependency
+on previously generated tokens in the output probability, i.e.,
+context information [5–8]. This enables multiple tokens to be
+generated in parallel, and the number of decoding steps is re-
+duced to either one or a constant smaller than the length of the
+output sequence, making it faster than AR decoding. Neverthe-
+less, there remains a performance gap between AR and NAR
+decoding due to the multi-modality problem in NAR decod-
+ing [5], which makes it difficult to maintain consistency in prob-
+able path selection when transcriptions may have uncertainty
+among multiple output paths.
+In the field of decision theory, the expected utility theory
+(EUT) [9] is often used for decision-making under uncertainty.
+In EUT, optimal decisions maximize the expected utility (EU),
+where the utility function represents preference relations or de-
+sirability. The minimum Bayes’ risk (MBR) framework based
+on EUT1 has been widely utilized for both training [10–14] and
+decoding [15–19] in ASR and other fields. In particular, MBR
+1EU maximization is equivalent to Bayes’ risk minimization.
+decoding improves the recognition performance without addi-
+tional training by selecting the output sequence that maximizes
+the EU, in contrast to the most widely used decoding method,
+maximum a posteriori (MAP) decoding, which selects the se-
+quence that maximizes the output probability. The EU is typ-
+ically estimated using the Monte Carlo method, with multiple
+output samples drawn from the output probability distribution.
+For fast yet high-quality speech recognition, we propose
+NAR-MBR decoding that maximizes the EU by using efficient
+non-autoregressive sampling. Figure 1 presents an overview of
+NAR and our NAR-MBR decoding. NAR-MBR decoding gen-
+erates multiple output samples using a non-autoregressive ASR
+model and then maximizes the EU based on WER. For esti-
+mating the EU, we generate multiple samples drawn from the
+output probability distributions of an NAR model utilizing unbi-
+ased sampling rather than greedy search. Notably, we efficiently
+sample multiple output paths only with a single forward com-
+putation by leveraging the independence assumption between
+output tokens in NAR models. We then estimate and maximize
+the EU using our efficient edit distance computation.
+Experiments on LibriSpeech [20], Switchboard [21],
+AMI [22], and web presentation corpus showed that NAR-MBR
+decoding transcribed speech up to 43.1 times faster than the
+beam search of AR decoding using Conformer [1] and achieved
+both speed and accuracy improvements, without additional
+training, compared to NAR decoding using Mask-CTC [8].
+2. Background: Decoding in ASR
+LetXbe the input space of ASR models andY :=V ∗ be the
+output space, whereV ∗ is the Kleene closure of vocabularyV.
+The goal of ASR is to generate a token sequencey∈Yfrom
+an input speechx∈X. Output tokensyare converted into the
+transcription textσ(y)∈Σ ∗, whereΣ∗ is the Kleene closure of
+alphabetΣ, andσ:V ∗→Σ∗ denotes a detokenizing function
+that maps a token sequence to its corresponding string.
+2.1. Sequence modeling in decoding
+Autoregressive decoding.Most ASR models are trained to cal-
+culate the output probability ofygivenx, i.e.,p(y|x;θ), where
+θdenotes trained parameters. Typically, they find the most
+probable path that maximizes the output probability, which is
+formulated using the chain rule of conditional probabilities:
+pAR(y|x;θ) :=Q|y|
+t=1p(yt|x,y <t).(1)
+In this autoregressive manner, output probabilities are predicted
+sequentially from left to right, conditioned on previously gener-
+ated tokens, allowing ambiguities among paths to be resolved.
+However, it is time-consuming, especially for long speech sig-
+nals, because probabilities must be calculated|y|times.
+820
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2971
+Encoder+CTC
+Input
+CTC output probability
+Best-path search: Eq. (3)
+CTC output tokens
+CMLM decoder
+Deterministic masking: Eq. (4)
+Masked tokens 
+CMLM output probability
+Greedy search: Eq. (5)
+CMLM output tokens
+Masked tokens 
+(a)NAR decoding in Mask-CTC
+Input
+CTC output probability
+CTC path sampling: Eq. (9)
+CTC output tokens 
+Probabilistic masking: Eq. (10)
+Masked tokens 
+Token sampling: Eq. (11)
+CMLM output tokens 
+Masked tokens 
+MBR output tokens
+CMLM output probability
+Encoder+CTC
+EU maximization: Eq. (12)
+CMLM decoder (b)Proposed NAR-MBR decoding in Mask-CTC
+Figure 1:NAR and NAR-MBR decoding in Mask-CTC atN iter = 1. Differences from NAR decoding are highlighted .
+Non-autoregressive decoding.For faster decoding, NAR de-
+coding reduces the number of probability calculations. It gen-
+erates multiple tokens in parallel, based on the independence
+assumption between output tokens, as follows:
+pNAR(y|x;θ) :=Q|y|
+t=1p(yt|x).(2)
+Mask-CTC [8], one of the most popular non-autoregressive
+ASR models, is built on an encoder–decoder architecture (Fig-
+ure 1(a)), where the encoder concurrently generates the en-
+tire output sequence with connectionist temporal classification
+(CTC) [6, 23], and the decoder, based on a conditional masked
+language model (CMLM) [7], refines the encoder outputs with
+mask prediction. The encoder predicts the output probability of
+tokens and blanks and greedily selects the CTC alignment path
+that maximizes the probability for each frame, as
+z
+CTC
+:= argmax
+z∈V ∗
+CTC
+p(z|x;θ CTC) = argmax
+z∈V ∗
+CTC
+Q|z|
+t=1p(zt|x;θ CTC),
+(3)
+whereV CTC :=V∪{∅}is the CTC output vocabulary of the
+encoder and∅denotes a blank frame. CTC then collapses the
+alignment pathz CTC by removing all blanks and aggregating
+consecutive frames with the same tokens. LetB:V ∗
+CTC ↠Y
+be a surjective function that maps a CTC path to its correspond-
+ing collapsed output sequence. The CTC output sequence is
+defined asy CTC :=B(z CTC). The CMLM decoder masks tokens
+within the CTC outputy CTC according to its confidence proba-
+bilityp(y CTC
+t |x;θ CTC), and fills the masked tokens. The masks
+m∈{0,1} ∗ are determined with a thresholdα∈[0,1]:
+mt :=1[p(y
+CTC
+t |x;θ CTC)<α],(4)
+where1denotes an indicator function. The masked sequence
+ymask is obtained by masking the CTC output usingm: ifm t =
+1,y t is replaced with the mask token; otherwise, it remains
+unchanged. Mask tokens are then filled via mask prediction:
+y
+CMLM
+t :=
+(
+argmaxyt∈Vp(yt|x,y mask;θ CMLM )m t = 1
+ymask
+t mt = 0.(5)
+The mask prediction can also be split intoNiter∈Z≥0 inference
+stages instead of filling all mask tokens at once, at the expense
+of decoding speed. Note thatN iter = 0corresponds to using
+yCTC without the CMLM. By filling tokens starting with those
+of higher confidence, lower WER has been achieved [8].
+Mask-CTC corrects erroneous tokens that occur due to
+the non-autoregressive manner of the encoder with CTC, and
+achieves a better recognition performance than encoder-only
+NAR models while reducing the number of probability calcu-
+lations and generating outputs faster than AR decoding. Never-
+theless, there is still a performance gap between AR and NAR
+decoding due to the multi-modality problem [5] caused by the
+uncertainty of multiple output paths.
+2.2. Decision rules in decoding
+MAP decoding.The most widely used output decision rule in
+ASR is MAP decoding, which maximizes the output probabil-
+ity. Since the output spaceYis an infinite set and searching over
+all possible paths is infeasible, it selects a pruned hypothesis set
+H⊂Y, usually obtained via beam search or sampling:
+y
+MAP
+:= argmaxh∈Hp(h|x;θ).(6)
+This point estimation strategy can pose problems, and recent
+studies have shown that high-probability sequences are not al-
+ways high-quality. Specifically, as the beam size increases, se-
+quences with higher probability are generated. However, such
+sequences hurt output quality and sometimes cause pathological
+outputs, e.g., empty outputs andn-gram repetitions [24, 25].
+MBR decoding.As a more quality-aware decision rule, MBR
+decoding selects the hypothesisy MBR that maximizes the EU:
+y
+MBR
+:= argmaxh∈H Ey∼Pr(·|x)[u(h;y)],(7)
+wherePr(·|x)is the true output probability distribution given
+the inputx, andu:Y×Y→Ris the utility function, which
+satisfiesh⪰ y h′⇐⇒u(h;y)≥u(h ′;y), where⪰ y denotes
+the preference relation under the given referencey. Typically,
+evaluation metrics to be maximized, e.g., negative WER, are
+used for the utility function. SincePr(·|x)is unknown, the
+EU is commonly estimated with the Monte Carlo (MC) method
+using output samples drawn from the modelθ[19, 26]:
+y
+MBR
+≃argmax h∈H
+1
+|R|
+P
+y∈Ru(h;y),(8)
+whereR :={y i}|R|
+i=1
+i.i.d.
+∼p(·|x;θ)is a multiset of sam-
+ples, called pseudo-references, which are drawn from the output
+probability distribution. To estimate the EU stably, unbiased
+sampling methods are used for generating pseudo-references
+rather than beam search or other biased sampling methods [26,
+27]. In a typical setting, the same sample set is used for both
+the hypotheses and the pseudo-references. MBR decoding ro-
+bustly generates high-quality outputs but is computationally ex-
+pensive due to hypothesis and pseudo-reference sampling and
+the quadratic-time utility calculation.
+821
+3. Proposed Method: NAR-MBR Decoding
+Our non-autoregressive minimum Bayes’ risk (NAR-MBR) de-
+coding aims to decode high-quality transcriptions significantly
+faster than AR decoding, without additional training for Mask-
+CTC. Figure 1(b) presents the overview of NAR-MBR decod-
+ing. It mainly consists of two steps: (1) probabilistic unbiased
+sampling from Mask-CTC, and (2) efficient EU maximization.
+3.1. Probabilistic unbiased sampling from Mask-CTC
+We sample hypotheses and pseudo-references from the output
+probability distribution of Mask-CTC. As described in Sec-
+tion 2.2, MBR decoding requires unbiased sampling to gener-
+ate pseudo-references, which is usually computationally expen-
+sive. While Mask-CTC generates CTC paths via fast but biased
+greedy search, we instead perform unbiased sampling without
+additional cost to obtain multiple CTC alignment paths.
+We first sample multiple CTC paths. Notably, this step does
+not increase the computational cost. In AR models, sequence
+sampling increases the computational cost by the number of
+samples, as it calculates context-dependent conditional proba-
+bilities. Here, we sample sequences from NAR models, i.e.,
+from context-independent probabilities. Since the probabilities
+are computed in a single forward pass, multiple samples can
+be obtained efficiently. The paths are sampled independently
+according to the output probabilities for each frame:
+Z :={z i}|Z|
+i=1
+i.i.d.
+∼p(z|x;θ CTC), z i,t∼Cat (p(z t|x;θ CTC)),
+(9)
+whereZis a multiset of sampled CTC alignment paths and
+Cat(·)denotes a categorical distribution. We then perform
+mask prediction for eachz i∈Z. The masks are sampled from
+Bernoulli distributions based on the confidence probabilities:
+mi,t∼Bernoulli
+ 
+1−p(y
+CTC
+i,t|x;θ CTC)
+
+.(10)
+Unconfident tokens are masked according tom i, the same as in
+the previous method. We then fill in the masked tokens based on
+the categorical distribution of the decoder’s output probabilities.
+y
+CMLM
+i,t :=
+(
+yi,t∼Cat
+ 
+p(yt|x,y mask
+i ;θ CMLM )
+
+mi,t = 1
+ymask
+t mi,t = 0.
+(11)
+Similar to standard decoding in Mask-CTC, our method can
+also extend mask prediction toN iter inference stages. To proba-
+bilistically fix output tokens from higher confident ones, we use
+the Gumbel-max trick [28] instead of top-k.
+Using the above method, a sample set for pseudo-references
+Ris obtained. Following previous studies [19, 26], we use the
+same set for both hypothesesHand pseudo-referencesR. For
+Niter = 0, CTC path samplesZare directly used asHandR.
+3.2. Efficient EU maximization
+We select the best sequence that maximizes the EU from the
+hypotheses based on Equation (8). For the utility functionu, we
+employ negative WER, i.e.,u(h;y) =−WER(σ(h);σ(y)),
+whereWER: Σ∗×Σ∗→[0,∞)calculates a WER score given
+a reference transcriptionσ(y). The output is thus obtained as
+y
+MBR
+≃argmax h∈H− 1
+|R|
+P
+y∈R WER(σ(h);σ(y)).(12)
+Estimating the EU for all hypotheses requires a quadratic time
+proportional to the number of samples. To maintain the speed
+benefit gained by using NAR models, we efficiently calculate
+the EU and mitigate the speed reduction due to MBR decoding.
+Removing longest common prefix and suffix.Removing the
+longest common prefix and suffix between a hypothesis and a
+pseudo-reference does not affect the edit distance. We thus re-
+move them before the calculation to reduce sequence lengths.
+Memorization.By caching the scores of duplicate sample
+pairs, we reduce the number of utility function calls. Since
+pseudo-references are sampled as a multiset, it sometimes con-
+tains duplicate samples. We first extract unique hypotheses and
+pseudo-references, calculate and cache the occurrence counts
+and scores of unique hypothesis–pseudo-reference pairs, and
+reuse the cached results for duplicate pairs.
+Parallelization.We calculate scores for each unique pair in
+parallel by leveraging multiple CPUs.
+Implementation.We implement WER in Rust, including text
+normalization. In the edit distance calculation, we convert
+words tou32word IDs to avoid expensive string comparisons.
+4. Experiments
+4.1. Setup
+To confirm the effectiveness of NAR-MBR decoding, we evalu-
+ate recognition performance and decoding speed in ASR tasks.
+Datasets.We use LibriSpeech [20], Switchboard (SWBD) [21],
+AMI [22], and web presentation corpus (Web). The Web cor-
+pus consists of 346 hours of training data from 1,938 speakers,
+and 3.7 hours of development and test sets, each from 16 speak-
+ers. LibriSpeech consists of “Clean” and “Other”, and SWBD
+consists of “Switchboard (Swbd)” and “Callhome (Callhm).”
+Models.We use Conformer [1] for AR decoding and Mask-
+CTC [8] for both NAR and NAR-MBR decoding. We train
+the models with the default hyperparameters for each dataset,
+as defined inESPNet[29]. The only differences between the
+models are the architectures and loss functions, i.e., the number
+of model parameters and other hyperparameters are the same.
+Decoding.For AR decoding, we use joint decoding with
+CTC [30, 31] and set the CTC weight to 0.3. We compare the
+beam widths of 1 (Greedy) and 10 (Beam). For NAR decoding,
+we useα= 0.999[8] as the masking threshold. In NAR-MBR
+decoding, we compare the sampling sizes|Z|∈{64,256}in
+Equation (9). In NAR and NAR-MBR decoding, we compare
+the number of inference iterationsN iter ∈ {0,1,10}, where
+Niter = 0directly generates transcriptions from the CTC out-
+puts without the CMLM decoder.
+Evaluation metrics.We evaluate recognition performance us-
+ing WER. We also conduct a statistical significance test using
+paired bootstrap resampling [32,33] with 1,000 resamples, com-
+paring NAR-MBR decoding with the baseline NAR decoding.
+Efficiency evaluation.For evaluating decoding speed, we cal-
+culate the gain for each decoding method relative to Beam de-
+coding (Speedup). Specifically, we measure the total wall-clock
+time for forward computation in the encoder and decoder, in-
+cluding utility calculation time in NAR-MBR decoding. We do
+not include other processing times, such as model and data load-
+ing, in the measurement. In addition, we measure the ratio of
+average GPU memory usage relative to Beam decoding (Mem).
+Computational environments.We use 8 cores of Intel ®
+Xeon® Gold 6346 CPU @ 3.10GHz and an NVIDIA ® RTX™
+6000 Ada GPU. In all experiments, we employESPNet[29]
+for training models andmbrs[34] for MBR decoding.
+822
+Table 1:Comparison of WER for each decoding method.Bold
+and underlined texts indicate the best and second-best WER, re-
+spectively, among NAR and NAR-MBR decoding. “†” indicates
+that NAR-MBR decoding significantly outperforms NAR decod-
+ing for allN iter∈{0,1,10}(p<0.05).
+LibriSpeech SWBD
+Decoding Clean Other Swbd Callhm AMI Web
+AR
+Greedy 3.0 6.0 6.9 13.9 17.8 8.2
+Beam 2.4 5.5 6.6 13.5 17.0 7.3
+NAR
+Niter = 0 3.3 7.4 7.9 15.7 18.9 7.7
+Niter = 1 3.4 7.7 7.8 15.6 18.8 8.9
+Niter = 10 3.3 7.5 7.6 15.2 18.4 8.5
+NAR-MBR with|Z|= 64(ours)
+Niter = 0 3.3 7.4 7.8 15.6 18.7 †7.6
+Niter = 1 †3.1 †7.1 †7.3 †14.9 †18.1 †7.4
+Niter = 10 †3.1 †7.1 †7.4 †14.9 †18.1 †7.4
+NAR-MBR with|Z|= 256(ours)
+Niter = 0 3.2 7.4 7.7 15.5 18.6 †7.5
+Niter = 1 †3.1 †7.0 †7.3 †14.9 †18.1 †7.3
+Niter = 10 †3.1 †7.0 †7.3 †14.9 †18.1 †7.3
+4.2. Results
+Recognition performance.Table 1 lists the WER for each
+decoding method. In all datasets, NAR-MBR decoding con-
+sistently outperformed NAR decoding for both|Z|= 64and
+256whenN iter ∈ {1,10}, with statistically significant im-
+provements. Notably,N iter = 1significantly improved WER
+compared to NAR decoding and achieved a comparable perfor-
+mance to beam search in the Web corpus.
+In the comparisons within NAR-MBR decoding, we ob-
+served two trends. First, increasing the sample size improved
+the WER, slightly. This is because the EU is estimated more
+robustly as the number of pseudo-references increases, owing
+to the nature of the Monte Carlo estimation in MBR decod-
+ing. Second, a larger number of inference iterationsN iter did
+not improve recognition performance. Interestingly, the WER
+of NAR-MBR decoding converged atN iter = 1and did not im-
+prove with a largerN iter, while NAR decoding did so. In NAR
+decoding, as the number of CMLM decoder calls increases, the
+condition of mask prediction becomes richer, making it easier
+to resolve ambiguities. In contrast, in NAR-MBR decoding, EU
+maximization serves this role instead. In addition, EU estima-
+tion requires unbiased samples rather than the most probable
+output, and we can obtain a sufficient number of such samples
+with a single forward computation. Therefore, NAR-MBR de-
+coding achieved low WER without iterative refinement.
+To summarize, we observed that NAR-MBR decoding out-
+performed NAR decoding and peak performance was achieved
+atN iter = 1for both|Z|= 64and256.
+Decoding speed.Table 2 shows the comparisons of decoding
+speed and average GPU memory usage. We omitted the re-
+sults ofN iter = 10in NAR-MBR decoding since peak WER
+was achieved atN iter = 1, as shown in Table 1. The results
+demonstrate that NAR-MBR decoding consistently ran faster
+than AR decoding, including Greedy decoding. In particular,
+in the Web corpus, NAR-MBR decoding atN iter = 1ran 43.1
+and 20.7 times faster than Beam decoding in|Z|= 64and256,
+respectively, while maintaining a comparable WER. Moreover,
+compared to NAR decoding atN iter = 10, NAR-MBR decod-
+Table 2:Decoding speed and average GPU memory usage
+on LibriSpeech (LS) and Web, relative to Beam. Results of
+Niter = 10in NAR-MBR decoding are omitted since peak WER
+was achieved atN iter = 1, as shown in Table 1.
+LS (Clean) LS (Other) Web
+Decoding Speed↑ Mem↓ Speed↑ Mem↓ Speed↑ Mem↓
+AR
+Greedy ×5.3 ×1.0 ×5.2 ×1.0 ×5.0 ×1.0
+Beam ×1.0 ×1.0 ×1.0 ×1.0 ×1.0 ×1.0
+NAR
+Niter = 0 ×61.3 ×1.0 ×50.1 ×1.0 ×90.3 ×1.0
+Niter = 1 ×44.2 ×1.0 ×34.7 ×1.0 ×71.3 ×1.0
+Niter = 10 ×21.3 ×1.0 ×15.2 ×1.0 ×26.7 ×1.0
+NAR-MBR with|Z|= 64(ours)
+Niter = 0 ×38.7 ×1.0 ×32.1 ×1.0 ×75.2 ×1.0
+Niter = 1 ×27.4 ×1.3 ×22.4 ×1.3 ×43.1 ×1.8
+NAR-MBR with|Z|= 256(ours)
+Niter = 0 ×30.9 ×1.0 ×22.1 ×1.0 ×41.1 ×1.0
+Niter = 1 ×11.8 ×2.7 ×9.7 ×2.4 ×20.7 ×5.0
+1 2 4 8 16 32 64 128 2561 2 4 8 16 32 64 128 2561 2 4 8 16 32 64 128 2561 2 4 8 16 32 64 128 256
+|Z|
+6
+7
+8
+9WER
+NAR-MBR
+NAR
+Greedy
+Beam
+Figure 2:WER of NAR-MBR decoding atN iter = 1when vary-
+ing number of samples in dev. set (Other) of LibriSpeech
+ing with 64 samples atN iter = 1was faster, yet it significantly
+improved the WER. The memory usage of NAR-MBR decod-
+ing was comparable to that of other methods whenNiter = 0but
+increased whenN iter = 1, primarily due to the computational
+cost of the CMLM decoder. Addressing this issue through more
+memory-efficient sampling will be part of future work.
+4.3. Effect of the number of samples
+We investigate the effect of the number of samples|Z|on the
+recognition performance in NAR-MBR decoding. Figure 2
+shows the WER when varying the number of samples within
+|Z| ∈ {20,...,2 8}in the development set of LibriSpeech
+(Other). The results show that NAR-MBR decoding improved
+the WER as the number of samples increased. In addition,
+the gain of NAR-MBR decoding converged in|Z|≥64and
+showed a similar trend to existing theoretical analyses of con-
+vergence rate in autoregressive MBR decoding [35, 36].
+5. Conclusion
+This paper proposes NAR-MBR decoding for fast speech
+recognition. The proposed method addresses the performance
+degradation of NAR decoding via probabilistic sampling and
+EU maximization. Experimental results demonstrated that
+our NAR-MBR decoding outperforms previous NAR decoding
+without additional training, and achieves a better trade-off be-
+tween recognition performance and decoding speed. For future
+work, we will extend our approach to other models and tasks.
+823
+6. Generative AI use disclosure
+Our use of generative AI tools was limited to proofreading, such
+as grammar and spell-checkers. All implementations, experi-
+ments, and analyses were conducted by the authors, who take
+full responsibility for the content.

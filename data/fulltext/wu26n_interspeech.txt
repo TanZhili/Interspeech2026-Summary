@@ -1,0 +1,496 @@
+Quantizer-Aware Hierarchical Neural Codec Modeling for Speech Deepfake
+Detection
+Jinyang Wu ID 1, Zihan Pan ID 1,∗∗, Qiquan Zhang ID 2,∗∗, Sailor Hardik Bhupendra1, Soumik Mondal1
+1 Agency for Science, Technology and Research (A*STAR), Singapore
+2 The University of New South Wales, Australia
+{wu jinyang,panz}@a-star.edu.sg, imcc.sg@gmail.com
+Abstract
+Neural audio codecs discretize speech via residual vector quan-
+tization (RVQ), forming a coarse-to-fine hierarchy across quan-
+tizers. While codec models have been explored for representa-
+tion learning, their discrete structure remains underutilized in
+speech deepfake detection. In particular, different quantiza-
+tion levels capture complementary acoustic cues, where early
+quantizers encode coarse structure and later quantizers refine
+residual details that reveal synthesis artifacts. Existing sys-
+tems either rely on continuous encoder features or ignore this
+quantizer-level hierarchy. We propose a hierarchy-aware repre-
+sentation learning framework that models quantizer-level con-
+tributions through learnable global weighting, enabling struc-
+tured codec representations aligned with forensic cues. Keep-
+ing the speech encoder backbone frozen and updating only 4.4%
+additional parameters, our method achieves relative EER reduc-
+tions of 46.2% on ASVspoof 2019 and 13.9% on ASVspoof5
+over strong baselines.
+Index Terms: Speech Deepfake Detection, Anti-spoofing,
+Codec Representation Learning
+1. Introduction
+Recent advances in text-to-speech (TTS) and voice conversion
+(VC) have made it increasingly easy to generate highly natural-
+sounding speech. Despite their perceptual realism, deepfake ut-
+terances often exhibit subtle low-level inconsistencies, such as
+imperfect transient modeling, over-smoothed spectral details, or
+locally distributed artifacts that are difficult to capture reliably
+under real-world distortions [1, 2]. Designing detectors that are
+both sensitive to these fine-grained artifacts and robust across
+domains remains a central challenge.
+A dominant trend in deepfake detection is to build detec-
+tors on top of self-supervised learning (SSL) speech encoders
+[3–5]. SSL representations are strong and transferable, offering
+contextualized frame-level features that generalize well across
+tasks and domains. However, the same contextual abstraction
+that benefits semantic modeling may attenuate fine-grained lo-
+cal cues that are highly indicative of synthetic generation, es-
+pecially when artifacts are weak, sparse, or partially masked by
+channel effects. This motivates exploring complementary rep-
+resentations beyond purely continuous SSL embeddings.
+Neural audio codecs provide such a complementary view.
+Instead of producing only continuous features, modern codecs
+discretize speech through residual vector quantization (RVQ),
+forming a sequence of quantizers that progressively encode
+coarse-to-fine residual details [6, 7]. This process induces a
+structured residual hierarchy: earlier quantizers capture dom-
+**indicates the corresponding author.
+inant structure, while later ones encode finer residual informa-
+tion. From a forensic perspective, synthesis artifacts may not
+distribute uniformly across quantizers but concentrate in spe-
+cific residual levels.
+Despite this structural property, the potential of neural
+codec representations remains underexplored in speech deep-
+fake detection. Existing codec-based representation learning
+studies, such as Codec2Vec [8], primarily aim at learning gen-
+eral speech representations from discrete codec tokens, without
+considering their forensic utility in detection tasks. Meanwhile,
+recent detection frameworks [9] have begun incorporating pre-
+trained codec models such as EnCodec [10] as additional fea-
+ture extractors in multi-view architectures. However, in these
+approaches codec outputs are treated as generic speech repre-
+sentations, without explicitly modeling the hierarchical struc-
+ture introduced by residual vector quantization (RVQ). Further-
+more, while both SSL models and neural codecs provide power-
+ful learned speech representations, their interaction in deepfake
+detection remains largely underexplored. In particular, how
+to effectively align codec representations with SSL-based en-
+coders while preserving the quantizer-level hierarchy has not
+been systematically studied.
+Motivated by this, we study lightweight SSL–codec inte-
+gration with explicit quantizer-level modeling. We first es-
+tablish strong and stable hierarchy-preserving baselines that
+keep codec residual levels disentangled and combine them with
+SSL features through late concatenation and a single projec-
+tion layer. Building on this setup, we propose Quantizer-
+Aware Static Fusion (QAF-Static), a parameter-light operator
+that learns global importance weights over residual quantizers
+to form a hierarchy guided codec representation before inte-
+gration with SSL features. This design injects an interpretable
+structural bias aligned with RVQ, while maintaining training
+stability and minimal computational overhead.
+2. Related Work
+2.1. SSL-based deepfake detection and parameter-efficient
+adaptation
+Self-supervised learning speech encoders [11, 12] have become
+the dominant backbone for spoofing and deepfake detection due
+to their transferability and contextual abstraction. Prior studies
+reveal that spoofing cues are not uniformly distributed across
+transformer layers. Panet al.[13] propose attentive merging of
+hidden embeddings from pre-trained speech models, showing
+that earlier SSL layers can contain stronger anti-spoofing sig-
+nals and enabling lightweight detectors with partial backbones.
+To further reduce adaptation cost, MoLEx [14] introduces
+a mixture-of-LoRA-experts framework that selectively adapts
+SSL encoders through parameter-efficient routing mechanisms.
+7400
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3212
+These works demonstrate that structured exploitation of SSL
+internals either across layers or experts can improve detection
+robustness without full fine-tuning.
+Complementary to SSL-only systems, multi-view strategies
+have also been explored. For instance, combining SSL em-
+beddings with spectral features (e.g., MFCC/LFCC/CQCC) via
+concatenation or attention improves generalization under un-
+seen distortions [15]. These approaches treat additional rep-
+resentations as complementary views but do not explicitly con-
+sider structural priors within those representations.
+2.2. Neural audio codecs: continuous latents and discrete
+RVQ hierarchy
+Neural audio codecs (NACs) compress waveforms into a latent
+space optimized for reconstruction [6,10,16,17]. Given an input
+waveformx, the encoder produces continuous latent features
+z=E(x), z∈R T×D,(1)
+which are typically used directly as continuous representations
+in detection pipelines. To enable bitrate control and com-
+pact transmission, NACs further discretizezvia residual vector
+quantization (RVQ). RVQ approximates each latent vectorz t
+through a sequence of residual codebooks:
+r(0)
+t =z t,(2)
+kt,q = arg min
+k
+r(q−1)
+t −e q,k
+
+2
+2
+,(3)
+r(q)
+t =r (q−1)
+t −e q,kt,q.(4)
+forq= 1,...,Q, wheree q,k denotes thek-th codeword in
+theq-th codebook. The reconstructed latent is given by
+ˆzt =
+QX
+q=1
+eq,kt,q.(5)
+This procedure induces a coarse-to-fine residual hierarchy
+[18]: earlier quantizers capture dominant structure, while later
+quantizers encode progressively finer residual details. Yet this
+hierarchical organization is rarely modeled explicitly, as many
+approaches either rely on continuous latent representations or
+apply uniform aggregation over discrete codec embeddings.
+In practice, codec representations have begun to appear in
+speech deepfake forensics, but are leveraged in different ways.
+For example, multi-view detection systems incorporate pre-
+trained neural codec models (e.g., EnCodec ) as additional fea-
+ture extractors and fuse them with other acoustic or SSL-derived
+representations [19]; in these settings, the encoder’s continuous
+outputs are typically used as features, rather than the discrete
+RVQ codes. In a different direction, SafeEar [20] repurposes a
+codec-style RVQ stack into a decoupling model that separates
+semantic and acoustic tokens for content privacy, and performs
+detection using acoustic-only tokens. Beyond detection, codec-
+aware forensics has also been explored for CodecFake source
+tracing [21] by predicting codec taxonomy attributes such as
+VQ type, auxiliary objectives, and decoder structures.
+In contrast to treating codec outputs as generic features,
+partitioning RVQ layers for privacy, or using taxonomy labels
+for attribution, we focus on explicitly modeling the RVQ quan-
+tizer hierarchy itself and studying lightweight, hierarchy-aware
+SSL–codec fusion for deepfake detection.
+3. Method
+Neural audio codecs represent speech through residual vector
+quantization (RVQ), where successive codebooks progressively
+Figure 1:Overview of the proposed speech deepfake detection
+framework. SSL features from WavLM (with Attentive Merging)
+are fused with codec representations through quantizer-aware
+weighting over RVQ levels. A quantizer mean pooling baseline
+is included for comparison.
+Attentive 
+Merging
+……
+Codec 
+Encoder
+Vector quantization
+… … … Fusion LSTM 
+Classification
+WavLM  SSL Speech Encoder
+Codec 
+Quantizer
+Speech 
+Input
+QAF-Static
+(Method 2)
+Temporal Alignment
+…
+W1
+Wq
+Vector quantization
+Vector quantization
+Vector quantization
+Transformer block
+Transformer block
+Transformer block
+Transformer block
+Quantizer Mean Pooling
+(Method 1)
+refine the latent representation and form a coarse-to-fine hierar-
+chy. We hypothesize that this hierarchy is informative for deep-
+fake detection, since synthesis artifacts may distribute unevenly
+across residual levels. However, existing approaches typically
+collapse codec outputs into flat embeddings. To address this
+limitation, we introduce a lightweight quantizer-aware operator
+that preserves RVQ structure and enables hierarchy-aware ag-
+gregation of codec representations.
+3.1. Hierarchy codec modeling
+Residual vector quantization represents each latent vector as
+a structured sum of residual levels (Eq. 5), naturally inducing
+an ordered hierarchy across quantizers. Earlier levels encode
+coarse acoustic structure, while later levels capture finer resid-
+ual refinements.
+A simple aggregation strategy applies uniform averaging
+across quantizers (Method 1: Quantizer Mean Pooling):
+˜H c
+avg = 1
+Q
+QX
+q=1
+˜E(q).(6)
+However, this assumes equal importance across quan-
+tizers and embedding dimensions, while synthesis artifacts
+may appear unevenly across both hierarchical levels and fea-
+ture channels. To address this limitation, we introduce
+Method 2: Quantizer-Aware Static Fusion (QAF-Static), a
+lightweight hierarchy-aware aggregation operator that learns
+global dimension-wise importance weights across residual
+quantizers while preserving the RVQ hierarchy.
+3.2. Quantizer-Aware Static Aggregation (QAF-Static)
+Neural codecs typically employ multiple residual codebooks to
+progressively refine acoustic representations [22]. While stan-
+dard practice aggregates codebook embeddings via uniform av-
+eraging, such treatment implicitly assumes equal contribution
+across quantization levels. However, in practice, different code-
+books capture heterogeneous information [18], and their rela-
+tive importance may vary across embedding dimensions [23].
+To enable fine-grained quantizer preference modeling while
+preserving optimization stability, we introduce a dimension-
+wise static aggregation mechanism.
+GivenQcodec codebooks, each produces a frame-level em-
+bedding:
+˜E(q)∈R B×T×D,(7)
+whereDdenotes the embedding dimension.
+7401
+Instead of uniformly averaging or learningQscalar
+weights, we introduce a dimension-wise static reweighting ma-
+trix:
+W∈R Q×D.(8)
+For each embedding dimensiond, we normalize weights
+across codebooks:
+αq,d = exp(Wq,d/τ)PQ
+q′=1 exp(Wq′,d/τ)
+,(9)
+whereτis a temperature parameter that stabilizes training.
+The aggregated codec representation is computed as:
+˜H c
+b,t,d =
+QX
+q=1
+αq,d ˜E(q)
+b,t,d.(10)
+This formulation enables each embedding channel to in-
+dependently select informative quantization groups, providing
+fine-grained quantizer-aware aggregation while preserving the
+stability of a static, input-independent design. In this sense,
+QAF-Static can be viewed as channel-wise soft attention over
+RVQ codebooks, where each embedding dimension learns a
+global quantizer prior. We choose this static formulation as a
+controlled and interpretable first step: dynamic input-dependent
+weighting may capture sample-specific artifact patterns, but it
+would also introduce additional trainable modules and make it
+harder to isolate whether the gains come from RVQ hierarchy
+modeling or from a more expressive fusion network. We there-
+fore leave adaptive quantizer weighting to future work [24].
+3.3. Lightweight SSL–Codec Fusion
+After quantizer-aware aggregation, we combine the SSL and
+codec streams using lightweight late fusion, implemented as
+late concatenation followed by a linear projection, to isolate
+the effect of RVQ hierarchy modeling from more complex
+cross-stream interaction. When the two streams have differ-
+ent frame lengths, a simple temporal resampling step aligns
+the codec features to the SSL sequence before fusion. We de-
+note the temporally aligned codec representation as ˜H c. Given
+SSL featuresH ssl∈R B×T×d model and aligned codec features
+˜H c∈R B×T×d codec, we compute:
+H f = Linear
+ 
+[H ssl; ˜H c]
+
+.(11)
+This late concatenation preserves the complementary roles of
+SSL contextual features and the codec residual hierarchy while
+avoiding premature cross-stream interaction.
+When enabled, Attentive Merging (AttM) [13] aggregates
+multi-layer SSL representations before fusion and is orthogo-
+nal to QAF-Static. The fused representation is then passed to a
+lightweight single-layer LSTM followed by a linear classifier.
+4. Experimental Setup
+4.1. Datasets and Evaluation Metric
+We evaluate our method on ASVspoof 2019 Logical Access
+(19LA) [25] and ASVspoof 5 [26]. For ASVspoof 2019 LA,
+we follow the official train/dev/eval protocol. For ASVspoof 5,
+we use the standard train/dev/eval split. Unless otherwise spec-
+ified, models are trained separately on 19LA and ASVspoof 5
+and evaluated on their respective evaluation sets. Equal Error
+Rate (EER, %) is used as the primary metric.
+Table 1:Performance on ASVspoof 5 Track 1 (EER). Rela-
+tive improvement is computed with respect to the AttM baseline
+(6.60). Here, sslF indicates that the SSL encoder is frozen in all
+our systems; codecF and codecT denote frozen and trainable
+codec branches, respectively. Method 1 and Method 2 refer to
+Quantizer Mean Pooling and QAF-Static, respectively.
+Method EER (%)↓Rel.Impr.
+Public baselines
+Wav2Vec2-AASIST-KAN [27] 22.67 –
+SEMAA-1 [28] 23.63 –
+AASIST-CAM++ fused [29] 25.47 –
+WavLM (FT-DA) [30] 17.08 –
+ASVspoof 5 challenge best [26] 8.61 –
+SSL-based baseline(SSL fine-tuned)
+AttM + LSTM (baseline) [13] 6.60 –
+Hierarchy-aware modeling (ours SSL Frozen)
+Mean Pooling (codecF, sslF, Method 1) 6.01 8.9%
+QAF-Static (codecF, sslF, Method 2) 6.04 8.5%
+QAF-Static (codecT, sslF, Method 2)5.68 13.9%
+4.2. Model Configuration and Training Details
+All systems use WavLM-Large as the SSL backbone, which
+is frozen throughout training. Following the AttM configura-
+tion [13], we use the first 12 transformer layers; AttM aggre-
+gates these multi-layer representations, while non-AttM sys-
+tems use the final selected SSL representation asH ssl.
+For the codec stream, we adopt Facebook EnCodec [17], an
+RVQ-based neural codec withQ=8quantizers, a codebook size
+of 1024, and an embedding dimension of 128. Discrete codec
+indices are mapped to trainable embeddings before fusion.
+All variants are trained with Adam under identical opti-
+mization settings, with early stopping based on development-set
+EER. In thecodecFsetting, the EnCodec branch is frozen and
+only the codec aggregation, fusion, and classification modules
+are optimized; incodecT, the EnCodec branch is additionally
+fine-tuned while the SSL backbone remains frozen.
+5. Results and Discussion
+5.1. Hierarchy-aware modeling of codec representations
+Table 1 and Table 2 compare different fusion strategies on
+ASVspoof 2019 and ASVspoof 5. Our QAF-Static improves
+over the AttM baseline by 46% relative EER reduction on
+ASVspoof 2019 LA and achieves a further 13.9% relative im-
+provement compared with the fully fine-tuned SSL model.
+We observe that codec-only modeling yields limited per-
+formance across datasets. While RVQ embeddings con-
+tain reconstruction-level cues, they lack the long-range con-
+textual information provided by SSL features. Adding a
+lightweight alignment module improves performance, indicat-
+ing that matching the codec embedding space to the SSL feature
+scale is necessary.
+We further analyze the parameter efficiency of the proposed
+codec-aware modeling. The WavLM backbone contains ap-
+proximately 315M parameters and is kept frozen throughout
+our training, while the neural codec branch introduces only
+about 14M additional parameters (approximately 4.4% of the
+SSL backbone). Despite this small parameter footprint, incor-
+porating codec representations already improves performance
+over the AttM baseline even when the codec parameters remain
+frozen. When the codec branch is fine-tuned while keeping the
+SSL backbone frozen, the proposed model further surpasses
+strong SSL-based baselines that rely on full backbone fine-
+7402
+Figure 2:Detection performance across codec groups in the
+CodecFake benchmark. The proposed quantizer-aware static
+fusion improves over the AttM-LSTM baseline and codec con-
+catenation on codec family group B.
+Figure 3:Average learned quantizer contribution weights over
+embedding dimensions on ASVspoof 5. Both the SSL encoder
+and codec encoder are frozen during training.
+tuning, achieving state-of-the-art performance on ASVspoof
+2019 LA and competitive results on ASVspoof5.
+These observations suggest that codec representations pro-
+vide complementary information beyond SSL features, partic-
+ularly for capturing fine-grained signal artifacts that are impor-
+tant for deepfake detection.
+5.2. Complementarity with SSL-based representations
+We compare our hierarchy-aware codec modeling with Atten-
+tive Merging (AttM), which exploits the hierarchical structure
+of SSL transformer layers. While AttM models the layer-wise
+hierarchy within SSL representations, our approach focuses on
+the discrete residual hierarchy induced by RVQ. These two
+forms of hierarchy operate at different levels of representation.
+Figure 3 illustrates the learned contributions of different
+codec quantizers. The distribution is clearly non-uniform, in-
+dicating that the model automatically learns the relative im-
+portance of quantizers instead of relying on uniform aggrega-
+tion. Notably, the first quantizer receives the largest contri-
+bution, while intermediate quantizers receive smaller weights.
+This pattern reflects the hierarchical structure of residual vector
+quantization, where earlier quantizers capture coarse acoustic
+structure and later quantizers encode finer residual details.
+Even with identical SSL backbones, incorporating
+quantizer-aware codec modeling provides complementary
+gains beyond SSL layer merging. This result suggests that
+RVQ hierarchy modeling captures forensic cues that are not
+fully represented by SSL features alone.
+5.3. Cross-codec robustness evaluation.
+To evaluate robustness against heterogeneous neural codec ar-
+tifacts, we adopt the CodecFake benchmark [31], which com-
+Table 2:Comparison on ASVspoof 2019 LA (EER %). Rela-
+tive improvement is computed with respect to the AttM baseline
+(0.65%). Here, sslF indicates that the SSL encoder is frozen
+in all our systems; codecF and codecT denote frozen and fine-
+tuned EnCodec branches, respectively. Method 1 and Method 2
+refer to Quantizer Mean Pooling and QAF-Static, respectively.
+Method EER (%)↓Rel.Impr.
+Public baselines
+W2V-XLSR-LLGF [32] 2.80 –
+HuBERT-XL [32] 3.55 –
+W2V-Large1-LLGF [32] 0.86 –
+W2V2-base-DARTS [33] 1.19 –
+W2V2-large-DARTS [33] 1.08 –
+SSL-based detectors
+AttM [13] 0.65 –
+MoLEx [14] 0.44 32.3%
+Hierarchy-aware modeling (ours)
+Mean Pooling (codecF, sslF, Method 1) 0.53 18.4%
+QAF-Static (codecF, sslF, Method 2) 0.44 32.3%
+QAF-Static (codecT, sslF, Method 2)0.35 46.2%
+prises multiple codec families with distinct quantization struc-
+tures and bitrate configurations. Different codecs employ di-
+verse RVQ architectures and compression strategies, resulting
+in varying distributions of quantization artifacts.
+Moreover, the most informative quantizer levels may vary
+across samples and attack types. While our static quantizer-
+aware aggregation provides a stable hierarchy prior, it may par-
+tially average out codec-specific artifact cues when the arti-
+fact patterns differ significantly across generation mechanisms.
+Therefore, evaluating cross-codec robustness is important to
+verify whether the detector can generalize beyond the training
+codec distribution.
+In particular, Group B includes AcademiaCodec and HiFi-
+Codec models, which are characterized by relatively compact
+RVQ hierarchies and lower effective bitrates. This benchmark
+allows us to examine how the detector generalizes across differ-
+ent codec generation mechanisms. As shown in Fig. 2, the pro-
+posed QAF-Static fusion model outperforms the AttM-LSTM
+baseline on Group B, while yielding comparable performance
+on other codec families. We therefore interpret CodecFake as
+a cross-codec robustness probe rather than evidence of uniform
+gains across all codec families. The results indicate that the
+benefit of QAF-Static is codec-family dependent. One possible
+explanation is that different codec families distribute spoofing
+artifacts differently across residual or quantization levels, which
+may affect how useful a global quantizer prior is.
+6. Conclusion
+We study codec-assisted speech deepfake detection from a
+structured representation modeling perspective. Instead of treat-
+ing neural codec outputs as an unstructured auxiliary stream, we
+explicitly model the residual hierarchy induced by RVQ. We
+show that hierarchy-preserving fusion provides a strong base-
+line, and propose Quantizer-Aware Static Fusion (QAF-Static),
+a lightweight quantizer-weighting mechanism for codec ag-
+gregation. Experiments demonstrate consistent improvements
+over strong SSL baselines. Notably, our approach keeps the
+SSL backbone frozen and introduces only about 4.4% addi-
+tional parameters relative to the backbone, showing that ex-
+plicitly modeling the RVQ hierarchy provides an effective and
+parameter-efficient way to leverage neural codec representa-
+tions for speech deepfake detection.
+7403
+7. Acknowledgment
+This research is supported by the National Research Foun-
+dation, Prime Minister’s Office, Singapore, and the Ministry
+of Digital Development and Information, under its Online
+Trust and Safety (OTS) Research Programme (MDDI-OTS-
+001). Any opinions, findings and conclusions or recommen-
+dations expressed in this material are those of the author(s) and
+do not reflect the views of National Research Foundation, Prime
+Minister’s Office, Singapore, or the Ministry of Digital Devel-
+opment and Information.
+8. Generative AI Use Disclosure
+We acknowledge the ISCA policy stating that generative AI
+tools cannot serve as co-authors. Generative AI tools were used
+only for language polishing and grammar editing.
+9. References
+[1] N. M ¨uller, P. Czempin, F. Diekmann, A. Froghyar, and
+K. B ¨ottinger, “Does Audio Deepfake Detection Generalize?” in
+Proc. Interspeech, 2022, pp. 2783–2787.
+[2] J. Yi, R. Fu, J. Tao, S. Nie, H. Ma, C. Wang, T. Wang, Z. Tian,
+Y . Bai, C. Fanet al., “Add 2022: the first audio deep synthesis de-
+tection challenge,” inProc. IEEE ICASSP, 2022, pp. 9216–9220.
+[3] X. Xuan, X. Liu, W. Zhang, Y .-C. Lin, X. Lin, and

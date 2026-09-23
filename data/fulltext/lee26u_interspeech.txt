@@ -1,0 +1,436 @@
+LLM-as-Joiner: Decoupling Alignment from Language Modeling
+in Label-synchronous ASR
+Jaeyoung Lee1,2, Masato Mimura 1, Ryo Magoshi 2, Tatsuya Kawahara2
+1 NTT, Inc., Japan
+2 Kyoto University, Japan
+jae.lee@ntt.com, masato.mimura@ntt.com
+Abstract
+We present LLM-as-Joiner, an LLM-based ASR architecture
+that decouples speech-text alignment from language modeling.
+A speech encoder first converts an input ofTacoustic frames
+intoUtoken-level speech states, one per output token, follow-
+ing the Aligner-Encoder framework. A pretrained LLM then
+predicts the transcript from theseUstates, with speech injected
+at a chosen LLM layer; only upper LLM layers are adapted
+via LoRA. Compared to conventional decoder-only speech-as-
+prefix decoding, the LLM operates on a shorter context (U
+rather thanT+U), reducing memory and compute. On Lib-
+riSpeech and multilingual Common V oice, the proposed LLM-
+as-Joiner outperforms size-matched baselines, and joint train-
+ing with a lightweight recognizer yields additional gains in
+the lightweight head, suggesting implicit transfer of linguistic
+knowledge from the LLM to the speech encoder.
+Index Terms: Speech recognition, Large language models
+(LLMs), Aligner-Encoders
+1. Introduction
+Modern end-to-end automatic speech recognition (ASR) is
+commonly approached with RNN-Transducer (RNN-T) mod-
+els [1] or attention-based sequence-to-sequence frameworks
+[2, 3]. Progress in both lines has been driven by stronger
+speech encoders: the Conformer architecture [4] captures both
+local and long-range structure in speech, and large-scale self-
+supervised pretraining [5, 6, 7] further improves acoustic repre-
+sentations and also supports monotonic alignment from speech
+to text. Sequence-to-sequence approaches have further been
+popularized by Whisper-style systems [8], especially relevant
+in the LLM era as their decoders are architecturally close to
+language-modeling Transformers.
+Decoder-only speech-as-prefix integration has become a
+common way to leverage strong linguistic priors from LLMs
+into ASR [9, 10, 11, 12]. While pretrained LLMs provide
+powerful text modeling, they are not pretrained with speech-text
+temporal alignment; consequently, decoder-only ASR must ac-
+quire this alignment during speech fine-tuning, often with addi-
+tional alignment aids (e.g., compressors [10], boundary tokens
+[13], or forced alignment [12]). In ASR, alignment is mono-
+tonic and has conventionally been well addressed by speech en-
+coders; asking a full LLM to infer alignment over long acoustic
+contexts could be inefficient. Moreover, speech-prefix decoding
+expands the LLM context and can dominate memory cost.
+Recent label-synchronous ASR explores obtaining token-
+level structure without full-sequence decoder-side attention
+over encoder frames. Continuous Integrate-and-Fire (CIF) [14]
+offers an alternative monotonic alignment mechanism by pre-
+dicting token boundaries and aggregating theT-frame sequence
+intoUtoken-level embeddings via integrate-and-fire, after
+which a decoder operates on theseUstates [14, 15]. Aligner-
+Encoders [16] push this further by simply applying frame-wise
+cross-entropy to encoder states at fixed label positions1,...,U
+and decoding inO(U)time, moving alignment into the encoder.
+Our method builds on Aligner-Encoders and leverages thisU-
+length interface, particularly effective for LLM integration be-
+cause it shortens the LLM context and removes the need for the
+LLM to learn speech-text alignment from scratch.
+We proposeLLM-as-Joiner: the speech encoder performs
+monotonic alignment and producesUlabel-synchronous states,
+while a pretrained LLM provides joiner-side language modeling
+and modality fusion. The LLM is integrated as-is, with no blank
+token and no added input/output embeddings, and its layers are
+partitioned into lowerpredictorand upperjoinerroles, with
+speech conditioning injected at the partition; only the joiner-
+side layers are LoRA-tuned. Because the LLM runs onUposi-
+tions rather thanT+Uspeech-prefix contexts, memory cost is
+reduced.
+This work makes three main contributions: (1) We in-
+troduce a novel LLM-based ASR architecture that decou-
+ples monotonic alignment (learned by an Aligner-Encoder)
+from language modeling (provided by a pretrained LLM used
+as the joiner), where the LLM operates onUaligned la-
+bel positions rather than a long speech-prefixed sequence.
+(2) We present a practical integration recipe that reuses the
+LLM with tokenizer/embeddings/LM head unchanged, injects
+speech at a chosen layer, and adapts only joiner-side layers
+via LoRA. (3) We show consistent WER improvements over
+size-matched baselines on LibriSpeech [17] and multilingual
+Common V oice [18] under a controlled setting without large
+pretrained speech encoders, and find that end-to-end training
+through the LLM joiner yields implicit knowledge transfer to
+the speech encoder.
+2. Related Work
+2.1. Label-synchronous ASR and Aligner-encoders
+AED ASR (e.g., LAS and Transformer variants) is label-
+synchronous in that decoding advances one step per output to-
+ken [2, 3], where alignment is typically realized via decoder-
+side attention over the length-Tencoder frame sequence. An al-
+ternative line of work constructs token-level acoustic represen-
+tations with explicit monotonic structure. Continuous Integrate-
+and-Fire (CIF) predicts monotonic token boundaries and aggre-
+gates a frame sequence intoUtoken-level embeddings [14].
+Aligner-Encoders [16], illustrated in Figure 2, further sim-
+plify training of alignment by supervising a fixed set of encoder
+positions directly with a token-level cross-entropy objective.
+Given a transcript of lengthU, Aligner-Encoders apply cross-
+6202
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2149
+Decoder-only LLM
+. .
+. .
+Encoder
+.  .  .  .  .  .  .
+.  .  .  .  .  .  .
+Figure 1:Conventional Decoder-only LLM integration to ASR.
+entropy supervision to the encoder outputs at positions1,...,U
+and ignore the remaining encoder states beyondU. The en-
+coder’s self-attention is thereby encouraged to concentrate the
+relevant acoustic evidence for label positionu(1≤u≤U)
+into the corresponding encoder state, yielding an explicitU-
+length, label-indexed speech interface.
+2.2. LLM-based ASR integration
+Recent LLM-based ASR systems typically connect a speech en-
+coder to a pretrained text LLM byconditioning a decoder-only
+model on speech embeddings(“speech-as-prefix”). As illus-
+trated in Figure 1, the encoder produces a sequence of acous-
+tic embeddings that are prepended to the text stream, and the
+decoder-only LLM autoregressively predicts text while attend-
+ing over this speech prefix. Speech-LLaMA studies decoder-
+only speech-to-text and LLM integration, while CJST intro-
+duces a CTC-based compressor to shorten the speech prefix and
+trains speech/text jointly [10, 11]. A related line keeps the LLM
+largely unchanged and learns a lightweight adaptor between the
+encoder and LLM; SLAM-ASR shows that such simple compo-
+sitions can be strong baselines [19]. In contrast, in our approach
+the LLM serves as the joiner and operates onUaligned label
+positions rather than a long speech-prefixed context.
+2.3. LLMs within transducer-style factorisations
+Several works aim to preserve or improve modularity of trans-
+ducer models by isolating language-model-like components.
+HAT [20] characterizes and leverages an internal language
+model within a transducer formulation, and the Factorized Neu-
+ral Transducer [21] separates blank and vocabulary predic-
+tion to facilitate language-model adaptation. More recently,
+Transducer-Llama integrates LLMs into streamable transducer-
+based ASR [22]. Our method differs in mechanism and ob-
+jective: by adopting an Aligner-Encoder backbone, we avoid
+transducer lattice computation and blank-token integration, and
+instead apply an LLM as a joiner over aU-length interface.
+3. Methodology
+Figure 3 summarizes the proposed LLM-as-Joiner architecture,
+which decouples monotonic speech-text alignment from lan-
+guage modeling in a label-synchronous ASR framework. An
+Aligner-Encoder backbone learns the monotonic alignment and
+produces a sequence ofUlabel-synchronous speech states con-
+sumed by downstream modules. We instantiate the predic-
+tor/joiner computation with a pretrained LLM by injecting the
+speech states at a split layer of the LLM via gated fusion; only
+the upper (joiner-side) layers are LoRA-tuned [23]. The LLM
+is reused as-is, without introducing a blank token or modifying
+its tokenizer, input embeddings, or LM head.
+3.1. Aligner-Encoder
+Given acoustic featuresX= (x 1,...,x T )and a tokenized
+transcripty= (y 1,...,y U )withy U =⟨eos⟩, we model
+Aligner-Encoder
+Predictor
+Joiner
+. .
+. .
+. .
+.  .  .
+.  .  .
+. .
+Discarded
++ + +  text tokens
+ speech frames
+Figure 2:Aligner-Encoder structure.
+p(y|X) =
+UY
+u=1
+p(y u|y <u,X).(1)
+Aligner-Encoders [16] learn monotonic alignment within
+the encoder by applying token-level supervision only at fixed
+label positionsu∈{1,...,U}. Because supervision is applied
+directly to encoder states at positions1,...,U, alignment is re-
+alized within the encoder via self-attention, rather than through
+decoder cross-attention overH. The encoder maps frames to
+hidden states
+H= (h 1,...,h T ) = Enc(X),h t∈R d,(2)
+and we take the firstUstates as the label-synchronous speech
+interfaceS= (s 1,...,s U )withs u =h u (Figure 2).
+To predicty u, we use a predictor-joiner factorization:
+gu = Pred(y <u),(3)
+ou = Join(s u,g u),(4)
+p(yu|y <u,X) = softmax(o u).(5)
+Training uses teacher forcing, and at inference the predictor
+conditions on previously emitted tokens. We computeHonce
+and decode left-to-right, stopping when⟨eos⟩is emitted or
+whenureaches a preset maximum length. The token-level neg-
+ative log-likelihood is
+L=−
+UX
+u=1
+logp(y u|y <u,X),(6)
+and decoding requiresO(U)joiner evaluations.
+3.2. LLM-as-Joiner
+We instantiate the predictor-joiner factorization (Section 3.1)
+with a pretrained decoder-only LLM by splitting it at layerℓ:
+lower blocks act as the predictor and upper blocks as the joiner,
+with speech injected at the split. This split-and-inject design
+is motivated by analyses showing modality fusion emerges in
+upper decoder layers in AED [24, 25]. It also lets us condi-
+tion the LLM on speech while reusing its pretrained input em-
+beddings and LM head; using the LLM as the predictor would
+instead require an additional joiner-side output head. We treat
+the split layerℓas a hyperparameter; empirically, early to mid
+injection yields similar accuracy, while late injection degrades
+(Section 4.2). Given the token history, the embedding layer
+and lower blocks produce text statesG= (g 1,...,g U )un-
+der a causal mask; we fuseGwith label-synchronous speech
+6203
+ text tokens
+ speech frames
+Aligner-Encoder
+LLM Predictor
+LLM Joiner
+. .
+. .
+. .
+Gated fusion
+Frozen
+LoRA
+Fully trained
+.  .  .
+.  .  .
+. .
+Discarded
+Pretrained LLM
+Split in two (upper and lower blocks)
+RMSNorm
+Lin
+Lin
+concat
+speech input text input
+(a) Overview of LLM-as-Joiner (b) Gated fusion
+output
+Figure 3:LLM-as-Joiner . We keep the autoregressive Aligner-Encoder objective (cross-entropy on label positions1,...,U), but replace
+the predictor/joiner with lower/upper blocks of a single pretrained LLM and inject speech at the split via position-wise gated fusion.
+The encoder processesTframes, while the LLM runs onUstates (notT+U).
+statesSto formF= (f 1,...,f U )(Section 3.3), which is
+then processed by the upper blocks and the native LM head to
+yield logitso u. We keep the LLM tokenizer, input embeddings,
+and LM head unchanged (no blank token and no added embed-
+dings). All pretrained LLM weights are frozen; we train only
+LoRA adapters aboveℓplus fusion parameters and the speech
+encoder. Because the LLM is evaluated only onUpositions, its
+memory scales withUrather thanT+U.
+3.3. Split-layer gated fusion
+Speech conditioning is injected at the split layer via a position-
+wise gated residual (see Figure 3 (b)). We project each label-
+synchronous speech state to the LLM hidden dimension,
+˜su = Lin(s u),(7)
+whereLin(·)is a linear projection with bias. Letg u denote the
+text hidden state produced by the lower LLM blocks at position
+u. We form the fused state
+f u =g u +α·σ(z u)·RMSNorm( ˜su),(8)
+whereσ(·)is the sigmoid function andαis a trainable scalar.
+We explore three variants of how the gate logitzu is computed:
+zu =
+
+
+
+Lin(˜su)(speech-only),
+Lin(gu)(text-only),
+Lin([˜su;g u])(both).
+(9)
+The resultingF= (f 1,...,f U )replaces the hidden state
+at the split and is consumed by the upper LLM blocks, which
+realize the joiner computation.
+3.4. Lightweight standalone recognizer
+To obtain a deployable model without the LLM at inference,
+we attach a lightweight non-LLM head to the same Aligner-
+Encoder and train it jointly with the LLM-as-Joiner head. The
+lightweight head consumes the same label-synchronous speech
+statesSand defines its own predictor and joiner: the predictor
+is a 1-layer LSTM [26] over the token history and the joiner
+is a small feed-forward network. The lightweight head pre-
+dicts over a corpus-matched subset of LLM-tokenizer tokens
+to keep tokenization consistent on both training and test sets.
+At inference we can drop the LLM and decode using only the
+lightweight head, while joint training encourages the shared en-
+coder to learn linguistic structure induced by the LLM pathway
+without an explicit distillation loss.
+3.5. Training objective
+We train a single shared speech encoder with two autoregressive
+heads: an LLM-as-Joiner head and a lightweight head. Both
+heads use the token-level negative log-likelihood in Eq. 6; we
+denote these losses asL llm andL lite when Eq. 6 is evaluated
+under the LLM and lightweight distributions, respectively. We
+additionally apply an inter-CTC lossL ctc [27] to encoder out-
+puts at an intermediate layer. The overall objective is a weighted
+sum:
+L=λ llmLllm +λ liteLlite +λ ctcLctc,
+where we setλ llm = 1.0,λ lite = 0.5, andλ ctc = 0.1.
+4. Experimental evaluations
+We evaluate on LibriSpeech and Common V oice 16.1 using a
+five-language subset (cv-5langs: de/en/es/fr/it) [17, 18]. Forcv-
+5langs, we train a single multilingual model on the union of all
+five languages and report per-language WER on the test splits;
+for LibriSpeech we report WER on test-clean and test-other.
+All Aligner-based systems use the same Conformer-L
+speech encoder (17 layers, 8 heads, hidden dim2048) on
+80-dim log-mel filterbank features, with inter-CTC loss at
+12th layer, trained from scratch on the target dataset (except
+Whisper-small); thus our results are not directly comparable to
+LLM-ASR work using externally pretrained speech encoders.
+For all LLM-based settings we use Llama-3.2-3B
+(base) [28] and inject speech at split layerℓ∈{0,7,14}(of 28
+layers; defaultℓ= 7), whereℓ= 0injects speech directly with
+the token embeddings (no lower LLM blocks). LoRA (rank 16)
+is applied only to attention modules above the injection point
+(Section 3).
+For the lightweight head, we use a subset vocabulary (4,359
+for LibriSpeech and 6,351 forcv-5langs) formed from the sub-
+set of tokens produced by the LLM tokenizer on the training
+transcripts. We use the Transformer learning rate schedule with
+the peak at10 −3, 20k warmup steps, and subsequent decay,
+with an effective batch size of 70 minutes of audio per update.
+All systems are decoded with beam search (beam size 6) with-
+out external LM, rescoring, or test-time adaptation.
+6204
+Table 1:LibriSpeech and Common V oice WERs (%). Except for Whisper-small, all systems use the same Conformer-L speech encoder
+trained from scratch. Real time factor (RTF) values are measured on a single RTX 6000 Ada GPU.
+Model Model Size RTF LibriSpeech Common V oice 16.1
+test-clean/other de en es fr it avg.
+Aligner (Lite; from-scratch baseline) 118M 0.02 3.9 / 6.5 11.3 19.9 11.0 16.2 13.3 14.4
+LLM Decoder-only baseline 3.3B 0.90 3.7 / 7.1(did not converge)
+Whisper-small 241M 0.18 2.8 / 6.5 10.7 17.0 10.0 16.2 12.4 13.3
+LLM-as-Joiner Lite head 118M 0.02 3.8 / 6.4 9.4 17.9 9.5 14.6 11.2 12.5
+LLM head 3.3B 0.65 3.2 / 5.6 8.9 15.8 8.7 13.9 10.0 11.5
+We train a single LLM-as-Joiner model with a shared Con-
+former encoder and two autoregressive heads: an LLM joiner
+head (LLM head) and a lightweight non-LLM head (Lite head);
+these differ only in the inference head. As a baseline,Aligner
+(Lite; from-scratch)uses the same lightweight head and vocabu-
+lary but is trained without the LLM pathway. We train Aligner-
+based systems for 100 epochs on LibriSpeech and 30 epochs
+oncv-5langs. Unless otherwise specified below, results are re-
+ported using model averaging over the best checkpoints on the
+validation set.
+4.1. Baseline settings
+We include two baselines in Table 1.LLM Decoder-onlyis a
+speech-as-prefix baseline (Figure 1) on LibriSpeech trained in
+two stages. (i) We first train the Conformer encoder only with a
+CTC objective for 50 epochs. (ii) We then attach the frozen en-
+coder to a decoder-only LLM in a speech-as-prefix ASR setup
+and train a small speech adaptor together with LoRA-tuning of
+the LLM for 10 epochs, reporting parameter-averaged results
+over the best five checkpoints. We use two-stage training be-
+cause it empirically outperformed one-stage training. The adap-
+tor performs frame stacking with stack size 5 (similarly to [19]),
+followed by a trainable linear projection to 2048, a ReLU, and a
+second linear projection to the LLM embedding dimension. The
+LLM is adapted via LoRA with rank 16. To isolate architectural
+effects, this baseline uses the same from-scratch Conformer en-
+coder and the same pretrained LLM as LLM-as-Joiner, and like-
+wise does not use external pretrained speech encoders.
+Whisper-smallrefers to multilingual Whisper-small [8],
+which we fully fine-tune for 10 epochs on each dataset (Lib-
+riSpeech andcv-5langs) and report parameter-averaged results
+over the best five checkpoints.
+4.2. Results
+Table 1 reports WER and real time factor (RTF) values on Lib-
+riSpeech andcv-5langs. On LibriSpeech, the proposed LLM-
+as-Joiner (LLM head) achieves 3.2/5.6 WER (test-clean/other),
+substantially improving over theLLM Decoder-onlybaseline
+(3.7/7.1), verified to be statistically significant at the 1% level.
+The decoder-only baseline did not converge oncv-5langs.
+LLM-as-Joiner (Lite head), the lightweight Aligner head
+trained jointly with the LLM pathway, consistently outperforms
+the size-matched Aligner baseline (Lite, from-scratch). The
+gain is statistically insignificant on LibriSpeech (3.9/6.5→
+3.8/6.4), but significant oncv-5langs(e.g., de: 11.3→9.4; it:
+13.3→11.2), suggesting implicit knowledge transfer from the
+pretrained multilingual LLM into the shared speech encoder de-
+spite the absence of an explicit distillation loss.
+Notably, the lightweight head also outperforms Whisper-
+small fine-tuned oncv-5langs(e.g., de: 10.7→9.4; it: 12.4
+→11.2, statistically significant) except in English, while using
+roughly half the parameters (118M vs. 241M) and achieving
+Table 2:Ablation on the LLM split layer (LibriSpeech WER %;
+clean/other).
+Split layer Lite head LLM head
+14th 4.1 / 6.6 4.0 / 5.8
+7th3.8/6.4 3.2/5.6
+0th3.8/ 6.53.2/5.6
+Table 3:Ablation on the gating input (LibriSpeech WER %;
+clean/other) with split layer 7th.
+Gating variant Lite head LLM head
+Speech-only 3.9 / 6.5 3.4 / 5.8
+Text-only 4.2 / 6.63.2/ 5.7
+Both ([h;g])3.8/6.4 3.2/5.6
+substantially lower latency (RTF 0.02 vs. 0.18,∼9×faster).
+LLM-as-Joiner is also shown to improve decoding effi-
+ciency: theLLM headruns at RTF 0.65, compared to 0.90
+for the LLM decoder-only baseline. This speedup follows from
+the shorter LLM context: in LLM-as-Joiner the LLM processes
+onlyUlabel positions, whereas decoder-only speech-as-prefix
+must attend over a speech prefix in addition to the generated
+tokens, yielding a longer effective context (T+U).
+Tables 2 and 3 analyze the split layer and gating design. For
+the split layer, accuracy is similar forℓ=0andℓ=7, indicating
+robustness to injection depth in this range. However, very late
+injection (ℓ=14) degrades performance, implying effective fu-
+sion requires exposing enough LLM layers to speech. For gat-
+ing, the LLM head is relatively insensitive to whether the gate
+conditions on speech:text-onlymatchesbothon test-clean (3.2)
+and is close on test-other (5.7 vs. 5.6). The lightweight head
+seems to benefit more from speech-conditioned gating:speech-
+onlyandbothoutperformtext-only, indicating that conditioning
+the gate on acoustic information is important for transferring
+useful information from LLM to the shared speech encoder.
+5. Conclusion
+We presentedLLM-as-Joiner, a label-synchronous ASR archi-
+tecture that separates monotonic alignment from language mod-
+eling by letting an Aligner-Encoder produce aU-length token-
+level speech interface and applying a pretrained decoder-only
+LLM as the joiner. Across LibriSpeech and multilingual Com-
+mon V oice, LLM-as-Joiner improves WER over size-matched
+baselines, and the jointly trained lightweight head benefits from
+implicit knowledge transfer from the LLM pathway, yielding
+strong multilingual gains. LLM-as-Joiner also improves decod-
+ing efficiency by avoiding a long speech-prefixed LLM context.
+6205
+6. Generative AI Use Disclosure
+Generative AI tools were employed to aid in code development
+and manuscript editing. The authors thoroughly reviewed and
+validated all generated content.

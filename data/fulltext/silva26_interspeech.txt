@@ -1,0 +1,459 @@
+NeuroMultiSpEx: Neuro-Guided Target Speaker Extraction for
+Multi-Speaker Scenarios
+Dashanka De Silva ID 1, Saurav Pahuja ID 1, Siqi Cai ID 2,3,∗∗, Tanja Schultz ID 1, Haizhou Li ID 2
+1 Cognitive Systems Lab (CSL), University of Bremen, Germany
+2 School of Data Science, The Chinese University of Hong Kong, Shenzhen, China
+3 Harbin Institute of Technology, Shenzhen, China
+ddesilva@uni-bremen.de, caisiqi@ieee.org
+Abstract
+Neuro-guided speaker extraction uses brain signals captured
+by EEG to extract attended speech from a multi-speaker mix-
+ture. Most studies address only 2-speaker scenarios. While
+real-world situations involve multiple concurrent talkers, multi-
+speaker neuro-guided extraction remains largely unexplored.
+We present NeuroMultiSpEx, a neuro-guided speaker extraction
+system for 4-speaker scenarios using mobile ear-EEG. Our ap-
+proach integrates temporal synchronization cues from an EEG-
+based envelope encoder with speaker identity from an EEG-
+based speaker encoder through a gated fusion mechanism that
+adaptively weights “when” versus “who” guidance. Trained
+end-to-end, NeuroMultiSpEx demonstrates effective speaker
+extraction on an ear-EEG dataset and substantially outperforms
+competing systems across all evaluation criteria. To our knowl-
+edge, this is the first study on neuro-guided multi-speaker ex-
+traction using wearable ear-EEG, advancing toward practical
+brain-informed hearing aids.
+Index Terms: target speaker extraction, auditory attention de-
+tection, ear-EEG, multi-speaker scenarios
+1. Introduction
+The human ability to focus on one speaker while ignoring com-
+peting talkers, known as selective auditory attention, is essen-
+tial for communication in complex auditory environments, the
+“cocktail party problem” [1]. This selective attention is re-
+flected in neural activity measured via EEG, where attended
+speech induces stronger cortical responses than unattended
+speech [2, 3], motivating neuro-guided speaker extraction that
+leverages EEG as a reference to isolate attended speech.
+Traditional speaker extraction relies on auxiliary refer-
+ences, such as speaker enrollment [4] or visual and audio-visual
+cues [5, 6]. However, these cues are often unavailable or unre-
+liable in real-world scenarios. EEG-based approaches provide
+an always-available neural reference reflecting attentional fo-
+cus, making them promising for wearable hearing aids. Recent
+neuro-guided methods have explored various EEG-derived ref-
+erence strategies, from direct envelope reconstruction [7] and
+learned speaker embeddings [8, 9] to dual-task training combin-
+ing temporal synchronization with waveform extraction [10],
+but all remain limited to binary (2-speaker) scenarios.
+Despite recent advances, a critical gap remains: existing
+methods have not been validated beyond two concurrent speak-
+ers, whereas real-world cocktail parties typically involve three
+or more talkers. The scalability to multi-speaker environments
+remains largely unexplored due to several factors. Multi-class
+**indicates the corresponding author.
+AAD (e.g., 4-way) is fundamentally harder than binary de-
+tection [11], where the system has a higher chance to take
+an interfering speaker as the target by mistake despite correct
+AAD [12], a problem exacerbated with more competitors. Fur-
+thermore, prior methods use either envelope reconstruction (im-
+plicit “when” cues) or simple EEG embeddings, but have not
+systematically integrated explicit speaker identity with tempo-
+ral guidance. Most prior work also relies on high-density scalp-
+EEG (64+ channels) [8, 10], impractical for deployment; ear-
+EEG (cEEGrid, 20 channels) offers wearability but requires
+novel solutions [13].
+We address these gaps with three contributions. First, we
+show that neuro-guided speaker extraction can be effectively
+scaled to multi-speaker (4-speaker) scenarios, a setting where
+increased permutation ambiguity renders single-cue guidance
+insufficient, making this the first such system beyond the binary
+limitation of all prior methods. Second, we demonstrate that
+jointly exploiting temporal synchronization and explicit speaker
+identity from EEG, combined through learned adaptive gating,
+provides richer neural guidance than either cue alone, unlike
+prior dual-task methods that use envelope reconstruction solely
+as an auxiliary training objective [10], our dual-encoder archi-
+tecture actively conditions the extraction network on both com-
+plementary cue types. Third, we validate that wearable ear-EEG
+(cEEGrid, 20 channels) carries sufficient neural information for
+both temporal tracking and identity decoding in 4-speaker sce-
+narios, advancing beyond high-density scalp-EEG (64+ chan-
+nels) [8, 9, 10] toward practical deployment.
+2. Related Work
+This paper is built on the success of some previous studies on
+neuro-guided speaker extraction in 2-speaker scenarios and the
+recent advances in neural basis auditory attention detection.
+2.1. Neuro-Guided Speaker Extraction
+The integration of neural signals for guided speaker extraction
+has evolved through several paradigms.
+BISS [7] introduced speech envelope reconstruction from
+EEG as reference cues for source separation, establishing that
+EEG contains sufficient information about attended speech,
+though relying on subject-specific linear decoders. Neuro-
+Heed [8] proposed shifting to learned speaker-specific embed-
+dings via contrastive training, while NeuroSpEx [9] introduced
+using cross-modal attention between speech and EEG repre-
+sentations. More recently, NeuroSpEx+ [10] combined dual-
+task training (waveform extraction and envelope reconstruc-
+tion), achieving strong results on the KULeuven dataset [14].
+However, all these methods operate exclusively on 2-speaker
+2219
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1120
+scenarios, leaving a gap between current systems and realistic
+multi-talker listening conditions.
+2.2. Auditory Attention Detection
+AAD methods have progressed from linear temporal response
+functions [15] through spatiotemporal attention (STAnet [16])
+and cross-hemispheric attention (XAnet [17]) to graph-based
+approaches. XAGnet [11] combines graph convolutional net-
+works (intra-ear dependencies) with cross-attention (inter-ear
+dependencies) for 4-speaker AAD using ear-EEG, demonstrat-
+ing that effective classification is achievable with minimal elec-
+trodes when spatial topology is exploited [11]. These advances
+in AAD open a complementary avenue for neuro-guided ex-
+traction: beyond temporal envelope tracking, AAD can provide
+explicit speaker identity, directly resolving the permutation am-
+biguity inherent in blind source separation [18]. Temporal cues
+from envelope reconstruction offer fine-grained “when” guid-
+ance but degrade under high speaker overlap [19], whereas iden-
+tity cues from AAD provide robust “who” disambiguation but
+lack frame-level temporal resolution. However, existing neuro-
+guided methods rely on either temporal references [7, 9, 10]
+or cascaded attention detection [12] in isolation, and no prior
+work has systematically fused both cue types for multi-speaker
+extraction.
+3. Methodology
+NeuroMultiSpEx (Fig. 1) takes a 4-speaker audio mixture and
+20-channel ear-EEG as input and outputs the attended speaker’s
+waveform. The architecture comprises an EEG-Envelope En-
+coder (temporal cues), an EEG-Speaker Encoder (speaker iden-
+tity), a Gated Fusion module, and a Target Speaker Extraction
+Network.
+3.1. EEG-Envelope Encoder
+The EEG-Envelope Encoder captures the fine-grained tempo-
+ral dynamics of the neural response to the attended speech
+stimulus. It takes as input the 20-channel ear-EEG signal,
+E∈R 20×T , recorded from the bilateral cEEGrid arrays.
+The encoder processes the EEG through a hierarchical ar-
+chitecture. The raw signal is first passed through a Pre-Conv
+layer (1×3kernel) for initial feature extraction and channel
+mixing. The core consists ofm=4stacked blocks, each com-
+prising two complementary sub-layers: a Self-Attention (SA)
+unit (2-head) that models long-range global temporal depen-
+dencies, and a Temporal Convolutional Network (TCN) unit
+with dilated depth-wise separable convolutions (dilation factors
+{1,2,4,8}) that captures local temporal variations. Together,
+these sub-layers enable the encoder to build hierarchical repre-
+sentations sensitive to fine-grained patterns and broader tempo-
+ral context.
+The resulting latent featuresH env serve a dual purpose.
+First, an Envelope Decoder, comprising a series of convolu-
+tional layers, reconstructs the one-dimensional speech envelope
+of the attended speaker fromH env, supervised by a Pearson
+Correlation Coefficient (PCC) loss that enforces temporal align-
+ment with the target speech. Second,H env is forwarded to
+the Gated Fusion module as the temporal synchronization refer-
+ence, providing the extraction network with information about
+whenthe target speaker is vocally active.
+3.2. EEG-Speaker Encoder
+A critical challenge in multi-speaker extraction is the risk of ex-
+tracting the wrong speaker, particularly when multiple talkers
+share similar acoustic properties. To mitigate this, we introduce
+an EEG-Speaker Encoder that explicitly models speaker iden-
+tity from the neural signal, providing the extraction network
+with direct “who” disambiguation among competing speak-
+ers. The encoder builds on a graph-attention architecture [11],
+which has demonstrated state-of-the-art performance on 4-class
+auditory attention detection using ear-EEG.
+The architecture exploits the bilateral cEEGrid topology:
+the 10 channels from each ear are processed by separate Graph
+Convolutional Network (GCN) branches that learn intra-ear
+spatial dependencies by operating on a graph defined by the
+physical electrode layout, capturing functional relationships be-
+tween neighboring sensors. The left and right-ear represen-
+tations are then integrated by a 2-head Cross-Attention (CA)
+block, enabling inter-hemispheric information exchange criti-
+cal for spatial attention and sound localization [20]. This de-
+sign mirrors the neural basis of binaural hearing, where bilateral
+processing and interhemispheric connectivity underpin audi-
+tory spatial attention [21], allowing the model to learn speaker-
+discriminative features grounded in spatial cues.
+The learned features are utilized in two branches. A Fully
+Connected (FC) classification head produces a 4-way speaker
+probability distribution supervised by Cross-Entropy loss, en-
+suring discriminative identity features. While these classifica-
+tion features are effective for the auxiliary AAD task, they rep-
+resent a static, time-aggregated summary of speaker identity.
+For the dynamic speech extraction task, these features must be
+projected into a temporally resolved representation. A novel
+Multi-Head Attention (MHA) Adapter fulfills this role by trans-
+forming the identity representation into a time-aligned sequence
+Hspk, compatible with the fusion module and matching the
+temporal resolution ofH env. The MHA mechanism enables
+the model to attend to different representational subspaces of
+the speaker identity, capturing diverse discriminative cues [22].
+3.3. Gated Fusion Mechanism
+In realistic acoustic environments, the reliability of different
+neural cues can vary significantly depending on the context.
+For instance, envelope tracking may be robust during isolated
+speech but degrades with high temporal overlap [19], where
+speaker identity cues remain more reliable. To address this,
+we employ a Gated Fusion module [23] that learns context-
+dependent weighting of the two complementary pathways. The
+module computes a soft, element-wise gate:
+g=σ(W g[Henv;H spk] +b g)(1)
+whereσis the sigmoid function,[·;·]denotes concatenation
+along the feature dimension, andW g,b g are learnable parame-
+ters. The fused reference is then obtained as:
+HRef =g⊙H env + (1−g)⊙H spk (2)
+where⊙denotes element-wise multiplication. This soft gating
+adaptively emphasizes “when” information when the envelope
+is distinct and “who” information during periods of high tem-
+poral overlap, yielding a context-aware guidance signal for the
+extraction network.
+2220
+Cross Attention
+Conv 1x1
+Layer norm
+Speech Encoder
+Speech Mixture
+Speech Decoder
+Target Speaker
+Mask
+X
+Conv 1x1
+Envelope
+Decoder
+Pre-Conv
+SA block
+TCN block
+EEG
+TCN stack
+Target Speech Envelope
+xm
+xn
+EEG
+Encoder
+Speaker
+Extractor
+GCN
+CA block
+FC
+Concat
+MHA
+Gated Fusion
+Multi Class Decision
+Reference Cue
+EEG Reference Generation Branch
+Target Speaker Extraction Branch
+XAGnet
+EEG-Envelope Encoder
+EEG-Speaker
+Encoder
+M
+x
+e
+Figure 1:NeuroMultiSpEx architecture. The EEG Reference Generation Branch processes 20-channel ear-EEG through two parallel
+encoders: the EEG-Speaker Encoder produces a 4-way attended speaker decision and speaker identity cue; the EEG-Envelope Encoder
+reconstructs the target speech envelope and generates a temporal cue. A Gated Fusion module combines both cues into a unified
+reference cue, which guides the Target Speaker Extraction Branch to isolate the attended speaker’s waveform from the audio mixture.
+3.4. Target Speaker Extraction Network
+The final component of NeuroMultiSpEx is the Target Speaker
+Extraction Network, which isolates the clean speech waveform
+of the attended speaker from the multi-talker mixture. This net-
+work is based on the Conv-TasNet [24] architecture, a widely
+adopted time-domain speech separation model, which we mod-
+ify to accept external neural conditioning.
+The process begins with a Speech Encoder [24], a 1-D con-
+volutional layer that transforms the raw audio mixture wave-
+form into a high-dimensional latent representationX. The core
+separation logic is implemented as a stack ofn= 4Speaker
+Extractor blocks. Unlike the original Conv-TasNet, which re-
+lies solely on the audio input, our extractor blocks are explicitly
+conditioned on the fused neural reference cueH Ref via the CA
+mechanism, where both representations share the same tempo-
+ral resolution.
+In this configuration, the Query (Q) is derived from the neu-
+ral referenceH Ref , while the Key (K) and Value (V) are de-
+rived from the speech mixture encodingX. This cross-modal
+attention allows the neural reference to query and selectively
+attend to regions in the speech encoding that are most relevant
+to the attended speaker, effectively filtering out the interfering
+talkers. The output of the CA layer is subsequently refined by
+a stack of TCN layers that model long-range temporal context,
+followed by a1×1convolutional layer that generates maskM.
+Finally, the estimated maskMis applied element-wise to
+the original mixture encoding to produce the masked represen-
+tation of the target speaker (X⊙M). At the end of the network,
+a Speech Decoder, adopted from [24], which is the transposed
+convolution counterpart of the Speech Encoder, transforms the
+masked latent representation back into the time-domain, yield-
+ing the reconstructed target speech waveform ˆS.
+3.5. Loss Function
+The entire NeuroMultiSpEx system is trained end-to-end by
+minimizing a joint multi-task loss function that optimizes all
+three modules simultaneously:
+Ltotal =L SI-SDR +λ 1LCE +λ 2LPCC (3)
+The primary objective is the Scale-Invariant Signal-to-
+Distortion Ratio (L SI-SDR), which measures the quality of the
+extracted speech against the ground-truth target. The Cross-
+Entropy loss (L CE) supervises the speaker classification head
+in the EEG-Speaker Encoder, ensuring that the learned embed-
+dings are discriminative for the four competing speakers. The
+PCC loss (LPCC) supervises the envelope reconstruction branch
+of the EEG-Envelope Encoder, ensuring that the temporal fea-
+tures are phase-locked to the attended speech. The loss weights
+λ1 andλ 2 balance the auxiliary objectives and are tuned on the
+validation set, following the multi-task strategy of [10].
+4. Experimental Setup
+We validate NeuroMultiSpEx on the PKU Ear-EEG
+Dataset [25], designed for auditory attention decoding in
+4-speaker environments. The dataset comprises 16 native
+Mandarin-speaking participants (ages 19–27), each completing
+40 one-minute trials (640 total segments). Participants attended
+to one of four concurrent speakers at±30 ◦ and±90 ◦, mixed at
+0 dB SNR. EEG was recorded using the cEEGrid system [13]
+(20 channels, 10 per ear), sampled at 500 Hz and downsampled
+to 128 Hz after bandpass filtering (1–40 Hz) and common av-
+erage referencing. For evaluation, we adopt a trial-independent
+split: from each subject’s 40 trials, we randomly select 4 (10%)
+for testing and 4 (10%) for validation, using the remaining
+32 (80%) for training. This yields 64 test trials, 64 validation
+trials, and 512 training trials across all subjects. The same
+four stimulus speakers appear across all trials and splits, so
+the evaluation is speaker-dependent but trial-independent.
+Recordings are segmented into 4-second windows with a
+1-second hop, balancing AAD accuracy and latency [26, 27],
+consistent with prior neuro-guided work [9, 10].
+NeuroMultiSpEx is evaluated using Scale-Invariant Signal-
+to-Distortion Ratio improvement (SI-SDRi) as the primary met-
+ric, measuring extraction quality relative to the unprocessed
+mixture, supplemented by SDRi, Perceptual Evaluation of
+Speech Quality (PESQ), and Short-Time Objective Intelligibil-
+ity (STOI) for signal-level and perceptual assessment. The aux-
+2221
+Table 1:Speaker extraction performance on the PKU 4-speaker
+ear-EEG dataset. Improvements over all baselines are statisti-
+cally significant (p <0.01, Wilcoxon signed-rank test across
+16 subjects, except NeuroSpEx+,p<0.05).
+Model SDRi SI-SDRi PESQ STOI AAD Envelope
+Acc % PCC
+BISS [7] 2.822 2.174 1.16 0.182 N/A N/A
+NeuroHeed [8] 8.353 7.682 1.43 0.643 N/A N/A
+NeuroHeed+ [12] 8.824 8.194 1.55 0.657 74.6 N/A
+NeuroSpEx [9] 9.188 8.618 1.78 0.664 N/A N/A
+NeuroSpEx+ [10] 9.525 8.904 1.84 0.683 N/A 0.018
+NeuroMultiSpEx 10.171 9.613 2.08 0.708 82.4 0.023
+iliary tasks are evaluated using 4-way AAD classification accu-
+racy and PCC to assess envelope reconstruction quality.
+We compare against five neuro-guided methods that collec-
+tively span the progression of EEG-based guidance strategies.
+BISS [7] uses linear envelope reconstruction for source sepa-
+ration, representing the foundational approach. NeuroHeed [8]
+advances to learned speaker embeddings via end-to-end train-
+ing, while NeuroHeed+ [12] further incorporates joint AAD
+fine-tuning to assess whether explicit attention supervision ben-
+efits extraction. NeuroSpEx [9] introduces cross-modal atten-
+tion between EEG and speech, while NeuroSpEx+ [10] fur-
+ther integrates dual-task training with envelope reconstruction
+and waveform extraction. All methods are trained on the PKU
+dataset for a fair comparison.
+All models are implemented in PyTorch 2.0+, and trained
+on 4×NVIDIA RTX A6000 GPUs using Adam (LR= 10 −4,
+batch size 16) with gradient clipping (norm≤5.0). Early stop-
+ping (patience 25) and learning rate halving (patience 5) are
+applied. Loss weights (λ 1 = 0.84,λ 2 = 0.62) were selected
+via grid search on the validation set.
+5. Results and Discussion
+Table 1 presents speaker-extraction performance comparisons
+between NeuroMultiSpEx and established baselines. Results
+are averaged across 16 subjects in a trial-independent man-
+ner, with approximately 3,584 evaluation windows from 64 test
+trials. NeuroMultiSpEx achieves 9.613 dB SI-SDRi, outper-
+forming the strongest baseline NeuroSpEx+ by 0.71 dB and the
+foundational BISS method by 7.44 dB. The substantial gap be-
+tween BISS and neural methods confirms that end-to-end learn-
+ing substantially outperforms linear envelope reconstruction in
+multi-speaker scenarios. Across perceptual metrics, NeuroMul-
+tiSpEx attains PESQ of 2.08 and STOI of 0.708, represent-
+ing improvements of 13% and 3.7% over NeuroSpEx+, respec-
+tively. For AAD, NeuroMultiSpEx achieves 82.4% accuracy on
+4-way classification (chance-level: 25%), substantially exceed-
+ing NeuroHeed+’s 74.6%. The envelope reconstruction PCC
+of 0.023 exceeds NeuroSpEx+’s 0.018, indicating stronger tem-
+poral alignment with attended speech. The relatively low PCC
+values compared to scalp-EEG literature [28] reflect the reduced
+spatial resolution of ear-EEG (20 channels vs. 64+ channels),
+though improvements remain consistent across methods.
+Table 2 compares EEG-Speaker Encoder architectures to
+validate the selection of XAGnet as the speaker identity back-
+bone. A simple fully-connected classifier achieves 6.225 dB SI-
+SDRi, establishing the baseline benefit of explicit speaker guid-
+ance. Replacing it with a CNN improves SI-SDRi by 0.98 dB,
+showing that learned spatial filters capture electrode-level pat-
+terns. STAnet’s spatiotemporal attention adds 0.74 dB by mod-
+eling temporal dynamics, while XAnet’s cross-attention be-
+tween left and right ear electrodes contributes a further 0.41 dB,
+Table 2:Impact of EEG-Speaker Encoder architecture on ex-
+traction performance.
+Architecture SI-SDRi AAD Acc.
+FC (non-linear) 6.225 78.7%
+CNN [29] 7.206 79.5%
+STAnet [16] 7.943 80.3%
+XAnet [17] 8.354 80.8%
+XAGnet [11] (Ours)9.613 82.4%
+Table 3:Ablation study quantifying contributions of dual-
+encoder branches and fusion mechanisms.
+Configuration SI-SDRi AAD Acc. PCC
+NeuroMultiSpEx (complete)9.613 82.4% 0.023
+w/o EEG-Speaker Encoder 9.206 N/A 0.021
+w/o EEG-Envelope Encoder 9.385 80.5% N/A
+w/o Gated Fusion (concat.) 9.411 81.1% 0.020
+w/o MHA Adapter 9.542 81.9% 0.021
+reflecting the importance of interhemispheric connectivity for
+auditory spatial attention [20]. XAGnet achieves the largest sin-
+gle improvement (+1.26 dB over XAnet) by combining graph
+convolutions that exploit the known spatial topology of cEE-
+Grid electrodes with cross-attention fusion, yielding 82.4%
+AAD accuracy, a 3.7% absolute gain over the FC baseline.
+Table 3 quantifies individual component contributions
+through systematic ablation. Removing the EEG-Speaker En-
+coder yields the largest SI-SDRi degradation (−0.407 dB), in-
+dicating that explicit speaker identity guidance is particularly
+important when multiple competitors share similar acoustic
+properties, a key challenge absent in binary scenarios. The
+EEG-Envelope Encoder ablation (−0.228 dB SI-SDRi,−1.9%
+AAD) reveals that temporal synchronization cues complement
+identity information, particularly for detecting attention shifts,
+and that the learned featuresH env provide richer guidance
+than the modest PCC values alone would suggest. Remov-
+ing gated fusion in favor of simple concatenation degrades SI-
+SDRi by−0.202 dB and AAD accuracy by−1.3%, validat-
+ing that learned adaptive weighting outperforms static fusion by
+enabling context-dependent emphasis on temporal versus iden-
+tity cues. The MHA Adapter contributes a smaller but con-
+sistent improvement (−0.071 dB), indicating that while time-
+alignment of static embeddings is beneficial, the core speaker
+representations already carry strong discriminative information.
+6. Conclusion
+We presented NeuroMultiSpEx, a neuro-guided speaker extrac-
+tion system designed for multi-speaker (4-speaker) scenarios
+using mobile ear-EEG. By integrating temporal synchroniza-
+tion cues with explicit speaker-identity information through a
+gated fusion mechanism, NeuroMultiSpEx outperforms exist-
+ing neuro-guided baselines on the PKU ear-EEG dataset. Abla-
+tion studies confirm that speaker identity guidance is critical in
+multi-speaker settings and that learned adaptive fusion outper-
+forms fixed concatenation. Our results demonstrate that neuro-
+guided extraction can scale beyond binary scenarios to realistic
+cocktail-party environments using wearable ear-EEG, advanc-
+ing the pathway toward practical brain-informed hearing assis-
+tance. Future work includes cross-subject generalization, val-
+idation in reverberant environments, evaluation with hearing-
+impaired users, and on-device deployment.
+2222
+7. Acknowledgments
+This work is supported by the Deutsche Forschungsgemein-
+schaft (DFG, German Research Fou

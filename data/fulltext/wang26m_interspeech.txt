@@ -1,0 +1,508 @@
+Position-Aware Target Speaker Extraction for Long-Form Multi-Party
+Conversations: A Diarization-Free Framework for ASR
+Yichi Wang ID 1, Junzhe Chen ID 1, Wangjin Zhou ID 1, Tatsuya Kawahara ID 1
+1 Graduate School of Informatics, Kyoto University, Kyoto, Japan
+{yiwang, juchen, zhou, kawahara}@sap.ist.i.kyoto-u.ac.jp
+Abstract
+In long-form multi-party conversations, highly imbalanced
+speaker activity and frequent overlap make it difficult to iden-
+tify “who spoke when and what”. Sliding-window continuous
+speech separation (CSS) mitigates sparse supervision, but of-
+ten suffers from cross-window speaker inconsistency and resid-
+ual crosstalk, which in practice requires diarization for reliable
+speaker attribution. Motivated by the stability of speakers’ di-
+rections of arrival (DOAs) in meetings, we proposePATSE, a
+multi-channelPosition-AwareTargetSpeakerExtraction front-
+end that uses DOA as a spatial prior to directly extract the
+speech of each target speaker. PATSE combines a DOA-guided
+spatial encoder and conditioner to generate speaker-attributed
+streams, from which speaker activity can be inferred via simple
+post-processing (e.g., V AD) without explicit diarization. Exper-
+iments on both replayed and real conversations show consistent
+ASR gains outperforming CSS and diarization-based pipelines.
+Index Terms: target speaker extraction, direction of arrival,
+multi-party conversation
+1. Introduction
+In multi-party conversations such as meetings and discussions,
+the fundamental problem is to identify “who spoke when and
+what” [1, 2, 3]. Real-world recordings are typically long and
+continuous, where spontaneous conversations results in highly
+imbalanced speaker activity, and back-channel responses and
+brief interruptions cause frequent speech overlap. Since most
+automatic speech recognition (ASR) systems are optimized for
+short single-speaker utterances, a widely-used strategy is to in-
+troduce a speaker-aware separation front-end to enable speaker-
+attributed transcription.
+Most separation systems allocate one output per speaker.
+For long recordings, however, many speakers remain inactive
+for long periods, yielding temporally sparse supervision and
+unstable training [4]. Continuous speech separation (CSS) [5]
+mitigates this issue by applying separation in sliding windows
+where only a subset of speakers are active. However, consis-
+tent speaker identity across discontinuous windows remains dif-
+ficult: similarity-based linking is local, while separation alone
+does not enforce long-range identity consistency, so speaker di-
+arization (SD) is typically required for reliable assignment. In
+addition, CSS is prone to producing crosstalk in single-speaker
+regions [6, 7], causing insertion errors in downstream ASR.
+The interaction between separation and diarization remains
+an open problem [8, 9]. Some approaches perform diarization
+prior to separation [10], as in guided source separation [11, 12].
+However, accurate estimation of speaker temporal boundaries
+in overlapping speech remains challenging [13].
+Since ideal separation naturally captures speaker activity,
+joint modeling has been explored to overcome cascaded lim-
+itations [14]. As a form of joint modeling, we formulate the
+front-end as target speaker extraction (TSE). TSE extracts a
+specified speaker’s speech conditioned on prior target informa-
+tion [15, 16, 17], such as speaker embeddings or spatial clues.
+Applying TSE independently to each target yields speaker-
+attributed streams, which (i) preserves consistent speaker track-
+ing without explicit diarization, and (ii) avoids inter-output
+crosstalk by producing a single output per target speaker.
+Nevertheless, speaker embedding-based TSE has two inher-
+ent drawbacks: reliance on enrollment audio [10, 18], which
+is often unavailable in practice, and mismatch between fixed
+reference embeddings and time-varying speaker characteristics.
+Although embeddings can be derived from diarization-based
+single-speaker segments [19], noise and interference in these
+segments may distort the resulting embeddings. In contrast,
+spatial cues such as direction of arrival (DOA) provide a more
+stable and explicit prior [20]. In typical meetings, speakers re-
+main largely stationary, yielding relatively consistent DOAs that
+can be obtained via microphone arrays or cameras. These obser-
+vations motivate multi-channel position-aware TSE as a practi-
+cal front-end design for long-form multi-party ASR, extending
+prior DOA-based TSE studies [16, 21, 22] beyond simulated
+short utterances.
+Following are the main contributions of this paper:
+• We propose PATSE, a multi-channel position-aware TSE
+front-end for multi-party ASR, featuring a DOA-guided spa-
+tial encoder and conditioning module that injects target-
+specific spatial features into the separation backbone. PATSE
+produces speaker-attributed streams, from which speaker ac-
+tivity can be inferred through simple post-processing (e.g.,
+voice activity detection, V AD) without explicit diarization.
+• We build and release LibriReplay-DOA 1, a real-room play-
+back dataset with ground-truth DOA annotations to bench-
+mark DOA-based methods. Experiments on LibriReplay-
+DOA and the real-world conversational TEIDAN dataset [23]
+demonstrate consistent improvements in downstream ASR.
+Detailed case studies are available on our demo page2.
+2. Proposed Method
+2.1. Architecture
+As shown in Figure 1, PATSE treats DOA as an explicit cue for
+“who” and conditions the separation backbone on this spatial
+prior. Letx={x m}M
+m=1 denote the multi-channel audio signal
+captured byMmicrophones, wheremindexes the channels.
+The azimuth angleθ tgt denotes the DOA of the target speaker.
+1https://huggingface.co/datasets/real-recordings/LibriReplay-DOA
+2https://exp-demos.github.io/PATSE-audio-demo
+1386
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-787
+Spatial
+Encoder
+Multi-Channel
+FeatureFusion
+Separator
+Audio
+Decoder
+Multichannel Audio Input
+TargetSpeaker
+Speech
+Spatial
+Conditioner
+FusedAudioFeat
+TgtSpk’ s 
+SpatialFeat
+SpatialEncoder
+PairIPDs
+PairPSFs
+Compute
+IPD &PSF
+Pair-wise
+Concat
+Self-
+Attention
+Linear
+FiLM
+SpatialConditioner
+Linear
+STFT
+Band-Split
+N×FFI
+block
+Separation
+Backbone
+AudioEncoderSeparator
+Band-
+Restore
+ISTFT
+AudioDecoder
+Audio
+Encoder
+𝜽!"!
+Multi-channelFeatureFusion
+TAC Channel-wiseAvg
+TargetSpeakerDOA
+𝐙 "𝐙
+"𝐒!"! "𝐙#$
+$𝐲!"!
+𝐱
+Figure 1:Overall Architecture of the PATSE Framework.
+PATSE performs DOA-conditioned extraction via the sepa-
+ration backbone (audio encoder with multi-channel feature fu-
+sion (MCFF), separator, and audio decoder), along with a spa-
+tial encoder and spatial conditioner:
+˜Z= MCFF(AudioEnc(x)), ˜Stgt = SpatialEnc(x,θ tgt),
+˜Zsc = SpatialConditioner( ˜Z, ˜Stgt),(1)
+ˆytgt = AudioDec(Separator( ˜Zsc)),
+where ˜Zdenotes the encoded audio features, ˜Stgt the target-
+specific spatial features, ˜Zsc the spatially conditioned features,
+and ˆytgt the reconstructed waveform of the target speaker.
+2.1.1. Separation Backbone
+In this work, we adopt TIGER [24] as the separation backbone,
+an encoder–separator–decoder architecture originally designed
+for single-channel input.
+The sharedaudio encoderoperates on each channel inde-
+pendently. For channelm, the input waveformx m is first trans-
+formed into the short-time Fourier transform (STFT) represen-
+tationX m ∈R F×T , whereFandTdenote the numbers of
+frequency bins and time frames, respectively. The STFTX m is
+then passed through the band-split module to obtain sub-band
+featuresZ m∈R N×K×T , whereKis the number of sub-bands
+andNis the feature dimension per sub-band. Collecting all
+channels yields multi-channel audio featuresZ={Z m}M
+m=1.
+Theseparatorthen stacks frequency–frame interleaved
+(FFI) blocks with residual connections.
+Theaudio decoderfinally reconstructs the time-domain
+waveform ˆytgt via band-restore and inverse STFT (iSTFT).
+2.1.2. Multi-Channel Feature Fusion (MCFF)
+To adapt multi-channel features to a monaural separator, MCFF
+fusesZinto a unified single-stream representation ˜Z.
+Specifically, MCFF first adopts a transform–average–
+concatenate (TAC) [25] strategy, where a learnable transform
+T(·)is applied to each channel and averaged to form a global
+descriptorh:
+h= 1
+M
+MX
+m=1
+T(Z m).(2)
+The per-channel featuresZ m are concatenated with the global
+descriptorhand fused through a mappingF(·):
+Z′
+m =F(Concat(Z m,h)) +Z m,(3)
+whereZ′
+m denotes the globally fused feature of channelm. The
+final single-stream encoded audio features ˜Zare obtained by
+channel averaging:
+˜Z= 1
+M
+MX
+m=1
+Z′
+m, ˜Z∈R N×K×T.(4)
+2.1.3. Spatial Encoder
+Interaural Phase Difference (IPD):For each microphone pair
+p= (i,j)(1≤i<j≤M), the IPD is defined as:
+IPD(p)(t,f) =∠X i(t,f)−∠X j(t,f).(5)
+Heret= 1,...,Tandf= 1,...,Fdenote the time-frame
+and frequency-bin indices, respectively.
+To avoid phase wrapping ambiguity [26], it is encoded as:
+ϕ(p)(t,f) =
+
+cos(IPD(p)(t,f)),sin(IPD (p)(t,f))
+
+.(6)
+Theoretical Phase Difference (TPD):TPD denotes the theo-
+retical phase difference induced by a source located at DOAθtgt
+under the far-field assumption, defined as [26]:
+TPD(p)
+tgt (f) = 2πfsf
+2(F−1)c cosθtgtdi,j,(7)
+wheref s denotes the sampling rate of the waveform,d i,j the
+distance between microphoneiandj, andcthe speed of sound.
+Phase Similarity Feature (PSF):A phase similarity feature
+between TPD and IPD is defined to quantify the dominance of
+the target speaker at each time–frequency(t,f)bin [21]:
+PSF(p)
+tgt (t,f) =
+
+sin(TPD(p)
+tgt (f)−IPD (p)(t,f)),
+cos(TPD(p)
+tgt (f)−IPD (p)(t,f))
+
+.
+(8)
+It is concatenated withϕ (p)(t,f)to form the spatial feature:
+S(p)
+tgt (t,f) =
+
+ϕ(p)(t,f),PSF (p)
+tgt (t,f)
+
+.(9)
+Stacking allP= M(M−1)
+2 pairs yieldsS tgt ={S (p)
+tgt}P
+p=1.
+Following the band-split strategy, stacked self-attention is
+applied within each band for refinement, and the outputs are
+aggregated to obtain the final target-specific spatial features˜Stgt.
+1387
++𝑥−𝑥
++𝑦
+−𝑦
+120°
+0°
+180°
+240°
++𝑥−𝑥
++𝑦
+−𝑦
+120°
+30°
+180°
+240°
++𝑥−𝑥
+−𝑦
+120° 75°
+180°
+240°
++𝑥−𝑥
+−𝑦
+120° 105°
+180°
+240°
+tgt
+inf2
+inf1
+tgt
+tgt
+tgt
+inf1
+inf1inf1
+inf2
+inf2inf2
+Figure 2:Four Spatial Configurations for LibriReplay-DOA.
+2.1.4. Spatial Conditioner
+We adopt feature-wise linear modulation (FiLM) [27], where
+a linear generatorLproduces modulation parametersγandβ
+from ˜Stgt, which are used to modulate ˜Zto obtain ˜Zsc:
+(γ,β) =L( ˜Stgt), γ,β∈R N×K×T,(10)
+˜Zsc =γ⊙ ˜Z+β,(11)
+where⊙denotes element-wise multiplication.
+2.2. Training Objective
+To better supervise the model under different target activity
+states (speech vs. silence), we adopt the activity-aware loss
+in [28]. Based on the reference waveformy tgt, it is segmented
+into silent and non-silent regions, and the same segmentation is
+applied to the estimated waveform ˆytgt, yielding aligned pairs
+(ˆysil
+tgt,y sil
+tgt)and( ˆyn-sil
+tgt ,y n-sil
+tgt ).
+Silent regions:The residual log-energy lossL E is defined as:
+LE = 10 log 10(∥ˆysil
+tgt∥2 +ϵ),(12)
+whereϵis a small constant for numerical stability.
+Non-silent regions:The signal-to-noise ratio (SNR) lossL S is
+defined as:
+LS =−10 log 10( ∥yn-sil
+tgt ∥2
+∥ˆyn-sil
+tgt −y n-sil
+tgt ∥2 +ϵ ).(13)
+Theoverall lossLis defined as:
+L=αL E +L S,(14)
+whereαis a scaling factor balancing theL E andL S.
+3. Experiments
+3.1. Datasets
+LibriReplay-DOA Dataset.Most speech separation bench-
+marks rely on simulated Room Impulse Responses (RIRs) that
+may not fully reflect real-world conditions, while real-world
+corpora often lack ground-truth DOA labels. To evaluate DOA-
+based methods reliably, we construct LibriReplay-DOA, a real-
+room playback dataset with ground-truth DOA annotations.
+Multi-party conversations were simulated by concatenat-
+ing LibriSpeech utterances [29] with inserted silences for each
+speaker and replaying them through loudspeakers in a real
+room. A total of 114 playback sessions (about 1 minute each)
+were created, each involving two or three speakers, with over-
+lap ratios of 0–25% (30), 25–50% (28), 50–75% (30), and 75–
+100% (26). Recordings were captured using a four-channel cir-
+cular array (ReSpeaker Mic Array V2.0, radius 0.032 m), and
+DOA labels were given by the physical loudspeaker directions.
+Table 1:Comparison of different front-end methods.
+Method DOA Chunk Stitch Spk. ID V AD
+DSB + Gate✓None – – Silero
+FastMNMF×None –OracleSilero
+Sortformer + GSS×SD – SD –
+CSS (FasNet-TAC)×Uniform MSEOracle–
+CSS (TIGER)×Uniform MSEOracle–
+PATSE✓Uniform Direct – Silero
+To evaluate spatial robustness, four angular configurations
+were designed by varying the target–interferer angle (15°, 45°,
+90°, 120°) while fixing the interferer–interferer angle at 120°, as
+shown in Figure 2 (in two-speaker sessions, inf2 remained silent
+throughout). Each session was recorded under all four angular
+configurations, yielding 456 recordings (≈7 hours in total).
+TEIDAN Dataset.TEIDAN is a real-world triadic dialogue
+corpus [23], where three participants sit around a circular ta-
+ble (about 120◦ apart) with a four-channel circular microphone
+array (radius 0.032 m) placed at the center. Experiments are
+conducted on the English subset (Sessions 01–05), which com-
+prises approximately 2.5 hours of spontaneous dialogue, with
+each recording lasting about 10 minutes and overlapping speech
+accounting for 31.98% of the total duration on average.
+Training Data.Training (50 h) and validation (6 h) data were
+generated following the same dialogue simulation procedure as
+in LibriReplay-DOA. For spatialization, RIRs were simulated
+using the gpuRIR toolbox [30]. Rooms were randomly sam-
+pled with sizes ranging from3×3×2.4m to10×8×4m
+and RT60 values between 0.2–0.8 s. A fixed four-channel cir-
+cular array (radius 0.032 m) was placed with random position
+and orientation. Speakers were positioned around a virtual ta-
+ble with inter-speaker distances (≥0.3 m), and relative speaker
+SNRs were sampled from 0–5 dB. Noise samples from the DNS
+corpus [31] were added as additional point sources, and the mix-
+ture SNR was uniformly sampled from 0–20 dB.
+3.2. Experimental Setup
+Baselines.Representative front-end and pipeline baselines are
+compared.DSB+Gateapplies delay-and-sum beamforming
+followed by frame-level energy gating.FastMNMF[32] is a
+multi-channel nonnegative matrix factorization (MNMF)-based
+blind source separation method.Sortformer+GSSperforms
+speaker diarization using Sortformer [33] followed by guided
+source separation (GSS) [34]. For CSS-based systems, only
+the separation backbone is employed, excluding the proposed
+spatial encoder and conditioning modules (Figure 1). FasNet-
+TAC [25] and TIGER extended with MCFF for multi-channel
+input are adopted as separation backbones, and oracle speaker
+assignment is provided for all CSS-based methods.
+System Configuration.Table 1 summarizes the configura-
+tions of all compared systems. TheDOAcolumn indicates
+whether prior speaker DOA information is required.Chunkde-
+scribes how long-form recordings are segmented: no segmenta-
+tion (None), where the full recording is processed as a whole;
+diarization-based segmentation (SD); or uniform segmentation
+using a 4 s window with 2 s overlap (Uniform).Stitchdenotes
+cross-chunk permutation alignment, which is based on mean
+squared error (MSE) for CSS systems, whereasDirectrefers to
+permutation-free concatenation, as adopted in PATSE. In this
+setup, CSS is configured to produce three output streams, en-
+abling separation of up to three overlapping speakers.Spk. ID
+1388
+Table 2:WER (%)↓on the LibriReplay-DOA dataset. Results are reported under four target–interferer angles (15°, 45°, 90°, 120°).
+Each entry in the form xx/xx/xx/xx corresponds to overlap ratios of 0–25%, 25–50%, 50–75%, and 75–100%, respectively.
+Method Training
+Strategy
+Speaker angle Overall
+15◦ 45◦ 90◦ 120◦
+DSB + Gate NT 37.1/ –/ –/ – 33.3/ –/ –/ – 28.3/ –/ –/ – 27.3/ –/ –/ – (31.5)
+FastMNMF NT 31.3/ 39.4/ 40.9/ 34.7 14.3/ 16.5/ 15.0/12.910.4/ 22.2/ 20.1/ 19.4 12.7/ 14.7/ 15.8/14.121.1
+Sortformer + GSS NT 28.3/ 28.9/ 45.5/ 56.5 25.1/ 23.1/ 42.4/ 49.1 22.3/ 24.4/ 44.2/ 51.2 22.0/ 24.7/ 41.5/ 48.6 38.4
+CSS (FasNet-TAC) Scratch 46.0/ 49.9/ 60.9/ 61.6 42.6/ 39.7/ 56.2/ 57.0 34.9/ 40.4/ 56.1/ 57.3 30.2/ 34.2/ 48.6/ 48.9 49.5
+CSS (TIGER) Scratch 25.8/ 32.5/ 41.6/ 50.5 24.8/ 27.1/ 38.5/ 46.6 22.5/ 29.0/ 39.3/ 49.1 19.0/ 24.8/ 35.0/ 44.4 36.3
+PT+FT 19.9/ 25.9/ 39.8/ 49.1 19.8/ 22.2/ 36.1/ 45.1 18.6/ 24.4/ 36.3/ 45.6 15.7/ 20.1/ 30.9/ 40.9 32.8
+PATSE Scratch 15.6/ 19.6/ 24.7/ 28.0 12.9/ 22.5/ 22.7/ 22.5 10.9/ 20.0/ 15.4/ 19.7 10.1/ 12.6/ 14.4/ 20.2 18.9
+PT+FT 15.1/ 15.3/ 21.4/ 22.8 11.0/9.6/13.3/ 14.78.9/ 10.0/ 13.5/ 15.3 8.8/9.5/12.2/ 14.614.0
+specifies how speaker identities are assigned (SDorOracle). In
+contrast, PATSE produces target-conditioned outputs and does
+not require an additional speaker assignment step.
+ASR and Segmentation.For ASR evaluation, estimated
+waveforms are segmented into utterances and transcribed us-
+ing Whisper Large-v3 [35]. For long-form outputs (e.g.,
+DSB+Gate,FastMNMF, and PATSE after stitching), Silero-
+V AD [36] is applied to obtain utterance boundaries, whereas
+Sortformer+GSSdirectly produces utterance-level outputs. For
+CSS-based systems, segmentation is derived from oracle
+speaker assignment, which defines the speaker boundaries.
+Implementation Details.T(·)is implemented as a two-layer
+Conv2D with PReLU, andF(·)is a Conv2D with PReLU. All
+separation backbone configurations, includingF,T,N, andK,
+follow TIGER-Large3. In the loss, the scaling factorαis set to
+0.005. The model is trained with a learning rate of 5e-4. ASR is
+evaluated using word error rate (WER), and speaker diarization
+using diarization error rate (DER).
+4. Results
+LibriReplay-DOA.Table 2 reports WER on LibriReplay-DOA
+across four target–interferer angles (15◦, 45◦, 90◦, 120◦) and
+four overlap ranges (0–25%, 25–50%, 50–75%, 75–100%). In
+theTraining Strategycolumn,NTdenotes no training;Scratch
+denotes training from scratch on the training data in Sec-
+tion 3.1; andPT+FTdenotes initialization from a pretrained
+model (TIGER-Large) followed by finetuning. DOA serves as
+an explicit cue to the target speaker inDSB+Gateand PATSE,
+whereas CSS-based methods andFastMNMFare provided with
+oracle target speaker identities for comparison.
+PATSE is applied per target DOA to separate all speak-
+ers. SinceDSB+Gatecannot handle heavy overlap, it is
+evaluated only for overlap<25%. As expected, smaller tar-
+get–interferer angles and higher overlap ratios increase task
+difficulty. Overall, PATSE consistently achieves the low-
+est WER across nearly all configurations, demonstrating the
+benefit of DOA-conditioned target extraction. The improve-
+ment of PATSE arises not only from DOA conditioning, as
+DSB+Gatealso exploits DOA cues yet performs substantially
+worse, but also from the architectural advantages of the pro-
+posed framework. By extracting a single target stream per
+speaker, PATSE avoids inter-output crosstalk and cross-chunk
+permutation ambiguity in CSS systems. Even with oracle
+3https://huggingface.co/JusperLee/TIGER-speech
+Table 3:WER (%)↓and DER (%)↓on TEIDAN dataset.
+Method WER (%) DER (%)
+DSB + Gate 41.33 35.72
+FastMNMF 26.82 28.42
+Sortformer+GSS 45.03 36.15
+CSS(TIGER) 37.43 –
+PATSE 20.50 13.83
+speaker assignment—an unrealistic upper bound that entirely
+eliminates diarization errors—CSS(TIGER)remains substan-
+tially worse, implying that the gap would be even larger un-
+der realistic conditions. The diarization-based pipelineSort-
+former+GSSperforms particularly poorly under high overlap
+conditions, as speaker temporal boundary estimation becomes
+unreliable, causing cascaded diarization–separation pipelines to
+struggle. Interestingly,FastMNMFshows competitive perfor-
+mance only under extremely high overlap ratios (75–100%), a
+scenario that is rarely encountered in real-world meetings.
+TEIDAN Dataset.Table 3 reports ASR (measured by
+WER) and speaker diarization (measured by DER) results on
+the real-world conversational dataset TEIDAN. The same ex-
+perimental setup is used, and the best-performingCSS(TIGER)
+setting is selected to represent CSS-based systems. Specifically,
+forSortformer+GSS, the DER is computed directly from the di-
+arization outputs of Sortformer. PATSE achieves the best over-
+all performance in terms of both WER and DER, demonstrating
+improved robustness for speaker-attributed transcription in real-
+world three-party conversations. The presence of filler words
+and informal expressions can increase recognition difficulty;
+thus, the WER may be partly limited by the ASR backend.
+5. Conclusion
+In this paper, we presented PATSE, a position-aware target
+speaker extraction framework for addressing the “who spoke
+when and what” problem in multi-party conversations. By pro-
+ducing target-conditioned, speaker-attributed streams, PATSE
+derived speaker activity via simple post-processing without ex-
+plicit diarization. To facilitate evaluation of DOA-based meth-
+ods, we introduced and released LibriReplay-DOA, a real-room
+dataset with DOA annotations to address the lack of DOA labels
+in real-room recordings. Experiments on LibriReplay-DOA and
+the real-world conversational TEIDAN dataset demonstrated
+consistent improvements in downstream ASR compared to con-
+ventional pipelines, even under oracle speaker assignment.
+1389
+6. Acknowledgments
+This work was supported by JST BOOST JPMJBS2407 and
+JST Moonshot R&D JPMJMS2011.
+7. Generative AI Use Disclosure
+Generative AI tools (Gemini and ChatGPT) were used for lan-
+guage editing and improving the phrasing of this manuscript.

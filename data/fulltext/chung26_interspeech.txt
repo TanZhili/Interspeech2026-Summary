@@ -1,0 +1,508 @@
+Localizing and Editing Knowledge in Large Audio-Language Models
+Sung Kyun Chung1, Jiaheng Dong1,∗, Qiuchi Hu1,∗, Jinuo Sun1, Gongping Huang3, Hong Jia2, Ting
+Dang1
+1 The University of Melbourne, Australia 2 University of Auckland, New Zealand
+3 Wuhan University, China
+sungkyun.chung1@student.unimelb.edu.au, jiahengd@student.unimelb.edu.au,
+qiuchi.hu@student.unimelb.edu.au, jinuosun@gmail.com
+Abstract
+Large Audio–Language Models (LALMs) have shown strong
+performance in speech understanding, making speech a natu-
+ral interface for accessing factual information. Yet they are
+trained on static corpora and may encode incorrect facts. Ex-
+isting model editing methods localize and update facts in text-
+only LLMs, but do not account for continuous speech represen-
+tations, or where knowledge is stored across audio encoder or
+LLM backbone in LALMs. We construct the first audio bench-
+mark for knowledge localization and editing in LALMs and
+propose a speech-driven locate–then–edit framework. First, we
+use speech-aware causal tracing to localize layers that support
+factual retrieval and then apply editing at identified sites. Exper-
+iments show that factual knowledge is jointly encoded in layers
+from audio encoder and language backbone, and that audio edit-
+ing yield more effective updates than text editing or fine-tuning,
+enabling fine-grained knowledge control in speech AI systems.
+Index Terms: large audio language models, model editing, fac-
+tual knowledge
+1. Introduction
+Large Audio-Language Models (LALMs) have recently demon-
+strated strong capabilities in speech understanding, instruc-
+tion following, audio question answering, and spoken interac-
+tion [1, 2, 3, 4, 5]. By jointly modeling acoustic and linguis-
+tic signals, these systems can reason over spoken inputs and
+generate contextually appropriate responses. Despite their im-
+pressive performance, LALMs are trained on large but static
+corpora. They may encode outdated, incomplete, or incorrect
+factual associations, leading to potential hallucinations and un-
+reliable outputs [6, 7, 8]. However, refreshing model knowledge
+through supervised fine-tuning or continual learning is compu-
+tationally expensive and often infeasible at scale.
+Unlike text-only LLMs, which operate purely on discrete
+tokens, LALMs incorporate dedicated audio encoders and fur-
+ther post-train the LLM backbone to jointly process multimodal
+representations from both audio and text [1, 2, 3]. Prior work
+on text LLMs shows that factual associations can often be local-
+ized to specific transformer layers or to specific modules within
+transformer layers, such as attention or MLP components, and
+updated via targeted parameter modifications [9, 10, 11]. How-
+ever, these findings assume a language-centric storage pattern
+and do not account for modality-specific encoders or cross-
+modal interactions. In LALMs, factual knowledge may instead
+be distributed across layers or modules in audio encoder, lan-
+guage backbone, and their interfaces, raising new questions
+about where facts are stored and how edits propagate through
+the multimodal computation.
+*These authors contributed equally.
+Existing approaches to improving factual reliability largely
+fall into two categories: retrieval-based methods (e.g.,
+RAG) [12, 13] that inject external knowledge, and model edit-
+ing methods that directly modify internal parameters[9, 10, 11].
+Retrieval methods can flexibly incorporate up-to-date infor-
+mation but incur additional storage and runtime costs and re-
+quire careful retrieval and integration. Model editing is more
+lightweight, as it updates only a small subset of weights so that
+the desired fact is reflected in the model’s predictions without
+full retraining. Nevertheless, all widely used editing methods
+(e.g., ROME [9], MEMIT [10], AlphaEdit [11]) have been de-
+veloped for text-only LLMs, leaving it unclear whether they can
+reliably locate and update factual knowledge in LALMs without
+disrupting audio–text alignment or multimodal reasoning.
+Compared to text-based LLMs, standard model editing
+methods, i.e., locate–then–edit methods, typically rely on con-
+trolled corruption of discrete input tokens (e.g., perturbing sub-
+ject tokens) to trace causal pathways and localize factual knowl-
+edge before editing [9, 10, 11]. Extending this strategy to
+LALMs is non-trivial. Text consists of tokens with clear seman-
+tic boundaries, whereas speech is a continuous waveform with
+temporally distributed representations [14]. While text corrup-
+tion can use well-defined token substitutions, speech corruption
+must perturb continuous acoustic signals over time, making it
+difficult to define token-like boundaries in the acoustic space.
+Moreover, attribution in LALMs must go beyond text-level se-
+mantics: effective localization and editing require understand-
+ing not only semantic subspaces but also how content is dis-
+tributed across temporally structured and multimodal represen-
+tations.
+To address these gaps, we (i) curate, to our knowledge, the
+first audio benchmark for knowledge localization and editing in
+LALMs; (ii) propose a speech-driven locate–then–edit frame-
+work that combines causal tracing with multimodal model edit-
+ing; and (iii) conduct a systematic study across two datasets.
+Our framework first uses speech-aware causal tracing to iden-
+tify layers and modules that contribute to factual retrieval from
+spoken prompts, and then applies single-layer and multi-layer
+editing at identified multi-modal locations. Experiments show
+that factual knowledge is jointly encoded in transformer layers
+from both audio encoder and language backbone, with layers
+from audio encoder playing a more prominent role. Coordi-
+nated cross-modal edits yield more effective updates than uni-
+modal editing or standard fine-tuning. These findings provide
+initial evidence for principled, fine-grained control of factual
+knowledge in speech-based AI systems.
+2. Related Work
+Large Audio–Language Models.Current LALMs extend text-
+based LLMs with audio encoders that map raw audio into
+6416
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2066
+Metropolita
+Input
+(c)
+Restore
+clean
+state
+Inpu
+Metropolitan
+Complet Complet
+France’ France’s
+th th
+sentenc sentenc
+wit wit
+onl onl
+capital capital
+on on
+wor worPari
+(corrupted output(correct output
+states within 
+word-aligned audio token
+state of
+text toke
+attentio ML Audio 
+embedding
+Corrupted 
+embedding
+Text 
+embedding
+Intervention 
+pat
+States 
+restoratio
+Audio Encode Audio EncodeLanguage Mode Language Mode
+(a)
+Clean
+ru
+(b)
+Corrupted
+ru
+Figure 1:Causal tracing consists of three runs: i) a clean run for the correct object; ii) a corrupted run, where the subject span are
+corrupted to obtain a low-probability object prediction; and iii) a corrupted-with-restoration run, which restores the corrupted hidden
+representations at selected layers to their clean values, evaluating the contribution of those layers via changes in object probability.
+token-compatible representations, while the LLM backbone is
+post-trained for joint audio–text reasoning (e.g., BLSP [15],
+SALMONN [3], Qwen2-Audio [1]). These architectures sup-
+port diverse speech and audio tasks, but modality-specific en-
+coders and cross-modal interactions may substantially change
+how factual knowledge is represented compared to text-only
+LLMs.
+Knowledge Localization via Causal Tracing.Causal trac-
+ing identifies where information is stored in LLM transformer
+layers by measuring how interventions on internal representa-
+tions affect predictions [9]. It typically corrupts hidden states
+and selectively restores them during inference to reveal com-
+ponents responsible for correct outputs. Early work showed
+that feed-forward (FFN) layers behave as key–value memories
+for factual associations [16], and later studies found that local-
+ization patterns depend on architecture, modality, and training
+regime [9, 17]. However, existing analyses focus on text-only
+LLMs; analogous investigations for LALMs remain largely un-
+explored.
+Model Editing.Model editing methods either preserve pa-
+rameters or directly modify them. Parameter-preserving ap-
+proaches such as MELO [18] and in-context knowledge edit-
+ing (IKE) [19] externalize new knowledge via auxiliary mech-
+anisms, avoiding weight changes but adding storage or con-
+text overhead and keeping edits implicit. Parameter-modifying
+methods update a subset of weights so that a target factual asso-
+ciation is reflected in the model output. Locate–then–edit meth-
+ods like ROME [9], MEMIT [10], and AlphaEdit [11] apply tar-
+geted updates at single or multiple transformer layers to inject or
+revise facts. However, all of these techniques are developed for
+text-only LLMs. In LALMs, where knowledge may be jointly
+represented across audio encoder and LLM backbone, it is un-
+clear whether such unimodal strategies can reliably locate and
+edit distributed factual knowledge without degrading audio–text
+alignment or multimodal reasoning.
+3. Method
+We study how factual knowledge is stored and updated in
+LALMs with spoken input. We represent each fact as a triple
+(s,r,o c)in datasetD, wheresdenotes the subject,rthe rela-
+tion, ando c the object currently stored in the model. Specif-
+ically, to probe a fact in the spoken modality, we construct a
+speech promptx=T(s,r)(e.g.,x=”Metropolitan France’s
+capital,”,s=“Metropolitan France’s”,r=“capital,”) in audio
+and provide a fixed textual instructionythat asks the model to
+complete the prompt. The predicted probability of the model
+for the object tokeno c (e.g.,o c =“Paris”) then reflects how
+strongly that factual association is stored in the LALM.
+Our method follows a two-stagelocate–then–editframe-
+work. In thelocatestage, we apply causal tracing to quantify
+the contribution of each transformer layers and attention/MLP
+modules within these layers in the LALM. In theeditstage,
+we investigate multiple editing methods to the layers or mod-
+ules identified in the locate stage, modifying their parameters
+so that the model’s prediction shifts from the original object
+(e.g., “Paris”) to a new object (e.g., “Lyon”), while aiming to
+preserve unrelated knowledge.
+3.1. Locate via Causal Tracing
+As shown in Figure 1, we use causal tracing to identify which
+internal representations of the LALM store factual knowledge.
+Each procedure has three runs: a clean run, a corrupted run, and
+a corrupted-with-restoration run.
+Clean Run.Given an input pair(x,y)with speechxand
+prompty, we feed it to the LALM and record each transformer
+layer output representations as hidden states at every framei
+and layerℓash (ℓ)
+i |i∈[1,T],ℓ∈L(Figure 1(a)). The prob-
+ability of the correct object tokenP(o c |x,y)serves as the
+high-scorebaseline.
+Corrupted Run.To disrupt the factual association, we cor-
+rupt the speech representations aligned with the subject span. A
+key challenge in speech corruption lies in accurately identifying
+subject phrase boundaries within continuous audio. We obtain
+word-level timestamps using WhisperX forced alignment [20],
+map them to acoustic frames, and corrupt only those frames
+(e.g., “Metropolitan France’s”). The corruption is applied to
+the input representations to the first transformer layers of the
+audio encoder, where low-level acoustic features remain stable
+but still encode subject identity. We inject Gaussian noise into
+the subject-span:
+h∗,(0)
+i ←h (0)
+i +ϵ, ϵ∼N(0,3σ).(1)
+whereσis the standard deviation of the clean subject-span rep-
+resentations following [9]. This yields corrupted statesh ∗,(ℓ)
+i
+and a low object probabilityP ∗(oc |x,y), used as thelow-
+scorebaseline.
+6417
+Corrupted-with-restoration Run.To measure the contribu-
+tion of a specific layer, we restore clean activations during the
+corrupted run. Specifically, we start from the corrupted input
+and run forward to frame ˆiand layer ˆℓ, then restore a small
+layer window around ˆℓto their clean values:
+h(ℓ)
+ˆi ←h ∗,(ℓ)
+ˆi , ℓ∈[ ˆℓ−4, ˆℓ+ 4],(2)
+We adopt±4layer window to allow the restored signal to prop-
+agate reliably, while preserving layer-level attribution as [9].
+The model continues the forward pass to produce
+P restore(oc|x,y). TheIndirect Effect(IE) of layer ˆℓis:
+IE(ˆℓ) =P ∗
+restore(oc|x,y)−P ∗(oc|x,y).(3)
+and the Average IE (AIE) is obtained by averaging over all
+speech sentences. Transformer layers with high AIEAIE (ˆℓ)
+are treated as primary storage sites for the association betweens
+ando c and are used as targets for subsequent model editing. We
+further decompose causal tracing by separately intervening on
+the MLP and attention modules within each layer, across both
+the audio encoder and LLM backbone, for multimodal analysis.
+3.2. Model Editing
+Given an existing fact(s,r,o c), model editing aims to update
+the LALM so that it instead reflects a target fact(s,r,o target)
+while preserving unrelated behaviour. For brevity, we omit
+layer and frame indices. Following prior work on text
+LLMs [9], we assume a linear transformation:
+h=Wk,(4)
+wherek=ϕ(s,r)is the hidden representation (key) induced
+by the subject–relation input andWis a learned weight matrix.
+The current outputWk=h c corresponds to the representation
+ofo c. Editing amounts to finding a perturbation∆such that:
+(W+ ∆)k=v target,(5)
+We study four editing strategies with increasing flexibility.
+Single-Layer Editing.Single-layer editing applies a con-
+strained rank-one update. Let the residual
+R=v target−Wk,(6)
+be the shift required to align the current output with the target.
+Single-layer editing computes
+∆ =Rk T (kkT +λI) −1,(7)
+which minimises the update magnitude while enforcing(W+
+∆)k≈v target. Unlike text-only LLMs, audio words span mul-
+tiple frames, so we obtain word-level representations via mean
+pooling over aligned audio frames and use the first or last sub-
+ject word ask. We apply this procedure to (i) a single audio
+layer and (ii) a single text layer respectively.
+Sequential Cross-Modal Single-Layer Editing.We extend
+single-layer editing to a sequential audio–text setting. We first
+edit a selected audio encoder layer, and the resulting represen-
+tation from the audio encoder performs a subsequent update in
+LLM backbone layers through the forward pass. In this way,
+language-path edits are explicitly conditioned on the audio edit,
+ensuring that semantic changes remain grounded in the updated
+acoustic representation.
+Multi-Layer Editing.Rank-one updates at a single layer can
+unintentionally affect other facts with overlapping keys. To bet-
+ter control interference, we perform multi-layer editing with
+explicit preservation constraints. LetK 0 be keys of protected
+facts,K 1 keys to be edited, andK p keys from previously edited
+facts. We require
+(W+ ∆)K 0 =WK 0,(8)
+which is enforced by projecting updates into the null space of
+K0. LetPbe a projection matrix withPK 0 = 0. We solve
+∆ = arg min
+e∆
+
+∥(W+ e∆P)K 1−V 1∥2 (9)
++∥(W+ e∆P)K p−V p∥2 +∥e∆P∥ 2
+
+.
+and apply the projected update∆ multi = ∆Pto selected layers.
+Following [11], we distribute a single edit direction across mul-
+tiple layers using predetermined layer-wise weights. We apply
+the multi-layer editing to i) audio or ii) text layers respectively.
+Sequential Cross-Modal Multi-Layer Editing.Finally, we
+perform sequential multi-layer editing across both audio en-
+coder and LLM backbone. We first apply∆ multi to target layers
+inE audio, then edit layers inF LLM conditioned on the modified
+audio encoder. This cross-modal variant offers greater flexibil-
+ity for updating distributed factual representations while main-
+taining alignment between audio and text pathways.
+4. Experimental Setup
+Dataset.We use CounterFact [9] and Known-1000 [9] in our
+experiments. CounterFact is a text-based benchmark of fac-
+tual triples(s,r,o c). Known-1000 consists of factual prompts
+correctly completed by GPT-2 XL. We first generate a spo-
+ken realization of this dataset using the Gemini 2.5 Flash TTS
+model [21], obtaining full audio sentences consisting of the sub-
+ject, relation and object.
+For localization, we retain only instances for which the
+pre-edit LALM predicts the correct objecto c, resulting in 250
+Known-1000 and 100 CounterFact examples. For editing, we
+construct a 500-instance CounterFact subset comprising these
+200 filtered items plus 300 additional randomly sampled triples
+without any pre-edit constraint.
+Implementation Details.We use Qwen2-Audio-7B-Instruct as
+the backbone LALM for all causal tracing and editing experi-
+ments. For single-layer and sequential cross-modal editing, we
+optimize for 10 gradient steps with learning rate0.01. Audio-
+layer edits use a weight decay of0.5, while text-layer edits use
+no weight decay. For the multi-layer setting, we compute pro-
+tected keysK 0 using 5000 samples drawn from LibriSpeech
+train-clean-100 [22]. We optimize for 10 gradient steps with
+learning rate0.5and weight decay of0.5for audio- and text-
+layer edits. As an additional baseline, we perform lightweight
+fine-tuning of selected layers using Adam with learning rate
+5×10 −4. All experiments run on a single NVIDIA A100 GPU.
+Evaluation.We adopt the standard evaluation protocol [9] and
+report three metrics. TheEfficacy Score(ES) measures whether
+the edited model prefers the target objecto target over the orig-
+inal objecto c after editing. TheParaphrase Score(PS) eval-
+uates generalization to paraphrased prompts of the same(s,r)
+pair. TheNeighbor Score(NS) measures specificity by test-
+ing whether related triples sharing relationrstill preserve the
+original objecto c after editing. High ES and PS indicate effec-
+tive and robust edits, while high NS reflects minimal unintended
+changes. We additionally report an overall scoreS, computed
+as the mean of ES, PS, and NS. Details can be referred to [9].
+6418
+0 20 40 60
+0.0
+0.2
+0.4
+Audio Text
+CF Hidden states
+0 20 40 60
+0.00
+0.05
+Audio Text
+MLP
+0 20 40 60
+0.00
+0.02
+0.04 Audio Text
+Attn
+0 20 40 60
+Layer number
+0.0
+0.2
+Audio Text
+KNOWN
+0 20 40 60
+Layer number
+0.00
+0.02
+Audio Text
+0 20 40 60
+Layer number
+0.00
+0.02
+Audio Text
+Average indirect effect on p(o)
+First subject word
+Middle subject words
+Last subject word
+First subsequent word
+Further words
+Last word
+Figure 2:Layer-wise Average Indirect Effect (AIE) of hid-
+den states (left), MLP modules (middle), and attention mod-
+ules (right) for the CounterFact (top) and Known-1000 (bottom)
+datasets. The dashed vertical line separates the audio encoder
+layers (left) from the LLM backbone layers (right).
+5. Results
+5.1. Causal Tracing
+Figure 2 reports the layer-wise AIE of hidden states, MLP mod-
+ules, and attention modules for CounterFact and Known-1000.
+Overall, factual information is jointly encoded in audio and text
+streams, but their contributions differ across layers, modules,
+and word positions.
+For CounterFact, audio-path hidden states show the
+strongest AIE in middle-to-late encoder layers (around 25–31),
+while text-path AIE peaks later in the decoder, indicating that
+the language backbone still supports factual retrieval even with
+spoken input. Within the subject span, the first subject word
+carries the largest AIE (solid line), followed by the last subject
+word (dash line), pointing to a subject-centric storage pattern
+where early and final audio tokens dominate the causal influ-
+ence on the predicted object. The last word of the sentence
+also contributes strongly in the later language backbone layers
+(red line), likely because the model consolidates the full sub-
+ject–relation–object context there.
+MLP modules show that mid-layer text in LLM backbone
+has the largest AIE, consistent with the view that feed-forward
+blocks act as key–value memories for factual associations. At-
+tention modules contribute more modest but widespread AIE,
+suggesting a role in routing and integrating information rather
+than storing facts. A similar but less sharply peaked profile
+is observed on Known-1000, with audio contributions more
+evenly spread across layers.
+These results indicate that factual knowledge in LALMs is
+distributed across audio encoder and LLM backbone : audio
+encoder layers primarily initiate retrieval from speech, while
+LLM backbone MLPs consolidate subject-aligned representa-
+tions into fact memories.
+5.2. Performance Comparison of Model Editing
+As shown in Table 1, for single-modality editing, targeted edit-
+ing consistently outperforms fine-tuning in the audio setting, but
+not for text. This highlights that audio-layer edits play a cen-
+tral role in controlling spoken factual knowledge. Moreover,
+single-layer editing consistently outperforms multi-layer edit-
+ing for both audio and text. This is possibly due to that single-
+layer edits are applied separately for each speech sample and
+the parameters are reset to their original values between edits,
+whereas multi-layer editing accumulates updates without reset-
+ting, leading to larger distribution shifts that hurt performance.
+We additionally evaluate multi-layer editing with parameter
+resetting between examples. With resetting, multi-layer edit-
+Table 1:Editing performance across modalities and strategies.
+Mod. Method Score↑ES↑PS↑NS↑
+Baseline 29.09 20.4 24.4 76.18
+Audio
+FT 61.50 97.2 45.9 59.86
+Single-layer 71.36 78.2 66.570.34
+Multi-layer 63.52 80.7 67.9 49.72
+Text
+FT 68.21 97.6 70.0 51.42
+Single-layer 64.10 79.7 56.3 60.64
+Multi-layer 51.05 54.02 42.2 60.18
+Multi
+FT 68.1898.4073.10 49.60
+Single-layer77.6095.2078.7064.72
+Multi-layer 60.91 82.5 72.0 43.02
+Table 2:Editing scoresSfor Top-3 layers by modality and word
+position. Layer numbers are ranked in parentheses.
+Mod. Word Top-1 Top-2 Top-3
+Audio subj. first (29,28,27) 71.70 73.34 73.34
+subj. last (29,28,27) 71.05 70.76 68.49
+Text subj. first (2,1,7) 51.77 32.33 51.54
+subj. last (12,10,8) 56.47 57.63 63.88
+ing achieves strong overall performance across all modalities,
+reaching 78.81 for audio editing, 71.40 for text editing, and
+79.67 for multimodal editing.
+In the multimodal setting, jointly editing both audio en-
+coder and LLM backbone layers achieves the best overall per-
+formance. This indicates that while audio-layer editing serves
+as the key anchor for modifying spoken factual knowledge, co-
+ordinated cross-modal updates further improve factual modifi-
+cation by aligning the updated acoustic representation with the
+language pathway.
+5.3. Layer and Word Selection Analysis
+To gain a deep understanding of how causal tracing offers ac-
+tionable guidance for choosing editing layers, we conduct a
+word-position–aware layer selection study summarized in Ta-
+ble 2. For audio, both subject-first and subject-last words select
+the same late encoder layers (27–29), but edits anchored on the
+first word consistently achieve higher overall scores, matching
+its stronger AIE and indicating that early subject-aligned frames
+are the most effective targets for modifying spoken facts. For
+text, subject-first and subject-last words peak at different lay-
+ers, yet configurations based on the last subject word (layers
+8, 10, 12) outperform those based on the first, suggesting that
+factual associations in the language backbone are most stably
+formed once the subject phrase is complete. Overall, layers and
+word positions with higher AIE also yield better, more specific
+edits, confirming that speech-aware causal tracing provides ac-
+tionable guidance for choosing editing locations in LALMs.
+6. Conclusion
+We presented a locate–then–edit framework for LALMs that
+uses speech-aware causal tracing to identify where spoken facts
+are stored and then applies targeted parameter updates to mod-
+ify them. Our analysis shows that factual knowledge is jointly
+encoded across audio and text pathways and that edits guided
+by causal signals yield more effective and specific updates than
+standard fine-tuning, especially when coordinating multimodal
+layers. These results suggest a practical route toward reliable,
+fine-grained knowledge control in speech-based AI systems.
+6419
+7. Generative AI Use Disclosure
+Generative AI tools were used solely f

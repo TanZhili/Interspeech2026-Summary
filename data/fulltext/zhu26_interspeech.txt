@@ -1,0 +1,396 @@
+Content-Aware Dynamic Compression for Efficient Speech Recognition based
+on Large Language Model
+Huifeng Zhu, Bingqian Wang, Shaoxun Xiu, Xingqun Jiang, Bin Lv
+BOE Technology Group Co., Ltd. Beijing, China
+zhuhuifeng 4981@126.com, wangbinqian@boe.com.cn, xiushaoxun@boe.com.cn,
+jiangxingqun@boe.com.cn, lvbin-cto@boe.com.cn
+Abstract
+Current LLM-based speech recognition systems use fixed-rate
+downsampling for acoustic representation, which overlooks
+speech content dynamics and causes information loss or re-
+dundancy. We propose a content-aware dynamic acoustic map-
+ping method via the Continuous Integrate-and-Fire (CIF) mech-
+anism, adaptively aligning speech embeddings with transcrip-
+tion token counts. This enables content-guided downsampling
+during training and inference, cutting LLM input length while
+preserving or boosting accuracy. On AISHELL-1 and Lib-
+riSpeech, we achieve 12-26% relative error reduction at compa-
+rable average speech embedding length (ASEL). While main-
+taining comparable performance, we achieve over 45% ASEL
+reduction with 7-19% lower time to first token (TTFT) across
+utterance lengths. GigaSpeech results confirm scalability. Our
+work establishes an efficient paradigm improving the accuracy-
+efficiency trade-off in LLM-based speech recognition.
+Index Terms: Speech Recognition, Large Language Models,
+Dynamic Mapping, Continuous Integrate-and-Fire
+1. Introduction
+Recent progress in large language models (LLMs) [1, 2, 3]
+have broadened their applicability to diverse speech and audio
+understanding applications. Particularly in ASR, the integra-
+tion of speech encoders with large language models has opened
+new frontiers [4, 5, 6]. A common paradigm involves con-
+verting speech into a sequence of features via an encoder (e.g.,
+Whisper [7], StepAudio2 [8], KimiAudio [9], Seed-ASR [10],
+Firered-ASR [11], ), which are then projected into the semantic
+space of an LLM through an adapter module [12]. To manage
+computational cost, these systems typically employ fixed down-
+sampling strategies to compress the acoustic feature sequence.
+However, existing downsampling methods often rely on lo-
+cal operations over speech features, such as feature concatena-
+tion or sliding-window convolution. As the downsampling ratio
+increases, these approaches tend to discard fine-grained acous-
+tic information, leading to a noticeable degradation in recog-
+nition performance [13].This work [14] presents TRIM, a to-
+ken reduction method for visual question answering to allevi-
+ate the heavy computational burden of multimodal large lan-
+guage models. The approach in [15] leverages cosine similar-
+ity between feature vectors to reduce the frame count input to
+the large model, enabling efficient edge deployment. This pa-
+per [16]proposes Token Merging (ToMe) that merges similar
+tokens in transformers to greatly boost the throughput of ViT
+models. Although these approaches significantly reduces infer-
+ence time, the latter two methods inevitably lead to a decline in
+recognition performance. This static compression also ignores
+the fundamental variability in speech content and the dynamic
+nature of acoustic-phonetic boundaries.
+In this work, we address this mismatch by introducing a
+content-aware dynamic acoustic mapping mechanism based on
+the Continuous Integrate-and-Fire (CIF) algorithm [17]. Un-
+like traditional fixed downsampling, our approach considers
+both the acoustic features and the corresponding textual content
+length, dynamically aligning the number of generated speech
+embeddings to the token count of the transcription. This en-
+ables the model to perform content-guided adaptive downsam-
+pling, where the compression ratio is adjusted according to the
+speech rate and linguistic content.
+Originally proposed for non-autoregressive ASR, CIF is
+a soft and monotonic alignment mechanism that dynamically
+”fires” acoustic embeddings based on accumulated attention
+weight, effectively determining the output sequence length
+on-the-fly. We adapt CIF to serve as a dynamic front-end
+for speech-enabled LLMs. Our proposed mapper produces
+a variable-length sequence of acoustic embeddings where the
+length is conditioned on the corresponding text transcription
+during training, allowing the model to learn a content-aware
+compression rate.
+Our contributions are threefold:
+1. We propose a novel dynamic acoustic mapping framework to
+replace fixed downsampling in speech LLM interfaces.
+2. We introduce a content-aware downsampling strategy using
+CIF that dynamically aligns acoustic frames with text tokens,
+improving both efficiency and robustness.
+3. We demonstrate that our method significantly reduces the se-
+quence length input to the LLM, leading to faster training
+and inference, while maintaining competitive recognition ac-
+curacy.
+2. Proposed Method
+The overall architecture of our model is illustrated in Figure 1.
+It consists of three main components: a speech encoder, a CIF-
+based dynamic mapper, and a large language model with an
+adapter.
+2.1. Speech Encoder
+We employ the audio encoder fromStepAudio2[8] orFir-
+eRedASR[11] as our speech encoder, which processes the raw
+waveform and outputs a sequence of high-level acoustic fea-
+turesH=h 1,h 2,...,h T , whereTdenotes the number of
+frames. A key characteristic of this encoder is its output frame
+rate of25 Hz, which provides a balanced temporal resolution
+suitable for capturing phonetic and prosodic details without ex-
+cessive computational overhead.
+To ensure a fair comparison with fixed-downsampling base-
+2461
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-230
+Figure 1:Overall architecture of the proposed model. The CIF-
+based Dynamic Mapper adaptively compresses the encoder out-
+putHinto a variable-length sequenceE a whose length is
+guided by the target token countN.
+lines and to leverage the pre-trained representations effectively,
+we keep the encoder frozen during training. This not only sta-
+bilizes the training process but also allows us to focus the learn-
+ing capacity on the dynamic mapping and alignment modules,
+rather than re-learning acoustic features from scratch.
+2.2. CIF-based Dynamic Mapper
+This module takes the encoder output feature sequenceH∈
+RB×T×D as input and produces a variable-length sequence of
+acoustic embeddingsE a ={e 1,e 2,...,e N}, whereNis dy-
+namically determined by the CIF mechanism. The detailed
+computational procedure is as follows:
+1.Feature Transformation: LetX=H ⊤, which has dimen-
+sions(B,D,T). We apply a 1D convolution with kernel size
+3 toX, followed by a transpose operation and a ReLU acti-
+vation, and add the result to theHvia a residual connection:
+M=ReLU
+
+(Conv1D(X))⊤ +H
+
+(1)
+whereM∈R B×T×D is the transformed feature representa-
+tion.
+2.Weight Prediction: The transformed featuresMare passed
+through a linear layer followed by a sigmoid activation to
+predict the firing weightsα t for each time step:
+α=σ(WM+b)(2)
+whereα∈R B×T represents the firing weight at each time
+step.
+3.Dynamic Embedding Generation via CIF: The weightsα
+and the original encoder featuresHare fed into the Continu-
+ous Integrate-and-Fire (CIF) module to generate the acoustic
+embeddings:
+Ea =CIF(α,H)(3)
+The CIF mechanism accumulates the weightsα t and fires
+an embeddinge i whenever the accumulated value reaches a
+thresholdβ. The fired embedding is computed as a weighted
+sum of the encoder hidden states over the integrated frames.
+During training, we constrain the predictor by minimizing
+the Mean Absolute Error (MAE) between the sum of frame
+weights and the target token countNfrom the transcription:
+LM AE =
+N−
+TX
+t=1
+αt
+
+This ensures that the total weight sum approximates the target
+token count. During inference, even without transcript super-
+vision, this enables the model to generate a number of embed-
+dings that match the speech content, thereby effectively guiding
+the LLM to avoid generating repetitive tokens in the decoding
+stage.
+2.3. Adapter and Language Model
+To effectively integrate the variable-length acoustic embedding
+sequenceE a∈R B×N×D from the dynamic mapper into the
+input space of a pre-trained LLM, we design a lightweight
+Adapter module. This module is responsible not only for feature
+dimension alignment but also incorporates a temporal down-
+sampling mechanism to further compress the sequence length,
+thereby enhancing the overall inference efficiency of the model.
+The processed embedding sequenceE out is then fed into
+the pre-trained LLM (e.g., Qwen [18]), which subsequently per-
+forms the final task, such as speech recognition. The entire sys-
+tem is trained end-to-end with a cross-entropy loss function.
+3. Experiments
+3.1. Experimental Setup
+3.1.1. Datasets
+We evaluate our method on four widely used ASR benchmarks:
+•AISHELL-1[19]: A Mandarin speech corpus containing
+178 hours of training data with 400 speakers.
+•LibriSpeech[20]: An English speech corpus with 960 hours
+of training data.
+•GigaSpeech[21]: A large-scale multilingual speech corpus
+containing 10,000 hours of labeled data.
+3.1.2. Model Configurations
+We explore multiple model configurations:
+Speech Encoder:We employ two different pre-trained speech
+encoders:
+•StepAudio2-Mini encoder[8]: 637M parameters, output
+frame rate of 25 Hz
+•FireRedLLM-ASR encoder[11]: 710M parameters, output
+frame rate of 25 Hz
+Adapter Architecture:The adapter module is implemented in
+three variants:
+•Conv1D + MLP: Incorporates a 1D convolutional layer for
+feature downsampling before a two-layer MLP, with fixed
+temporal downsampling rates of 2, 4, or 6
+•Concat-MLP: Uses feature concatenation for downsampling
+before a two-layer MLP with fixed rates of 2, 4, or 6
+•Dyn-MLP: Our proposed dynamic downsampling method
+using CIF mechanism
+2462
+Large Language Model:We use two scales of the Qwen3
+model family:
+•Qwen3-1.7B: 1.7 billion parameters, 28 layers, hidden di-
+mension 2048
+•Qwen2-7B: 7 billion parameters, 32 layers, hidden dimen-
+sion 3584
+Tokenizer:For dynamic mapping, we explore two tokenizers:
+•Qwen3 Tokenizer: The default tokenizer from the Qwen3
+model family
+•SenseVoice-Small Tokenizer[22]: A specialized BPE-
+based [23] subword tokenizer for better acoustic-text align-
+ment
+3.2. Training Strategy
+We adopt a carefully designed two-stage training strategy to sta-
+bilize learning and efficiently leverage pre-trained models.
+Stage 1 (S1): Training Adapter and Dynamic Mapper
+In this initial stage, we freeze both the speech encoder and the
+LLM, training only the CIF-based dynamic mapper and adapter
+module. We use the AdamW optimizer [24] with a learning
+rate of 5e-5 and apply gradient clipping [25] with a threshold
+value set to 5. The number of training epochs is set to 100 for
+AISHELL-1, 10 for LibriSpeech, and 5 for GigaSpeech, respec-
+tively, to accommodate dataset sizes and avoid overfitting.
+Stage 2 (S2): LLM Fine-tuning
+After stable training of the adapter and mapper, we introduce
+LLM fine-tuning. Only LLM parameters are updated. For Gi-
+gaSpeech, we use a learning rate of 1e-5 and train for 5 epochs
+in this stage.
+Considering the varying data scales across datasets, we
+apply different training strategies. On small-to-medium scale
+datasets (AISHELL-1 and LibriSpeech), only Stage 1 training is
+conducted to learn the dynamic mapper and adapter efficiently
+without overfitting. On the large-scale dataset (GigaSpeech),
+both Stage 1 and Stage 2 training are employed to fully adapt the
+LLM. This adaptive training schedule ensures efficient use of
+computational resources while maintaining robust performance
+across datasets of different scales.
+3.2.1. Evaluation Metrics
+We employ comprehensive evaluation metrics to assess model
+performance:
+Accuracy Metrics:
+•Character Error Rate (CER)for AISHELL
+•Word Error Rate (WER)for LibriSpeech and GigaSpeech
+Efficiency Metrics:
+•Average Speech Embedding Length (ASEL): Representing
+the average number of encoder frames input to the LLM
+•Time to First Token (TTFT): Representing the latency from
+input speech to the generation of the first output token
+3.3. Main Results
+3.3.1. Comparison with WEST Baseline
+We first compare our dynamic mapping method against a strong
+fixed-stride baseline based on the WEST toolkit [26]. As shown
+in Table 1, the baseline system uses the FireRedLLM-ASR en-
+coder, a Conv+MLP adapter with a fixed downsampling rate
+of 2, and achieves CERs of 4.17% (Qwen3-1.7B) and 4.01%
+(Qwen2-7B) on AISHELL-1, with an ASEL of 70.
+In contrast, our Dyn-MLP method significantly reduces
+the input length while improving recognition accuracy. With
+Qwen3-1.7B, we achieve a CER of 3.53% with an ASEL of
+27, representing a 15.3% relative improvement in CER. With
+Qwen2-7B, we further lower CER to 2.67% while maintaining
+the same ASEL of 27, corresponding to a33.4% relative CER
+reduction. The reduction in ASEL from 70 to 27 (approxi-
+mately 61.4% ) leads to proportional decreases in computational
+cost.
+Table 1:Comparison with WEST baseline on AISHELL-1 using
+FireRedLLM-ASR encoder.
+Method LLM Adapter Type CER (%) ASEL
+Baseline Qwen3-1.7B Conv-MLP 4.17 70
+Baseline Qwen2-7B Conv-MLP 4.01 70
+OursQwen3-1.7BDyn-MLP 3.5327
+OursQwen2-7BDyn-MLP 2.6727
+3.3.2. Comprehensive Comparison on AISHELL-1 and Lib-
+riSpeech
+We further compare Dyn-MLP against two strong fixed-
+downsampling baselines (Conv-MLP and Concat-MLP) using
+the StepAudio2 encoder and Qwen3-1.7B LLM. The fixed-
+stride methods are evaluated with downsampling rates(DS) of
+2, 4, and 6, while Dyn-MLP adaptively determines the com-
+pression ratio.
+AISHELL-1 Results (Table 3):Dyn-MLP achieves competi-
+tive CERs of 3.16% (Qwen3 tokenizer) and 2.90% (SenseV oice-
+Small tokenizer) with ASELs of 26 and 37, respectively. Com-
+pared to fixed-stride baseline (ASEL=70), Dyn-MLP reduces
+ASEL to 26 and 37, achieving∼60% reductionwhile main-
+taining competitive CER. The Dyn-MLP model achievesrela-
+tive CER reductions of 26% and 19%compared to the fixed
+downsampling rate baseline at ASEL values of 23 and 35, re-
+spectively.
+LibriSpeech Results (Table 2):Dyn-MLP achieves WERs of
+2.65% (Qwen3) and 2.80% (SenseV oice-Small) on test-clean
+with ASELs of 54 and 137, and WERs of 6.15% and 6.11% on
+test-other with ASELs of 48 and 120, respectively. Compared to
+baseline (ASEL=118–136), Dyn-MLP reduces ASEL to 48 and
+54, with∼59–60% reductionin ASEL under similar WER.
+Dyn-MLP achieves12% and 13% relative WER reduction
+over fixed downsampling rate baselines at ASEL values of 39
+and 46 on test-clean and test-other.
+The proposed dynamic mapping method achieves∼60%
+ASEL reductionwith comparable accuracy, andrelative error
+reduction ranging from 12% to 26%under similar ASEL,
+demonstrating superior efficiency-accuracy trade-off.
+3.3.3. Large-scale Dataset Evaluation on GigaSpeech
+To validate our method on larger-scale datasets, we conduct
+experiments on GigaSpeech using StepAudio2 encoder and
+Qwen3-1.7B LLM. For this evaluation, we selectConv-MLP
+as the adapter andQwen3 tokenizerbased on their consistent
+performance on the LibriSpeech dataset shown in Table 2. As
+shown in Table 4, Dyn-MLP with Qwen3 tokenizer achieves
+CERs of 12.29% (Stage 1) and 11.20% (Stage 2) with an ASEL
+of 39, outperforming Conv-MLP baselines across all downsam-
+pling rates.
+2463
+Table 2:Results on LibriSpeech with StepAudio2 encoder and Qwen3-1.7B.
+Method Rate test-clean WER (%) test-clean ASEL test-other WER (%) test-other ASEL
+Conv-MLP 2 2.49 136 6.08 118
+Conv-MLP 4 2.79 68 6.30 59
+Conv-MLP 6 3.03 46 6.98 39
+Concat-MLP 2 2.64 136 6.06 118
+Concat-MLP 4 2.95 68 6.67 59
+Concat-MLP 6 3.34 46 7.32 39
+Dyn-MLP (Qwen3) Adaptive 2.65 54 6.15 48
+Dyn-MLP (SenseV oice) Adaptive 2.80 1376.11120
+Table 3:Results on AISHELL-1 with StepAudio2 encoder and
+Qwen3-1.7B.
+Method DS CER (%) ASEL
+Conv-MLP 2 3.08 70
+Conv-MLP 4 3.78 35
+Conv-MLP 6 4.34 23
+Concat-MLP 2 2.90 70
+Concat-MLP 4 3.57 35
+Concat-MLP 6 4.29 23
+Dyn-MLP (Qwen3) Adaptive 3.16 26
+Dyn-MLP (SenseV oice) Adaptive2.9037
+Table 4:Results on GigaSpeech with StepAudio2 encoder and
+Qwen3-1.7B.
+Method DS S1/S2 CER (%) ASEL
+Conv-MLP 2 12.90/11.60 108
+Conv-MLP 4 13.04/12.09 54
+Conv-MLP 6 13.43/12.57 36
+Dyn-MLP (Qwen3) Adaptive12.29/11.2039
+3.3.4. Analysis of Training Criteria
+We investigate the impact of different training criteria for pre-
+dicting transcription length. As shown in Table 5, we evaluate
+three loss functions on AISHELL-1 using StepAudio2 encoder,
+Qwen3-1.7B LLM, and Qwen3 tokenizer. All criteria achieve
+similar CERs with identical ASELs of 26, indicating minimal
+impact of regression loss choice on performance.
+Table 5:Analysis of training criteria on AISHELL-1.
+Method Training Criterion CER (%) ASEL
+Dyn-MLP MAE 3.16 26
+Dyn-MLP MSE 3.12 26
+Dyn-MLP SMAE 3.12 26
+3.3.5. Inference Efficiency Analysis: TTFT on Variable-Length
+Utterances
+To further validate the practical efficiency gains of our proposed
+method, we evaluate the TTFT atency across utterances of vary-
+ing lengths, employing the StepAudio2 encoder and Qwen3-
+1.7B model to compare Dyn-MLP against the Conv-MLP base-
+line with a downsampling rate of 2.
+As presented in Table 6, Dyn-MLP consistently outper-
+forms the baseline with lower TTFT across all duration cate-
+gories. For 6-second utterances, TTFT is reduced from 357.0
+ms to 331.5 ms (a 7.1% improvement), alongside an ASEL re-
+duction from 78 to 43 (44.9%). For utterances longer than 6
+seconds, TTFT reductions range from 15.2% to 19.5%, with
+ASEL reductions of 53.4% to 67.3%.
+Table 6:TTFT comparison across different utterance durations.
+Conv-MLP Dyn-MLP TTFT∆
+(ASEL / TTFT(ms)) (ASEL / TTFT(ms))
+6s 78 / 357.0±9.7 43 / 331.5±9.6 -7.1%
+9s 117 / 392.1±14.1 49 / 332.4±9.0 -15.2%
+12s 156 / 413.1±8.4 51 / 343.7±9.5 -16.8%
+15s 195 / 445.6±1.8 66 / 358.7±18.6 -19.5%
+18s 234 / 448.1±25.2 109 / 377.7±22.9 -15.7%
+4. Conclusion
+We proposed a dynamic acoustic mapping method for LLM-
+based speech models using Continuous Integrate-and-Fire. By
+replacing fixed downsampling with a content-aware compres-
+sion mechanism, our approach allows the model to adaptively
+determine the number of frames fed into the language model.
+Extensive experiments show that this leads to a more efficient
+use of computational resources, achieving a better accuracy-
+efficiency trade-off than strong fixed-stride baselines. This
+work paves the way for more flexible and efficient architectures
+for speech-enabled large language models.
+5. Generative AI Use Disclosure
+Generative AI tools were used only to optimize academic writ-
+ing and fix grammar issues throughout the manuscript. The
+proposed content-aware dynamic acoustic mapping method, all
+speech recognition experiments and result analysis were fully
+designed and implemented by the authors without AI genera-
+tion. All authors are fully accountable for the paper content and
+agree to the submission per ISCA rules. No generative AI tool
+is listed as co-author.
+2464

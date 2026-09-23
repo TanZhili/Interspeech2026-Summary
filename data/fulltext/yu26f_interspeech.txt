@@ -1,0 +1,551 @@
+Disentangling Reasoning in Large Audio-Language Models for Ambiguous
+Emotion Prediction
+Xiaofeng Yu1,∗, Jiaheng Dong2,∗, Jean Honorio2,4, Abhirup Ghosh3, Hong Jia1, Ting Dang2
+1 University of Auckland, New Zealand 2 The University of Melbourne, Australia
+3 University of Birmingham, United Kingdom 4 ARC OPTIMA, Australia
+xyu724@aucklanduni.ac.nz, jiahengd@student.unimelb.edu.au
+Abstract
+Speech emotion recognition plays an important role in vari-
+ous applications. However, most existing approaches predict
+a single emotion label, oversimplifying the inherently ambigu-
+ous nature of human emotional expression. Recent large au-
+dio–language models show promise in generating richer out-
+puts, but their reasoning ability for ambiguous emotional un-
+derstanding remains limited. In this work, we reformulate am-
+biguous emotion recognition as a distributional reasoning prob-
+lem and present the first systematic study of ambiguity-aware
+reasoning in LALMs. Our framework comprises two comple-
+mentary components: an ambiguity-aware objective that aligns
+predictions with human perceptual distributions, and a struc-
+tured ambiguity-aware chain-of-thought supervision that guides
+reasoning over emotional cues. Experiments on IEMOCAP and
+CREMA-D demonstrate consistent improvements across SFT,
+DPO, and GRPO training strategies.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Speech emotion recognition (SER) plays an important role in
+human–computer interaction [1, 2, 3], conversational agents [4],
+and mental health applications [5]. Despite recent advances,
+most SER systems are trained to predict a single discrete emo-
+tion category, which oversimplifies the complexity of human
+emotional expression. In practice, emotions are often ambigu-
+ous and mixed rather than belonging to a single class. This
+discrepancy between computational modeling and human emo-
+tional perception motivates the need for more expressive and
+uncertainty-aware emotion understanding paradigms.
+Recent large audio–language models (LALMs) have
+demonstrated promising capabilities in generating richer tex-
+tual outputs beyond single-label classification [6, 7]. Prior
+work shows that LALMs can capture multiple emotional cues
+from speech and generate distributional emotion predictions [6].
+However, their reasoning ability under highly ambiguous emo-
+tional conditions remains limited. While humans naturally rea-
+son under emotion ambiguity by weighing multiple cues and
+forming probabilistic judgements [8, 9], current LALMs strug-
+gle to emulate.
+Enhancing reasoning in LALMs has attracted increas-
+ing attention, particularly through chain-of-thought (CoT)
+prompting [10] and reinforcement learning (RL)-based post-
+training [11, 12]. For example, supervised fine-tuning (SFT)
+with CoT supervision [13], or preference optimization meth-
+ods such as Direct Preference Optimization (DPO) [14] and RL
+*These authors contributed equally.
+methods of Group Relative Policy Optimization (GRPO) [15]
+show great promises. However, these studies mainly focus on
+deterministic speech understanding tasks such as audio question
+answering (AudioQA) that selects a single correct answer. In
+contrast, ambiguous emotion reasoning is inherently distribu-
+tional: multiple emotional interpretations may simultaneously
+be plausible, and can be represented as a soft label or proba-
+bility distribution over emotion classes (e.g., 40% happy, 60%
+surprised). Therefore, the challenge is to improve reasoning
+quality and also avoid premature collapse to a single determin-
+istic emotional interpretation when uncertainty is present.
+To address this gap, we reformulate ambiguous emotion
+recognition as a distributional reasoning problem and present
+the first systematic study of ambiguity-aware reasoning in
+LALMs. An effective model must (i) preserve affective uncer-
+tainty at the decision level and (ii) perform structured reasoning
+over emotional ambiguity, coherently integrating subtle and het-
+erogeneous emotional evidence. Our framework proposes two
+key components to tackle these: (i) an ambiguity-aware objec-
+tive that aligns predicted emotion distributions with human per-
+ceptual distributions via forward KL regularization to prevent
+affective collapse; and (ii) structured ambiguity-aware CoT su-
+pervision to guide evidence of emotion ambiguity integration
+before prediction. The framework is plug-and-play and com-
+patible with different post-training strategies, evaluated across
+SFT, DPO, and GRPO. Our contributions are summarized:
+• We propose the first systematic study of ambiguity-aware
+reasoning in LALMs
+• We design two complementary objectives to support
+ambiguity-aware learning: an ambiguity-aware objective and
+structured ambiguity-aware CoT supervision.
+• We evaluate the proposed paradigm across multiple post-
+training strategies on IEMOCAP and CREMA-D dataset,
+demonstrating effectiveness of both objectives.
+By disentangling decision-level uncertainty modeling from rea-
+soning enhancement, our work provides new insights into
+ambiguity-aware emotion understanding in LALMs.
+2. Related Work
+Ambiguous Speech Emotion Recognition.Early studies
+on ambiguous emotion recognition include modelling emo-
+tions ambiguity using soft labels instead of categorical hard la-
+bels [16], capturing ambiguity by simulating multiple annota-
+tors with multiple classifiers [17], or handling ambiguous emo-
+tions as out-of-distribution cases [18]. With the emergence of
+LALMs, several studies investigates ambiguity-aware emotion
+recognition. For instance, [6] examines whether LALMs im-
+plicitly encode emotion ambiguity by analyzing token-level pre-
+7458
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2031
+diction distributions. Another study [7] proposes augmenting
+multi-annotator labels with synthetic annotations generated by
+LALMs. However, these approaches ignores improving the rea-
+soning processes of LALMs for ambiguous emotion perception.
+Reasoning Capabilities of LALMs.Recent work on im-
+proving reasoning in LALMs mainly falls into two categories:
+chain-of-thought (CoT) and reinforcement learning (RL) based
+approaches. CoT-based methods aim to teach step-by-step rea-
+soning. For example, Audio-CoT [10] explores prompt-based
+CoT elicitation, while Audio-Reasoner [13] further trains mod-
+els to follow structured reasoning routines before producing
+answers. However, these methods typically employ CoT pat-
+terns designed for deterministic tasks (e.g., AudioQA), where
+the goal is to produce a single correct answer, and do not ex-
+plicitly model emotional ambiguity.
+RL-based approaches instead optimize reasoning behav-
+iors through reward-driven learning. SARI [11] and Sound-
+Mind [12] improve reasoning capability using GRPO and RE-
+INFORCE++ [19] respectively. However, these reasoning
+frameworks are still tailored to certain tasks where the objective
+is to identify a single correct answer. It remains unclear what
+post-training objectives and strategies are essential for ambigu-
+ous emotion reasoning.
+3. Methods
+3.1. Problem Formulation
+We formulate emotion understanding as an ambiguity-aware
+reasoning task. For each speech utterancen, the input is a mul-
+timodal pairx n ={A n,Tn}, whereA n denotes the acoustic
+signal andT n its transcript. To capture perceptual subjectiv-
+ity, each sample is annotated with (i) a ground-truth emotion
+distributionpGT
+n ∈R C overCcategories and (ii) a reasoning
+trajectoryZGT
+n :
+pGT
+n,i = mn,i
+PC
+j=1mn,j
+,Z GT
+n = (z (1)
+n ,...,z (L)
+n )(1)
+wherem n,i denotes the number of annotators selecting class
+i, andz (ℓ)
+n represents an intermediate reasoning step. Unlike
+single-label classification,pGT
+n encodes collective emotion am-
+biguity as a soft distribution (e.g., 70% happy and 30% sur-
+prised). The trajectoryZ GT
+n is a structured CoT that explains
+how reasoning over subtle acoustic and linguistic cues leads to
+the ambiguous emotion distribution, serving as an interpretable
+bridge between multimodal evidence and final predictions.
+The objective is to learn a LALMf θ that maps the in-
+put to a joint output space consisting of a predicted reason-
+ing trajectory ˆZn and a predicted emotion distribution ˆpn:
+( ˆZn, ˆpn) =f θ(An,Tn). The model is optimized via two com-
+plementary objectives. It minimizes (i) the divergence between
+the predicted and ground-truth distributions while (ii) encour-
+aging the generated reasoning steps to follow the ground truth
+reasoning trajectoryZn.
+3.2. CoT Curation via Ambiguity-aware Prompting
+To enable the LALM to reason over ambiguous emotional cues,
+we first curate a structured CoT dataset that provides explicit
+reasoning supervision signals for ambiguity emotion. For each
+inputxn ={A n,Tn}and its corresponding ground-truth distri-
+butionpGT
+n , we synthesize the reasoning trajectoryZ GT
+n using
+a high-capacity, closed-source LALM (e.g., GPT-4o).
+The generation process follows a structured protocol to en-
+sure the trajectory remains grounded and logically consistent as
+Table 1:Synthesis for ambiguity-aware CoT Curation.
+Input:x n ={A n,Tn},pGT
+n
+Critical Rules for Reasoning Steps: KeywordsExtract
+salient acoustic and linguistic cues.
+Step 1: Text Analysis.Analyze the text strictly for semantic
+meaning and context. Identify potential ambiguity.
+Step 2: Audio Analysis.Describe the prosody using profes-
+sional terminology (V olume, Speed, Pitch, Tone). Highlight
+specific cues that support both the majority label AND the
+minority label (if any).
+Step 3: Synthesis.Synthesize the evidence to resolve the
+ambiguity. The reasoning must be strong enough that a
+reader would predict the Ground Truth labels just by read-
+ing your analysis.
+shown in Table 1. The generated trajectories are then automat-
+ically validated by checking whether the explanation is consis-
+tent with the given target distribution using the same closed-
+source model.
+3.3. Ambiguity-aware Learning Objectives
+With the structured reasoning trajectoryZGT
+n and the perceptual
+distributionpGT
+n , we explore the optimization of the LALM for
+ambiguity-aware emotion understanding. Specifically, we pro-
+pose a Ambiguity-Aware Objective designed to align the model
+outputs with human emotional uncertainty. A key advantage of
+our formulation is its “plug-and-play” compatibility; it can be
+seamlessly integrated into various training frameworks, includ-
+ing SFT, DPO, and GRPO.
+3.3.1. Ambiguity-Aware Objective
+The goal is to align the model predicted emotion distributionˆpn
+with the human perceptual distributionp GT
+n . We employ the
+Kullback-Leibler (KL) Divergence as the alignment criterion:
+Ldist =D KL (ˆpn∥p GT
+n ) =
+CX
+i=1
+pGT
+i logpGT
+i
+ˆpi
+,(2)
+Rather than relying on standard textual generation to ob-
+tain ˆpn, we read out token-level logits for emotion category
+names at the final step and applying a softmax over these logits
+to capture a more nuanced distribution of emotional states, fol-
+lowing [6]. This logit-based formulation lets the model express
+graded uncertainty over emotion classes, mirroring the multi-
+annotator soft labels.
+3.3.2. Plug-and-Play Learning Paradigms
+Our distribution-aware objective is framework-agnostic, allow-
+ing for seamless integration into different training strategies.
+SFT.For learning using SFT, the model is trained to jointly
+maximize the likelihood of the reasoning tokens and minimize
+the distributional divergence. The total lossLSFT is a weighted
+combination:
+LSFT =L CE ( ˆZn,ZGT
+n ) +λLdist(ˆpn,pGT
+n ),(3)
+whereL CE is the standard cross-entropy loss for the autore-
+gressive generation of the CoT trajectory. This objective jointly
+constrains the reasoning trajectory and the distribution.
+DPO.For DPO, we extend the standard framework with our
+ambiguity-aware objective. Instead of relying on static, offline
+7459
+LALM
+...
++
+SFT(Supervised Fine-Tuning)
+Ambigutiy-Aware Objective
+Text
+Embeddings
+Audio
+Embeddings
+Decoder layer
+LM head
+Softmax
+Targeted
+emotions Angry Sad Neutra ...
+ logit 14.81 9.50 8.56
+......
+<Keywords>resigned tone, low pitch, slower
+pace, negative phrasing...</keywords>
+[Step1: Text Analysis]The phrase \"It
+wouldn't work this way\" carries a negative...
+[Step2: Audio Analysis]The speaker's tone is
+low in pitch and the pace is relatively ...
+[Step3: Synthesis]Because the tone is low, the
+pace is slow, and the delivery feels......
+LALM
+<Keywords> ...
+[Step 1] ...
+[Step 2] ...
+[Step3] ...
+............
+...
+............
+Update
+Structured
+Protocal
+Ambiguity-aware CoT curation
+DPO(Direct Preference Optimization)
+LALM
+Negative Positive
+Preference Pair
++
+Update
+GRPO(Group Relative Policy Optimization)
+LALM
+Group of K+1 Rewards
+...
++ +
+Update
+Group of K+1 rollouts
+......
+Figure 1:Overview of the proposed ambiguity-aware objectives and Plug-and-play Learning Paradigms.
+preference pairs, we use an on-policy scheme where the cur-
+rent policy generatesdynamicCoT rollouts ˆZn and their emo-
+tion distributions ˆpn. Rollouts whose predicted distribution de-
+viates from the ground-truth distribution are treated as nega-
+tive samples, while the curated ground truth CoT serves as the
+positive sample. This is measured by Jensen-Shannon (JS) Di-
+vergence,JS( ˆpn,pGT
+n ), which provides a bounded symmetric
+metric more stable for identifying “poor” reasoning paths. The
+DPO loss then encourages preference for trajectories that both
+follow the gold reasoning and better match the human percep-
+tual distribution, combined with the KL-based distribution loss
+and CoT cross-entropy as:
+LDPO-total =L DPO +λ 1Ldist(ˆpn,pGT
+n ) +λ 2LCE ( ˆZn,ZGT
+n ),(4)
+LDPO =−E
+h
+logσ
+
+β
+ 
+log
+πθ (ypos |xn )
+πref (ypos |xn )−log
+πθ (yneg |xn )
+πref(yneg |xn )
+i
+,(5)
+whereπθ denotes the current LALM, andπ ref denotes the orig-
+inal LALM without any update.
+GRPO.We additionally study reinforcement learning based
+reasoning optimization using GRPO, and similarly augment the
+reward with ambiguity-awareness.
+At each update of the old policyπθold, we sampleKreason-
+ing trajectories{ ˆZn,k}K
+k=1 ∼π θold (·|xn)with corresponding
+emotion distributions{ ˆpn,k}K
+k=1. Each trajectory is assigned a
+rewardrn,k:
+rn,k =−L dist(pGT
+n , ˆpn,k) +λ 3rformat( ˆZn,k),(6)
+where the first term rewards accurate matching of the human
+perceptual distribution and the second term enforces adherence
+to the prescribed CoT format (defined similar as [12]). We
+then normalize rewards into advantages to stabilize training:
+ˆAn,k =
+rn,k−µn
+σn
+, whereµn andσn denote the mean and stan-
+dard deviation of advantages across theKsampled trajectories
+for utterancen.
+The policy is then optimized using a GRPO-style objective:
+JGRPO =E
+"
+1
+K
+KX
+k=1
+1
+|Zn,k|
+X
+t
+min
+
+ρn,k,t(θ) ˆAn,k,(7)
+clip(ρn,k,t(θ),1−ϵ,1 +ϵ) ˆAn,k
+
+−βKL(πθ||πref)
+#
+.
+whereρ n,k,t(θ)denotes the token-level policy probability ra-
+tio. The objective increases the likelihood of high-quality rea-
+soning trajectories while suppressing low-quality ones.
+Standard GRPO typically relies on sampled trajectories
+without direct references to ground-truth reasoning paths.
+When the overall quality of rollouts is low, the highest-rewarded
+trajectory might merely be the ”least bad” rather than genuinely
+high-quality. Inspired by a recent study [20] that combines
+on-policy RL with expert references to improve stability, we
+enhance standard GRPO by introducing the ground-truth tra-
+jectoryZ GT
+n as an additional reference sample, referred to as
+GRPOz. This ensures that the ground-truth reasoning trajectory
+consistently receives the highest reward, thereby biasing opti-
+mization toward more faithful reasoning paths under ambiguity.
+4. Experimental Setup
+Datasets.We evaluate our training paradigm on IEMO-
+CAP [21] and CREMA-D [22]. IEMOCAP contains four emo-
+tion categories: Anger, Happiness, Sadness, and Neutral, with
+“Excited” merged into Happiness, and is evaluated using strict
+5-fold leave-one-session-out cross-validation. CREMA-D [22]
+voice-only set includes six categories, adding Disgust and Fear.
+We aggregate annotator votes (i.e., 3 annotators in IEMOCAP
+and 4-12 annotators in CREMA-D and normalize them to con-
+struct soft ground-truth labels.
+Implementation Details.We use GPT-4o to construct struc-
+tured CoT trajectories on the training folds due to its strong ca-
+pability in generating coherent reasoning chains that connect
+input observations with target outputs [13]. Experiments with
+post-training are conducted using Qwen2-Audio-7B-Instruct 1
+as the base LALM. For all the learning paradigms, we apply
+LoRA (r= 8,α lora = 16) to the attention and feed-forward
+modules. All trainable parameters are optimized using AdamW
+with optimized learning rates of 1e-4 (SFT), 5e-6 (DPO), and
+2e-5 (GRPO). A 3% linear warmup and cosine decay are ap-
+plied throughout training. The corresponding loss weights are
+λ= 1,λ 1 = 0.1,λ 2 = 0.1, andλ 3 = 0.1for regulariza-
+tion during DPO optimization. We compare against the 1) Base
+Model and 2) Audio-Reasoner [13].
+1https://huggingface.co/Qwen/Qwen2-Audio-7B-Instruct
+7460
+Table 2:Comparison for ambiguous emotion recognition per-
+formance. The best results are inbold. GRPO z indicates
+ground-truth CoT trajectory injection in GRPO.
+Dataset Methods JS↓BC↑R 2↑Brier↓
+IEMOCAP
+Base model 0.40 0.64 0.51 0.15
+Audio-Reasoner 0.36 0.67 0.52 0.15
+SFT 0.29 0.73 0.60 0.12
+DPO 0.23 0.79 0.65 0.09
+GRPO 0.36 0.67 0.55 0.13
+GRPOz 0.20 0.82 0.67 0.07
+CREMA-D
+Base model 0.25 0.78 0.54 0.05
+Audio-Reasoner 0.37 0.69 0.51 0.09
+SFT 0.21 0.82 0.57 0.04
+DPO0.17 0.860.670.03
+GRPO 0.25 0.77 0.46 0.04
+GRPOz 0.20 0.820.680.04
+Evaluation Metrics.To assess how well the predicted emo-
+tion distribution matches the ground-truth distribution, we re-
+port Jensen–Shannon divergence (JS↓) and the Bhattacharyya
+Coefficient (BC↑) [23], which measure distributional discrep-
+ancy and probability mass overlap, assessing if the model pre-
+serves uncertainty rather than overconfident predictions.
+5. Results
+5.1. Performance of Post-Training Strategies
+We first evaluate the effectiveness of the proposed ambiguity-
+aware training paradigm across different post-training strategies
+in Table 2. Across both datasets, applying the proposed objec-
+tives consistently improves performance over the Base model
+under SFT, DPO, and GRPOZ.
+Among them, SFT consistently performs worse than both
+GRPOZ and DPO, suggesting that ambiguity-aware emotion
+modelling benefits from learning over multiple reasoning tra-
+jectories rather than relying on a single supervised reasoning
+path. Notably, GRPO Z achieves the strongest performances
+on IEMOCAP across all metrics, whereas DPO performs best
+on CREMA-D. This difference suggests that the effectiveness
+of post-training strategies depends on the structural complexity
+of the emotion distribution space. As the number of emotion
+classes increases in CREMA-D, the predicted distribution be-
+comes more sensitive to subtle variations in intermediate rea-
+soning steps. In such higher-dimensional ambiguity settings,
+the outcome-level reward signal used in GRPOZ relies largely
+on the divergence between the predicted and target emotion
+distributions at the final decision stage , which may become
+less precise for guiding fine-grained reasoning. In contrast,
+preference-based methods such as DPO provide denser super-
+vision by directly contrasting positive and negative reasoning
+chains at the token level, leading to stronger intermediate tra-
+jectory supervision toward the target distribution.
+5.2. Impact of KL divergence
+We analyze the impact of KL-based distribution supervision by
+comparing variants trained with cross-entropy (CE) only against
+those incorporating KL divergence for emotion distribution su-
+pervision in Figure 2.
+Across both datasets, incorporating KL supervision consis-
+tently improves distribution-level metrics compared to CE-only
+training. On IEMOCAP, adding KL regularization reduces JS
+JS
+ BC
+ R²
+ Brier
+0.0
+0.5Score
+(a) SFT  IEMOCAP
+JS
+ BC
+ R²
+ Brier
+0.0
+0.5Score
+(b) SFT  CREMA-D
+JS
+ BC
+ R²
+ Brier
+0.0
+0.5Score
+(c) DPO  IEMOCAP
+JS
+ BC
+ R²
+ Brier
+0.0
+0.5Score
+(d) DPO  CREMA-D
+w/o KL supervision w/ KL supervision
+Figure 2:Comparison between CE-only (w/o KL supervision)
+and proposed additional KL supervision. (a) SFT on IEMO-
+CAP , (b) SFT on CREMA-D, (c) DPO on IEMOCAP , and (d)
+DPO on CREMA-D.
+Table 3:Ablation of SFT training objectives. Models
+are trained on CREMA-D and evaluated under in-domain
+(CREMA-D) and cross-domain (IEMOCAP) settings.
+Setting CoT KL JS↓BC↑R 2↑Brier↓
+In-domain✓ ✓ 0.21 0.82 0.57 0.04
+In-domain✗ ✓ 0.22 0.81 0.57 0.04
+Cross-domain✓ ✓ 0.38 0.65 0.50 0.15
+Cross-domain✗ ✓ 0.52 0.52 0.31 0.22
+divergence and increases BC for both SFT and DPO variants
+relative to their CE-only counterparts. Similar improvements
+are observed on CREMA-D. These consistent gains indicate
+that while CE-based training encourages the model to reproduce
+the curated reasoning trajectory and final prediction tokens, it
+performs weak supervision to explicitly constrain the predicted
+probability mass to match the soft-label emotion distribution.
+In contrast, KL divergence directly penalizes distribution mis-
+matches, leading to improved consistency with ambiguity.
+5.3. Impact of ambiguity-aware CoT supervision
+We analyze the impact of ambiguity-aware CoT supervision in
+Table 3. Comparing SFT trained with and without CoT super-
+vision reveals different behaviors under in-domain and cross-
+domain evaluation. When training and testing on CREMA-
+D, incorporating CoT supervision yields marginal performance
+gain comparing to KL-only training. However, when training
+on CREMA-D and testing on IEMOCAP, models trained with
+CoT supervision significantly outperform those trained without.
+This observation suggests that optimizing only the final emo-
+tion distribution through KL regularization without CoT can
+easily overfit to dataset-specific distribution patterns. In con-
+trast, ambiguity-aware CoT supervision encourages the model
+to reason over multimodal emotional cues, leading to stronger
+generalization capability.
+6. Conclusions
+This work presents the first systematic study of ambiguity-
+aware reasoning in large audio–language models for ambigu-
+ous speech emotion recognition. We reformulate ambigu-
+ous emotion understanding as a distributional reasoning prob-
+lem and propose a plug-and-play framework that combines an
+ambiguity-aware objective with structured chain-of-thought su-
+pervision. Different post-training strategies, such as SFT, DPO,
+and GRPO, using our training paradigm consistently improve
+performance on both IEMOCAP and CREMA-D.
+7461
+7. Generative AI Use Disclosure
+Generative AI tools were used solely for minor language edit-
+ing and polishing to improve the clarity and readability of the
+manuscript. These tools were not used to generate scientific
+content, analyze experimental results, summarize related work,
+develop methodologies, or propose research ideas. All concep-
+tual contributions, experimental design, analysis, and conclu-
+sions presented in this paper were developed and verified by the
+authors. The authors take full responsibility for the content of
+this manuscript.

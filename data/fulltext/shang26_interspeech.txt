@@ -1,0 +1,470 @@
+Seed-Enh: Generative Speech Enhancement in Decoupled Semantic and
+Timbre Spaces
+Zengqiang Shang1, Biao Liu 1,2, Yu Zhao1,2, Pengyuan Zhang1,2
+1 Laboratory of Speech and Intelligent Information Processing, Institute of Acoustics, CAS, China
+2 University of Chinese Academy of Sciences, Beijing, China
+shangzengqiang@hccl.ioa.ac.cn
+Abstract
+Most existing speech enhancement operate directly in the
+acoustic space, where noise and speech components are in-
+herently entangled, leading to artifacts such as high-frequency
+attenuation and background holes. In this paper, we pro-
+pose Seed-Enh, a generative speech enhancement framework
+that performs enhancement in decoupled semantic and tim-
+bre spaces. Our framework processes noisy speech in three
+stages: (1) semantic space processing using a frozen Whisper
+encoder to extract noise-robust semantic representations, (2)
+timbre space processing using CAM++ embeddings and con-
+text learning, and (3) space fusion via flow matching. Exper-
+iments demonstrate that Seed-Enh achieves the highest over-
+all quality scores compared to state-of-the-art baselines, effec-
+tively suppressing noise while restoring harmonic structures and
+high-frequency details. Beyond speech enhancement, Seed-Enh
+also enables zero-shot voice conversion, significantly outper-
+forming Seed-VC when handling noisy inputs. The demo and
+pretrained model are available athttps://github.com/
+shangqwe123/Seed-Enh.
+Index Terms: speech enhancement, speech disentanglement,
+context learning, zero-shot voice conversion
+1. Introduction
+Speech enhancement refers to the task of recovering clean
+speech from noisy speech signals, which has wide applica-
+tions in remote communication and robust speech recognition.
+With the advancement of deep learning technologies, signifi-
+cant progress has been made in this field. Deep learning-based
+speech enhancement methods can be primarily categorized into
+discriminative methods and generative methods. Discriminative
+methods learn the boundary features between clean and noisy
+speech by directly predicting the clean speech components from
+the noisy speech [1, 2]. In contrast, generative methods focus
+on modeling the underlying distribution of clean speech under
+noisy conditions, demonstrating greater robustness when faced
+with unseen noise scenarios. Among generative approaches,
+diffusion-based models [3, 4, 5], Schr ¨odinger bridge [6], and
+flow matching [7, 8] have shown particularly promising results.
+However, most existing speech enhancement methods,
+whether discriminative or generative, operate directly in the
+acoustic space (e.g., STFT spectrograms, Mel spectrograms,
+time-domain signals), where noise and speech components are
+inherently entangled. Models tend to learn shortcut solutions
+based on acoustic domain, rather than truly understanding the
+semantic content and timbre characteristics of speech. This fun-
+damental lack of understanding manifests in two critical ways.
+the lack of semantic understanding makes it difficult to distin-
+guish between speech and noise when they share similar acous-
+tic characteristics, leading to either over-suppression of speech
+components or under-suppression of noise. the lack of timbre
+understanding causes artifacts such as high-frequency attenu-
+ation and background holes, resulting in speaker identity loss
+and timbre distortion. Early decoupling methods in denoising,
+such as amplitude-phase compensation [9] and subband decom-
+position [10], still operate within the acoustic space and cannot
+effectively separate semantic content from timbre information.
+In contrast, speech synthesis and voice conversion methods
+have demonstrated the effectiveness of processing in decoupled
+semantic and timbre spaces. Models like SeedTTS [11], Seed-
+VC [12], and CosyV oice [13] employ a three-stage pipeline:
+(1) semantic representation extraction using pre-trained models
+like Whisper [14] or Hubert [15], (2) timbre-conditioned acous-
+tic feature generation using diffusion models, and (3) wave-
+form synthesis via vocoders. These methods operate in decou-
+pled spaces, where semantic and timbre information are pro-
+cessed separately, enabling better control over different speech
+attributes. However, their application to speech enhancement
+has been limited. AnyEnhance [16] attempts to apply decou-
+pled generation to denoising, but still processes semantic infor-
+mation in a way that is not fully decoupled from timbre space.
+This paper proposes a novel approach that extends the de-
+coupled space processing paradigm to speech enhancement.
+We perform enhancement in decoupled semantic and timbre
+spaces rather than the original acoustic space [17]. By leverag-
+ing the noise robustness of pre-trained semantic encoders (e.g.,
+Whisper) to extract clean semantic representations from noisy
+speech, and separately processing timbre information in its own
+space, we can achieve superior enhancement quality compared
+to methods operating directly in the acoustic space. This ap-
+proach enables both high-quality denoising and zero-shot voice
+conversion capabilities.
+2. Method
+2.1. Motivation: Enhancement in Decoupled Spaces
+To address the fundamental limitations of existing methods op-
+erating in the acoustic space (as discussed in Section 1), we
+propose performing enhancement in decoupled semantic and
+timbre spaces. The key motivation for this design is twofold.
+First, semantic information can be extracted in a noise-robust
+manner using pre-trained models like Whisper, which have been
+trained on large-scale diverse audio data and inherently learn to
+preserve linguistic content even in noisy conditions. This al-
+lows us to leverage the encoder’s built-in noise robustness to
+obtain relatively clean semantic representations directly from
+noisy speech. Second, by processing timbre information sep-
+arately in its own space, we can apply specialized techniques
+(e.g., context learning and speaker embeddings) to extract and
+419
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-200
+Whisper Encoder
+Vocoder
+FlowMatching
+Noisy_ctx
+Mel Spectrogram
+Noisy
+Mel Spectrogram
+Timbre Shifter
+Clean
+Mel Spectrogram
+CAM++
+Waveform
+Discriminative/
+Diffusion/
+FlowMatching/
+Schr¨odinger bridge
+Noisy
+STFT / Waveform
+Clean
+STFT / Waveform 
+Acoustic Space Timbre Space Semantic Space
+Figure 1:The overall framework of Seed-Enh.
+restore timbre characteristics from noisy speech, without the
+constraints of maintaining acoustic-level fidelity that would in-
+terfere with semantic preservation. This decoupled process-
+ing enables independent optimization of semantic and timbre
+restoration, avoiding the mutual interference that occurs when
+both are processed jointly in the entangled acoustic space.
+As illustrated in Figure 1, our framework processes noisy
+speech in three stages: (1) semantic space processing to extract
+noise-robust semantic representations, (2) timbre space process-
+ing to extract and restore timbre information from noisy speech,
+and (3) space fusion via flow matching to generate clean speech
+by combining information from both spaces.
+2.2. Semantic Space Processing
+The semantic space processing stage leverages the noise robust-
+ness of pre-trained semantic encoders to extract clean semantic
+representations from noisy speech. To ensure proper decoupling
+between semantic and timbre information, we split the input
+audio: the second half (after applying a low-complexity timbre
+perturbation module, which is employed during training) is used
+for semantic extraction, while the first half is reserved for tim-
+bre extraction. This audio splitting strategy prevents informa-
+tion leakage by ensuring that semantic and timbre information
+are extracted from different portions of the audio, while both
+are derived from the same noisy input.
+Given the second half of the noisy speechy, we first con-
+vert it to 80-dimensional Mel spectrograms and feed them into
+a frozen Whisper-Large-v2 encoder [14]. We extract features
+from the last transformer layer of the Whisper encoder, result-
+ing in semantic representationsc semantic∈R Ts×1024, where
+Ts is the temporal length (typically 4×downsampled from the
+original audio). The key advantage of processing in the seman-
+tic space is that the Whisper encoder, pre-trained on large-scale
+internet data containing diverse noise conditions, has implic-
+itly learned to filter out noise while preserving semantic con-
+tent. Therefore, the semantic representationsc semantic ex-
+tracted from noisy speech are already relatively clean, effec-
+tively achieving ”denoising” in the semantic space through the
+encoder’s inherent noise robustness.
+2.3. Timbre Space Processing
+Unlike semantic information, timbre information is more sus-
+ceptible to noise and cannot rely solely on pre-trained models’
+robustness. Therefore, we employ specialized techniques to ex-
+tract and process timbre information from noisy speech in the
+timbre space. As mentioned in Section 2.2, we use the first half
+of the input audioy ctx for timbre extraction to ensure proper
+decoupling from semantic information.
+Global Timbre Embedding:We use a pre-trained
+CAM++ model [18] to extract a 192-dimensional global speaker
+embeddings ctx
+global ∈R 192 fromy ctx. This provides a com-
+pact representation of speaker identity that is relatively robust
+to noise due to CAM++’s training on diverse speaker verifica-
+tion tasks.
+Local Timbre Features via Context Learning:Since the
+global embedding alone may not capture all timbre details, es-
+pecially in noisy conditions, we also employ context learning to
+extract local timbre features. Specifically, we concatenate the
+Mel spectrogram ofy ctx and corresponding semantic embed-
+dingc ctx
+semantic directly to input, allowing the model to learn
+timbre information implicitly through the context.
+The final timbre representation combines the global embed-
+ding with the local Mel spectrogram features, providing both
+global speaker characteristics and local timbre details.
+2.4. Space Fusion via Flow Matching
+After processing in the semantic and timbre spaces separately,
+we fuse the information from both spaces to generate clean
+speech. We employ a flow matching model (DiT) [12] that takes
+the semantic representationcsemantic and the processed timbre
+informations ctx
+global,y ctx andc ctx
+semantic as conditions. Unlike
+previous methods such as FlowSE [7] that use noisy speech as
+the source distribution, we adopt a standard Gaussian distribu-
+tion as the source and condition the flow on information from
+both semantic and timbre spaces. The training objective mini-
+mizes the flow matching loss:
+LFM =E x∼p1,t∼U[0,1],z∼p 0 [∥vθ(xt, t, csemantic,
+sctx
+global, yctx, cctx
+semantic)−u t(x, z)∥2 (1)
+During inference, we solve the ODE to generate clean Mel spec-
+trogramsˆx, which are then converted to waveforms using a
+BigVGAN vocoder [19], producing the final clean speechx.
+2.5. Network Architecture
+DiT Architecture:The DiT (Diffusion Transformer) is the core
+generative model that fuses information from semantic and tim-
+bre spaces to generate clean Mel spectrograms. The architec-
+ture follows a Transformer-based design with the following key
+components:
+Input Processing:First,c semantic andc ctx
+semantic are up-
+sampled via nearest-neighbor interpolation to match the length
+of the acoustic representations. Next, the current statex t is
+concatenated withc semantic along the channel dimension, and
+yctx is concatenated withc ctx
+semantic in the same manner. Fi-
+nally, the resulting representations are concatenated in the tem-
+poral dimension with the diffusion timetand the global timbre
+embeddingsctx
+global, forming the final input matrix.
+Transformer Blocks:The DiT employs standard Trans-
+former blocks with self-attention mechanisms. Temporal em-
+beddingstare used in adaptive layer normalization (AdaLN)
+to condition the generation process on the diffusion time step.
+420
+Seed-EnhFlowSEAnyEnhanceSBStoRM
+SGMSETFGridNetFullSubNet
+CleanNoisy
+Time (s) Time (s) Time (s)Time (s) Time (s)
+Time (s) Time (s) Time (s)Time (s) Time (s)
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Frequency (kHz)
+0
+2
+8
+6
+4
+Figure 2:Spectrogram analysis of the proposed method.
+U-Net style skip connections are employed to maintain con-
+sistent sequence lengths without downsampling. Rotary posi-
+tion encoding (RoPE) is used for better positional generaliza-
+tion across different sequence lengths.
+2.6. Training and Inference
+Training Procedure:We adopt a two-stage training strategy.
+In the first stage, we train the DiT model using clean audio
+pairs to establish the voice conversion capability. Specifically,
+clean speech is provided as input, with timbre-related features
+extracted from the first half and semantic pronunciation repre-
+sentations extracted from the second half; the objective is to re-
+construct the clean speech signal. This stage enables the model
+to learn the mapping from semantic and timbre conditions to
+clean speech. In the second stage, we fine-tune the model on
+noisy-clean pairs to enable timbre extraction from noisy speech.
+The training data consists of noisy speechy noisy (created by
+mixing clean speech with noise at SNR ranging from -5 to 15
+dB) as input and corresponding clean speechxas target. The
+loss function is the flow matching lossL FM defined in Equa-
+tion (1).
+Inference Procedure:During inference, given noisy
+speechynoisy, we extract semantic featurescsemantic from the
+second half ofy noisy and timbre features (s ctx
+global,y ctx, and
+cctx
+semantic) from the first half. The DiT model then generates
+clean Mel spectrograms by solving the ODE using an Euler
+solver with 25 steps. If clean reference audio is available, we
+can use it to extract timbre features for better quality. For voice
+conversion tasks, we extract semantic features from the source
+speaker and timbre features from the target speaker.
+3. Experiments
+3.1. Datasets & Evaluation Metrics
+Training setsTo comprehensively evaluate the performance
+of Seed-Enh, we utilize the Emilia dataset [21] as clean au-
+dio, which contains 101k hours of speech data covering mul-
+tiple languages, including Chinese, English, French, German,
+Japanese, and Korean. For the noise types, we employ the noise
+library provided by the DNS Challenge, which contains over
+60,000 samples, amounting to 181 hours. The signal-to-noise
+ratio (SNR) range is configured to vary between -5 and 15 deci-
+bels. The model training and inference follow the guidelines at
+https://github.com/Plachtaa/seed-vc.
+Test Sets and MetricsTo evaluate the denoising perfor-
+mance, we employ the DNS Challenge blind test set and the
+simulated LibriTTS+wham dataset. Since our proposed genera-
+tive model focuses on perceptual quality rather than signal-level
+fidelity, we primarily use DNSMOS [22], a neural network-
+based speech quality estimator that effectively captures hu-
+man auditory perception. DNSMOS provides three sub-scores:
+OVRL (overall quality), SIG (signal quality), and BAK (back-
+ground noise suppression), all on a scale of 1-5. We also re-
+port SIM (speaker similarity) using Resemblyzer 1 to calculate
+cosine similarity between speaker embeddings, and CER (char-
+acter error rate) using HuBERT-Large [15] for ASR to evaluate
+intelligibility. All audio is resampled to 16,000 Hz for evalua-
+tion.
+3.2. Baselines
+In this study, we conduct a comparative analysis of our proposed
+method against several state-of-the-art approaches. Within
+the category of discriminative models, we consider FullSub-
+Net [10], which employs a comprehensive full-band and sub-
+1https://github.com/resemble-ai/Resemblyzer
+421
+Table 1:Performance Comparison of Speech Enhancement Methods on DNS blindtest set and LibriTTS+wham
+Method Type DNS blindtest LibriTTS+wham
+OVRL↑ SIG↑ BAK↑ OVRL↑ SIG↑ BAK↑ SIM↑ CER↓
+FullSubNet Regression 2.772 3.134 3.755 2.587 3.102 3.302 0.835 0.128
+TFGridNet [20] Regression 2.872 3.153 3.995 2.652 3.041 3.587 0.848 0.133
+SGMSE Diffusion 2.987 3.318 3.899 3.117 3.439 3.960 0.867 0.307
+StoRM Diffusion 2.981 3.329 3.905 3.120 3.483 3.913 0.908 0.164
+SB Schr¨odinger Bridge 3.076 3.333 4.108 3.147 3.417 4.098 0.881 0.159
+AnyEnhance MaskGit 3.054 3.314 4.039 3.061 3.352 3.993 0.843 0.318
+FlowSE [7] FlowMatching 2.824 3.159 3.839 2.893 3.230 3.801 0.828 0.263
+Seed-Enh FlowMatching 3.095 3.361 4.071 3.193 3.486 4.023 0.890 0.167
+band network architecture for speech enhancement, as well as
+TFGridNet [20], which adopts a time-frequency grid network
+approach. Furthermore, in the realm of generative models,
+we evaluate our method against the baseline implementation of
+the Schr ¨odinger Bridge (SB) [6] with four steps, StoRM [5],
+a score-based generative model designed for speech enhance-
+ment, and SGMSE [4], which represents a score matching
+method incorporating an OUVE and a one-step corrector. We
+also compare with AnyEnhance [16], which uses MaskGit for
+denoising in discrete acoustic features, and FlowSE [7], which
+uses flow matching for denoising in Mel spectrogram features.
+3.3. Experimental Results
+Overall Performance Comparison:The results presented
+in Table 1 highlight the performance of various speech en-
+hancement methods on the DNS blindtest set and the Lib-
+riTTS+wham dataset. Notably, Seed-Enh outperforms other
+methods in both datasets, achieving the highest overall scores
+(OVRL) of 3.095 and 3.193, respectively. This indicates that
+Seed-Enh can achieve better speech quality, even though we
+trained on internet data Emilia. In terms of similarity, we
+achieved better timbre similarity, slightly lower than StoRM,
+which may be due to the use of a higher number of iterations.
+In terms of character error rate, we achieved a decent charac-
+ter error rate, although it is higher than that of discriminative
+models. Our model outperforms semantic-based models like
+AnyEnhance and FlowMatching models FlowSE, and we used
+fixed parameters for the Whisper encoder without fine-tuning it
+for the denoising task, which could yield more benefits. It is
+worth noting that while SB achieves slightly higher BAK, this
+comes at the cost of more severe spectral holes and reduced
+SIG. In contrast, our proposed model better preserves spectral
+details.
+Spectrogram Analysis:The comparative analysis of the
+spectrograms in Fig 2 illustrates that while FullSubNet and TF-
+GridNet leave noticeable residual noise during non-speech in-
+tervals, generative models such as StoRM and SGMSE exhibit
+limited capability in reconstructing fine details above 6 kHz,
+showing evident high-frequency suppression. In contrast, SB
+achieves higher background cleanliness but suffers from se-
+vere over-suppression and the most pronounced attenuation of
+high-frequency components. Furthermore, AnyEnhance tends
+to discard critical speech segments and FlowSE introduces dis-
+tinct spectral holes within harmonic regions, whereas Seed-Enh
+demonstrates superior performance by effectively suppressing
+noise while accurately restoring delicate harmonic structures
+and semantic features, yielding a spectral distribution that most
+closely aligns with the Clean reference signal.
+Table 2:Performance Metrics for Denoising and Conversion
+Model Ref OVRL SIG BAK SIM CER
+Seed-Enh Noisy 3.194 3.487 4.024 0.891 0.167
+(Denoise) Clean 3.213 3.503 4.038 0.942 0.140
+Seed-Enh Noisy 3.225 3.506 4.048 0.823 0.172
+(Conversion) Clean 3.223 3.496 4.071 0.863 0.158
+Seed-VC Noisy 2.461 3.174 2.799 0.726 0.168
+(Conversion) Clean 3.174 3.486 3.991 0.861 0.166
+Denoising and V oice Conversion Analysis:Seed-Enh re-
+tains both denoising and voice conversion functions. Table 2
+shows the performance comparison on both tasks using Lib-
+riTTS+wham noisy speech as input, with both noisy and clean
+speech as references. For the denoising task, when clean refer-
+ence audio is available, Seed-Enh achieves better audio quality
+(OVRL: 3.213 vs. 3.194), similarity (SIM: 0.942 vs. 0.891),
+and intelligibility (CER: 0.140 vs. 0.167) compared to using
+noisy references. For the voice conversion task, Seed-Enh sig-
+nificantly outperforms Seed-VC when using noisy references
+(OVRL: 3.225 vs. 2.461, SIM: 0.823 vs. 0.726), demonstrat-
+ing its superior capability in handling noisy inputs. When using
+clean references, Seed-Enh achieves comparable performance
+to Seed-VC (SIM: 0.863 vs. 0.861). The minimal differences in
+CER across all models (ranging from 0.140 to 0.172) indicate
+that the Whisper encoder itself possesses good noise robustness.
+4. Conclusion
+In this paper, we propose Seed-Enh, a generative speech en-
+hancement framework that performs enhancement in decoupled
+semantic and timbre spaces rather than the original acoustic
+space. The key innovation lies in leveraging the noise robust-
+ness of pre-trained Whisper encoders to extract clean semantic
+representations, while separately processing timbre information
+using CAM++ embeddings and context learning. This decou-
+pled processing enables independent optimization of semantic
+and timbre restoration, avoiding the mutual interference that oc-
+curs in the entangled acoustic space. Experimental results on
+the DNS blindtest and LibriTTS+wham datasets demonstrate
+its ability to suppress noise while accurately restoring high-
+frequency details. Beyond speech enhancement, Seed-Enh also
+enables zero-shot voice conversion, significantly outperforming
+Seed-VC when handling noisy inputs.
+422
+5. Acknowledgement
+This work was supported by National Natural Science Founda-
+tion of China (NSFC) (No. 12504548) and CPSF Postdoctoral
+Fellowship (No. GZB20230811).
+6. Generative AI Use Disclosure
+We used generative AI tools only for grammar and language
+polishing. All technical content was written by the authors.

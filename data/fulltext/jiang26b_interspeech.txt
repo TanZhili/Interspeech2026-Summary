@@ -1,0 +1,683 @@
+VoCodec: A Low-bitrate Streamable Neural Speech Codec with Voicing-driven
+Quantization
+Xiao-Hang Jiang1, Yang Ai1,∗∗, Rui-Chen Zheng1, Li-Rong Dai1, Zhen-Hua Ling1, Ji Wu2
+1 University of Science and Technology of China, China
+2 Tsinghua University, China
+{jiang xiaohang, zhengruichen}@mail.ustc.edu.cn,
+{yangai, lrdai, zhling}@ustc.edu.cn, wuji ee@tsinghua.edu.cn
+Abstract
+Neural speech codecs are key to speech transmission and
+storage, but most use uniform quantization across frames, allo-
+cating the same bitrate regardless of content and wasting bits.
+We propose V oCodec, a low-bitrate streamable neural speech
+codec with voicing-driven quantization that assigns higher bi-
+trate to voiced frames and lower bitrate to unvoiced frames
+according to perceptual sensitivity. V oCodec embeds a voic-
+ing detector in a fully causal encoder-quantizer-decoder neural
+coding framework, using residual scalar-vector quantization for
+voiced frames and simple scalar quantization for unvoiced ones.
+Experiments show that on the LibriTTS dataset at a 16 kHz sam-
+pling rate, V oCodec outperforms baseline neural speech codecs
+even at a bitrate as low as 1.1 kbps. Our further experiments
+also confirm that introducing voicing-driven quantization can
+effectively reduce the bitrate by approximately 27% compared
+with uniform quantization strategy.
+Index Terms: neural speech codec, voicing attribute, quantiza-
+tion, low bitrate
+1. Introduction
+Speech codec is a critical component in digital speech process-
+ing, serving the dual functions of encoding and decoding speech
+signals. They play a vital role in reducing the data volume
+required to represent speech while maintaining acceptable de-
+coded speech quality. These codecs find wide application in
+speech communication [1], speech compression [2], and numer-
+ous downstream tasks such as speech synthesis [3, 4, 5, 6] and
+speech enhancement [7, 8].
+Traditional speech codecs, such as code-excited linear pre-
+diction (CELP) [9], leverage the short-term stationarity of
+speech to model vocal tract resonances via linear predictive co-
+efficients (LPC) [10]. By distinguishing between voiced and
+unvoiced excitation sources, CELP achieves high-quality recon-
+struction at medium bitrates (e.g., 4–16 kbps). However, these
+methods are difficult to generalize to different speech features
+and often rely on manual parameter adjustments.
+With advances in deep learning, neural speech codecs have
+emerged as a key focus in speech coding research. Early works
+like SoundStream [11] and Encodec [12] achieved marked per-
+formance gains over traditional codecs while maintaining low
+latency via causal models (no need for future input). How-
+ever, this left substantial room for improving coding quality.
+Later, AudioDec [13] was proposed, which attempted to use
+HiFi-GAN [14] vocoder as a decoder to improve coding qual-
+ity while maintaining low latency, but its performance was still
+unsatisfactory. As the demand for higher quality increased,
+**indicates the corresponding author.
+non-causal codecs that ignore latency requirements gradually
+emerged [15, 16, 17]. By scaling up model parameters, they
+achieved impressive performance; however, this limited their
+applicability in real-world scenarios such as real-time speech
+communication. To meet the dual objectives of low latency
+and high perceptual quality, StreamCodec [18] adopts a fully
+causal and lightweight architecture, takes the modified discrete
+cosine transform (MDCT) spectrum as the modeling target, and
+employs a novel residual scalar-vector quantizer (RSVQ) for
+discretization. The RSVQ adopts a coarse-to-fine quantization
+strategy, which significantly improves coding quality.
+However, most neural speech codecs use uniform quantiza-
+tion, allocating the same bitrate to all frames regardless of their
+characteristics (e.g., voiced or unvoiced). Since voiced frames,
+with their periodic structure and concentrated energy, contribute
+more to speech intelligibility, while unvoiced frames have a
+weaker perceptual impact [19], uniform allocation wastes bits
+on unvoiced frames and leaves room for bitrate reduction.
+To address this issue, we propose V oCodec, a low-bitrate
+streamable neural speech codec with a voicing-driven quantiza-
+tion strategy. Inspired by StreamCodec [18], V oCodec adopts
+a fully causal architecture for streaming generation. It first de-
+tects the voicing attribute of each frame, then applies RSVQ to
+voiced frames and a simple scalar quantizer (SQ) to unvoiced
+frames [20]. Experimental results show that, compared with
+baseline models using uniform quantization, V oCodec reduces
+bitrate by approximately 27% while maintaining high recon-
+struction quality by allocating more bits to perceptually impor-
+tant voiced components.
+2. Proposed Method
+2.1. Overview
+Fig. 1 shows an overview of the proposed V oCodec. V oCodec
+consists of four main components: an encoder, a voicing de-
+tector, a voicing-driven quantizer and a decoder. The encoder
+and the voicing detector process the input speech in parallel,
+and their outputs share the same frame rate (i.e., they share the
+same downsampling ratio). The voicing-driven quantizer re-
+ceives both the encoder output and the voicing flag token from
+the voicing detector, and applies either RSVQ or SQ to the
+encoded features based on the detected voicing flags. Finally,
+the decoder decodes the quantized features and reconstructs the
+speech waveform.
+2.2. Encoder & Decoder
+As shown in Fig. 1, V oCodec inherits StreamCodec’s [18]
+fully causal convolutional encoder-decoder. Its encoder en-
+codes the MDCT spectrum extracted from input speech, using
+1064
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-466
+Speech
+Waveform
+MDCT 
+Spectrum
+Causal Modified ConvNeXt v2
+Linear Layer
+Causal Downsampling Conv1D
+Causal Conv1D
+Causal Conv1D
+IVQ 1
+... SQ Ns
+ ... IVQ Nv
+......
+Causal Conv1D
+Causal Upsampling DeConv1D
+Linear Layer
+Causal Modified ConvNeXt v2
+Causal Conv1DMDCT 
+Spectrum
+Speech
+Waveform
+IMDCT
+Encoder Decoder
+x8
+ x8
+SQIf Unvoiced
+If Voiced
+Voicing-driven Quantizer
+Voicing Detector
+ABS &
+SUM
+ABS &
+SUM
+ Energy Detector 
+SQ 1
+dSQ
+dSQ
+ dIVQ
+ dIVQ… 
+Quantization Tokens
+… 
+dSQ
+Voicing Flag Token
+(1)
+(0)
+(Ns) (1) (Nv)
+dVF
+share downsampling ratio
+FFT
+FFT
+MDCT
+Figure 1:Overall architecture of the proposed VoCodec. Here, MDCT, IMDCT, Uni-LSTM, SQ, IVQ, FFT, ABS and SUM stand for
+modified discrete cosine transform, inverse modified discrete cosine transform, unidirectional long short-term memory layer, scalar
+quantizer, improved vector quantizer, fast Fourier transform, absolute value calculation and summation, respectively.
+8 convolution-based causal modified ConvNeXt v2 blocks [18]
+as backbone, along with causal convolutional layers and linear
+layers. As a supplement to the causal convolution operations,
+we introduce a unidirectional long short-term memory (LSTM)
+layer [21] at the end of the encoder for sequential modeling.
+The decoder, symmetric to the encoder but with upsampling in-
+stead of downsampling, decodes the MDCT spectrum which is
+finally converted to waveform via inverse MDCT.
+2.3. Voicing Detector
+In V oCodec, the voicing detector extracts voicing flag tokens
+from the input speech waveform. Based on these tokens, the
+voicing-driven quantizer adaptively selects quantization strate-
+gies to optimize bitrate allocation. Given that V oCodec operates
+in a streamable manner, we illustrate the processing pipeline us-
+ing a single frame as an example. The process for generating the
+voicing flag token is detailed as follows. First, for a frame of
+time-domain speech waveformx∈R N (i.e., a speech segment
+after framing and windowing), it first computes the complex
+spectrum using the fast Fourier transform (FFT), i.e.,
+X[k] =
+N−1X
+n=0
+x[n]·e −j2πkn/N, (1)
+whereNandkrepresent frame length and frequency bin index,
+respectively. To align the frame rate of the voicing flag token
+with that of the encoder’s encoded feature, the framing process
+adopts a frame shift identical to the encoder’s downsampling
+ratio. Subsequently, the frame energy is calculated according to
+the formula:
+E=
+Kf0max−1X
+k=Kf0min−1
+|X[k]|, (2)
+whereK f0min andK f0max are the index boundaries of the
+fundamental frequency search range in the frequency domain,
+defined asK f0min =
+j
+f0min·KFFT
+fs
+k
+,Kf0max =
+j
+f0max·KFFT
+fs
+k
+,
+wheref 0min andf 0max are minimum and maximum fundamen-
+tal frequency.K FFT andfs represent the number of FFT points
+and the waveform sampling rate, respectively. Next,Eis pro-
+cessed by an energy detector. If the energy exceeds the thresh-
+oldτ energy, the frame is classified as voiced (assigned a flag to-
+ken of 1); otherwise, it is classified as unvoiced (assigned a flag
+token of 0), i.e.,
+dVF =
+(
+1ifE >τ energy
+0otherwise ,(3)
+wheredVF is the voicing flag token.
+2.4. Voicing-driven Quantizer
+The voicing-driven quantizer is a core component of V oCodec,
+specifically designed to apply distinct quantization strategies to
+voiced and unvoiced frames. Due to the periodic nature and
+low-frequency energy concentration of voiced sounds, they play
+a more dominant role in auditory perception. In contrast, un-
+voiced sounds exhibit more dispersed and lower energy, result-
+ing in a relatively minor perceptual impact. Therefore, a more
+sophisticated quantization strategy is applied to voiced frames,
+as they contribute more significantly to perceived speech quality
+than unvoiced frames.
+Specifically, given an encoded feature frames∈R M from
+the encoder, whereMis the feature dimension, the voicing-
+driven quantizer selects either RSVQ or SQ based on the voic-
+ing flag tokend VF . Ifd VF = 1(i.e.,sis the encoded fea-
+ture of a voiced frame),sis quantized using the RSVQ. The
+RSVQ consists of multiple SQs [20] and improved vector quan-
+tizers (IVQs) [22]. The SQ handles coarse quantization, while
+IVQ is responsible for fine quantization, with a residual connec-
+tion established between them. In contrast to traditional VQ,
+IVQ introduces online clustering and codebook balancing loss.
+These improvements enable IVQ to prevent codebook collapse
+and achieve higher codebook efficiency. Ifd VF = 0(i.e.,sis
+the encoded feature of an unvoiced frame),sis quantized us-
+ing a single SQ. Therefore, the quantization result ofsby the
+voicing-driven quantizer is:
+ˆs=
+(PNs
+i=1 L(W(i)
+SQ,d (i)
+SQ) + PNv
+j=1 L(W(j)
+IVQ,d (j)
+IVQ ),ifd VF = 1,
+L(W(0)
+SQ,d (0)
+SQ),ifd VF = 0.
+(4)
+where ˆs∈R M .N s,Nv are the numbers of SQs and IVQs
+in RSVQ.Lrepresents the lookup operation.W (i)
+SQ andd (i)
+SQ
+denote the codebook (with a size ofK (i)
+SQ) and the quantization
+token of thei-th SQ in RSVQ, respectively.W (j)
+IVQ andd (j)
+IVQ
+denote the codebook (with a size ofK(j)
+IVQ ) and the quantization
+token of thej-th IVQ in RSVQ, respectively.W (0)
+SQ andd (0)
+SQ
+denote the codebook (with a size ofK (0)
+SQ) and the quantization
+token of the single SQ, respectively. Therefore, the quantization
+tokens produced by the voicing-driven quantizer are given as
+follows:
+dQ =
+(
+d(1)
+SQ,...,d (Ns)
+SQ ,d (1)
+IVQ,...,d (Nv )
+IVQ,ifd VF = 1,
+d(0)
+SQ,ifd VF = 0.
+(5)
+Therefore, V oCodec produces two types of tokens, i.e.,
+1065
+Table 1:Results on LibriTTS (16 kHz) at 1.1 kbps. Thebold
+and underlined numbers indicate optimal and sub-optimal re-
+sults, respectively. The hidden-reference natural speech scored
+93.21±1.74, and the anchor scored29.25±2.68in MUSHRA.
+Streamable Target Bitrate = 1.1 kbps
+LSD (dB)↓STOI↑ViSQOL↑MUSHRA↑FLOPs↓Param.↓
+DAC × 0.936 0.888 3.781 74.83±5.32 55.53G 73.87M
+BigCodec × 0.8880.920 4.086 77.40±5.0761.03G 159.32M
+AudioDec ✓ 0.988 0.698 3.617 71.02±5.89 26.32G 24.41M
+MDCTCodec-S ✓ 0.952 0.867 3.772 65.37±7.712.32G 6.75M
+StreamCodec ✓ 0.918 0.896 4.048 69.64±6.522.32G 6.75M
+V oCodec ✓ 0.896 0.916 4.11575.18±5.16 2.62G 9.31M
+quantization tokensdQ and voicing flag tokendVF . Once con-
+verted into binary format, these two types of tokens are both
+transmitted or stored, allowing the receiver or decompression
+module to reconstruct the speech signal accordingly based on
+the voicing flag. For bitrate calculation of V oCodec, assume
+that the downsampling rate of the encoder isDand the ratio
+of voiced frames isR, the bitrate of V oCodec is calculated as
+follows:
+Bitrate= fs
+D·[R·(
+NsX
+i=1
+log2K (i)
+SQ +
+NvX
+j=1
+log2K (j)
+IVQ )
++(1−R)·(log 2K (0)
+SQ) + 1].
+(6)
+2.5. Mask-based Efficient Training
+During V oCodec’s training, streaming mode slows training sig-
+nificantly as parallel computation is not feasible. To acceler-
+ate training, we use a mask-based strategy. Specifically, in-
+stead of selecting RSVQ or SQ for batch encoded features
+S= [s 1,...,s B]∈R M×B (withs b∈R M (b= 1,...,B)
+andBas the number of frames) based on voicing flag tokens,
+we apply dual-path quantization toSin parallel. This yields
+two quantized outputs: ˆSv ∈R M×B from the RSVQ and
+ˆSu∈R M×B from the SQ. Given the batch voicing flag token
+vectordVF = [dVF−1 ,...,d VF−B ]⊤∈R B, we construct the
+corresponding mask matrix as
+mask= [d VF ,dVF ,...,d VF
+| {z }
+repeatM times
+]⊤, (7)
+wheremask∈R M×B . At the output of the voicing-driven
+quantizer, the decoder receives:
+ˆS= ˆSv⊙mask+ ˆSu⊙(1−mask), (8)
+where⊙represents the element-wise multiplication. The pur-
+pose of the mask matrix is to selectively mask either voiced or
+unvoiced frames. This method facilitates efficient and paral-
+lelizable model training. Regarding the loss function, V oCodec
+borrows the formulation from [18], which consists of spectral-
+level loss, codebook loss and generative adversarial loss.
+3. Experiments
+3.1. Experimental Setup
+We conducted experiments 1 on the LibriTTS [23] and VCTK
+[24] datasets. For LibriTTS (16 kHz sampling rate), we used
+train-clean-100 and train-clean-360 for training, dev-clean and
+1Speech samples are available at:https://pb20000090.
+github.io/VoCodec/.
+Table 2:Results on VCTK (48 kHz) at 2.7 kbps. Thebold
+and underlined numbers indicate optimal and sub-optimal re-
+sults, respectively. The hidden-reference natural speech scored
+95.08±1.33, and the anchor scored28.16±3.42in MUSHRA.
+Streamable Target Bitrate = 2.7 kbps
+LSD (dB)↓STOI↑ViSQOL↑MUSHRA↑
+DAC × 0.870 0.842 3.580 81.22±3.41
+BigCodec × 0.850 0.8803.67884.73±2.27
+AudioDec ✓ 0.886 0.771 3.695 81.01±3.37
+MDCTCodec-S ✓ 0.862 0.836 3.714 79.30±4.41
+StreamCodec ✓ 0.855 0.842 3.802 79.38±3.92
+V oCodec ✓ 0.8470.857 3.84082.95±2.38
+45.25
+%
+19.25
+%
+35.50
+%
+45.25
+%
+19.25
+%
+35.50
+%
+VoCodec @1.1 kbps N/P AudioDec @1.1 kbps
+(p=0.0298)
+53.50
+%
+6.00
+%
+40.50
+%
+53.50
+%
+6.00
+%
+40.50
+%
+VoCodec @1.1 kbps N/P DAC @1.1 kbps
+(p=0.0071)
+47.75
+%
+16.75
+%
+35.50
+%
+47.75
+%
+16.75
+%
+35.50
+%
+N/P MDCTCodec-S @1.1 kbps
+(p=0.0071)
+52.50
+%
+11.75
+%
+35.75
+%
+52.50
+%
+11.75
+%
+35.75
+%
+N/P StreamCodec @1.1kbps
+(p=0.0003)
+VoCodec @1.1 kbps
+VoCodec @1.1 kbps
+43.75
+%
+14.50
+%
+41.75
+%
+43.75
+%
+14.50
+%
+41.75
+%
+N/P BigCodec @1.1kbps
+(p=0.6658)
+VoCodec @1.1 kbps
+Figure 2:LibriTTS (16 kHz) ABX preference (%) at 1.1 kbps.
+N/P indicates “no preference”;pis the pairedt-testp-value.
+test-clean for validation and testing. For VCTK (48 kHz sam-
+pling rate), 40,936 utterances served as the training set and
+2,937 as the test set.
+V oCodec inherits the model configuration and training pa-
+rameters from [18]. The downsampling rate is set toD= 320
+For the RSVQ, we used one SQ and two IVQs. For all SQs
+and IVQs in V oCodec, the codebook size is set to 1024. The
+input and output dimensions of each quantizer are set to 32. We
+setf 0min = 60,f 0max = 600andτ energy = 0.75as voicing
+detection parameters.
+The effective bitrate of V oCodec is content-dependent and
+varies with the voiced-frame ratioR. V oiced frames are en-
+coded by RSVQ (one SQ plus two IVQs), whereas unvoiced
+frames are encoded by a single SQ, with an additional 1-bit
+voicing flag transmitted for each frame. Equation (6) yields the
+simplified bitrate expressionBitrate = fs
+320 (11 + 20R),which
+shows that the bitrate depends linearly onR. SinceR∈[0,1],
+the bitrate ranges from0.55to1.55kbps at16kHz; accord-
+ingly, at48kHz, the bitrate ranges from1.65to4.65kbps. With
+R= 0.55on LibriTTS andR= 0.35on VCTK, the resulting
+average bitrates are1.1kbps and2.7kbps, respectively.
+3.2. Evaluation Metrics
+Both objective and subjective metrics are used for evaluating
+the performance of compared codecs from different perspec-
+tives. For coding quality evaluation, we employed three met-
+rics: log-spectral distance (LSD), short-time objective intelli-
+gibility (STOI) [25] and virtual speech quality objective lis-
+tener (ViSQOL) [26]. Additionally, floating point operations
+(FLOPs) [27] and the number of model parameters (Param.)
+were also analyzed to assess computational complexity and
+model efficiency, respectively.
+For subjective evaluation, we conducted multiple stim-
+uli with hidden reference and anchor (MUSHRA) [28] and
+ABX preference tests on Amazon Mechanical Turk to com-
+pare V oCodec with baseline codecs. In MUSHRA, 20 test-set
+utterances per codec were rated by at least 20 native English
+listeners on a 0–100 scale, with natural speech as the hidden
+reference and a 3.5-kHz low-pass-filtered version as the an-
+chor. In ABX, 20 test-set utterance pairs for each compari-
+1066
+47.50
+%
+7.00
+%
+45.50
+%
+47.50
+%
+7.00
+%
+45.50
+%
+VoCodec @1.1 kbps N/P AudioDec @1.5 kbps
+(p=0.6788)
+43.75
+%
+9.00
+%
+47.25
+%
+43.75
+%
+9.00
+%
+47.25
+%
+VoCodec @1.1 kbps N/P DAC @1.5 kbps
+(p=0.4638)
+47.75
+%
+7.25
+%
+45.00
+%
+47.75
+%
+7.25
+%
+45.00
+%
+VoCodec @1.1 kbps N/P MDCTCodec-S @1.5 kbps
+(p=0.5686)
+43.00
+%
+9.25
+%
+47.75
+%
+43.00
+%
+9.25
+%
+47.75
+%
+VoCodec @1.1 kbps N/P StreamCodec @1.5 kbps
+(p=0.3193)
+42.60
+%
+21.20
+%
+36.20
+%
+42.60
+%
+21.20
+%
+36.20
+%
+VoCodec @1.1 kbps N/P SQCodec @1.5 kbps
+(p=0.1070)
+Figure 3:LibriTTS (16 kHz) ABX preference (%) comparing
+VoCodec (1.1 kbps) with other codecs (1.5 kbps). N/P denotes
+“no preference”;pis the pairedt-testp-value.
+son were evaluated by at least 20 native English listeners, who
+were asked to determine which utterance in each pair had better
+speech quality, or whether they had no preference. We report
+mean scores/preferences and statistical significance via at-test
+(p-value).
+3.3. Comparison with Baseline Neural Speech Codecs
+We compared the proposed V oCodec with several advanced
+neural speech codecs including non-streamable codecs, i.e.,
+DAC [15], BigCodec [17], SQCodec [29], and streamable
+codecs, i.e., AudioDec [13], causal MDCTCodec (denoted as
+MDCTCodec-S) [30] and StreamCodec [18].
+To ensure fairness, all baseline codecs were configured to
+match V oCodec’s target bitrates (1.1 kbps at 16 kHz and 2.7
+kbps at 48 kHz). Specifically, we set the stride factors to 2, 4,
+5, and 8, yielding an overall downsampling factor of 320, and
+used two codebooks with sizes of 2048 at 16 kHz and 512 at 48
+kHz. SQCodec was excluded because its official release only
+provides a 1.5 kbps implementation at 16 kHz.
+At 16 kHz and 1.1 kbps, the objective results in Table 1
+show that the lightweight V oCodec is highly competitive in
+LSD, STOI, and ViSQOL, approaching the heavyweight Big-
+Codec despite much higher computational cost. This trend
+is consistent with the subjective MUSHRA results, where
+V oCodec ranks second, close to BigCodec and clearly ahead
+of StreamCodec. Compared with StreamCodec, replacing the
+original RSVQ with the proposed voicing-driven quantizer and
+introducing a unidirectional LSTM yields clear quality gains
+without a significant increase in parameters, while preserving
+low latency, low complexity, and a lightweight design. The
+48 kHz results in Table 2 further confirm the effectiveness of
+V oCodec across sampling rates and datasets.
+We further conducted ABX listening tests at 16 kHz. As
+shown in Fig. 2, the subjective results are consistent with Ta-
+ble 1: at 1.1 kbps, V oCodec significantly outperforms most
+baselines (p <0.05) and remains comparable to BigCodec
+(p>0.05). This indicates that reducing the bitrate of unvoiced
+frames via voicing-driven quantization does not noticeably de-
+grade perceptual quality. We also compared V oCodec at 1.1
+kbps with higher-bitrate baselines in order to evaluate the bi-
+trate savings enabled by the proposed quantizer. Fig. 3 shows
+that V oCodec at 1.1 kbps achieves perceptual quality compa-
+rable to all compared codecs, including SQCodec, at 1.5 kbps
+(p>0.05), corresponding to a bitrate saving of 27% (400 bps).
+3.4. Analysis and Discussion
+In this section, we further conducted detailed analysis experi-
+ments for voiced and unvoiced frames respectively to verify the
+effectiveness of the speech coding approach based on voicing
+Table 3:Experimental results on decoded speech quality evalu-
+ations for StreamCodec, VoCodec and VoCodec-r on LibriTTS
+(16 kHz) at 1.1 kbps.
+Target Bitrate = 1.1 kbps
+LSD↓LSD v↓LSD u↓STOI↑ViSQOL↑
+StreamCodec 0.918 0.7400.6200.896 4.048
+V oCodec 0.896 0.7000.6450.916 4.115
+V oCodec-r 0.959 0.796 0.622 0.823 3.673
+0 1 2 3
+Time (s)
+0
+2
+4
+6
+8Frequency (kHz)
+VoCodec
+0 1 2 3
+Time (s)
+0
+2
+4
+6
+8Frequency (kHz)
+VoCodec-r
+0 1 2 3
+Time (s)
+0
+2
+4
+6
+8Frequency (kHz)
+GT
+Figure 4:Comparison of speech spectrograms from the ground
+truth (GT) and the decoded speech of VoCodec and VoCodec-r.
+properties proposed in this paper. For convenience, the follow-
+ing experiments were conducted only at 1.1 kbps and a 16 kHz
+sampling rate.
+Separate Evaluation for Voiced and Unvoiced Frames.We
+measured LSD for voiced and unvoiced frames as LSD v and
+LSDu separately. Table 3 shows that V oCodec, which priori-
+tizes quantization of voiced frames, outperformed StreamCodec
+in voiced-frame LSD but performed worse on unvoiced frames.
+However, subjective results in Fig. 2 indicate that V oCodec
+sounded significantly better than StreamCodec. These findings
+suggest that the degraded objective performance on unvoiced
+frames has minimal impact on perceptual quality, consistent
+with the effectiveness of V oCodec’s voicing-driven quantization
+strategy.
+Analysis of the Impact of Reversing Quantization Strategies
+Between Voiced and Unvoiced Frames.To further validate the
+effectiveness of the voicing-driven quantizer, we reversed the
+quantization strategies: using RSVQ for unvoiced frames and
+single SQ for voiced frames (denoted V oCodec-r). Table 3 com-
+pares V oCodec and V oCodec-r, showing reversed quantization
+for voiced/unvoiced frames significantly degrades most met-
+rics, including, LSD, LSD v, STOI and ViSQOL. While com-
+plex quantization for unvoiced frames improves their LSD, i.e.,
+LSDu, it offers no gain in speech intelligibility or overall per-
+ceptual quality. Fig. 4 also presents their spectrograms, with the
+blue box highlighting severe distortion in the voiced-frame har-
+monics of V oCodec-r. These results confirm the need for more
+complex quantization of voiced frames and the effectiveness of
+V oCodec’s voicing-driven approach.
+4. Conclusion
+This paper presents V oCodec, a streamable neural speech codec
+designed for low-bitrate scenarios. Its key innovation is a
+voicing-driven quantization strategy that allocates bitrates based
+on speech’s voiced/unvoiced characteristics, effectively reduc-
+ing bitrate while preserving high perceptual quality. Experi-
+mental results show V oCodec outperforms advanced baseline
+neural speech codecs in coding quality at lower bitrates, with
+competitive computational and model complexity, validating its
+ability to save bitrate and improve compression efficiency. Ex-
+tending V oCodec to the coding of other types of audio data will
+be the focus of our future work.
+1067
+5. Acknowledgments
+This work was supported by the National Natural Science Foun-
+dation of China under Grant No. 62301521 and U23B2053.
+6. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used
+ChatGPT 5.2 to polish the language and improve the flow of
+the text. After using this tool, the authors reviewed and edited
+the content as needed and take full responsibility for the final
+version of the manuscript.

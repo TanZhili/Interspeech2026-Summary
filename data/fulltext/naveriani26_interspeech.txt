@@ -1,0 +1,567 @@
+Diffusion Language Models for Speech Recognition
+Davyd Naveriani1,∗, Albert Zeyer ID 1,2,∗, Ralf Schlüter ID 1,2, Hermann Ney1,2
+1Machine Learning and Human Language Technology Group, RWTH Aachen University, Germany
+2AppTek, Germany
+davyd.naveriani@rwth-aachen.de, {zeyer,schlueter,ney}@cs.rwth-aachen.de
+Abstract
+Diffusion language models have recently emerged as a leading
+alternative to standard language models, due to their ability for
+bidirectional attention and parallel text generation. In this work,
+we explore variants for their use in speech recognition. Specif-
+ically, we introduce a comprehensive guide to incorporating
+masked diffusion language models (MDLM) and uniform-state
+diffusion models (USDMs) for rescoring ASR hypotheses. Ad-
+ditionally, we designed a new joint-decoding method that com-
+bines CTC and USDM by integrating the framewise probabil-
+ity distributions derived from CTC with the labelwise proba-
+bility distributions computed by USDM at each decoding step,
+thereby generating new candidates that combine strong lan-
+guage knowledge from USDM and acoustic information from
+CTC. Our findings reveal that USDM, as well as MDLM, can
+significantly improve the accuracy of recognised text. We pub-
+lish all our code and recipes.
+Index Terms: Speech Recognition, Diffusion Language Model
+1. Introduction
+Autoregressive language models (LMs) are commonly used to
+improve automatic speech recognition (ASR) systems due to
+their strong linguistic capabilities and the ability to incorpo-
+rate external textual knowledge [1–3]. However, applying tra-
+ditional autoregressive LMs in joint decoding inherently limits
+the speed due to their strictly left-to-right decoding structure.
+Non-autoregressive language models [4–6] can operate in a par-
+allel manner, potentially resolving this bottleneck and enabling
+faster decoding.
+Recently, discrete diffusion models, such as large language
+diffusion with masking (LLaDA) [7] and masked diffusion lan-
+guage models (MDLM) [8] have emerged as powerful non-
+autoregressive alternatives [7–12]. Prior work has explored
+diffusion-based models in ASR as audio-conditioned decoders
+[13–15]. Other non-autoregressive speech recognition models
+have been proposed [16–18].
+Here, we focus on keeping a separate language model to
+better leverage large amounts of text data and to allow more
+flexible integration of the language model into the ASR sys-
+tem [19, 20]. An investigation of diffusion language models
+as standalone models for joint ASR decoding has not yet been
+conducted and their integration into token-level joint decoding
+remains unexplored.
+In this work, we systematically investigate diffusion lan-
+guage models for ASR rescoring, comparing masked diffusion
+language models (MDLM) and uniform-state diffusion models
+*These authors contributed equally.
+(USDM). Furthermore, we develop a novel token-level decod-
+ing method that allows for the integration of USDM with a
+non-autoregressive connectionist temporal classification (CTC)
+speech recognition model [21]. Because USDM corrupts se-
+quences using uniform transitions without artificial mask to-
+kens, it provides a full vocabulary probability distribution for
+every token at each denoising step [22], which enables a direct
+combination of framewise CTC probabilities and labelwise dif-
+fusion distributions during hypothesis construction, as detailed
+in Section 2 and Section 3. To the best of our knowledge,
+this is the first work that (i) systematically compares masked
+and uniform-state diffusion language models for ASR rescor-
+ing, and (ii) integrates a uniform-state diffusion language model
+into CTC-based token-level joint decoding.
+2. Diffusion Language Models
+Masked diffusion language model.MDLM corrupts text by
+randomly masking tokens and learns to reconstruct the sequence
+during the reverse generative pass.During the forward pro-
+cess,tokens are independently masked based on a monotoni-
+cally decreasing noise scheduleα t ∈[0,1]. Essentially,α t
+represents the probability of a token retaining its original value,
+while(1−α t)is the probability of it being masked. As the
+process reaches the final stepL,α L approaches0, meaning the
+sequence becomes completely masked with probability1. The
+marginal distribution of this forward process is defined as:
+q(zt|w) = Cat(z t;α t1w + (1−α t)1m)(1)
+whereCatis the categorical distribution,wis the original clean
+token,z t∈Vis the token at diffusion stept,1 w∈{0,1} |V|
+denotes the one-hot vector with a1at positionw∈Vand in-
+dicates a clean token, andmis the index of the[MASK]token.
+During the reverse process,starting from a fully masked se-
+quence, an MDLM iteratively denoises the text to recover the
+original tokens. The theoretical objective is to align the reverse
+transition with the true posterior distribution, which is defined
+as:
+q(zs|z t,w)
+=
+
+
+
+Cat(zs; 1zt )z t̸=m,
+Cat
+
+zs; (1−α s)1m + (αs−αt)1w
+1−α t
+
+zt =m.
+(2)
+However, because the target tokenwis unknown during gen-
+eration, a parameterized modelw θ(zt,t)is trained to directly
+predict the best estimate of the unmasked tokens from the noisy
+statez t. This implies that the training objective is computed
+5471
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2070
+exclusively over the masked tokens, taking the form of a cross-
+entropy loss weighted by the noise schedule [7,8]. The bidirec-
+tional context modeling of MDLM makes it particularly well-
+suited for ASR hypothesis rescoring [13, 14].
+Uniform-state diffusion model.USDM works similarly to
+MDLM but uses a different corruption strategy.During the for-
+ward process,tokens are replaced with random samples from
+the vocabulary rather than a mask token. The marginal distri-
+bution is defined asq(zt|w) = Cat(z t;α t 1w + (1−α t)π),
+whereπ= 1
+|V| 1is the uniform distribution over the vocabulary
+V[23].During the reverse process,these forward dynamics
+allow for continual token updates. Since corrupted tokens are
+indistinguishable from clean ones, the model must re-evaluate
+every position at each denoising step, enabling a self-correcting
+property where previously predicted tokens can be updated or
+fixed in the future steps [9, 22, 24, 25]. Consequently, at each
+denoising step, the modelw θ(zt,t)produces a full probabil-
+ity distribution over the entire vocabulary for every token in the
+sequence, regardless of its current state. For ASR, this dense
+output is particularly advantageous as it provides a continu-
+ous stream of vocabulary-wide probabilities that can be directly
+aligned and combined with frame-wise CTC scores during joint
+decoding.
+3. Methodology
+3.1. Rescoring
+We rescoren-best CTC hypotheses˜a
+˜S
+1 = (˜a1,...,˜a ˜S)by com-
+bining the CTC log-probability with a diffusion language model
+(DiffLM) score and a prior correction term:
+F(˜a
+˜S
+1 ) =λ CTC logP CTC(˜a
+˜S
+1|x T
+1 )
++λ DiffLMFDiffLM(˜a
+˜S
+1 )
+−λ prior logP prior(˜a
+˜S
+1 )(3)
+wherex T
+1 denotes the sequence ofTacoustic feature frames,
+λCTC,λ DiffLM, andλ prior are tunable interpolation weights,
+and the prior term compensates for the implicit language model
+bias learned by the CTC model [26,27]. SincelogP DiffLM(˜a
+˜S
+1 )
+is intractable, prior work has shown that it can be approximated
+using a variational evidence lower bound (ELBO) [8, 28]. We
+also propose alternative score functions for the diffusion LM,
+denotedF DiffLM(˜a
+˜S
+1 ).
+MDLM.A naive sequence-length normalization estimate av-
+erages over the full sequence length ˜S:
+FDiffLM-seq(˜a
+˜S
+1 ) = 1
+K
+KX
+k=1
+1
+˜S
+α′
+tk
+1−α tk
+X
+j∈Mk
+logPθ(˜aj|z
+˜S
+tk,1)
+(4)
+wheretk is a noise level for samplekthat determines the mask-
+ing probability,M k is the set of randomly masked positions
+in thek-th sample,˜a j is thej-th token of the hypothesis, and
+z
+˜S
+tk,1 denotes the noisy sequence obtained by masking posi-
+tionsM k with masking probability(1−α t). As discussed
+in [7], this estimator suffers from high variance because the
+weightα ′
+tk/(1−α tk )does not directly reflect the number of
+masked tokens|Mk|in each Monte Carlo sample, since tokens
+are masked randomly.
+Sample-level mask normalization.We normalize each sam-
+ple by its own mask count before averaging overK:
+FDiffLM-sample(˜a
+˜S
+1 ) = 1
+K
+KX
+k=1
+1
+|Mk|
+X
+j∈Mk
+logPθ(˜aj|z
+˜S
+tk,1)
+(5)
+Global mask normalization.We pool all masked predictions
+across allKsamples and divide by the total mask count:
+FDiffLM-global(˜a
+˜S
+1 ) =
+PK
+k=1
+P
+j∈Mk
+logPθ(˜aj|z
+˜S
+tk,1)
+PK
+k=1|Mk|
+(6)
+Sample-level normalization weights each Monte Carlo sample
+equally, whereas global normalization weights each predicted
+token equally. As shown in Figure 3, they significantly improve
+WER over sequence-length normalization.
+Coupled scoring.Additionally, inspired by the coupled-
+sampling scheme from [29], we constructKpairs of comple-
+mentary masksM (1)
+k andM (2)
+k =M(1)
+k , such that every token
+is masked in exactly one of the two forward passes per pair:
+FDiffLM-coupled(˜a
+˜S
+1 )
+= 1
+K
+KX
+k=1
+1
+˜S
+ X
+j∈M(1)
+k
+logPθ(˜aj|z (1), ˜S
+tk,1 )
++
+X
+j∈M(2)
+k
+logPθ(˜aj|z (2), ˜S
+tk,1 )
+!
+(7)
+This guarantees that every token contributes to the score in a
+realistic partially-masked context, reducing estimation variance
+compared to standard Monte Carlo sampling.
+USDM.We adopt the ELBO from [9] as the scoring objec-
+tive. Unlike MDLM, where only masked tokens contribute to
+the score, USDM corrupts positions with uniform noise and ev-
+ery token participates in the score regardless of the noise level.
+3.2. Joint-Decoding
+USDM exhibits several properties that make it particularly suit-
+able for integration with CTC in a joint decoding framework
+(see Figure 1): its self-correcting nature allows the model to
+continuously refine all positions rather than committing to pre-
+dictions early; and since tokens are corrupted with uniform
+noise rather than a mask token, the model maintains a well-
+defined probability distribution over the full vocabulary at every
+position throughout the entire denoising process. These proper-
+ties motivate us to extend USDM to a novel joint CTC-USDM
+decoding framework.
+We initialize the denoising process from the CTC greedy
+sequence˜a
+˜S
+greedy,1 at noise levelt start [15], which we treat as a
+tunable hyperparameter. Since CTC operates on frames while
+USDM operates on tokens, we align the two by extracting the
+log-probability distribution of the first frame corresponding to
+each collapsed token and renormalizing it over the non-blank
+vocabulary. At each denoising stepl, and each token positioni,
+USDM produces a token-level distributionPθ,i(·|z
+˜S
+tl,1), which
+we combine with the CTC distribution:
+Fcomb,i(v) =λ CTC logP CTC,τi (v|x T
+1 )
++λ DiffLM logPθ,i(v|z
+˜S
+tl,1)−λ prior logP prior(v),∀v∈V
+(8)
+5472
+𝐶𝑜𝑛𝑓𝑜𝑟𝑚𝑒𝑟𝐸𝑛𝑐𝑜𝑑𝑒𝑟Audio
+𝒕𝒐𝒌𝒆𝒏𝒎 𝒕𝒐𝒌𝒆𝒏𝒎
+𝑈𝑛𝑖𝑓𝑜𝑟𝑚−𝑆𝑡𝑎𝑡𝑒
+𝐷𝑖𝑓𝑓𝑢𝑠𝑖𝑜𝑛𝑀𝑜𝑑𝑒𝑙
+𝒕𝒐𝒌𝒆𝒏𝒎 𝒕𝒐𝒌𝒆𝒏𝒌
+𝒕𝒐𝒌𝒆𝒏𝒌𝒃𝒍𝒂𝒏𝒌
+𝑧!,#
+$%=𝑎$&’(()*,#
++̃
+𝑡=𝑡-./’.
+𝐹!"#$,&𝑣=	%𝜆’(’log𝑃’(’,)!𝑣𝑥*
+(
++𝜆+,--./log𝑃0,&𝑣𝑧1",*
+23	−𝜆45&65log𝑃45&65𝑣/ 
+𝐼𝑛𝑝𝑢𝑡
+𝑆𝑡𝑒𝑝0
+𝑦01234	
+log𝑃!"!,$!"𝑣𝑥%
+&
+log𝑃!"!,$#𝑣𝑥%
+&
+𝑃!"#$,&𝑣
+=softmax𝐹!"#$,&𝑣 
+𝑙=𝑙−1 
+𝑧1"#$,&∼𝑃!"#$,&(𝑣) 
+ 
+ 
+Figure 1:Overview of the proposed joint CTC-USDM decoding.
+At each denoising step, the USDM token-level distribution is
+combined with the CTC frame-level distribution to sample input
+to the next denoising step.
+τi denotes the first CTC frame aligned with token positioni
+in the collapsed greedy sequence. The termP CTC,τi (v|x T
+1 )
+corresponds to the frame-level CTC probability of tokenvat
+frameτ i, obtained from the encoder output and renormalized
+over the non-blank vocabulary. The termPθ,i(v|z
+˜S
+tl,1)denotes
+the token-level probability predicted by the USDM at position
+igiven the current noisy sequencez
+˜S
+tl,1. The combined score
+Fcomb,i(v)therefore integrates acoustic evidence from the CTC
+model with contextual information from the diffusion language
+model during each denoising step. We adopt ancestral sampling
+from [23, 24, 30], drawing each position ofz
+˜S
+tl,1 independently
+from the corresponding combined distributionP comb,i, which
+is derived asP comb,i = softmax(Fcomb,i).
+4. Experiments
+4.1. Experimental Setup
+We use LibriSpeech [31] for both ASR and language-model
+training: the CTC ASR model is trained on the 960-hour Lib-
+riSpeech ASR training data, while MDLM and USDM are
+trained on a combined corpus of normalized LibriSpeech LM
+data and train-other transcriptions. For our experiments, we
+leverage the training frameworks from [8, 9]. The DiffLMs are
+trained for 5, 10, and 25 epochs using AdamW with weight de-
+cay 0.1 [32], a piecewise linear learning-rate scheduler, and a
+batch size of 20,000 tokens. We evaluate two Diffusion Trans-
+former (DiT) architectures [33]: a small model with 12 layers,
+hidden dimension 768, and about 110M parameters, and our pri-
+mary 24-layer model with 16 attention heads, dropout 0.1 [34],
+hidden dimension 1024, and about 340M parameters. Text is
+tokenized with SentencePiece into 10,240 subword units [35].
+4.2. Results
+Language model training.Table 1 shows the perplexity up-
+per bounds for USDM and MDLM trained with the same con-
+figuration. MDLM achieves lower PPL at 5 and 10 epochs (see
+Figure 2, e.g. 37.0 vs. 39.4 on dev at 10 epochs), but USDM
+surpasses it at 25 epochs (34.0 vs. 32.3 on dev). This can be ex-
+plained by the fact that USDM faces an inherently harder task.
+Both models show improvement with longer training.
+Rescoring.As illustrated in Figure 3, MDLM rescoring
+0 50 100 150 200
+Subepoch
+40
+60
+80
+100
+120
+140PPL
+USDM 10ep
+MDLM 10ep
+Figure 2:Dev PPL learning curves for MDLM and USDM
+trained for 10 full epochs (1 full epoch = 20 subepochs).
+Table 1:Perplexity (PPL) upper bounds on train, dev, and de-
+vtrain splits for MDLM and USDM trained for 5, 10 and 25
+epochs on LibriSpeech LM data (last checkpoint).
+Diffusion LM Number of Epochs PPL
+train dev devtrain
+MDLM
+5 ≤36.2 ≤36.6 ≤47.9
+10 ≤32.7 ≤37.0 ≤44.6
+25 ≤30.0 ≤34.0 ≤42.2
+USDM
+5 ≤40.5 ≤40.2 ≤59.5
+10 ≤37.0 ≤39.4 ≤48.0
+25 ≤33.5 ≤32.3 ≤44.1
+Table 2:MDLM rescoring (with sample-level normalization)
+WER [%] on dev-other across 5, 10 and 25 training epochs,
+varying the number of Monte Carlo samples (K). Standard de-
+viations computed over 5 random seeds.
+K WER [%]
+MDLM 5 ep MDLM 10 ep MDLM 25 ep
+1 4.97±.03 4.96±.02 4.95±.01
+2 4.94±.01 4.93±.02 4.91±.02
+16 4.78±.03 4.77±.02 4.74±.03
+32 4.72±.03 4.68±.04 4.66±.04
+64 4.64±.04 4.60±.02 4.54±.01
+128 4.59±.04 4.56±.03 4.51±.02
+256 4.54±.03 4.51±.02 4.47±.03
+consistently outperforms the CTC baseline (5.08% WER)
+and USDM. While standard sequence-length normalization
+achieves a WER of 4.62% (K= 256), our proposed sample-
+level mask normalization outperforms it across all sample
+counts and yields a further reduction to 4.54% (K= 256). For
+all rescoring experiments, we do not sample but fix the noise
+level tot= 0.5. Additionally, coupled scoring improves results
+with fewer samples, already reaching 4.57% WER atK= 64.
+Furthermore, as shown in Table 2, extending MDLM training to
+10 and 25 epochs provides additional gains, reaching a rescor-
+ing performance of 4.51% and 4.47% WER atK= 256. While
+USDM rescoring does not match the performance of MDLM, it
+still yields improvements over the CTC baseline. USDM re-
+duces the WER from 5.08% to 4.72% atK= 256.
+5473
+1 2 4 8 16 32 64 128 256
+K
+4.6
+4.7
+4.8
+4.9
+5.0WER [%]
+MDLM Seq Level
+MDLM Global Mask
+MDLM Sample Mask
+MDLM Coupled Mask
+USDM
+Figure 3:WER [%] on dev-other comparing MDLM rescor-
+ing (sequence-level, global-mask and sample-mask score nor-
+malization), MDLM (5 ep) coupled scoring, and USDM (5 ep)
+rescoring, across different numbers of Monte Carlo samples
+(K). Stars mark the best WER for each method.
+Table 3:WER [%] on dev-other for CTC-USDM (USDM 10 ep)
+joint decoding with different initial noise leveltstart, and denois-
+ing stepsL.
+WER [%]
+L
+tstart 1 2 4 8 16 32 64
+0.3 4.73 4.73 4.72 4.72 4.70 4.70 4.70
+0.5 4.74 4.74 4.73 4.72 4.71 4.69 4.69
+0.8 4.80 4.72 4.71 4.72 4.70 4.69 4.68
+CTC-USDM Joint Decoding.As shown in Table 3, joint de-
+coding yields better results than USDM rescoring, suggesting
+that the active participation of USDM in hypothesis construc-
+tion produces better hypotheses. Most interestingly, with just
+a single forward step on the greedy sequence˜a
+˜S
+1 , the model
+already significantly improves recognition accuracy (t start =
+0.3,L= 1, 4.73% WER). In Table 4, we can see that with
+tstart = 0.1andL= 1, joint decoding achieves the best result
+of 4.66% WER. Conversely, higher starting noise levels, such
+ast start = 0.5or0.8, yield a worse initial WER atL= 1(up
+to 4.80%) and require more steps (L) to reach similar perfor-
+mance.
+Comparison with Autoregressive LMs.Table 4 provides
+an overview of the results across the different modeling ap-
+proaches. As expected, the autoregressive language models
+achieve the lowest overall WER, with 4.19% for rescoring and
+3.86% for first-pass. Additionally, for the autoregressive model,
+increasing the number of layers from 12 to 24 reduces rescoring
+WER from 4.29% to 4.19%. Both USDM and MDLM show
+similar behavior. While we do not investigate scaling of dif-
+fusion LMs further, some prior works on denoising language
+models [36, 37] and diffusion language models [38] investigate
+their scaling behavior and show that they surpass autoregressive
+models under data-constrained settings if trained long enough.
+In Table 4, we also investigate the recognition RTF of different
+decoding strategies. Although diffusion LM rescoring is much
+less efficient than decoding with a standard LM, CTC-USDM
+Table 4:WER [%] and RTF on dev-other comparing CTC
+without LM, with an autoregressive LM, with MDLM (10 ep,
+sample-level mask norm.,K= 256) and USDM (10 ep,K=
+256rescoring andL= 1,t start = 0.1joint decoding).
+LM Model
+Dim
+Num
+Layers
+Decoding WER [%] RTF
+dev-other
+None – – greedy 5.08 0.002
+Auto-
+regressive
+LM
+768 12 rescoring 4.29 0.006
+first-pass 4.10 0.039
+1024 24 rescoring 4.19 0.008
+first-pass 3.86 0.078
+MDLM 768 12 rescoring 4.58 0.800
+1024 24 4.51 2.040
+USDM
+768 12 rescoring 4.75 0.980
+joint-decoding 4.69 0.003
+1024 24 rescoring 4.71 2.086
+joint-decoding 4.66 0.003
+joint decoding provides a very fast alternative and achieves a
+recognition RTF of 0.003, which is very close to CTC-only de-
+coding with an RTF of 0.002. At the same time, joint decoding
+still significantly improves recognition accuracy.
+5. Conclusions
+In this work, we systematically explored the integration of dis-
+crete diffusion language models into ASR systems. While tra-
+ditional autoregressive models are constrained by a strictly se-
+quential, left-to-right decoding structure, diffusion LMs lever-
+age bidirectional context and parallel generation, offering a
+more flexible and theoretically faster alternative for ASR. We
+introduced new methods to rescore ASR hypotheses using
+MDLM, namely Global and Sample-level Mask Normalization.
+By utilizing the mask length for normalization, these methods
+significantly improved performance in comparison to standard
+sequence-level normalization. Most notably, we leveraged the
+unique properties of Uniform-State Diffusion Models for ASR,
+specifically their lack of artificial mask tokens and their full-
+vocabulary probability distribution for each position, and devel-
+oped a CTC-USDM joint decoding framework, which success-
+fully outperformed static rescoring with USDM. Importantly,
+joint decoding already yields substantial improvements with a
+single forward step on the greedy CTC sequence and achieves
+an RTF close to CTC-only decoding, making it a very fast
+alternative to standard autoregressive LM decoding. Evalua-
+tion shows MDLM achieves better rescoring accuracy on lim-
+ited data than USDM. This is likely because MDLM’s explicit
+mask tokens provide a clearer reconstruction signal, whereas
+USDM’s uniform noise forces the model to implicitly distin-
+guish clean from noisy tokens at every position. Consequently,
+USDM’s more complex objective may require additional data
+or scaling to reach peak performance. We also compared our
+methods with standard autoregressive language models. Au-
+toregressive LMs show better performance in both rescoring
+and first-pass decoding, however, prior studies suggest that
+diffusion language models can surpass autoregressive models
+when trained long enough. In future work, we plan to evalu-
+ate these models with more training epochs and scale the model
+capacities further to close the performance gap with autoregres-
+sive baselines. We also plan to investigate the joint decoding
+framework in greater detail, including extending it to MDLM.
+5474
+6. Acknowledgements
+This work was partially supported by NeuroSys, which as part
+of the initiative “Clusters4Future” is funded by the Federal
+Ministry of Research, Technology and Space BMFTR (fund-
+ing IDs 03ZU2106DA and 03ZU2106DD), and by the project
+RESCALE within the programAI Lighthouse Projects for the
+Environment, Climate, Nature and Resourcesfunded by the
+Federal Ministry for the Environment, Nature Conservation,
+Nuclear Safety and Consumer Protection (BMUV), funding ID:
+67KI32006A. The authors gratefully acknowledge the comput-
+ing time provided to them at the NHR Center NHR4CES at
+RWTH Aachen University (project numbers p0023565 and/or
+p0023999). This is funded by the Federal Ministry of Edu-
+cation and Research, and the state governments participating
+on the basis of the resolutions of the GWK for national high
+performance computing at universities (www.nhr-verein.
+de/unsere-partner).
+7. Generative AI Use Disclosure
+We use LLMs to improve the formulations and grammar of the
+paper.

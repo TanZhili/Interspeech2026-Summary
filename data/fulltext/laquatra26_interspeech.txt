@@ -1,0 +1,426 @@
+Etiology-Aware Speech Language Models for Dysarthric Speech Recognition
+Moreno La Quatra ID 1, Alkis Koudounas ID 2, Valerio Mario Salerno ID 1, Sabato Marco
+Siniscalchi ID 3
+1 Kore University of Enna, Italy
+2 Sony Group Corporation, Japan
+3 Universit`a degli Studi di Palermo, Italy
+moreno.laquatra@unikore.it, alkis.koudounas@sony.com, valerio.salerno@unikore.it,
+sabatomarco.siniscalchi@unipa.it
+Abstract
+Standard ASR systems ignore clinical context about speak-
+ers’ neurological conditions, limiting their effectiveness on
+dysarthric speech. We propose etiology-aware speech language
+models that incorporate clinical knowledge to improve recog-
+nition. We compare four strategies: standard fine-tuning, aux-
+iliary etiology classification, providing the condition as input
+context (hinting), and predicting the condition before transcrib-
+ing within the same autoregressive stream. We find that predict-
+ing the condition before transcribing is the most effective strat-
+egy, achieving 7.77% WER on the Speech Accessibility Project
+dataset, a 6.4% relative reduction over standard fine-tuning.
+This approach requires no clinical labels at inference. Auxil-
+iary classification reaches higher etiology accuracy yet fails to
+reduce WER, showing that clinical reasoning must occur within
+the generation stream to benefit recognition. Cross-dataset eval-
+uation on TORGO confirms consistent gains across conditions.
+Index Terms: Dysarthric speech recognition, speech language
+models, clinical auxiliary tasks, etiology prediction
+1. Introduction
+Dysarthric speech recognition represents one of the most chal-
+lenging problems in automatic speech recognition, affecting
+millions of individuals worldwide with neurological conditions
+such as stroke, Parkinson’s disease, amyotrophic lateral scle-
+rosis (ALS), cerebral palsy, and Down syndrome [1]. These
+conditions produce highly variable speech patterns with im-
+paired articulation, altered prosody, and reduced intelligibility,
+substantially degrading the performance of standard ASR sys-
+tems [2, 3]. Traditional approaches have focused on acoustic
+modeling improvements through speaker adaptation [4], robust
+features [5, 6], and domain-specific training [7]. Recent ad-
+vances have explored fine-tuning strategies [8–10], pathology-
+aware representations [11], and post-processing error correc-
+tion [12]. However, these approaches treat clinical information
+about speakers’ neurological conditions as secondary, missing
+the chance to leverage condition-specific acoustic-phonetic pat-
+terns [13, 14].
+The emergence of speech language models (SLMs)
+presents new opportunities for incorporating clinical reasoning
+into dysarthric speech recognition [15–17]. Unlike traditional
+encoder-decoder models [18–20], SLMs can naturally han-
+dle multi-task scenarios and auxiliary prediction tasks. How-
+ever, how to optimally incorporate clinical knowledge into
+these models remains unexplored. In this work, we investi-
+gate etiology-aware SLMs that incorporate information about
+the speaker’s underlying neurological condition (i.e., the eti-
+ology of their dysarthria) to improve transcription. We com-
+pare four training approaches:standard supervised fine-tuning
+(SFT), where models learn transcription without clinical infor-
+mation;etiology classification (EC), where an auxiliary classi-
+fication head predicts the speaker’s condition but does not feed
+this prediction to the decoder;etiology hinting (EH), where clin-
+ical information is provided as input context; andetiology pre-
+diction (EP), where the model generates the speaker’s condi-
+tion as text before transcription within the same autoregressive
+stream. We find that explicit etiology prediction significantly
+outperforms all alternatives.
+Our contributions are threefold. First, we present a system-
+atic comparison of strategies for incorporating clinical knowl-
+edge into speech language models for dysarthric speech recog-
+nition. Second, we show that the placement of clinical reason-
+ing within the generation stream is critical: auxiliary classifi-
+cation achieves 81% etiology accuracy yet yields higher WER
+than standard fine-tuning, while in-sequence prediction reaches
+72% accuracy but reduces WER from 8.30% to 7.77%. Third,
+we evaluate our approach across five neurological conditions on
+the SAP dataset [1] and confirm cross-dataset generalization on
+TORGO [21].
+2. Related Work
+In recent years, large pre-trained models have been used to ad-
+dress automatic speech recognition of dysarthric speech using
+parameter-efficient fine-tuning [22], curriculum learning [9],
+and model merging techniques [10]. Data scarcity has mo-
+tivated various augmentation strategies, including adversarial
+perturbation methods [23] and voice conversion approaches
+that synthesize new dysarthric utterances from limited speaker
+data [24]. Generating synthetic dysarthric speech has been ex-
+plored using multi-speaker text-to-speech systems with sever-
+ity controls and pause insertion mechanisms [25]. While these
+data-side approaches address sample scarcity, they do not lever-
+age information about the speaker’s neurological condition.
+Clinical knowledge integration has primarily been exploited at
+the representation level. Pathological speech analysis shows
+that condition-specific knowledge is crucial for detecting and
+characterizing speech disorders [26,27], supporting the value of
+clinical information for speech-based tasks. Pathology-aware
+speech encoders use etiology-specific modeling during pre-
+training to create better acoustic representations [11]. These ap-
+proaches focus on encoding clinical knowledge into feature ex-
+traction processes rather than incorporating clinical information
+into the transcription task itself. Post-processing methods com-
+bined traditional ASR with language model-based error correc-
+5033
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1773
+tion [12], but operate after recognition rather than during the
+transcription process.
+The emergence of speech language models (SLMs) has
+opened new possibilities in speech recognition [15–17]. Un-
+like traditional encoder-decoder architectures [18–20], SLMs
+can naturally handle additional tasks alongside transcription.
+Their autoregressive text generation framework enables chain-
+of-thought reasoning [28], where intermediate predictions in-
+form subsequent outputs, making them suitable for clinical rea-
+soning processes. However, no prior work has systematically
+compared strategies for integrating clinical etiology knowledge
+into SLMs for dysarthric speech recognition, nor investigated
+whether the position of clinical information within the model
+architecture determines its benefit for transcription quality. We
+address this gap and find that the placement of clinical reason-
+ing within the model, not its accuracy, determines whether it
+benefits transcription.
+3. Methodology
+Beyond standard supervised fine-tuning (SFT), we propose
+three approaches for incorporating clinical knowledge into
+speech language models, as illustrated in Figure 1, which differ
+in how clinical information is integrated into the model.
+3.1. Problem Formulation
+Given an audio sequencexfrom a speaker with a neurologi-
+cal conditione∈E={ALS, Parkinson’s, Stroke, Down Syn-
+drome, Cerebral Palsy}, our goal is to generate a transcripty.
+Traditional approaches modelP(y|x), ignoring clinical context
+e; we exploit etiology information to improve transcription.
+Standard Transcription.Our baseline approach follows the
+conventional speech language model SFT. The model learns to
+generate transcripts directly from audio through autoregressive
+token prediction:
+P(y|x) =
+NY
+i=1
+P(y i|x,y <i)
+The model receives a standard transcription prompt and learns
+to map acoustic patterns to text tokens without explicit clinical
+awareness. This establishes our performance baseline for incor-
+porating clinical knowledge.
+Etiology Classification (EC).This approach adds an auxiliary
+classification objective to standard fine-tuning. A classification
+head attached to the audio encoder predicts the speaker’s neu-
+rological condition:
+P(e|x) =softmax(W·pool(h(x)) +b)
+whereh(x)denotes the speech encoder output and pool(·)per-
+forms temporal mean pooling. The total training loss combines
+the standard transcription objective with the classification term:
+L=L LM +L CE
+whereL LM is the autoregressive language modeling loss over
+transcript tokens,L CE is the cross-entropy classification loss
+over etiology labels. Crucially, the etiology prediction from
+this head does not feed into the language model decoder. The
+decoder prompt remains identical to standard fine-tuning, re-
+ceiving no clinical information. This variant isolates the effect
+of condition-discriminative encoder features from the effect of
+conditioning the decoder on clinical information.
+Standard Transcription / Etiology Classification (EC)
+Input:Please transcribe the spoken content into written text.
+Audio:[Speech signal X]
+Output:
+The quick brown fox jumps over the lazy dog.
+Etiology Hinting (EH)
+Input:Please transcribe the spoken content into written text. Con-
+sider that the speaker has been diagnosed with Parkinson’s Disease.
+Audio:[Speech signal X]
+Output:
+The quick brown fox jumps over the lazy dog.
+Etiology Prediction (EP)
+Input:Please transcribe the spoken content into written text.
+Audio:[Speech signal X]
+Output:
+Etiology: Parkinson’s Disease
+Transcript: The quick brown fox jumps over the lazy dog.
+Figure 1:Training approaches for Speech Language Models.
+EC shares the same format as Standard Transcription but adds
+an auxiliary encoder classification loss during training.
+Etiology Hinting (EH).The etiology hinting approach provides
+clinical information as input context. The model receives audio
+and explicit neurological condition information, modifying the
+conditional probability to:
+P(y|x,e) =
+NY
+i=1
+P(y i|x,e,y <i)
+The clinical informationeis verbalized in the input prompt.
+This approach tests whether direct clinical context improves
+recognition performance.
+Etiology Prediction (EP).Our etiology prediction approach re-
+quires the model to perform explicit clinical assessmentbefore
+transcription. The model learns a joint distribution over both
+etiology and transcript:
+P(y,e ∗|x) =P(e ∗|x)·P(y|x,e ∗)
+wheree ∗ represents the model’s predicted etiology for the in-
+put speech. During training, the model generates a structured
+output that first predicts the speaker’s neurological condition,
+then produces the transcript (Figure 1). At inference, we re-
+move the etiology prefix from the generated text and compute
+WER only on the transcript portion. The model is required to
+analyze acoustic-pathological patterns in the speech signal to
+infer the underlying neurological condition, then uses this pre-
+diction to condition subsequent transcription decisions. This
+establishes a causal chain: acoustic analysis→etiology predic-
+tion→condition-aware transcription. Unlike EC, the etiology
+prediction is generated within the same autoregressive stream as
+the transcript, so every subsequent token is causally conditioned
+on the model’s clinical assessment.
+4. Experiments and Analysis
+4.1. Experimental Setup
+Datasets.We evaluate our etiology-aware approaches on two
+complementary datasets. The Speech Accessibility Project
+5034
+Table 1:Dysarthric speech recognition performance across neurological conditions. WER% (lower is better) and SemScore (higher is
+better). Blue : Zero-shot. Red : Adapted models. EC = Etiology Classification, EH = Etiology Hinting, EP = Etiology Prediction.
+Method ALS Parkinson Stroke Down Syndrome Cerebral Palsy Overall
+WER SemScore WER SemScore WER SemScore WER SemScore WER SemScore WER SemScore
+Zero-shot
+W-Lv3 23.60 76.37 20.37 85.68 14.78 85.26 37.29 57.27 37.94 61.10 24.42 76.91
+Parakeet 17.36 71.81 12.15 84.57 16.21 83.31 40.64 53.36 32.77 56.94 17.77 74.30
+Q2A 36.38 57.95 32.65 63.89 36.97 63.89 57.25 41.07 56.96 41.10 38.37 58.40
+Granite 23.41 67.99 15.91 83.68 17.23 83.31 41.59 54.17 42.69 53.90 22.72 72.56
+Phi-4 15.76 76.10 12.08 86.49 14.85 85.26 38.05 58.16 32.81 61.54 17.26 77.42
+Kimi 14.70 76.81 11.91 87.04 14.98 85.79 36.21 59.12 30.65 61.39 16.54 77.90
+Domain-Adapted on SAP Dataset
+W-Lv3 15.72 90.71 16.88 93.19 9.90 92.77 17.94 80.48 23.67 84.86 17.67 90.11
+Parakeet 6.20 91.07 7.15 93.14 11.47 92.02 19.18 80.86 14.26 85.56 8.73 90.30
+Q2A 19.15 87.43 19.01 90.62 13.40 88.17 24.19 75.66 28.95 78.93 20.75 86.52
+Granite 12.41 84.46 9.67 91.61 13.01 88.50 25.26 73.66 26.12 75.08 13.53 85.55
+Phi-4 6.76 91.26 7.22 93.64 9.84 92.70 18.69 80.75 15.04 85.21 8.92 90.53
+Kimi 5.98 91.63 6.46 94.07 10.87 91.93 18.29 79.86 14.91 83.89 8.30 90.48
+Kimi-EC 6.02 91.79 6.59 93.99 9.93 92.98 19.27 79.49 15.40 83.61 8.49 90.42
+Kimi-EH 5.97 91.69 6.43 94.08 11.18 92.89 17.97 80.55 14.58 84.20 8.22 90.63
+Kimi-EP 5.75 92.12 6.03 94.32 8.80 93.10 17.90 80.64 13.76 85.21 7.77 91.05
+(SAP) dataset 1 [1] serves as our primary training and evalua-
+tion corpus, containing 240,047 training utterances (547 hours)
+and 35,600 development utterances (81 hours) from speak-
+ers with five neurological conditions. The dataset exhibits
+class imbalance with Parkinson’s disease representing approxi-
+mately 49% of samples, followed by ALS (22%), cerebral palsy
+(17%), Down syndrome (8%), and stroke (4%). For zero-shot
+cross-dataset generalization, we evaluate SAP-trained models
+directly on the TORGO dataset [21] without any TORGO-
+specific adaptation. TORGO contains 15 speakers (8 dysarthric,
+7 healthy controls) with 16,552 utterances spanning single-word
+and sentence-level tasks.
+Model Configuration.We evaluate six models across two
+architectures2. Encoder-decoder baselines include Whisper
+(W-Lv3) [18] and Parakeet [20], representing state-of-the-
+art general ASR and current best performance on dysarthric
+speech [8, 9]. Speech language models include Phi-4 [16],
+Qwen2-Audio [30], Granite [17], and Kimi [15]. For encoder-
+decoder models, we fully fine-tune model parameters as shown
+to achieve best performance on dysarthric speech [8, 31], while
+for SLMs, we apply LoRA [32] with rank 16 andα= 32
+targeting all linear layers. All SLMs are trained for 3 epochs
+with a peak learning rate of 5e-5, global batch size of 64, and
+the AdamW optimizer with 5% warmup ratio and linear decay.
+All experiments are run on a single node with 4 NVIDIA A100
+80GB GPUs. We apply etiology-aware strategies (EC, EH, EP)
+to Kimi, which achieves the best SFT performance among all
+evaluated models, to isolate the effect of clinical knowledge in-
+tegration from model capacity differences.
+Evaluation Metrics.We follow the evaluation protocol estab-
+lished for the SAP Challenge [29], reporting word error rate
+(WER) and semantic score (SemScore), which combines natu-
+ral language inference and semantic similarity metrics to assess
+1We use the May 2025 release (v31-05-2025). Results are reported
+on the full development set as the official test set for the SAP Chal-
+lenge [29] remains private. The training set was further split 90/10 for
+training and validation.
+2https://github.com/MorenoLaQuatra/dysarthric-asr
+content preservation beyond exact word matching [33].
+4.2. Results
+SAP Results.Table 1 presents our core results on the SAP
+dataset. Fine-tuning strongly improves all models, with SLMs
+matching or outperforming encoder-decoder models (Kimi:
+8.30% vs. Parakeet: 8.73% WER). Among etiology-aware
+strategies, EP achieves 7.77% WER, with relative improve-
+ments over SFT (6.4%), EC (8.5%), and EH (5.5%), all statis-
+tically significant withp <0.001(paired t-test). Notably, EC
+achieves 81% classification accuracy, substantially higher than
+EP’s 72%, yet yields 8.49% WER, worse than both SFT and
+EP. This indicates that condition-discriminative encoder fea-
+tures alone are insufficient; clinical reasoning must reach the
+decoder to improve transcription. Although EC multi-task train-
+ing improves the encoder, the etiology label never enters the de-
+coder’s generation context; EP, by inserting an explicit etiology
+token into the autoregressive stream, gives the decoder direct
+access to the clinical assessment. EP also achieves the high-
+est SemScore (91.05), consistent with the WER improvements
+across all conditions.
+Per-Condition Analysis.Clinical conditions show distinct dif-
+ficulty patterns reflecting both pathological characteristics and
+data availability. ALS (5.75% WER) and Parkinson’s disease
+(6.03% WER) achieve the lowest error rates, benefiting from
+substantial training data (22% and 49% of samples, respec-
+tively). Down syndrome (17.90% WER) and cerebral palsy
+(13.76% WER) present the greatest challenges, reflecting more
+severe articulatory impairments that affect intelligibility across
+all training strategies. Stroke reveals the most informative pat-
+tern across training strategies: despite having the fewest train-
+ing samples (4%), both EC and EP improve over SFT (9.93%
+and 8.80% vs. 10.87% WER), while EH degrades performance
+(11.18%), indicating that passive clinical context can hurt when
+training data is scarce. EC’s improvement shows that auxiliary
+etiology supervision helps the encoder in low-resource settings,
+but EP’s 19.0% relative reduction over SFT confirms that feed-
+ing clinical reasoning into the decoder provides a better alter-
+5035
+Table 2:TORGO cross-dataset evaluation. WER% / SemScore
+format. H = Healthy speakers, NH = Non-Healthy speakers,
+Sent. = Sentences.
+Model H - Words H - Sent. NH - Words NH - Sent. Overall
+Zero-shot
+W-Lv3 24.1 / 84.2 2.5 / 97.8 60.0 / 60.0 28.3 / 71.5 18.5 / 79.3
+Parakeet 30.1 / 80.5 3.0 / 97.9 66.9 / 52.9 30.8 / 70.3 21.2 / 75.6
+Q2A 81.1 / 34.3 15.0 / 88.4 90.6 / 23.9 41.6 / 61.6 41.7 / 43.1
+Granite 46.1 / 71.7 2.6 / 98.2 72.0 / 51.1 36.4 / 66.8 26.0 / 70.6
+Phi-4 29.1 / 81.5 2.8 / 97.9 63.6 / 56.8 33.7 / 69.6 21.3 / 77.0
+Kimi 23.4 / 85.4 3.8 / 97.8 62.2 / 56.0 28.3 / 73.3 19.2 / 79.0
+Domain-Adapted on SAP Dataset
+W-Lv3 23.6 / 85.3 3.3 / 97.3 52.2 / 65.9 28.8 / 71.1 18.1 / 81.2
+Parakeet 33.6 / 79.5 4.0 / 96.8 59.3 / 60.7 31.3 / 70.3 21.7 / 76.9
+Q2A 29.0 / 82.7 3.7 / 97.3 58.8 / 61.9 32.7 / 67.5 21.0 / 78.7
+Granite 36.5 / 77.2 2.9 / 97.8 65.4 / 55.5 37.4 / 64.8 23.8 / 74.2
+Phi-4 22.6 / 86.0 3.2 / 97.5 52.7 / 65.4 31.1 / 69.5 18.5 / 81.4
+Kimi 22.9 / 84.52.4/ 98.3 57.2 / 59.5 28.6 / 72.9 18.0 / 79.5
+Kimi-EC18.5/88.02.5 / 98.2 52.5 / 65.1 28.5 / 71.8 16.7 / 82.6
+Kimi-EH 20.2 / 87.12.4/98.451.4 / 66.1 25.4 / 74.9 16.2 / 82.7
+Kimi-EP 20.3 / 87.1 2.5 /98.4 50.1/67.4 24.2/76.0 15.8/83.1
+native. Overall, EP consistently outperforms SFT, EC, and EH
+across all five conditions, demonstrating that placing clinical
+assessment within the autoregressive generation stream is more
+effective than both auxiliary classification and passive context.
+Cross-Dataset Generalization.Table 2 shows that SAP-
+trained models generalize to the out-of-distribution TORGO
+corpus without any TORGO-specific fine-tuning. TORGO
+contains speakers with cerebral palsy and ALS (two con-
+ditions present in SAP training) plus matched healthy con-
+trols [21], providing a genuine test of cross-domain transfer.
+The performance hierarchy observed on SAP remains consis-
+tent: EP achieves the best overall WER (15.8%), followed
+by EH (16.2%), EC (16.7%), and standard Kimi (18.0%).
+All three etiology-aware strategies improve over standard fine-
+tuning, confirming that clinical knowledge generalizes beyond
+the training domain. TORGO, however, includes healthy speak-
+ers with no corresponding SAP etiology label. For EH, we
+replace condition-specific hints with binary prompts indicat-
+ing whether the speaker is healthy or has a neurological con-
+dition, as TORGO does not provide per-speaker etiology la-
+bels, introducing a train-inference mismatch. EP instead pre-
+dicts an etiology for all speakers, including healthy ones, re-
+quiring no prompt adaptation. Despite this forced misattri-
+bution, EP achieves comparable healthy performance to other
+strategies. EC achieves the lowest WER on healthy single-
+word recognition (18.5% vs. 20.3% for EP), though this ad-
+vantage disappears on sentences where all methods perform
+comparably (2.4-2.5% WER). However, EP shows the largest
+gains on non-healthy speakers, reducing WER from 57.2% to
+50.1% on single-word tasks and from 28.6% to 24.2% on sen-
+tences compared to standard Kimi, driving the best overall per-
+formance. Single-word tasks remain more challenging than
+sentences across all models (50.1% vs. 24.2% WER for non-
+healthy speakers with EP), aligning with established literature
+on contextual benefits for dysarthric speech recognition [12].
+Impact of Etiology Misclassification.To assess whether in-
+correct etiology predictions degrade transcription, we stratify
+EP results by prediction correctness. Samples with correct
+predictions achieve 7.78% WER, while samples with incor-
+rect predictions achieve 7.71% WER, showing no degradation
+from misclassification. This suggests that the act of predict-
+ing etiology, rather than the prediction’s correctness, forces the
+model to attend to pathologically relevant acoustic features.
+Per-condition analysis supports this interpretation: misclassi-
+fication correlates with speech characteristics rather than model
+failure. For conditions with generally low intelligibility (cere-
+bral palsy, ALS), misclassified samples achieve substantially
+lower WER (e.g., cerebral palsy: 7.18% incorrect vs. 18.11%
+correct), suggesting these speakers may exhibit atypical, more
+intelligible speech patterns for their condition. Conversely, for
+Down syndrome, misclassified samples tend to be more severe
+(28.65% vs. 13.97% WER).
+Etiology Prediction Analysis.The results above reveal a con-
+sistent pattern: the placement of clinical reasoning within the
+model determines its impact on transcription. EC’s high clas-
+sification accuracy (81%) does not translate into lower WER
+because condition-discriminative features remain confined to
+the encoder. In contrast, EP places clinical reasoning within
+the autoregressive generation stream, where etiology predic-
+tions causally condition all subsequent transcript tokens. The
+superior performance of EP over EH further shows that mod-
+els benefit more from generating clinical assessments than from
+receiving them as input. EP also offers a practical advantage:
+while EH requires clinical information at inference time, EP
+eliminates this dependency by internalizing clinical knowledge
+during training. Notably, EH receives oracle etiology labels at
+inference, giving it strictly more information than EP, yet EP
+achieves lower WER (7.77% vs. 8.22%). This confirms that
+self-generated clinical reasoning is more effective than exter-
+nally provided context.
+5. Conclusion
+We proposed etiology-aware speech language models that in-
+corporate clinical reasoning into dysarthric speech recognition
+via in-sequence clinical prediction. Our key finding demon-
+strates that etiology prediction outperforms standard transcrip-
+tion (8.30% WER), auxiliary classification (8.49%), and etiol-
+ogy hinting (8.22%), achieving 7.77% WER while eliminat-
+ing the need for clinical information at inference time. No-
+tably, auxiliary classification achieves higher etiology accuracy
+(81%) than prediction (72%) yet fails to improve transcription.
+This shows that classification accuracy is not the limiting factor:
+what matters is whether clinical reasoning reaches the decoder,
+where it causally conditions each subsequent transcript token.
+This result suggests that explicit clinical prediction improves
+speech recognition through active reasoning rather than passive
+context provision. Future work could extend this framework
+to predict multiple clinical attributes, such as severity levels or
+symptom profiles, though progress depends critically on devel-
+oping consistent and clinically validated annotation protocols
+for such auxiliary tasks.
+Limitations.Our method requires clinical labels during train-
+ing, motiva

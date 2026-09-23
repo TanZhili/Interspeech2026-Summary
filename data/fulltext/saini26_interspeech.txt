@@ -1,0 +1,583 @@
+Listening Like a Judge: A Music-Aware Framework for Automatic Singing
+Performance Evaluation
+Neelam Saini1, Sourav Ghosh ID 1
+1 Samsung R&D Institute Bangalore, India
+neelam.saini@samsung.com, sourav.ghosh@samsung.com
+Abstract
+Automatic singing quality assessment (SQA) requires evaluat-
+ing lyrical correctness and musical fidelity while handling ex-
+pressive variations. However, existing systems largely rely on
+either acoustic cues or lyric transcriptions exclusively, limiting
+holistic performance evaluation. Furthermore, their integration
+is non-trivial due to challenges in robust singing transcription
+amid melisma, vibrato, and tempo elasticity. To this end, we
+propose MUSICJUDGE, a modality-guided framework for auto-
+mated SQA that performs block-aligned multimodal analysis by
+coupling lyric correctness with pitch-rhythm fidelity. It detects
+semantically meaningful lyric blocks using multi-signal match-
+ing that integrates semantic embeddings, lexical similarity, and
+phonetic alignment. To improve singing audio transcription, we
+introduce Modality-Guided LoRA for ASR fine-tuning. Exper-
+iments across datasets demonstrate strong agreement with hu-
+man expert judgments and validate the generalizability of MU-
+SICJUDGE.
+Index Terms: singing qualitative assessment, speech recogni-
+tion, music evaluation
+1. Introduction
+Singing quality assessment (SQA) is a multifaceted problem in-
+volving lyrical accuracy, pitch intonation and rhythmic timing.
+Human experts evaluate vocal performances based on correct
+lyric pronunciation and adherence to the underlying melodic and
+rhythmic structure of the music (e.g., Raag in Indian classical
+music). However, objective evaluation is challenging because
+singers often introduce acceptable variations, including pronun-
+ciation changes and deliberate creative improvisations, further
+compounded by singer-to-singer differences in vocal timbre,
+pitch range, and expressive style. Existing computational SQA
+use isolated metrics like pitch deviation or lyric transcription
+accuracy (via automatic speech recognition or ASR), which
+fail to capture the holistic judgments by human evaluators.
+Moreover, signal-level similarity measures penalize musically
+valid improvisations, while text-based lyric matching overlooks
+phonetic and ordering variations in sung content. In this
+work, we propose a block-aligned multimodal framework for
+automated SQA that is resilient to stage performance nuances
+like audience noise, in media res, bridge entry, etc. We analyze
+performances at semantically meaningful temporal segments
+(e.g., verses, choruses) in two complementary dimensions: con-
+tent fidelity and musical quality . These signals are aggregated
+to produce an interpretable unified singing performance score.
+Unlike rigid pitch-threshold or transcript-matching systems,
+our MUSICJUDGE models acceptable expressive variations while
+preserving musical structure. Our main contributions are:
+• We present the first block-aligned multimodal SQA frame-
+work that jointly models lyrical grounding and music-aware
+pitch-rhythm fidelity, producing interpretable scores with
+strong human expert correlation.
+• We introduce a multi-signal lyric alignment and scoring
+mechanism that integrates semantic embeddings, fuzzy lex-
+ical matching, and phonetic similarity, allowing robust detec-
+tion and evaluation of sung lyric segments even under ASR
+errors, pronunciation variation, and melismatic singing.
+• We introduce Modality-Guided LoRA (MG-LoRA), a music-
+aware fine-tuning strategy for ASR that integrates pitch, tim-
+ing, and alignment cues, significantly improving lyric tran-
+scription robustness.
+Related Work: Early SQA methods rely on handcrafted acous-
+tic features and shallow models [1], with later neural approaches
+introducing temporal modeling for vocal dynamics [2, 3]. How-
+ever, these methods remain largely limited to acoustic anal-
+ysis and do not integrate musical structure with lyrical content.
+Musical representation learning methods capture pitch, tonality,
+and rhythm through structured audio embeddings and harmonic
+context [4, 5, 6], but they do not address lyric-aligned tran-
+scription or melismatic tokenization in singing ASR. Recent
+singing transcription approaches adapt transformer-based ASR
+and benchmark robustness under musical variability [ 7, 8], yet
+they do not explicitly model pitch continuity or onset cues
+to handle melisma-induced segmentation errors. More recent
+work leverages self-supervised audio representations for singing
+assessment [9], but acoustic modeling and lyric decoding re-
+main largely decoupled.
+In contrast, our approach integrates pitch contour, duration
+stability, and onset alignment into ASR fine-tuning objective,
+enabling segmentation-aware transcription aligned with musi-
+cal structure and linguistic decoding. To the best of our knowl-
+edge, this is the first work to jointly model these aspects for SQA.
+Experiments on our SWARALYRICS dataset demonstrate strong
+agreement with human expert judgments ( Spearman correla-
+tion of 0.683, 32% ↑, Kendall’s τ of 0.499, 41% ↑), while re-
+sults on Jamendo [ 10] and SingMOS-Pro further demonstrate
+the generalizability of MUSICJUDGE.
+2. Problem Formulation
+Let x(t) denote a singing performance waveform defined over
+t ∈ [0, T ], where T is the total duration. Let G = {ℓ∗(t), Z ∗}
+denote the global reference comprising ground-truth lyrics and
+canonical musical structure (e.g., tonal framework). Source
+separation yields vocal and accompaniment streams: x(t) →
+(xv(t), xa(t)).
+133
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-912
+Audio
+Reference 
+Lyrics
+SOURCE
+SEPARATION
+LYRICS PIPELINE
+Musical Content Analysis
+MUSICAL QUALITY SCORING
+Beat Tracking
+Pitch Extraction
+Baseline Waveform
+Rhythm
+Fidelity
+Pitch 
+Fidelity
+Multi-Signal Matching
+Semantic 
+Embeddings
+Fuzzy-Lexical 
+Matching
+Phonetic
+Matching
+Fine-tuned ASR 
+Model
+Vocal 
+Stream
+Accompaniment 
+Stream
+Proto 
+Segments
+ASR 
+Transcription
+Overlapping 
+Windows
+Sliding 
+Window
+Candidates
+Quantitative Aggregation
+Qualitative Feedback 
+Generation
+Good rhythmic alignment in 
+the verse, but some pitch 
+instability in the chorus.
+INPUT
+DATA
+Musical 
+Score
+𝑴𝒌
+Content 
+Score
+𝑪𝒌
+Global Key Estimation
+𝑺 𝒙, 𝑮 = ෍
+𝒌=𝟏
+𝑲
+𝒘𝒌 𝜸𝑪𝑪𝒌 + 𝜸𝑴𝑴𝒌
+STRUCTURED AGGREGATION 
+& SYNTHESIS
+Pitch 
+Contour Onsets Stability
+Figure 1: MUSICJUDGE jointly evaluates the content and musical
+aspects of singing audio.
+2.1. Segmentation Under Structural Uncertainty
+2.1.1. ASR-Derived Proto-Segments
+Let { ˜Sn}N
+n=1 denote temporal proto-segments obtained from
+transcription of xv(t): ˜Sn = {t | ˜t(s)
+n ≤ t ≤ ˜t(e)
+n }. Here ˜t(s)
+n
+and ˜t(e)
+n are start and end times induced by ASR token or lyric-
+line boundaries (proto-segment boundaries). Due to singing-
+specific phenomena (e.g., vowel elongation, melisma, vibrato),
+these boundaries may not align with musically coherent units.
+2.1.2. Sliding-Window Block Candidates
+To mitigate segmentation uncertainty, overlapping candidates
+are formed: Wm = ∪m+L−1
+n=m
+˜Sn, m = 1 , . . . , N − L + 1 ,
+where L is the window length (in proto-segments).
+2.1.3. Block Selection
+Final evaluation blocks B = {Bk}K
+k=1 are selected from {Wm}
+based on multi-signal structural coherence, i.e., Bk ∈ { Wm}.
+Each selected Bk corresponds to a linguistically and musically
+coherent unit (e.g., verse, chorus, bridge, or alaap) and admits
+a temporal representation, Bk = {t | t(s)
+k ≤ t ≤ t(e)
+k }, where
+t(s)
+k and t(e)
+k denote the inferred start-end times obtained from
+the selected window Wm. Subsequent evaluation operates on
+Bk.
+2.2. Block-Level Fidelity Measures
+For each block Bk, we extract – (a) transcribed lyrics ˆℓk from
+xv(t), (b) pitch contour pk(t) and vocal onsets ok from xv(t),
+(c) beat sequence bk from xa(t), and (d) global key K estimated
+once from xa(t) and shared across blocks. Let ℓ∗
+k denote refer-
+ence lyrics aligned to Bk.
+Content Fidelity , Ck = ∑
+i αi si(ℓ∗
+k, ˆℓk), ∑
+i αi = 1 ,
+where si(·) denote complementary semantic, lexical, and pho-
+netic similarity measures and αi denote weighting coeﬀicients.
+Pitch Fidelity , Pk = 1 − 1
+|Bk|
+∫
+Bk
+ρp(δp(t; K)) dt, where
+δp(t; K) denotes deviation relative to the performance-intrinsic
+global key K, and ρp(·) is a bounded expressive penalty func-
+tion. The specific construction of δp(·) is described in Sec. 3.
+Rhythmic Fidelity, Rk = 1 − 1
+|ok|
+∑
+oi∈ok
+ρr(δr(oi)), where
+δr(oi) denotes normalized deviation between a vocal onset oi
+and its nearest beat in bk. The musical score for block Bk is:
+Mk = β1Pk + β2Rk, β 1 + β2 = 1.
+2.3. Structured Aggregation
+Let |Bk| = t(e)
+k − t(s)
+k denote the duration of block Bk. We
+define duration weights: wk = |Bk|∑K
+j=1 |Bj | , ∑K
+k=1 wk = 1. The
+overall performance score is then given by:
+S(x, G) =
+∑K
+k=1
+wk [γC Ck + γM Mk] (1)
+2.3.1. Probabilistic Interpretation
+Each penalty ρ(δ) corresponds to a negative log-likelihood un-
+der an implicit expressive noise model. Under conditional inde-
+pendence across blocks and modalities, S(x, G) is proportional
+to the log-likelihood of the observed performance given the ref-
+erence structure, with block boundaries treated as latent struc-
+tural variables inferred through multi-modal consistency.
+3. Methodology
+Our framework targets SQA through block-aligned multi-modal
+analysis, integrating lyrics-aware content scoring and pitch-
+rhythm modeling as depicted in Fig. 1.
+3.1. Dataset Curation and ASR Adaptation
+To improve lyric transcription robustness, we fine-tune
+whisper-large-v3 on singing data. Many existing
+datasets [ 8, 11] lack pitch-related information, while some
+have partial lyrics content ( ∼ 4.3k English lines in [ 8]).
+There is also a significant data gap in the coverage of musical
+performance recordings alongside their reference lyrics, which
+is further constrained due to copyright restrictions. So, for this
+work, we also curate SWARALYRICS, a corpus of 420 samples
+(train/val/test: 70/15/15), comprising (a) singing performances
+(including audience noise, judge commentary), (b) authoritative
+playback audio, and (c) native-script lyrics. Here, (b) and (c)
+serve as ground-truth references during evaluation. Portion
+used for fine-tuning is either locally recorded by the authors’
+institutional band or appropriately licensed. To improve
+robustness to acoustic variability, we apply data augmentation
+(noise mixing, tempo perturbation). SWARALYRICS primarily
+consists of Indian music, particularly solo songs, spanning
+diverse moods, genres, eras, and singer demographics.
+3.2. Source Separation
+Given an input performance audio, we do source separation us-
+ing Demucs [12] to obtain vocal and accompaniment. Vo-
+cal stream supports lyric-pitch analysis, while accompaniment
+stream supports beat-tonal estimation.
+3.3. Lyrics Pipeline: Reference-Guided Block Detection
+and Scoring
+The lyrics evaluation pipeline follows a reference-guided but
+ASR-driven progression. Block-wise analysis accommodates
+live performances that may begin from arbitrary song sections
+or reorder structural parts such as intro, verse, and chorus. We
+select Whisper [13] as our base ASR model to leverage its inher-
+ent pause-based segmentation, which is likely to yield segments
+parallel to musical phrases. Each segment comprises a raw tran-
+script with a timestamp.
+3.3.1. Modality-Guided Fine-Tuning for Singing ASR
+To improve temporally stable and lyrics-faithful transcrip-
+tion under singing-specific acoustic variations, we fine-tune
+whisper-large-v3 on curated music data (Sec. 3.1), lever-
+aging Low-Rank Adaptation (LoRA). With MG-LoRA, model is
+optimized using a composite objective that combines the stan-
+dard sequence-to-sequence cross-entropy loss, LASR, with au-
+thoritative lyrics as targets, augmented by singing-aware regu-
+larization terms. Specifically, we optimize
+Ltotal = LASR + λdLd + λpLp + λaLa + λoLo (2)
+134
+Here, Ld penalizes unstable token duration in sustained
+segments, Lp discourages token boundary proliferation within
+acoustically smooth fundamental frequency regions, La en-
+forces monotonic alignment consistency, and Lo encourages to-
+ken boundaries to coincide with detected vocal onset structure.
+The coeﬀicients are selected by tuning on a small validation
+set. For our experiments, these are λd = 0 .10, λp = 0 .15,
+λa = 0.10, and λo = 0.05.
+Augmentation strategies (e.g., additive noise, tempo pertur-
+bation) are applied to improve robustness to performance vari-
+ability and background interference (e.g., audience reactions).
+We then convert it to Faster-Whisper for lower inference latency.
+The separated input vocal stream is then transcribed using the
+fine-tuned Whisper model. The output consists of time-aligned
+tokens grouped into proto-segments. Since no explicit structural
+labels (e.g., verse, chorus) are available at inference time, song
+structure is treated as latent.
+3.3.2. Sliding ASR Window Creation
+Boundary distortions caused by singing-specific acoustic effects
+(e.g., vowel elongation, melisma, vibrato) may misalign ASR
+token boundaries from musically coherent units. Furthermore,
+Whisper operates in 30s windows, further introducing unde-
+sired boundaries. To mitigate this, we group proto-segments into
+overlapping sliding windows to generate candidate temporal text
+blocks.
+3.3.3. Multi-Signal Block Detection
+Each candidate window is compared against reference lyrics
+using complementary similarity signals: (a) embedding sim-
+ilarity: sentence-level semantic embeddings measure con-
+textual alignment. (b) fuzzy lexical matching: normal-
+ized edit-distance captures surface-form correctness. (c) pho-
+netic matching: grapheme-to-phoneme conversion enables
+pronunciation-aware alignment. Windows are assigned to refer-
+ence blocks based on joint multi-signal coherence, thereby refin-
+ing block boundaries through reference-guided alignment rather
+than fixed segmentation.
+3.3.4. Line-Level Ordered Matching
+Within each detected block, line-level sequential alignment is
+done to ensure correct progression. We employ HIT/MISS to
+detect missing lines, repeated/spurious lines, and ordering in-
+consistencies. This captures structural coverage and lyrical flow
+beyond surface similarity.
+3.3.5. Block Content Scoring
+For each block, three normalized measures are computed – (a)
+coverage: proportion of reference lines correctly detected, (b)
+correctness: lexical and phonetic fidelity, and (c) flow: sequen-
+tial consistency and order preservation. These are combined to
+produce a block-level content score,Ck, which contributes to the
+overall lyrics score after aggregation across blocks.
+3.4. Musical Quality Scoring
+We design MUSICJUDGE to reward adherence to melodic prin-
+ciples without penalizing creative deviations. Notably, we do
+not constrain the performance to be grounded to Z ∗. Next, we
+describe the pitch and rhythm deviation terms δp(·) and δr(·)
+introduced in Sec. 2.
+3.4.1. Global Key Estimation
+A single global key K is estimated from the accompaniment sig-
+nal xa(t) using chroma-based tonal profile matching. K is in-
+ferred once per performance and shared across all blocks {Bk}.
+This is done from the accompaniment of the input performance
+rather than the playback reference Z ∗ to avoid penalizing inten-
+tional transposition while still enforcing intra-performance tonal
+consistency.
+3.4.2. Pitch Deviation Construction
+For each block Bk, the vocal pitch contour pk(t) is extracted
+from xv(t) using Probabilistic YIN (pYIN) [14]. Voiced frames
+are retained via pYIN masking. We compute three complemen-
+tary components – (a) in-key deviation: minimum circular dis-
+tance between pitch class c(t) and the scale induced by K, (b)
+stability: short-term variance within sustained regions, and, (c)
+voiced rate: proportion of voiced frames within Bk.
+The aggregated pitch deviation for block Bk is defined as:
+δ(k)
+p = λ1d
+(k)
+scale + λ2σ(k) + λ3(1 − vk), ∑
+i λi = 1 ,
+where d
+(k)
+scale, σ(k), and vk denote block-averaged in-key dis-
+tance, stability, and voiced-frame ratio, respectively. The pitch
+fidelity score is obtained via bounded normalization: Pk =
+1 − ρp
+(
+δ(k)
+p
+)
+, where ρp(·) applies clipping-based normaliza-
+tion to ensure Pk ∈ [0, 1].
+3.4.3. Rhythmic Deviation Construction
+For each onset oi ∈ ok, we compute normalized beat-alignment
+deviation: δr(oi) = |oi−NN(oi;bk)|
+τk
+, where τk is the local inter-
+beat interval. For block Bk, three complementary rhythm statis-
+tics are computed – (a) absolute timing error: mean |δr(oi)|,
+(b) signed bias: mean δr(oi), and (c) stability: standard devi-
+ation of onset-level deviations δr(oi) within block Bk.
+The aggregated rhythmic deviation is: δ(k)
+r = η1 |δr|
+(k)
++
+η2 Std(k) + η3 |δr
+(k)
+|, ∑
+i ηi = 1 , where within block Bk,
+|δr|
+(k)
+denotes the mean absolute onset deviation, Std (k) or
+Std ({δr(oi)}oi∈ok ) denotes the stability metric, and δr
+(k)
+de-
+notes the signed mean deviation (bias). The rhythm fidelity
+score is defined via bounded normalization: Rk = 1 −
+ρr
+(
+δ(k)
+r
+)
+, ensuring Rk ∈ [0, 1].
+3.4.4. Block-Level Musical Consistency
+The resulting Pk and Rk are fused to compute the block-level
+musical score as described in Sec. 2.2.
+3.5. Overall Performance Evaluation
+Quantitative Aggregation: Block-level content and musical
+scores are aggregated using Eq. 1. For our experiments, we set
+γC = 0 .55 and γM = 0 .45, placing slightly higher emphasis
+on lyrical fidelity. These weights have been selected empirically
+based on validation-set correlation with human expert ratings.
+Natural Language (NL) Feedback Generation: In addition
+to the scalar score, we generate structured natural-language feed-
+back. We provide an LLM with: (a) ordered sequence {Ck}K
+k=1,
+(b) ordered sequence {Mk}K
+k=1, (c) ASR transcription ˆℓ(t),
+and (d) reference lyrics ℓ∗(t). Block-wise score sequences
+preserve localized performance variations (e.g., weaker chorus,
+stronger verse), enabling the production of section-aware NL
+rather than relying solely on the global aggregate.
+4. Experimental Results
+Configuration: We conduct experiments on Linux workstation
+equipped with 2 × NVIDIA Tesla V100-SXM2 GPUs (32 GB
+each), using GPU acceleration for ASR fine-tuning and infer-
+ence. We fine-tune whisper-large-v3 using parameter-
+135
+Table 1: Agreement and error metrics for singing evaluation.
+ρ = Spearman [ 15], τ = Kendall [16]. Lower MSE [ 17], MAE [ 18], and MedAE
+[19] are better (↓).
+Method C M SWARALYRICS SingMOS-Pro [8]
+ρ ↑ τ ↑ MSE ↓ MAE ↓ MedAE ↓ ρ ↑ τ ↑ MSE ↓ MAE ↓ MedAE ↓
+SingMOS [20] 3 7 - - - - - 0.091 0 .062 0 .56212 0 .60370 0 .45039
+UTMOS [21] 3 7 - - - - - 0.120 0 .076 0 .24000 0 .39200 0 .29400
+DNSMOS [22] 3 7 - - - - - 0.201 0 .137 0 .07560 0 .22000 0 .16500
+Whisper [13] 3 7 0.518 0 .350 0 .00960 0 .08010 0 .06250 0.326 0 .241 0 .06829 0 .20020 0 .16600
++ MG-LoRA 3 7 0.626 0.459 0.00685 0.06073 0.04250 0.483 0.379 0.04275 0.15129 0.10799
+SWIPE [23] 7 3 0.455 0 .320 0 .00910 0 .07600 0 .06500 × × × × ×
+CREPE [24] 7 3 0.482 0 .345 0 .00870 0 .07400 0 .06300 × × × × ×
+pYIN [14] 7 3 0.495 0 .354 0 .00836 0 .06673 0 .03600 × × × × ×
+MUSICJUDGE 3 3 0.683 0.499 0.00564 0.05514 0.03633 0.483 0.379 0.04275 0.15129 0.10799
+Table 2: MUSICJUDGE Ablation Study on SWARALYRICS
+(a) Content vs. Pitch-Rhythm
+Configuration ρ ↑ MSE ↓
+Musical Score M only 0.495 0 .00836
+Content Score C only 0.626 0 .00685
+Both (C ∧ M ) 0.683 0 .00564
+(b) Multi-signal (Sec. 3.3.3)
+Variant αembed αfuzzy ρ ↑
+NO_EMBED 0.00 0 .5 0.495
+NO_PHONETIC 0.70 0 .3 0.560
+NO_FUZZY 0.70 0 .0 0.608
+FULL_ALL 0.55 0 .2 0.626
+eﬀicient LoRA adapters ( r = 16 , α = 32 , dropout = 0 .05)
+applied to the attention projection layers ( q_proj, k_proj,
+v_proj, out_proj). Audio inputs are limited to 12 s
+with a maximum transcription length of 256 tokens. Train-
+ing is performed for 10 epochs with a learning rate of 10−4,
+batch-size 1 with 16-step gradient accumulation. The lyrics
+pipeline time-based ASR windows ( L = 28 s, stride = 10 s)
+over proto-segments, discarding windows with < 25 charac-
+ters, block matching uses embedding/lexical/phonetic weights
+(0.55, 0.20, 0.25) with threshold 0.72. Musical analysis uses
+pYIN (C2–C6, frame = 2048, hop = 256) and onset detection
+(pre_max = 3, post_max = 3, δ = 0.15).
+Table 3: MG-LoRA transcription robustness
+(a) across singing genres
+Genre Base MG-LoRA
+WER CER WER CER
+Classical 0.800 0 .671 0.689 0 .563
+Folk 0.742 0 .624 0.497 0 .405
+Ghazal 0.682 0 .592 0.571 0 .482
+Bhajan 0.642 0 .534 0.529 0 .421
+Pop 0.562 0 .423 0.451 0 .319
+(b) across languages
+Language Base MG-LoRA
+WER CER WER CER
+English 0.4052 0 .2627 0.2218 0 .2234
+Mandarin 0.7400 0 .1990 0.6100 0 .1062
+Hindi 0.7477 0 .4850 0.5474 0 .4382
+Punjabi 0.9431 0 .6347 0.6705 0 .3854
+Bengali 0.9375 0 .5153 0.7500 0 .4365
+Quantitative Validation: We sample a sequence of 120 vo-
+cal performances, scored by ≥ 3 human expert judges inde-
+pendently on a scale of 1-10 with the final score computed as
+the per-clip mean across judges and then assess these perfor-
+mances using MUSICJUDGE to derive an overall score. Then,
+we rank them based on these two score sequences and de-
+rive two orderings. Table 1 shows how closely the order-
+ing inferred by MUSICJUDGE correlates with human expert
+ground truth. Evaluation on SingMOS-Pro is limited to mod-
+els supporting lyrics/content evaluation ( C), as it lacks ground-
+truth for music score evaluation ( M). On SWARALYRICS,
+NL feedback via gpt-oss-120b [29] (Sec. 3.5) yields a
+all-MiniLM-L6-v2 [30] cosine similarity of 63.97 with ex-
+pert comments.
+Component impact analysis: Table 2 presents key ablations.
+Table 2a showcases the impact of content and musical compo-
+nents on SQA. In an exemplary instance, where content C, pitch
+P, and rhythm R, singularly emit scores 0.829, 0.490, and 0.491
+respectively, the overall score is computed as: (a) 0.829 (for C
+only), (b) 0.490 (for M only; 55: 45 weightage), and (c) 0.677
+(for C ∧ M; 55: 25: 20 weightage). Aggregation of (c) bears the
+A B C D E (Ours)
+0
+0.5
+1
+WER [25]
+SingMOS WER Jamendo WER SWARALYRICS WER
+0
+0.5
+1
+CER [26]
+SingMOS CER Jamendo CER SWARALYRICS CER
+Figure 2: Singing ASR Performance. Lower is better. A:
+hubert-large-ls960-ft [27], B: wav2vec2-large-960h-lv60 [28],
+C: whisper-medium, D: whisper-large-v3, E: D + MG-LoRA.
+highest ρ of 0.683. Table 2b further breaks down the compo-
+nents of the lyrics pipeline, proving that multi-signal block de-
+tection approach outperforms individual signals. Fig. 2 shows
+that the singing transcription accuracy improves by 29.87% due
+to MG-LoRA over the second best (averaged across SWARA-
+LYRICS, SingMOS-Pro, and Jamendo [ 10]). The base ASR ρ
+of 0.518 improves to 0.583 (+ LASR), 0.597 (+Ld), 0.616 (+Lp),
+0.622 (+La), 0.626 (+ Lo), showing a maximum benefit due to
+Lp after LASR.
+Generalization of MG-LoRA: Tables 3a, 3b present evalua-
+tions across the top-5 SWARALYRICS genres and 5 languages rep-
+resenting Whisper performance extremes.
+Qualitative Analysis: Table 4 shows that MG-LoRA improves
+transcription in cases like sustained note prolongation, melisma,
+ornamentation (like gamakas), portamento. Our NL feed-
+back is shown in Supplementary: https://neelam472.
+github.io/MusicJudge/Supp.pdf .
+Table 4: Exemplary instances of lyrics transcription
+Ground Truth Lyrics Whisper (Base) Whisper + MG-LoRA (Ours)
+उलझनमेरीसुलझादे,चाहूँमैंयाना
+(Uljhan meri suljha de,
+chahoon main aana)
+उलज़ममेरीसुलजादेचाहोमैंआना
+(Uljham meri sulja de
+chaho main aana)
+उलझनमेरीसुलजादे,चाहूँमैंयाना
+(Uljhan meri sulja de,
+chahoon main ya na)
+मेराकोईएहसासहैजैसे
+(Mera koi ehsaas hai jaise)
+मेराकोई अहसासहैजेसे
+(Mera koi ahsaas hai jese)
+मेराकोई एहसासहैजैसे
+(Mera koi ehsaas hai jaise)
+सीनेसेतुममेरेआके लगजाओना
+डरतेहोक्यूँ?
+ज़रापासतोआओना
+(Seene se tum mere aa ke lag
+jao na darte ho kyun?
+Zara paas to aao na)
+सीनेसेतुममेरे आखेलगजाओना
+ददǂहोक्यों
+जरापासतोआओना
+(Seene se tum mere aakhe lag
+jao na darde ho kyon
+jara paas to aao na)
+सीनेसेतुममेरे आकेलगजाओना,
+दरतेहोक्यूँ,
+ज़रापासतोआओना
+(Seene se tum mere aa ke lag
+jao na, darte ho kyun,
+zara paas to aao na)
+5. Conclusion
+We introduc

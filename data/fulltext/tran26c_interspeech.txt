@@ -1,0 +1,405 @@
+From Single to Multi-Label SER: Dataset and Mamba-Based Fusion Model
+Vu Long Tran1,∗, Long Duc Do1,∗, Vinh Quang Nguyen1,∗, Ngoc Minh Nguyen1, Quang Minh Le
+Pham1, Hieu Trung Nguyen1, Trang Thu Thi Nguyen1,∗∗
+1 Hanoi University of Science and Technology, Viet Nam
+vutl2004@gmail.com, long3172004@gmail.com, quangvinh0469@gmail.com,
+ngocminhgb123@gmail.com, mkw.dsa@gmail.com, hieuasroma@gmail.com,
+trangntt@soict.hust.edu.vn
+Abstract
+We present a reproducible multi-label benchmark for speech
+emotion recognition (SER) built from the MSP-Podcast V2.0
+corpus. Our pipeline converts crowdsourced emotion votes into
+multi-hot labels with controlled ambiguity and sparsity via re-
+liability filtering, deterministic vote-to-label construction, and
+lightweight time-shift augmentation. On this benchmark, we
+provide a compact Mamba-based fusion baseline over MFCC
+and log-mel features, following prior SER fusion practice,
+while using linear-time state-space backbones for efficient mod-
+eling of long audio. Using a validation-only global threshold
+sweep for checkpoint selection and a fixed test-time threshold
+for evaluation, our fusion model attains competitive micro-F1
+on two MSP-Podcast test partitions (≈0.50on both Test1 and
+Test2) while remaining substantially lighter than heavier base-
+lines and recent methods. We release dataset splits, construction
+code, and training recipes to support future work on scalable
+multi-label SER.
+Index Terms: Multilabel speech emotion recognition, MSP-
+Podcast, fusion, Mamba, MFCC, Logmel Spectrogram
+1. Introduction
+Speech emotion recognition (SER) has been studied for decades
+with established benchmarks and model families [1]. However,
+most existing datasets and models treat SER as asingle-label
+task, assuming that each utterance expresses only one domi-
+nant emotion. In practice, natural speech often conveys multi-
+ple emotions simultaneously (e.g., happiness with excitement,
+or surprise with anger), and collapsing annotator ratings into
+a single majority-vote label obscures perceptual ambiguity and
+systematic disagreement in subjective affect annotation [2–5].
+To better reflect the co-occurrence and ambiguity of emo-
+tions in natural speech, several works have explored multi-label
+SER and disagreement-aware training strategies [6–8]. How-
+ever, publicly available datasets for this setting remain limited.
+A Korean multi-label speech dataset with deep fusion archi-
+tectures has been proposed [9], but it is not publicly released,
+limiting reproducibility and broader benchmarking. Some cor-
+pora such as CMU-MOSEI [10] and conversational datasets like
+MEISD [11] contain multi-label affect annotations, yet they are
+primarily designed for multimodal or dialogue analysis rather
+than large-scale speech-only SER.
+In contrast, widely used SER datasets such as MSP-Podcast
+provide large-scale naturalistic speech with crowd-sourced per-
+ceptual ratings [12]. Nevertheless, most downstream SER
+pipelines still collapse these ratings into majority-vote labels,
+*These authors contributed equally.
+**indicates the corresponding author.
+discarding valuable ambiguity information. Recent bench-
+mark initiatives such as EMO-SUPERB further highlight repro-
+ducibility issues and the need for standardized evaluation proto-
+cols in SER research [13]. Despite this progress, a standardized
+and reproducible large-scale benchmark for multi-label SER on
+widely used in-the-wild speech corpora is still lacking [4, 14].
+On the modeling side, modern SER systems increasingly
+rely on Transformer-, ViT-, or SSL-based backbones [9,15–20],
+which can be computationally heavy for long audio sequences
+and resource-constrained deployment [21]. This motivates ef-
+ficient sequence models that retain strong long-range modeling
+ability.
+In this work, we introduce a reproducible pipeline that con-
+verts MSP-Podcast into a multi-label SER benchmark via re-
+liability filtering, deterministic vote-to-multi-hot labeling, and
+long-tail combination control. We further provide an efficient
+dual-branch Mamba baseline with linear-timeO(T)sequence
+modeling [22, 23], where separate encoders process MFCC and
+log-mel features and a lightweight fusion module integrates
+complementary cues.
+Our main contributions are: (i) a transparent and repro-
+ducible protocol for constructing a multi-label benchmark from
+MSP-Podcast; (ii) controlled dataset variants that trade off per-
+ceptual ambiguity and combinatorial sparsity; and (iii) an effi-
+cient Mamba-based fusion baseline demonstrating strong per-
+formance under a unified evaluation protocol.
+2. Multi-label Dataset Construction
+2.1. Source corpus, label space, and reliability filtering
+We construct a public multi-label SER benchmark from MSP-
+Podcast (V2.0), using its official speaker-independent Train/De-
+v/Test partitions [24]. The corpus contains naturalistic speech
+segments annotated by multiple raters, each providing categor-
+ical emotion votes for the perceived emotion of an utterance.
+These multiple annotations reflect the inherently ambiguous na-
+ture of emotional perception in speech. Fig. 1 summarizes the
+overall pipeline used to construct our benchmark.
+Recent work has explored converting MSP-Podcast an-
+notations into multi-label supervision. For example, EMO-
+SUPERB derives distributional emotion labels from annotator
+votes and determines target classes by applying thresholds to
+these distributions, while EMO-Debias similarly binarizes dis-
+tribution labels using a fixed threshold (e.g.,1/CwhereCis the
+number of emotion classes) for multi-label evaluation [13, 25].
+Such approaches preserve soft annotator agreement but rely on
+heuristic thresholding, which can lead to unstable label combi-
+nations.
+In contrast, we construct deterministic multi-hot labels di-
+rectly from vote counts using explicit agreement constraints, en-
+1881
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3458
+Figure 1:Data construction pipeline.Overview of the bench-
+mark construction pipeline. Multi-hot labels are finalized be-
+fore data splitting, while long-tail combination pruning and
+time-shift augmentation are applied only to the training par-
+tition to avoid evaluation leakage.
+abling transparent ambiguity control and further regularization
+of the label space through long-tail combination control.
+We focus on eight primary emotions (Angry, Contempt,
+Disgust, Fear, Happy, Neutral, Sad, Surprise); all other tags are
+treated as out-of-scope (OOS). Before constructing labels, we
+apply model-agnostic quality gates: utterances with fewer than
+vmin = 3ratings or with an OOS-ratio≥0.5are discarded.
+Any rule depending on combination frequency is computed on
+the Train split only and then applied to Dev/Test to avoid data
+leakage.
+2.2. Deterministic vote-to-multi-hot labeling and threshold
+selection
+For each utteranceu, we aggregate in-scope votes into
+v(u)∈Z 8
+≥0 with totalV(u) = P
+ivi(u). Letmaj(u) =
+arg maxivi(u)be the majority emotion (deterministic tie-
+break by lowest index). We always includemaj(u), and add
+a secondary emotioni̸= maj(u)if:
+vi(u)≥n min, vi(u)
+V(u) ≥τ rel, vi(u)
+vmaj(u)≥τ maj.(1)
+The label set size is capped byL max (majority plus up to
+Lmax−1secondary labels with the highest votes). To prevent
+label-tuning leakage, the parameters(n min,τ rel,τ maj,L max)
+are selected using dataset-level stability statistics computed on
+the Train split (average label cardinality, multi-label rate, and
+rare-sample ratio). In our benchmark we useL max = 3and
+(τrel,τ maj) = (0.20,0.40).
+2.3. Combination long-tail control and benchmark variants
+Even after vote thresholding, label combinations exhibit a
+strong long-tail, which destabilizes training and evaluation. We
+therefore applytrain-fit pruning(computed on Train, applied
+to Dev/Test) to remove extremely rare combinations, then de-
+fine three practical variants (Table 1).
+nmin = 1(permissive):A permissive agreement constraint
+yields higher ambiguity (higher multi-label rate) but retains a
+Variant Train samples % multi-label Train combos
+nmin = 1171,345 48.63 85
+nmin = 2170,058 29.16 39
+nmin = 2final 186,353 30.90 18
+Table 1:Training-set label statistics for benchmark variants af-
+ter long-tail control. Our main benchmark usesn min = 2final,
+which retains combinations with≥1000 training samples and
+applies train-only augmentation for within-combination bal-
+ancing.
+large, sparse combination space (85 unique sets) following a
+Zipfian long-tail distribution, which is typically impractical for
+stable benchmarking.
+nmin = 2(pruned):A more conservative agreement con-
+straint substantially reduces the combination space after train-fit
+pruning (computed on Train and applied to Dev/Test). We keep
+this variant because it preserves broader combination diversity
+(including some 3-label mixtures) compared to the final cutoff
+version.
+nmin = 2final:This is themain benchmark used in
+this paper. Starting from the prunedn min = 2label set, we
+drop combinations with fewer than 1000 Train samples, pro-
+ducing a compact 18-combination label space by design, ef-
+fectively pruning 78% of the initial combination types to fo-
+cus on well-represented emotion mixtures. Then, instead of
+augmenting rare-tail combinations, we applytrain-only right-
+shift augmentationwithin each remaining combination using
+a frequency-aware schedule: iterating combinations sorted by
+Train count, we augment a combination whenever its count is
+more than2×the next smaller one, repeating to reduce large
+count gaps. This increases within-combination diversity with-
+out changing labels or contaminating Dev/Test.
+3. Methodology
+3.1. Acoustic Features and Input Representation
+Speech segments are processed after standard preprocessing.
+During training we optionally apply a lightweight time-shift
+augmentation (right shift with silence padding).
+We extract two complementary acoustic views: (i) a 100-
+dimLogMel Spectrogram, and (ii) 40-dimMel-Frequency
+Cepstral Coefficients (MFCCs).
+Variable-length sequences are managed using padding and
+length masks. We focus on MFCC and log-mel as lightweight
+and widely used representations for SER fusion and omit addi-
+tional handcrafted features (e.g., VQF/eGeMAPS) to keep the
+benchmark simple and reproducible [9, 26].
+3.2. Dual-Branch Mamba Fusion Model
+Mamba backbone.Our encoders are built on the Mamba state-
+space model (SSM) [22], which enables linear-time sequence
+processing (O(T)) and is therefore well-suited to long acoustic
+sequences. At each time step, Mamba updates a hidden stateht
+from the current inputxt and produces an outputyt:
+ht = Aht−1 + Bxt,(2)
+yt =Ch t +Dxt,(3)
+where Aand Bare discretized parameters derived from contin-
+uous counterparts andC,Dare learned projection parameters.
+Unimodal branches.As shown in Fig. 2, MFCCs and
+log-mel features are processed by parallel Mamba encoders.
+1882
+Figure 2:Architecture of the dual-branch Mamba-based fu-
+sion model. Raw audio is transformed into MFCC and log-
+mel features, encoded by separate Mamba stacks, fused by a
+lightweight gated head, and mapped into multi-label sigmoid
+outputs.
+TheMFCC branchuses a lightweight 1D convolutional front-
+end to capture local phonetic patterns before projecting features
+to the Mamba dimension. Thelog-mel branchfirst applies
+patch/projection to form a sequence of spectro-temporal tokens
+with positional embeddings, followed by a deeper Mamba stack
+to model longer-range structure. For both branches, we obtain
+utterance-level embeddings via masked mean pooling.
+Fusion and classifier.Letz mfcc andz mel be the pooled em-
+beddings. To leverage complementarity while keeping the head
+lightweight, we apply LayerNorm to each embedding, scale
+them with learnable scalar gates, and concatenate the gated em-
+beddings. The fused vector is passed through a bottleneck (lin-
+ear + GELU) to obtain a unified multimodal representation, fol-
+lowed by a linear classifier producing 8 sigmoid logits for multi-
+label prediction. This lightweight fusion serves as a strong val-
+idation backbone for our dataset reformulation.
+3.3. Training Objective
+We optimize a multi-label objective on the proposed bench-
+mark. Because the label space is long-tailed and negatives dom-
+inate in multi-label settings, we usebinary focal loss[27] as the
+default training objective:
+pt,c =y cpc + (1−y c)(1−p c),
+αt,c =y cα+ (1−y c)(1−α),
+Lfocal =− 1
+C
+CX
+c=1
+αt,c(1−p t,c)γ log(pt,c),(4)
+whereC= 8,y c ∈ {0,1},pc =σ(ˆyc), andγis the fo-
+cusing parameter. We also implemented imbalance- and co-
+occurrence-aware objectives inspired by prior multi-label SER
+work [4, 7] and class-balanced reweighting [28]. However, in
+this paper we report results using focal loss and leave a system-
+atic loss ablation for future work.
+4. Experiments
+4.1. Experimental Setup and Protocol
+All experiments are conducted on our MSP-Podcast multi-
+label benchmark (Sec. 2) using the official speaker-independent
+Train/Dev/Test partitions, and we report results on two held-
+out test sets (Test1 and Test2). For fair comparison with prior
+multi-label SER work [9], all models are evaluated using a fixed
+decision thresholdt= 0.45.
+Because static thresholds can bias early-stage validation un-
+der class imbalance, we select checkpoints via a validation-only
+global sweep: for each epoch we sweep a single threshold on
+Dev to maximize Dev miF1 and choose the best checkpoint ac-
+cordingly. Importantly, the sweep is used only for checkpoint
+selection; all Test metrics are computed with the fixedt= 0.45.
+Models are trained for 100 epochs (batch size 8, seed 42)
+using AdamW with gradient clipping (max-norm 1.0). To ad-
+dress label imbalance we use an inverse-frequency weighted
+sampler. Unless stated otherwise, the default objective isbi-
+nary focal loss(Eq. 4) following prior multi-label SER prac-
+tice [9]. We also test LP+CB [8] as a secondary objective, but
+the main benchmark results use focal loss.
+4.2. Evaluation Metrics
+Ourprimary metric is micro-F1 (miF1), aggregated over all
+labels. We also reportmacro-F1 (maF1), i.e., the unweighted
+average F1 across labels, which is more sensitive to tail emo-
+tions. To capture set-level consistency, we further reportHL
+(fraction of wrong label decisions; lower is better),Jac(set
+IoU),ExAcc(exact set match rate), andBiAcc(mean per-label
+accuracy) (Table 2).
+4.3. Main Results and Analysis
+Table 2 summarizes results under the unified protocol. Un-
+der the fixed-threshold evaluation, differences are most evident
+in set-level metrics (HL/Jaccard/ExactAcc) rather than micro-
+F1 alone, highlighting the value of standardized protocols for
+multi-label SER comparisons. This aligns with our goal: estab-
+lishing a standardized benchmark and evaluation protocol rather
+than pursuing a large-margin model gain.
+Proposed fusion.Both Fusion-Gate and Fusion-Stack
+combine MFCC-Mamba and LogMel-Mamba features but dif-
+fer in the fusion head. Fusion-Gate learns adaptive branch
+weighting, while Fusion-Stack performs late logit fusion.
+Among our models, Fusion-Gate consistently achieves the best
+set-level performance, improving miF1, maF1, and Jaccard
+while reducing Hamming lossrelative to unimodal branches.
+Fusion-Stack remains competitive but slightly trails Fusion-
+Gate on most metrics.
+Comparison to baselines.Compared with the re-
+implemented Korean baselines, our fusion models are
+overall comparable and often stronger on macro-F1 and
+set-level metrics. Fusion-Gate outperforms Fuse-KR
+(MFCC+LogMel) on Test1 and remains competitive with
+the stronger MFCC+LogMel+VQF system while using only
+MFCC and log-mel inputs. Several prior architectures and
+large pretrained models (e.g., MulT and WavLM) achieve
+strong micro-F1, but our Mamba-based models provide a
+favorable accuracy–efficiency trade-off with substantially
+fewer parameters.
+Efficiency context.The Korean fusion combines MFCC-
+LSTM (0.040M) with ViT-LogMel (1.08M), whereas our de-
+sign uses two Mamba branches. While LogMel-Mamba is
+1883
+Table 2:Benchmark results on MSP-Podcast multi-label test sets. All methods useglobal-sweep checkpoint selection(best val miF1)
+and are evaluated with a fixed thresholdt= 0.45. (↑) means higher is better; (↓) means lower is better.
+Efficiency Test1 Test2
+Model Params (M) miF1↑maF1↑HL↓Jac↑ExAcc↑BiAcc↑miF1↑maF1↑HL↓Jac↑ExAcc↑BiAcc↑
+Prior Architectures
+MulT (Audio-only MFCC) [29] 0.781 0.508 0.251 0.195 0.411 0.141 0.805 0.526 0.217 0.194 0.422 0.101 0.807
+MulT (Audio-only LogMel) [29] 0.782 0.509 0.246 0.192 0.411 0.143 0.808 0.552 0.208 0.178 0.438 0.141 0.822
+HHMPN (Audio-only MFCC) [30] 9.09 0.364 0.072 0.175 0.326 0.251 0.825 0.558 0.096 0.123 0.523 0.426 0.877
+HHMPN (Audio-only LogMel) [30] 9.34 0.367 0.069 0.177 0.330 0.231 0.828 0.575 0.101 0.125 0.525 0.419 0.878
+UniV A (Audio-only MFCC) [31] 29.68 0.375 0.0762 0.172 0.339 0.271 0.835 0.572 0.098 0.118 0.536 0.449 0.885
+UniV A (Audio-only LogMel) [31] 29.73 0.380 0.0771 0.171 0.3420.2760.8390.5870.1100.116 0.542 0.452 0.889
+WavLM [32] 94.3 0.504 0.27 0.223 0.402 0.078 0.778 0.525 0.23 0.230 0.393 0.054 0.770
+Re-implemented Prior Work
+VQF-DNN [9] 0.001 0.340 0.156 0.163 0.236 0.156 0.837 0.393 0.130 0.155 0.288 0.194 0.845
+MFCC-LSTM [9] 0.040 0.392 0.208 0.286 0.288 0.180 0.834 0.463 0.226 0.271 0.324 0.021 0.840
+ViT-LogMel [9] 1.08 0.475 0.264 0.182 0.406 0.188 0.818 0.510 0.226 0.183 0.407 0.157 0.817
+Fuse-KR (MFCC+LogMel) [9] 1.13 0.447 0.270 0.160 0.234 0.164 0.840 0.452 0.235 0.164 0.202 0.109 0.837
+Fuse-KR (MFCC+LogMel+VQF) [9] 1.14 0.475 0.272 0.202 0.374 0.131 0.798 0.490 0.229 0.202 0.374 0.107 0.798
+Fusion (MFCC-LSTM + LogMel-CNN) [26] 0.12 0.446 0.268 0.265 0.321 0.040 0.735 0.445 0.228 0.264 0.320 0.047 0.736
+Fusion (MFCC+LogMel+eGeMAPS) [26] 0.13 0.411 0.263 0.333 0.288 0.028 0.667 0.426 0.236 0.320 0.302 0.036 0.680
+Proposed Methods
+MFCC-Mamba (Ours)2.26 0.489 0.299 0.185 0.396 0.166 0.815 0.481 0.246 0.194 0.372 0.120 0.806
+LogMel-Mamba (Ours)0.99 0.500 0.283 0.188 0.398 0.143 0.812 0.505 0.248 0.195 0.385 0.105 0.805
+Fusion-Gate (Ours)3.070.510 0.3050.1790.4120.163 0.821 0.5140.2580.179 0.405 0.143 0.821
+Fusion-Stack (Ours)3.02 0.501 0.304 0.201 0.392 0.118 0.799 0.503 0.254 0.201 0.383 0.091 0.799
+LP+CB Loss
+LogMel-Mamba (Ours)0.99 0.401 0.2360.1330.316 0.2410.8620.383 0.193 0.141 0.288 0.206 0.859
+MFCC-Mamba (Ours)2.26 0.405 0.270 0.150 0.334 0.246 0.850 0.337 0.205 0.169 0.258 0.168 0.831
+slightly smaller than ViT-LogMel, MFCC-Mamba is larger
+than MFCC-LSTM, making Fusion-Gate/Fusion-Stack (∼3M)
+heavier than Fuse-KR (∼1.1M). Most of this increase comes
+from upgrading the MFCC branch.
+5. Discussion
+Despite strong aggregate performance, multi-label SER on nat-
+uralistic speech remains challenged by extreme long-tail label
+distributions. Our results in Table 2 and Table 3 make this limi-
+tation explicit.
+Tail emotions remain difficult.Although Fusion-Gate im-
+proves overall set-level consistency (higher Jaccard and lower
+Hamming loss in Table 2), several rare emotions remain dif-
+ficult to detect under a fixed decision threshold. As shown in
+Table 3, tail classes such asFear,Disgust, andContemptobtain
+very low F1 scores, particularly on Test2. This behavior reflects
+the strong class imbalance typical in naturalistic emotion cor-
+pora, where head emotions dominate the training distribution
+and models tend to make conservative predictions for minority
+labels.
+The gap between micro-F1 and macro-F1 highlights this
+imbalance. While micro-F1 reflects overall prediction accuracy
+dominated by frequent emotions, macro-F1 is more sensitive
+to minority-class performance. The relatively lower macro-F1
+values therefore indicate that tail emotions remain an open chal-
+lenge even when overall performance is strong.
+Future directions.Future work should explore stronger
+long-tail learning strategies, including imbalance-aware objec-
+tives, combination-aware regularization, and data augmentation
+targeting rare emotion combinations. Another direction is lever-
+aging large pretrained speech encoders as teachers or feature
+extractors while maintaining the unified evaluation protocol in-
+troduced in this benchmark.
+Table 3:Per-label precision/recall/F1 of Fusion-Gate
+Test1 Test2
+LabelP R F1 P R F1
+Angry 0.4935 0.6237 0.5510 0.2479 0.3494 0.2901
+Contempt 0.0857 0.1690 0.1138 0.0622 0.1491 0.0878
+Disgust 0.0208 0.0335 0.0257 0.0215 0.0450 0.0291
+Fear 0.0195 0.0388 0.0260 0.0038 0.0136 0.0620
+Happy 0.4098 0.7411 0.5278 0.3548 0.5920 0.4437
+Neutral 0.5144 0.7974 0.6254 0.6583 0.8366 0.7368
+Sad 0.2563 0.3293 0.2882 0.1432 0.4113 0.2124
+Surprise 0.0890 0.1976 0.1227 0.0821 0.1291 0.1004
+6. Conclusion
+We addressed the challenges of label ambiguity and extreme
+long-tail distributions in multi-label speech emotion recogni-
+tion (SER) [1, 6]. We developed a transparent and repro-
+ducible pipeline that converts the MSP-Podcast V2.0 corpus
+[24] into multi-hot labels through reliability filtering and de-
+terministic vote-to-label rules [2]. Our proposed dual-branch
+Mamba-based fusion model demonstrated that linear-time state-
+space backbones [22, 23] can achieve competitive performance
+(≈0.50micro-F1) while remaining significantly lighter than
+heavier Transformer-based architectures [17, 33].
+Crucially, our results reveal that while architectural choices
+are broadly comparable on this benchmark [9], the detection
+of rare emotions remains an open challenge under fixed de-
+cision thresholds [4]. These findings suggest that future re-
+search should prioritize imbalance-aware objectives [8, 28] and
+targeted data augmentation for rare emotion combinations over
+incremental model scaling [16]. By releasing our dataset con-
+struction code and training recipes, we aim to support standard-
+ized and scalable multi-label SER research [13].
+1884
+7. Generative AI Use Disclosure
+This research used generative AI tools only to assist with lan-
+guage editing, grammar checking, and improving the clarity
+of the manuscript. The tools were not used to generate the
+research idea, methodology, experimental results, analysis, or
+conclusions. All scientific content, experiments, results, and fi-
+nal manuscript text were reviewed, verified, and approved by
+the authors, who take full responsibility for the work.

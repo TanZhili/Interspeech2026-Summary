@@ -1,0 +1,450 @@
+Low-Framerate Speech Tokenization via Two-Stage Latent Patch Modeling
+Th´eodor Lemerle1, Diego Torres1, T´eo Guichoux1,2, Nicolas Obin1, Axel Roebel1
+1 STMS Lab, IRCAM - Sorbonne Universit´e - CNRS, Paris, France
+2 ISIR, Sorbonne Universit´e, Paris, France
+lemerle@ircam.fr
+Abstract
+Recent advances in neural speech tokenizers rely on low-
+framerate, semantically rich latent representations that facilitate
+downstream generative modeling tasks such as text-to-speech.
+However, achieving high perceptual quality at low bitrate and
+framerate remains computationally demanding, as it typically
+requires joint compression, adversarial training, and semantic
+supervision, resulting in expensive training.
+In this work, we introduceZ-CODEC, a two-stage latent
+speech codec. In the first stage, we train a high-framerate varia-
+tional autoencoder (V AE) with adversarial objectives to capture
+fine-grained acoustic details and absorb the complexity of ad-
+versarial training. In the second stage, we perform final com-
+pression within the latent space of the first stage using flow
+matching and incorporate semantic supervision, enabling high-
+quality low-framerate tokenization.
+Our approach achieves state-of-the-art reconstruction qual-
+ity for both low-bitrate discrete tokenizers and continuous set-
+tings, outperforming or matching strong baselines. Importantly,
+the staged design ofZ-CODECmakes training tractable on a
+single RTX 4070 GPU, enabling high-quality, low-framerate
+speech tokenizer reproducible on consumer-grade hardware. 1
+Index Terms: speech codec, speech tokenizer, text-to-speech
+1. Introduction
+Text-to-speech (TTS) systems have increasingly adopted neu-
+ral speech tokenizers that represent audio as sequences of to-
+kens [1, 2, 3]. This formulation makes it possible to train TTS
+models with the same architectures and scaling strategies that
+have proven effective in natural language processing, in partic-
+ular large Transformer models. Transformers are well suited
+to this setup: they capture long-range dependencies, scale pre-
+dictably with data, and support both autoregressive and non-
+autoregressive generation. However, speech representations are
+typically inefficient compared to text. Even after compression
+by a neural codec, token rates remain much higher than those of
+natural language, leading to long sequences that are expensive
+to train on and slow to decode. Consequently, recent work has
+focused on improving bitrate efficiency and reducing temporal
+resolution through low-frame-rate speech tokenizers [4, 5, 6].
+These approaches learn compact discrete representations that
+shorten sequence length while preserving perceptual quality and
+downstream performance. Discrete tokenizers usually rely on
+vector quantization and codebooks. Achieving stronger com-
+pression often requires increasing vocabulary size or using mul-
+tiple codebooks through residual or hierarchical quantization.
+1We release code and checkpoints athttps://github.com/
+theodorblackbird/z-codec
+While effective in lowering frame rates, these designs intro-
+duce additional challenges during training. Large codebooks
+are prone to collapse, where many entries remain unused, and
+often require auxiliary techniques such as commitment penal-
+ties [7], exponential moving average updates [8], codebook re-
+initialization [1], or alternative quantization strategies. Multi-
+level quantization further complicates downstream modeling
+and decoding, requiring specialized sampling strategies such as
+delayed codebook prediction [9] or depth-wise token genera-
+tion [4]. As a result, although discrete codecs provide an effec-
+tive speech-to-token interface, their reliance on large or hierar-
+chical codebooks introduces practical challenges when scaling
+TTS systems.
+In parallel, an alternative line of work has explored contin-
+uous latent representations for speech modeling [10, 11, 12].
+Typically implemented using variational autoencoders, these
+approaches avoid explicit quantization and therefore bypass is-
+sues such as codebook collapse and complex residual quantiza-
+tion schemes.
+In addition, many speech tokenizers incorporate semantic
+supervision during training to ensure that the latent representa-
+tion preserves linguistically relevant information while discard-
+ing redundant or uninformative acoustic details. Such supervi-
+sion is often combined with adversarial waveform reconstruc-
+tion objectives to maintain naturalness, which increases training
+complexity. Different forms of semantic guidance have been
+explored, including CTC-based objective [13], joint ASR or
+language modeling objectives [14], and distillation from self-
+supervised speech models [4, 15, 16]. These techniques help
+maintain intelligibility and semantic consistency in highly com-
+pressed speech representations. However, the combination of
+adversarial training, semantic supervision, waveform modeling,
+and compression leads to expensive training setups that pre-
+clude reproduction on consumer-grade GPUs.
+2. Flow Matching
+Flow Matching [17] aims to learn a velocity fieldv θ(x,t)that
+transports a simple prior distributionp 0 into the data distribu-
+tionp data by solving the ODE:
+dx
+dt =v(x,t), x(0)∼p 0.
+in order to retrievex(1)∼p data. Training supervision is pro-
+vided by defining a family of conditional pathsp t(x|x 0,x 1)
+that interpolate betweenp 0 andp data and with corresponding
+conditional velocity fieldv cond(x,t,x 1). Training reduces to
+the objective:
+3971
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2863
+AR Transformer
+˜z1 ˜z2 . . . ˜zL-2 ˜zL-1 ˜zL
+c1 c2 . . . cL-2 cL-1
+Velocity
+Head
+˜vt
+L
+ODE
+Solver
+NAR Transformer
+t1 t2 . . . tN-1 tN
+x-att
+t1
+t
+˜z
+c
+Text token
+PatchV AE latent
+AR Condition output
+ϵ
+t
+Figure 1:TTS backbone used for downstream evaluation. An
+autoregressive Transformer consumes continuous tokens˜zand
+produces condition embeddingsc, which drive a lightweight
+MLP predicting the velocity field˜vfrom Gaussian noise to
+PatchVAE’s latent space. Text inputs are encoded by a
+non-autoregressive Transformer and incorporated via cross-
+attention, following a standard encoder-decoder architecture.
+LFM(θ) =E t∼U[0,1]
+x1∼pdata
+x∼pt(x|x0,x1)
+∥vθ(x,t)−v cond(x,t)∥ 2.
+where the modelv θ learns to predict the conditional veloci-
+ties along sampled paths. In this work, we employ linear in-
+terpolants where conditional paths are defined as straight-line
+interpolations between prior and data samples:
+x(t) = (1−t)x 0 +tx 1, t∈[0,1],
+withx 0 ∼p 0 andx 1 ∼p data. At inference time, we sam-
+plex 0 ∼p 0 (e.g., Gaussian) and integrate the ODE with the
+learned velocity fieldvθ forward tot= 1, yielding approximate
+samples fromp data. Recent work [18] has further demonstrated
+that autoregressive probabilistic models can be combined with
+diffusion-like approaches by replacing categorical logits predic-
+tion with continuous velocity prediction.
+3. Method
+3.1. Two-Stage Latent Speech Patching
+3.1.1. Two-Stage Speech Tokenizer
+Our approach relies on a two-stage continuous speech codec.
+The motivation is to reduce the computational and memory
+cost of directly modeling raw waveform, which typically re-
+quires adversarial training and complex setups, making scaling
+up models impractical on consumer-grade GPUs. In the first
+stage (WavV AE), we produce a mildly compressed latent repre-
+sentationzthat preserves high fidelity at a relatively high frame
+rate. This stage abstracts away the complexity of waveform
+modeling, simplifying the task for the next stage. In the sec-
+ond stage (PatchAE), these latents are further compressed into
+a lower-frame-rate representation˜zwithout operating directly
+on the waveform nor requiring adversarial training. Semantic
+supervision is achieved during this second stage. This hierar-
+chical design enables an order-of-magnitude larger batch size
+in the second stage, keeping both memory and compute man-
+ageable even in the presence of semantic supervision.
+Waveform
+Encoder
+(Conv/ResBlocks)
+µ σ
+z ϵ
+Decoder
+(ConvNeXt)
+iSTFT
+Waveform
+z
+˜z
+WavV AE latent
+PatchAE latent
+(a)1st stage: WavVAE
+zz
+vv
+ztzt
+z z z
+Patchify
+rearrange
+b(np)d -> bn(pd)
+z
+Encoder
+(ConvNeXt)
+V AE/FSQ
+˜z
+Decoder
+(ConvNeXt + SA)
+Velocity Head
+(ConvNeXt)
+tϵ
+vt
+ODE Solver
+SSL
+feat.
+z
+Unpatchify
+rearrange
+bn(pd) -> b(np)d
+zz z
+(b)2nd stage: PatchAE
+Figure 2:Two-stage continuous latent patching.Stage 1 (Wav-
+VAE):The waveform is encoded into Gaussian parameters
+(µ,σ)and sampled to latent vectorsz. A Vocos-based decoder
+reconstructs the waveform via predicted STFT frames.Stage 2
+(PatchAE):Latentszare grouped into patches and compressed
+to lower-rate latents˜z(discrete or continuous, resp. FSQ or
+VAE). Decoding uses latent flow-matching to predict velocity
+patchesv t conditioned on˜zand timestept. Semantic supervi-
+sion is achieved at the velocity head level.
+3.1.2. AR Continuous Modeling
+Our TTS backbone consists of an encoder–decoder T5 Trans-
+former, equipped with a lightweight velocity prediction head.
+Specifically, a 3-layer MLP predicts the velocity field˜vof a flow
+that maps gaussian noise to continuous speech latents˜zpro-
+duced by the second-stage speech tokenizer (PatchV AE). This
+simple MLP is mostly similar to VibeV oice [12] as opposed to
+DiTAR[10] which directly predicts patches of higher-framerate
+latents.
+3.2. First Stage (WavV AE): High-Framerate Waveform
+Compression with V AE-GAN
+GAN-based autoencoders produce perceptually convincing au-
+dio representations but are difficult to scale due to the cost of
+waveform modeling and discriminator training. To mitigate
+this, we train a high-framerate autoencoder with a relatively
+low compression rate. This design mirrors mel-spectrogram
+3972
+vocoders, which operate at 80–100 Hz with moderate compres-
+sion. By avoiding aggressive compression at this stage, adver-
+sarial training becomes more stable and computationally effi-
+cient.
+Our architecture follows the time-domain encoder intro-
+duced in SNAC [19], using cascading downsampling layers
+with strides [3,4,4,5], and a ConvNeXt decoder inspired by V o-
+cos [20] that predicts STFT features. We employ a V AE with
+bottleneck dimension 24, producing continuous latents at 100
+Hz.
+Training largely follows the V ocos setup with three modifi-
+cations: (1) the MRD loss weight is increased from 0.1 to 1.0,
+(2) training is reduced to 500k steps (instead of 1M), and (3) a
+KL-divergence loss with weight2×10 −4 is added. Training
+takes approximately four days on a single RTX 4070 GPU. The
+training data consists of HiFiTTS2 [21] together with the full
+LibriTTS training split.
+3.3. Second Stage (PatchV AE/PatchFSQ): Low-Framerate
+Latent Compression with Flow-Matching
+The second stage compresses the first-stage latent sequencezto
+the target framerate and bitrate. It operates as an autoencoder
+overpatchesof latents, grouping consecutive tokens (patchify,
+see Figure 2b). The encoder uses [20] blocks with base di-
+mensionality 768, while the decoder mirrors this architecture
+and incorporates non-overlapping windowed self-attention lay-
+ers (window size 32) to capture longer-range dependencies.
+A velocity head, composed of ConvNeXt blocks with affine
+modulation conditioned on the flow timestep and decoder out-
+put, reconstructs the original high-framerate latent patches. In
+practice, 100 Hz first-stage latents are grouped into patches of
+8, producing a second-stage sequence˜zat 12.5 Hz.
+We explore both continuous tokenization using a V AE (dis-
+tinct from WavV AE) and discrete tokenization using FSQ [22],
+a popular alternative to RVQ in speech tokenizers [5, 13, 23].
+Both variants use 32 latents. For FSQ, each scalar is quantized
+over 7 values, resulting in a bitrate of approximately 1.1 kbps.
+To encourage semantic consistency, an auxiliary branch from
+the velocity head (two MLP layers) maximizes cosine similarity
+with semantic features extracted from the 6th layer of WavLM-
+large [24]. We use the same training dataset as WavV AE. Train-
+ing runs for 300k steps on 2.56 s segments with batch size
+128 using AdamW and a cosine learning rate schedule from
+1×10 −4 to1×10 −5. We use a KL weight of2×10 −3, gra-
+dient clipping at 1.0, and randomly drop decoder conditioning
+in the velocity head with probability 0.1. Training completes in
+approximately six days on a single RTX 4070 (12GB).
+3.4. TTS backbone: T5 transformer with velocity predic-
+tion
+Our TTS model adopts an encoder–decoder architecture with
+cross-attention, similar to the backbone used in several recent
+TTS systems [25, 26]. Text is tokenized using byte-pair encod-
+ing (BPE) at the character level, with a vocabulary of 256 entries
+trained on the same corpus as the model. The backbone employs
+a hidden dimension of 1024 and an attention head size of 128.
+The text encoder is a 6-layer self-attention transformer, while
+the audio decoder is a 12-layer gated linear attention (GLA)
+transformer [27], following prior designs [28, 29]. Finally, a
+lightweight 3-layer MLP similar to [18], conditioned on autore-
+gressive decoder outputs, is used to predict velocities˜vof the
+latent speech representation˜z. We trained the TTS model with
+a batch size of 50k PatchV AE tokens per update (corresponding
+0 20 40 60 80 100
+MUSHRA score
+Negative Anchor
+SemantiCodec
+Mimi
+XY-T okenizer
+z-codec (FSQ)
+Higgs
+z-codec (VAE)
+Hidden Reference
+Subjective Audio Quality (95% Bootstrap CI)
+Figure 3:Results of our perceptive test following a MUSHRA
+protocol for acoustic quality. Test conducted internally with 17
+listeners each listening to 20 random samples from Librispeech
+test-clean, evaluating 3 models per sample. DAC at 1.5kbps is
+used as negative anchor.
+to approximately 1 hour of speech) for 250k steps. Optimiza-
+tion used AdamW with a cosine learning rate schedule decaying
+from1×10 −4 to1×10 −5. We randomly drop the AR condi-
+tion output in the velocity head at a rate of 0.1. The full training
+ran for about 2 days on a single RTX 4090 GPU. We trained our
+models on a combination of HiFiTTS-2 [21] and the train split
+of LibriTTS.
+4. Evaluations
+Our baselines for speech tokenizers include:
+1.Mimi[4], a causal discrete RVQ speech codec operating at
+12.5 Hz.
+2.WavTokenizer[35], a single-VQ speech codec operating at
+40 and 75 Hz, which does not explicitly model semantic in-
+formation.
+3.Higgs v2[31] a production-grade low-framerate RVQ tok-
+enizer including semantic supervision.
+4.XY-Tokenizer[14], a low-framerate RVQ tokenizer includ-
+ing semantic supervision.
+5.Semanticodec[15], a latent speech codec using semantic
+inputs and a diffusion-based decoder. Unlike our method,
+diffusion is trained separately from the latent representation
+and compression.
+6.DAC[8], a general RVQ codec that operates at high framer-
+ate without semantic supervision.
+We also compare our WavV AE against two vocoders [20, 30]
+since our first stage latent space share comparable framerate and
+dimensionality to mel-spectrogram features. For TTS, we com-
+pare against three comparable baselines:F5-TTS[32], a non-
+autoregressive flow-matching TTS model;Spark-TTS[33], a
+discrete token-based model built on Qwen [36]; andXTTS-v2
+[34], a multilingual zero-shot TTS system. Following standard
+practice in diffusion/FM models, we apply classifier-free guid-
+ance (CFG) during inference using a guidance scale of 2.0 for
+the PatchAE and 1.3 for the TTS velocity head. We use 10
+ODE steps for both PatchAE and the TTS velocity head. Under
+this settingZ-CODECinference speed is measured 130 faster
+than real-time at encoding-decoding on a RTX 4090 at batch
+size 1 on LibriTTS test-clean samples. We report differential
+3973
+Table 1:Objective evaluation of WavVAE andZ-CODEC(WavVAE + PatchVAE/PatchFSQ) against baselines on LibriTTS test-clean.
+Name Semantic
+supervision
+Framerate
+(Hz)
+Parameters
+(M)
+Bitrate
+(kbps) PESQ↑STOI↑UTMOSv2↑Sim↑dCER↓
+Ground Truth – – – – – – 3.18 – –
+V ocos [20] No 80 14 – 3.67 0.97 3.050.940.15%
+BigVGAN-base [30] No 80 14 – 3.92 0.98 3.14 0.94 0.14%
+WavV AE (ours, 1st stage only) No 100 5+14 – 4.14 0.98 3.14 0.94 0.14%
+WavTokenizer (1 VQ) [7] No 40 82 0.5 1.73 0.86 3.03 0.63 3.02%
+WavTokenizer (1 VQ) [7] No 75 82 0.9 2.25 0.90 3.120.69 1.35%
+DAC (4 RVQ) [8] No 80 76 3.0 2.40 0.912.09 0.74 0.63%
+DAC (2 RVQ) [8] No 80 76 1.5 1.53 0.84 1.39 0.50 2.00%
+SemantiCodec (1 VQ) [15] Yes 100 67 1.4 2.00 0.88 2.45 0.70 0.65%
+Higgs (4 RVQ) [31] Yes 25 89 1.0 2.550.85 3.05 0.770.67%
+XY-Tokenizer (8 RVQ) [14] Yes 12.5 112 1.0 2.270.912.950.77 0.47%
+Mimi (8 RVQ) [4] Yes 12.5 79 1.1 2.270.912.88 0.72 0.86%
+Z-CODEC(V AE) (ours, 2 stages) Yes 12.5 19+99 – 2.22 0.88 2.94 0.75 0.69%
+Z-CODEC(FSQ) (ours, 2 stages) Yes 12.5 19+99 1.1 2.23 0.89 3.05 0.73 0.59 %
+–w/o WavLM supervision No 12.5 19+99 1.1 2.17 0.88 3.04 0.68 1.49%
+Table 2:TTS subjective and objective evaluations. Pairs
+marked with* were not found significantly different
+(Mann–Whitney U test, p<0.05).
+Model # Params CER↓NMOS↑SMOS↑SIM-O↑
+Ground Truth - 0.7%4.42±0.22 4.26±0.25-
+F5-TTS [32] 0.3B 1.4%4.03±0.22∗4.03±0.23 67.2
+SparkTTS [33] 0.5B 1.3% *4.15±0.22*4.02±0.2356.3
+XTTS v2 [34] 0.3B 1.5%3.56±0.20 3.57±0.2358.1
+Encoder-Decoder-FM (ours) 0.24B1.1%*4.13±0.233.94±0.2361.1
+character error rate (dCER), defined as the CER between the
+ASR ground-truth transcription and the transcription produced
+by the same ASR 2 system on reconstructed audio. This met-
+ric accounts for original transcription discrepancies and intrin-
+sic ASR variability. For speaker similarity, we report cosine
+similarity using a popular speaker verification model based on
+WavLM [32]. We also report UTMOSv2 [38] measurements for
+objective perceptual quality.
+4.1. Continuous Speech Tokenizer Evaluation
+Table 1 reports objective metrics for WavV AE and the full two-
+stage system (WavV AE + PatchV AE), compared with vocoder-
+like and codec-like baselines. CER is computed by transcribing
+both the original and reconstructed audio using the same ASR
+model. The first-stage WavV AE achieves the highest PESQ and
+comparable STOI and UTMOS scores. This indicates that high-
+framerate compression with adversarial training can produce
+high-quality reconstructions and provides an alternative to Mel-
+spectrogram representations, offering a higher compression rate
+(10×vs.≈3×) with competitive performance. When com-
+bined with PatchAE to form ourZ-CODEC, the two-stage sys-
+tem reduces the framerate to 12.5 Hz while preserving semantic
+content as measured by dCER. The impact of SSL distillation
+is measured through an ablation on the PatchFSQ variant and is
+especially noticeable on the dCER that more than doubles, with
+values similar to WavTokenizer at comparable bitrate. In sub-
+jective evaluation (see Figure 3),Z-CODECperforms best along-
+side Higgs, both in discrete and continuous setups.Z-CODECis
+found to have comparable objective measures with state-of-the-
+art low-framerate and semantic rich baselines.
+2We employ Nemo Parakeet 0.6b v2 for ASR[37]
+4.2. TTS Evaluation
+For simplicity we limit downstream TTS evaluation to con-
+tinuous features (PatchV AE) as it requires simpler architec-
+ture choice at low-framerate. We conducted a listening test
+on Prolific with 50 native English participants, each evaluat-
+ing 15 samples drawn from the LibriTTS test-clean split. Stim-
+uli consisted of prompt-target pairs with total durations con-
+strained to be under 20 seconds. Participants rated naturalness
+(NMOS) and speaker similarity (SMOS) on a 5-point scale. Ta-
+ble 2 compares our TTS model against recent large-scale TTS
+baselines. Despite having fewer parameters (0.24B), our model
+achieves competitive CER, naturalness, and speaker similarity,
+on par with larger models such as SparkTTS (0.5B) and F5-TTS
+(0.3B). Again this confirms the suitability of our continuous to-
+kenizer to downstream task while offering tractable training of
+the TTS model on a single RTX 4090 (24GB) permitted by the
+low-framerate.
+5. Conclusion
+5.1. Limitations
+Our current speech codec relies on non-causal convolution
+and attention layers, limiting its applicability in low-latency or
+streaming scenarios. Extending the architecture to causal set-
+tings is left for future work. In addition, all experiments in this
+paper are limited to English speech.
+5.2. Conclusion
+We introducedZ-CODEC, a two-stage speech tokenizer. By first
+addressing waveform compression with WavV AE and then ag-
+gregating latent patches with PatchAE, our method balances
+high-fidelity reconstruction with efficient low-framerate repre-
+sentation and is effective for both continuous and discrete rep-
+resentations. Experiments demonstrate thatZ-CODECachieves
+competitive fidelity and is effective for TTS, while remaining
+fully trainable on a single consumer-grade GPU.
+5.3. Use of Generative AI Disclosure
+Generative AI tools were used in the preparation of this
+manuscript, primarily for formatting assistance and proofread-
+ing/checking purposes (e.g., grammar, consistency, and L ATEX
+3974
+formatting). All technical content, experiments, and conclu-
+sions are the authors’ own.

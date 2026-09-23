@@ -1,0 +1,478 @@
+Self-supervised Speaker Verification with High-Confidence Pseudo-Label
+Selection and DINO-Style Self-Distillation Based on Pre-trained Models
+Yishuang Li, Yi Yu, Wanli Dong, Weihao Gan∗∗
+Malanshan audio&video laboratory, China
+liyishuang@mlslabs.com.cn, ganweihao@mlslabs.com.cn
+Abstract
+In this paper, we propose a self-supervised speaker verifica-
+tion (SS-SV) method based on pre-trained models (PTMs),
+which improves performance via high-confidence pseudo-label
+selection and DINO-style self-distillation. We select the top-
+K most speaker-discriminative Transformer layers from PTMs
+and cluster their representations separately to generate multiple
+pseudo-label sets. Using label alignment, we retain samples
+with consistent clustering as high-confidence pseudo-labeled
+data, while others are treated as unlabeled. We perform pseudo-
+supervised learning with label noise correction loss on the high-
+confidence set;for unlabeled data we use an EMA teacher to
+provide soft distillation targets and apply a consistency loss for
+regularization. These objectives are jointly optimized to train
+the SV model. Experiments on the V oxCeleb dataset show that
+our SS-SV method achieves performance comparable to current
+state-of-the-art approaches, demonstrating its effectiveness.
+Index Terms: self-supervised speaker verification, pre-trained
+model, pseudo-label selection, DINO-style self-distillation,
+clustering
+1. Introduction
+Speaker verification (SV) aims to determine whether two
+speech segments are spoken by the same person [1]. Deep learn-
+ing has substantially advanced SV in recent years [2], but cur-
+rent high-performance SV systems typically rely on large-scale,
+carefully labeled speaker data. Such annotations are costly and
+time-consuming to obtain, and growing privacy concerns fur-
+ther restrict data access and sharing, creating a major bottleneck
+for continued progress [3].
+To reduce the dependence on labeled data and better ex-
+ploit abundant unlabeled speech, self-supervised learning (SSL)
+has become a promising direction [4]. By constructing pre-
+text tasks, SSL learns structured representations from unlabeled
+data, often capturing semantic and speaker-discriminative infor-
+mation [5, 6]. Recent self-supervised speaker verification(SS-
+SV) methods commonly adopt an iterative two-stage frame-
+work: (i) training an encoder to extract speaker embeddings
+with an SSL objective, and (ii) generating pseudo-labels (PL)
+via clustering and iteratively refining the encoder or down-
+stream SV model [7, 8, 9, 10]. In the first stage, contrastive
+learning typically relies on positive and negative pairs [7, 9, 11],
+but negatives may come from the same speaker and thus mis-
+lead SS training. To remove this dependence, negative-free self-
+distillation methods such as DINO [12] have been proposed and
+shown notable gains [10, 13, 14, 15]. However, the quality of
+pseudo-labels remains critical: noisy pseudo-labels can inject
+**indicates the corresponding author.
+erroneous supervision and degrade discrimination [16]. To mit-
+igate this issue, prior work filters unreliable samples based on
+the observation that low-loss samples tend to be more reliable,
+e.g., loss gating and its dynamic variants [9, 10, 17].
+Meanwhile, pre-trained models (PTMs) for speech repre-
+sentation learning, such as HuBERT [18], UniSpeech-SAT [19],
+and WavLM [20], have rapidly progressed and provide high-
+quality universal features from large-scale unlabeled speech.
+Chen et al. [21] further extend PTMs to SS-SV in PTM-LC
+by clustering PTM representations to obtain stronger initial
+pseudo-labels and applying label correction to improve perfor-
+mance and robustness. Despite these advances, an open chal-
+lenge remains: under unlabeled conditions, how can we lever-
+age hierarchical PTM representations to construct more reli-
+able supervision while suppressing pseudo-label noise without
+sacrificing data efficiency? To address this challenge, we pro-
+pose a PTM-based self-supervised SV method that jointly op-
+timizes the overall system via high-confidence pseudo-label se-
+lection (HCPLS) and DINO-style self-distillation.Our con-
+tributions are three-fold:(1) We propose a high-confidence
+pseudo-label selection strategy based on multi-layer clustering
+consistency of PTMs, which improves pseudo-label quality via
+cross-layer alignment and consistency filtering. (2) We de-
+velop a joint training framework that couples pseudo-supervised
+learning with DINO-style self-distillation, fully exploiting high-
+confidence samples while effectively leveraging low-confidence
+samples as unlabeled data. (3)Extensive experiments on the
+V oxCeleb dataset validate the effectiveness of the proposed
+method, achieving an EER of 1.09% on V oxCeleb1-O.
+2. Proposed Method
+2.1. Overall Framework
+Fig. 1 overviews the proposed approach, and Algorithm 1 de-
+tails its implementation. Given an unlabeled setU={x i}N
+i=1,
+we adopt an iterative refinement framework. In Iteration-1,
+we compute the layer-wise equal error rate (EER) of the PTM
+gon validation trialsVand select the top-Kmost speaker-
+discriminative layers. Note thatVis not used to update
+any model in this work. For each selected layer, we extract
+utterance-level representations fromUand perform clustering
+independently, yieldingKpseudo-label sets. We then align
+cluster IDs across layers via co-occurrence matrices and Hun-
+garian matching, and retain only cross-layer consistent sam-
+ples as the high-confidence setH, while assigning the remain-
+ing samples to the unlabeled setL. The model is trained us-
+ing pseudo supervision onHtogether with DINO-style self-
+distillation onL, where an EMA teacherf θ′ provides soft tar-
+gets. After training, we perform offline label correction and
+retrain the model. From Iteration-2 onward, we cluster speaker
+embeddings extracted by the current model to obtain a single
+6323
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1965
+Clustering
+Label Alignment & Selection
+Top-K Layer Selection
+Feature Extractor
+...
+Transformer Layer 1
+...
+...
+Transformer Layer  
+...
+Transformer Layer L
+...
+..
+ECAPA-TDNN
+Encoder
+Classifier
+Student
+LNC
+Loss
+Encoder
+Classifier
+Teacher
+Softmax
+Softmax
+//
+EMA
+ Mask
+KD Loss
+Stop
+Gradient
+Aug2 Aug1
+...
+Waveform
+...
+Figure 1:Overall architecture of the proposed self-supervised speaker verification method.
+Algorithm 1:Iterative self-supervised SV with HC-
+PLS and DINO-Style Self-Distillation
+Input:Unlabeled setU, validation trialsV, PTMg,
+clusteringA(·), top layersK, IterationsI,
+thresholdτ, weightλ, EMA decayα
+Output:Trained student modelf θ
+1Initialize studentf θ and teacherfθ′ (θ′←θ);
+2S←TopKLayersByEER(g,V,K);
+3foreachℓ k∈Sdo
+4y (k)←A(Emb(g,ℓ k,U));
+5(H,L)←ConsensusSelect({y (k)});
+6foreach training stepdo
+7L sup←Loss sup(fθ,H);
+8(X 1,X 2)←Augment2Views(L);
+9(P T,conf)←TeacherSoftmax(f θ′,X 1);
+10M←{i|conf i≥τ};
+11P S←StudentSoftmax(f θ,X 1);
+12L kd←mean i∈M KL(Pi
+S||Pi
+T );
+13(z 1,z 2)←StudentEmb(f θ,X 1,X 2);
+14L cons←mean(1−cos(z 1,z 2));
+15L total←L sup +λ(L kd +L cons);
+16Updateθ;
+17θ ′←αθ′ + (1−α)θ;
+18y←CorrectLabels(f θ,U);
+19TrainSup(f θ,y);
+20fori= 2toIdo
+21y←A(Emb(f θ,U));
+22TrainSup(f θ,y);
+23y←CorrectLabels(f θ,U);
+24TrainSup(f θ,y);
+25returnf θ
+pseudo-label set for supervised training, and then iteratively re-
+peat offline correction and retraining until convergence.
+2.2. Top-KLayer Selection and High-Confidence Pseudo-
+Label Selection
+Different transformer layers in PTMs capture speaker informa-
+tion at different abstraction levels [22]. We explicitly select
+the most speaker-discriminative layers and perform cross-layer
+consensus pseudo-label selection to improve label purity in the
+initial stage. For an utterancex, the output of theℓ-th Trans-
+former layer of PTM isH (ℓ)(x)∈R S×D, whereSdenotes
+the number of frames andDdenotes the feature dimension. We
+apply temporal pooling to obtain an utterance-level embedding
+e(ℓ)(x)∈R D. On the validation trial listV, cosine similarity
+scoring is performed usinge (ℓ)(·)for each layer, and we com-
+pute the corresponding EER. We then select the top-Klayers
+with the lowest EER:
+S={ℓ 1,...,ℓ K}.(1)
+For each selected layerℓ k ∈ S, we extract embeddings
+{e(ℓk)(xi)}N
+i=1 for all samples inUand apply a clustering al-
+gorithmA(·)to obtain a pseudo-label assignment:
+y(k)∈{0,1,...,C k−1}N.(2)
+Since cluster IDs are permutation-invariant, pseudo labels from
+different layers cannot be compared directly. Takingy(1) as the
+reference, we build a co-occurrence matrix betweeny (1) and
+y(k) (k≥1):
+C(k)(i,j) =
+{n:y (1)
+n =i,y (k)
+n =j}
+.(3)
+Hungarian matching is solved on−C (k) to obtain a mapping
+πk that maximizes the total agreement. Aligned labels are com-
+puted as:
+˜y(k)
+n =π k(y(k)
+n ).(4)
+We define the cross-layer consensus index set:
+I={n:y (1)
+n = ˜y(2)
+n =···= ˜y(K)
+n }.(5)
+Only samples inIare kept as high-confidence pseudo-labeled
+dataH; all other samples, as well as clusters with fewer than 5
+samples, are assigned toL:
+H={(x n,ˆyn =y (1)
+n ) :n∈I},L={x n :n /∈I}.(6)
+2.3. EMA Teacher–Student Training (Pseudo Supervision
++ Self-Distillation)
+The student modelf θ consists of an encoder and a classifier.
+As shown in the red dashed box in Fig. 1, the encoder is com-
+posed of a PTM sub-network (PTM-sub) that contains only the
+firstℓ 1 layers (where layerℓ 1 achieves the lowest EER on the
+6324
+validation trials) and a downstream ECAPA-TDNN [23]. The
+layer-wise representations produced by the PTM-sub are com-
+bined by a learnable weighted sum [22] and then fed into the
+ECAPA-TDNN. The teacherf θ′ shares the same architecture,
+performs forward inference only, and is updated by exponential
+moving average (EMA):
+θ′←αθ′ + (1−α)θ,(7)
+whereαis the EMA decay. We optimize the following objec-
+tive:
+Ltotal =L sup +λ
+ 
+Lkd +L cons
+
+,(8)
+whereλcontrols the weights of the KD and consistency losses.
+AlthoughHis high-confidence, noise labels still exist.
+To mitigate overfitting, we adopt the Label Noise Correction
+(LNC) loss [21]. Letˆy i be the pseudo label,˜y i the model-
+predicted label, andP i,c the posterior of classc. For a mini-
+batch of sizeB,L lnc is defined as:
+Llnc =− 1
+B
+BX
+i=1
+h
+(1−β t) logPi,ˆyi +βt logPi,˜yi
+i
+,(9)
+βt =β T·
+ t
+Titer
+ 1
+2
+,(10)
+whereβ t is a time-dependent confidence weight, with itera-
+tiont, total iterationsT iter, and final weightβ T ∈[0,1]. As
+training progresses,βt increases, gradually shifting supervision
+from pseudo labels to model predictions. We setL sup =L lnc.
+For the unlabeled setL, we generate two augmented views
+(X 1,X 2)for each sample. The teacher outputs softened distri-
+butions onX 1:
+PT =softmax(o T/T), o T =logits
+ 
+fθ′ (X 1)
+
+,(11)
+whereTis the distillation temperature. We define the teacher
+confidence as:
+confi = max
+c
+(PT )i,c,M={i:conf i≥τ},(12)
+whereτis a confidence threshold, andMdenotes the se-
+lected confident indices. The student distribution onX 1 is
+PS =softmax(o S/T)witho S =logits(f θ(X 1)). The KD
+loss is computed only overM:
+Lkd =T 2· 1
+|M|
+X
+i∈M
+KL
+
+P (i)
+S ∥P (i)
+T
+
+,(13)
+Confidence gating is crucial to prevent low-quality teacher pre-
+dictions from destabilizing training. To enforce view-invariant
+speaker embeddings, we compute embedding-level consistency
+loss between two augmented views:
+zS1 =f θ(X 1),z S2 =f θ(X 2),(14)
+Lcons = 1
+|BL|
+X
+i
+
+1−cos(z (i)
+S1,z (i)
+S2)
+
+,(15)
+whereB L is a mini-batch fromL. Note thatL cons is computed
+over the entire batch and does not depend on the confidence
+mask.
+2.4. Clustering and Offline Label Correction
+We use Infomap [24], a graph-based clustering method that
+treats each utterance embedding as a node, connects nodes by
+cosine similarity, and minimizes the random-walk description
+length, making it effective for discovering complex speaker
+communities. To further improve pseudo-label reliability, we
+apply offline label correction [21]: each utterance is split into
+chunks and predicted at the chunk level. If one label appears in
+more than50%of chunks, it is assigned to the utterance; other-
+wise, the utterance is considered ambiguous and discarded.
+Figure 2:EER (%) across transformer layers for different
+PTMs.
+3. Experimental Setup
+3.1. Datasets and Evaluation Metrics
+To validate the proposed self-supervised speaker verifica-
+tion framework, we conduct extensive experiments on V ox-
+Celeb2 dev (V ox2 dev) [25], which contains 5994 speakers
+with 1,092,009 utterances. During training, we segment each
+utterance into non-overlapping 2 s chunks. We perform online
+data augmentation using MUSAN [26] and RIR [27], including
+wav drop, speed perturbation, adding noise, and adding rever-
+beration. Note that no ground-truth speaker labels are used dur-
+ing training. We evaluate performance on V oxCeleb1-O (V ox1-
+o), using EER and minimum normalized detection cost function
+(MinDCF). For MinDCF, we setP target = 0.01.
+3.2. System Configuration
+We evaluate theLargevariants of three widely used pre-
+trained speech models—HuBERT [18], UniSpeech-SAT [19],
+and WavLM [20]—and select layers based on validation EER.
+Each PTM comprises a 7-layer convolutional feature extractor
+followed by a 24-layer Transformer. Fig. 2 shows the layer-
+wise validation EERs. WavLM attains the three lowest EERs
+at layers 10, 11, and 9, possibly due to its speaker-oriented
+pre-training that uses simulated noise/overlapped speech as in-
+put and predicts pseudo-labels of clean speech in masked re-
+gions. Accordingly, we adopt the first 10 Transformer lay-
+ers of WavLM as the PTM-sub network. We train the model
+with AdamW and a cyclic learning-rate schedule [28]. Follow-
+ing [22], training proceeds in two stages: Stage 1 updates all
+parameters except the PTM-sub, and Stage 2 fine-tunes the en-
+tire network. The maximum learning rates are set to5×10 −4
+and1×10 −5 for the two stages, with 10 and 5 epochs, respec-
+tively. Hyperparameters are set toβ t=0.7inL lnc,T=2.0and
+τ=0.6inL kd,λ=0.5, and EMA decayα=0.999.
+4. Experimental Results
+4.1. High-Confidence Pseudo-Label Selection Results
+In Table 1(a), single-layer clustering on the candidate layers
+(10/11/9) yields comparable quality (NMI≈0.86 and F1≈
+0.52–0.55). Table 1(b) shows that, after introducing the HC-
+PLS strategy, the pseudo-label quality of the high-confidence
+subsetH K is substantially improved: whenK= 2,H 2
+achieves NMI/F1 of 0.9361/0.7191, and whenK= 3, it
+further improves to 0.9522/0.7571. In contrast, the low-
+confidence subsetsL 2/L3 exhibit much lower scores (F1 of
+only 0.2256/0.2581), demonstrating that HCPLS effectively
+separates reliable from unreliable pseudo-labeled samples and
+supporting the use ofLas unlabeled data for subsequent self-
+distillation training.
+6325
+Table 1:Pseudo-label quality before and after HCPLS.
+(a) Single-layer clustering onU
+Layer NMI↑F1↑Prec.↑Rec.↑#Clus.
+10 0.8692 0.5419 0.7481 0.4248 20241
+11 0.8689 0.5540 0.7393 0.4430 19861
+9 0.8601 0.5244 0.7754 0.3962 20924
+(b) HCPLS using top-Klayers
+K(Layers) Subset NMI↑F1↑#Clus. Segs.
+1 ({10})H 1 0.8689 0.5419 20241 1,092,009
+2 ({10,11})H 2 0.9361 0.7191 13553 806,809
+L2 0.7636 0.2256 18745 285,200
+3 ({10,9,11})H 3 0.9522 0.757111672 714,597
+L3 0.7710 0.2581 19358 377,412
+4.2. Iteration-1 Performance Comparison
+As shown in Table 2, in Iteration-1 our method outperforms pre-
+vious representative self-supervised SV methods on V ox1-O. S1
+is our implemented baseline, configured the same as PTM-LC
+[21], which performs pseudo-supervised training only onH 1
+without HCPLS or self-distillation, achieving an EER of 2.64%.
+Compared with S1, S2 and S3 apply only the HCPLS strategy
+and train onH 2 andH 3, lowering the EER to 2.44% and 2.40%,
+respectively. This confirms that HCPLS markedly improves
+pseudo-label reliability in the first Iteration, thereby reducing
+the sensitivity of pseudo-supervised training to label noise. In
+addition, S3 outperforming S2 indicates that a stricter cross-
+layer consensus (K=3) yields a more stable supervision sig-
+nal.Building on HCPLS, S4 and S5 further incorporate DINO-
+style self-distillation and treat the low-confidence subsetLK as
+unlabeled data, resulting in additional EER reductions to 2.17%
+and 2.10%. Notably, S5 performs best, delivering a 20.5% rel-
+ative EER reduction over S1. This suggests that forcing hard
+pseudo labels on low-confidence samples can exacerbate noise,
+whereas leveraging them as unlabeled data through distillation
+and consistency regularization enhances representation learning
+without introducing unreliable supervision. Overall, combining
+high-confidence pseudo supervision with low-confidence unla-
+beled self-distillation in Iteration-1 provides a stronger initial-
+ization and a better foundation for subsequent iterations.
+Table 2:Iteration-1 results of different methods and settings on
+Vox1-O.Udenotes the unlabeled Vox2 dev set.
+System Train set HCPLS DINO-SD EER (%) MinDCF
+MBPC[29]U- - 3.49 0.375
+AT-HT [17]U- - 3.29 -
+CA-DINO [15]U- - 2.90 0.300
+LGL [9]U- - 3.52 -
+PTM-LC [21]H 1 % %2.55 -
+S1(ours)H 1 % %2.64 0.259
+S2(ours)H 2 ! %2.44 0.256
+S3(ours)H 3 ! %2.40 0.236
+S4(ours)H 2+L2 ! !2.17 0.215
+S5(ours)H 3+L3 ! !2.10 0.212
+4.3. Impact of Distillation and Consistency Losses
+Table 3 examines the impact of unlabeled loss components and
+their hyperparameters in Iteration-1 training. Under the default
+setting (λ=0.5, τ=0.6), the full model S5 (with bothL kd and
+Lcons) achieves the best EER. RemovingLcons (S6) causes only a
+Table 3:Effect of loss components and hyperparameters in
+Iteration-1 training.
+SystemL kd Lcons λ τEER (%) MinDCF
+S5! !0.5 0.6 2.10 0.212
+S6! %0.5 0.6 2.17 0.231
+S7% %0.5 0.6 2.40 0.236
+S8! !0.5 0.4 2.28 0.224
+S9! !0.5 0.8 2.21 0.219
+S10! !1.0 0.6 2.47 0.248
+S11! !0.2 0.6 2.35 0.240
+Figure 3:EER (%) of different methods across iterative refine-
+ment on Vox1-O.
+slight degradation, whereas removingL kd (S7) leads to a much
+larger drop, indicating that confidence-gated distillation is the
+primary contributor; the consistency term provides complemen-
+tary gains and stabilizes training. We also vary the confidence
+thresholdτ, which controls how many samples participate in
+distillation. A lowerτ(S8, 0.4) may admit noisy soft targets,
+while a higherτ(S9, 0.8) reduces usable unlabeled data;τ=0.6
+offers a better trade-off. Finally,λmust be balanced: a largeλ
+(S10) over-emphasizes unlabeled regularization and suppresses
+pseudo supervision, whereas a smallλ(S11) weakens distil-
+lation and consistency effects. Overall, appropriateλandτ
+are crucial for effectively exploiting unlabeled self-distillation
+in Iteration-1 training.
+4.4. Iterative Refinement and Performance Comparison
+As shown in Fig. 3, our method consistently reduces EER across
+iterations and achieves an EER of 1.09% on V ox1-O after 4 it-
+erations, outperforming most previous iterative self-supervised
+SV approaches. Compared with the PTM-LC [21] baseline,
+which obtains an EER of 1.25%, our method achieves a relative
+EER reduction of 12.8%. Notably, IPL [30] requires 11 itera-
+tions to reach an EER of 1.14%, whereas our method achieves
+a lower EER in fewer iterations. This highlights both the effec-
+tiveness and the iteration efficiency of the proposed method.
+5. Conclusion
+In this study, we propose an efficient self-supervised speaker
+verification method based on PTMs. By combining high-
+confidence pseudo-label selection based on PTM multi-layer
+clustering consistency with DINO-style self-distillation strat-
+egy, we significantly improve pseudo-label quality and effec-
+tively utilize low-confidence data. Experiments on the V ox-
+Celeb dataset validate the effectiveness of our method, which
+delivers promising performance.
+6326
+6. Use of Generative AI Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools to polish the English language, improve read-
+ability, and assist with LATEX formatting. These tools were not
+used to generate any scientific claims, experimental results, or
+significant parts of the manuscript.

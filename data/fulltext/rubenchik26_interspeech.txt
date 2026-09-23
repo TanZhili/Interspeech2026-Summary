@@ -1,0 +1,449 @@
+Latent Flow Matching Based Speech Separation Using Speaker Diarization
+Boris Rubenchik1, Sharon Gannot ID 1, Ethan Fetaya ID 1
+1 Faculty of Engineering, Bar-Ilan University, Israel
+rubenchik.boris@live.biu.ac.il, sharon.gannot@biu.ac.il, ethan.fetaya@biu.ac.il
+Abstract
+This paper presents a novel generative approach to single-
+channel speech separation that integrates flow matching with
+end-to-end speaker diarization. Discriminative Deep Neural
+Networks (DNN)-based separation methods have demonstrated
+excellent performance in recent years. More recently, genera-
+tive models have emerged as strong competitors for producing
+perceptually high-quality speech.
+We propose a framework that combines the representational
+strength of speaker diarization models with the high-fidelity
+generative capabilities of latent space Flow Matching. The
+method achieves high-quality separation while requiring train-
+ing only of the latent generative U-Net component. In addi-
+tion, we introduce a novel Adversarial Speaker Guidance (ASG)
+mechanism to mitigate speaker confusion. By conditioning on
+mixture-derived speaker attractors rather than traditional enroll-
+ment signals, the proposed approach improves intelligibility and
+reduces the occurrence of speaker confusion.
+Index Terms: Speech-Separation, Generative Modeling, Flow
+Matching, Latent-Space
+1. Introduction
+Speaker separation aims to decompose a given mixture into
+separate output channels, each corresponding to an individual
+speaker. Numerous successful multi-microphone approaches
+have been developed, including methods based on Independent
+Component Analysis (ICA) and beamforming [1]. With the ad-
+vent of deep learning, single-microphone solutions have also
+become viable, significantly broadening the applicability of
+speaker separation techniques.
+Since the seminal work of [2], numerous separation meth-
+ods [3, 4, 5, 6, 7, 8] have demonstrated substantial performance
+improvements. Several approaches [5, 9, 10] further leverage
+speaker identity information available during training to en-
+hance inference performance and improve speaker discrimina-
+tion.
+Speaker diarization [11] addresses the task of estimating
+“who speaks when” by assigning speaker identities to their cor-
+responding activity segments. Traditionally, diarization systems
+follow a modular pipeline that typically comprises Speech Ac-
+tivity Detection (SAD), feature extraction, and clustering. The
+resulting diarization estimates are widely used to support down-
+stream tasks such as Automatic Speech Recognition (ASR) and
+speaker separation [12, 13].
+Two key limitations of traditional diarization systems,
+namely, handling overlapped speech and directly minimizing
+diarization error, were addressed by End-to-End Neural Di-
+arization (EEND) [14, 15, 16]. In [14], the problem was for-
+mulated as a multi-label classification task, which allows as-
+signing multiple speakers to the same time segment and en-
+ables direct optimization of the diarization error. Subsequent
+works [15, 16] extended this framework by adopting a flexible
+Encoder-Decoder-Based Attractor Calculation (EDA) mecha-
+nism to handle an unknown number of speakers. The model
+first extracts per-frame audio embeddings, which are fed into
+the encoder–decoder structure to generate speaker attractors.
+The similarity (e.g., inner product) between each speaker at-
+tractor and the corresponding audio embedding is then used to
+estimate the probability of speaker activity at each frame.
+The use of pre-trained speaker representations has also been
+explored using diarization outputs [17] to guide the estimation
+of separation masks. More recently, [18] proposed a multi-
+channel EEND-based approach for speech separation. The
+method employs a diarization model to identify segments in
+which only a single speaker is active and extracts audio em-
+beddings from these regions to serve as speaker-conditioning
+signals for the separation network. This strategy, however, re-
+lies strongly on accurate diarization, since segmentation errors
+directly contaminate the shared embeddings used to represent
+the speakers.
+In recent years, generative modeling has gained increasing
+attention in audio and audio-visual processing. Traditionally,
+deep-learning-based speech processing has been dominated by
+discriminative models that regress directly to a clean signal or a
+time-frequency mask. Such approaches minimize the expected
+distance between the estimate and the ground truth, which can
+result in over-smoothing and perceptual artifacts due to statisti-
+cal averaging under ambiguous conditions.
+In contrast, generative methods shift the paradigm from
+pointwise regression to distribution matching. By learning the
+prior distribution of natural speech, these models generate high-
+fidelity samples conditioned on degraded inputs, encouraging
+outputs that lie on the clean-speech manifold.
+A recent development in iterative generative modeling is
+the direct estimation of the vector field between the source and
+target distributions, as proposed in Flow Matching and Recti-
+fied Flows [19, 20]. By explicitly learning this transport field,
+these frameworks enable simpler, more direct training and in-
+ference procedures, while significantly reducing the number of
+steps required to obtain high-quality samples.
+In audio generation, [21] introduced a latent-space text-to-
+audio model. Building on this line of work, language-queried
+audio source separation was proposed in [22], leveraging a pre-
+trained Variational Autoencoder (V AE) [23] and training only a
+vocoder and a flow model conditioned on embeddings derived
+from textual descriptions of the target signal. Generative ap-
+proaches have also been applied to speech enhancement tasks,
+including speaker separation [24, 25], denoising [26, 27], and
+extraction [28, 29]. In particular, [28] applied flow matching in
+2230
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1401
+the mel-spectrogram domain, conditioning the model on an en-
+rollment speech segment concatenated with the mixture along
+the temporal axis.
+A common challenge in audio extraction and separation
+models is the failure to correctly estimate the desired source due
+to weak conditioning or the presence of dominant interferers,
+a phenomenon often referred to as target or speaker confusion
+[30]. In generative frameworks, this manifests as a tendency
+to extract the same speaker from the mixture regardless of the
+conditioning signal, indicating insufficient control over condi-
+tioning. To mitigate this issue, SoloSpeech [29] introduced a
+dedicated conditional transformer that delivers speaker-specific
+features through a cross-attention mechanism, strengthening the
+coupling between the conditioning signal and the generative
+process. In video-to-audio generation, [31] has applied nega-
+tive audio guidance to discourage sound duplication between
+steps. They use a representation of the audio in past steps to
+negatively condition the flow model in the present step, avoid-
+ing the re-generation of the audio.
+In this paper, we propose a novel latent-space generative
+speech separation framework that leverages EEND-EDA attrac-
+tors and speaker-activity probabilities to directly condition the
+model during both overlapping and non-overlapping segments.
+This conditioning mechanism provides explicit speaker guid-
+ance derived from the diarization process. To further miti-
+gate speaker confusion, we introduce a novel ASG strategy that
+significantly enhances separation performance and strengthens
+conditioning robustness. We train a Flow Matching model in the
+latent space (building upon [22]) conditioned on the speaker-
+related representations derived from the EEND model [32]. Im-
+portantly, only the latent-space Flow Matching U-Net is trained,
+while all other components (adapted from [21, 22, 32]) remain
+fixed and are used as pretrained modules.
+2. Background
+2.1. Problem Definition
+Let x(t) be a mixture of I concurrent speakers captured by a
+single microphone:
+x(t) =
+IX
+i=1
+si(t) t = 0, 1,...,T − 1, (1)
+wheresi(t) represents the speech signal of thei-th speaker. Our
+goal is to optimize the Conditional Flow Matching (CFM) loss
+so that each speaker present in the mixture can be sampled in-
+dividually, thereby improving speech quality and intelligibility
+measures.
+2.2. Flow Matching
+Flow Matching [19, 20] is a recently proposed generative mod-
+eling approach based on a continuous-time Markov process.
+The model is tasked with learning a marginal vector field be-
+tween a source distribution p and a target distribution q. The
+marginal field is intractable; however, we can define a condi-
+tional path between x0∼ p andx1∼ q and train a model to
+estimate the conditional vector/velocity field. We first calculate
+xt, an intermediate noisy point on the conditional path, where
+σmin is the minimum standard-deviation constant:
+xt = (1− (1−σmin)t)·x0 +t·x1. (2)
+Then, we train the Flow Matching modelvθ(xt,t,c ) to estimate
+the velocityut:
+ut(xt) = dxt
+dt =x1− (1−σmin)·x0. (3)
+By minimizing the CFM loss between our model’s estimate and
+the target velocity:
+LCFM(θ) = Et,x1,x0,c
+"
+vθ(xt,t,c )−ut(xt)
+
+
+2
+#
+, (4)
+wheret∼ (0, 1), we are able to generate a sample from the tar-
+get distribution q by iteratively applying the model vθ to sam-
+ple from the target distribution. Specifically, using the Euler
+method, we obtain:
+xt+∆t =xt + ∆t·vθ(xt,t,c ) (5)
+whereN is the number of generation iterations and ∆t = 1/N
+is the size of each iteration. A common method for improv-
+ing sample fidelity at the expense of generated sample diversity
+is the usage of Classifier-Free Guidance (CFG) [33], which per-
+forms an additional estimation of velocity in each inference step
+for the unconditional case (c = ∅):
+˜vθ(xt,t,c ) = (1−w)·vθ(xt,t, ∅) +w·vθ(xt,t,c ). (6)
+Settingw = 1 yields the standard inference. Latent space gen-
+eration is a common application for generative models [34]. An
+additional model, usually a V AE, is trained to generate a rep-
+resentation of much lower dimensionality than the original, yet
+can still reconstruct a high-quality estimate of the original sig-
+nal. The V AE is usually frozen during the training of the latent
+model. Working in the latent space provides two significant
+advantages: first, it allows the flow model, which is often ap-
+plied iteratively, to operate on a much lower-dimensional repre-
+sentation of the signal, thereby reducing computational require-
+ments. Second, it allows the model to allocate its computational
+resources to learning structure rather than low-level details [35].
+2.3. End-To-End Neural Diarization with Encoder-
+Decoder-based Attractors
+EEND [15] was proposed to address the diarization problem in
+an end-to-end manner. It provides a framework in which the di-
+arization objective, Diarization Error Rate (DER), can be opti-
+mized directly while naturally handling the overlapping speech
+among multiple speakers. The method employs a context aggre-
+gator over audio input features to produce a frame-level repre-
+sentation. Each frame representation is passed through a linear
+layer followed by a sigmoid activation to estimate speaker ac-
+tivity scores. The model is trained using Permutation Invariant
+Training (PIT) [2, 36].
+EEND-EDA extends this framework to support an unknown
+number of speakers by introducing two complementary rep-
+resentations: frame-level embeddings and speaker attractors.
+The embeddings serve as frame-level speech representations,
+whereas each attractor corresponds to a specific speaker. The at-
+tractors may be time-invariant, denoted byas, or time-varying,
+denoted byas,m, wheres∈{ 0, 1,...,S } indexes the speaker
+andm∈{ 0, 1,...,M − 1} denotes the frame index. Here, S
+typically represents the maximum number of speakers consid-
+ered, often augmented with one or two additional control chan-
+nels.
+2231
+Figure 1: Proposed architecture: EEND model on the left
+(frozen), latent flow matching pipeline on the right. Only the
+latent flow matching model is trainable.
+3. Method
+Our approach combines EEND-based speaker activity estimates
+and attractors with latent-space Flow Matching to achieve high-
+perceptual-quality speaker separation. We use the speaker at-
+tractors of the EEND model to condition a latent flow matching-
+based separator. The V AE encoder generates a latent represen-
+tation of the input mixture, which is concatenated to Gaussian
+noise of the same dimensions. The latent U-Net Flow Matching
+model estimates the direction of the vector field from the latent
+representation. During inference, after iterative generations, the
+V AE decoder synthesizes the latent representation into a mel-
+spectrogram, which is then synthesized into a waveform.
+3.1. End-to-End Neural Diarization (EEND)
+We apply the diarization model [32] to the input mixture’s mel-
+spectrogram. Speaker attractors are selected based on their esti-
+mated per-frame activity and are averaged-pooled across the ut-
+terance to obtain a compact, low-dimensional representation for
+each speaker. These speaker-specific representations are then
+used to condition the Flow Matching U-Net. The generative
+model is provided with the concatenation of the two speaker
+representations, yielding a single one-dimensional condition-
+ing vector. The EEND-derived conditioning vector is the only
+speaker condition used for the generative speaker separation,
+using no prior enrollment.
+3.2. Latent Speaker Flow Matching Separator
+For the generative architecture, we adopt the framework of
+[22], employing a pretrained vocoder [37], a mel-spectrogram
+V AE, both of which remain frozen during training, and a flow-
+matching model. The concatenated speaker representation is
+injected into the Flow Matching U-Net via Feature-wise Linear
+Modulation (FiLM) conditioning [38].
+The initial latent representation of the separated signal is
+sampled from Gaussian noise, while the target corresponds to
+the clean speech latent associated with the selected speaker rep-
+resentation. The intermediate state xt is constructed according
+to (2).
+The input to the Flow Matching model consists of the con-
+catenation of the original mixture latent representation and the
+intermediate noisy speech latent, as illustrated in Fig. 1.
+For each speaker in the mixture, the separation is performed
+by exchanging the speaker order in the conditioning vector,
+where the first part of the vector (with the same length as the
+attractor) represents the desired speaker and the rest of the vec-
+tor represents the interfering speaker.
+During inference, inputs longer than the model’s input
+dimension are processed using chunking with an overlap of
+50%. The overlapping segments are combined using cross-
+faded overlap-and-add in the mel-spectrogram domain before
+being passed to the vocoder.
+3.3. Permutation Aware Training
+Blind Source Separation (BSS), unlike speaker extraction, must
+address the permutation ambiguity between the estimated out-
+puts and the reference sources. The representations produced by
+EEND are not designed for general speaker verification tasks.
+In particular, attractors corresponding to a given speaker are not
+guaranteed to be closer to attractors of the same speaker in other
+recordings. Similarly, the attractor associated with a speaker in
+a mixture is not necessarily closer to the attractor of the corre-
+sponding clean source than to that of an interfering speaker.
+To address this issue, we propose employing PIT during
+training of the Flow Matching model. At each training step,
+the intermediate representation is evaluated under all possible
+permutations of the target speakers. The permutation that yields
+the lowest combined Flow Matching loss is selected, and the
+gradients are backpropagated accordingly.
+3.4. Adversarial Speaker Guidance (ASG)
+An additional improvement we propose is the application of
+ASG to further reduce speaker confusion. Similarly to CFG,
+where the model is trained during part of the iterations with
+“null” conditioning in order to strengthen adherence to the
+conditioning signal relative to the unconditioned distribution
+(cf. (6)), our approach uses the interfering speaker in an anal-
+ogous role. Specifically, we exploit the model’s ability to esti-
+mate the vector field associated with the interfering speaker and
+use it to steer the generative process away from the undesired
+source, thereby increasing consistency with the target speaker
+conditioning (cf. (7)), without additional training. Explicitly,
+˜v = (1+wneg)·[(1 +wnull)·vpos−wnull·vnull]−wneg·vneg (7)
+where vpos = vθ(xt,t,c ), vnull = vθ(xt,t, ∅), and vneg =
+vθ(xt,t, c) indicate the estimated vector field for the target
+speaker, unconditional distribution and interfering speaker, re-
+spectively.wnull andwneg, being the unconditional and interfer-
+ing weights.
+3.5. ECAPA-TDNN Variant and Speech Extraction
+We further propose a variant of the framework that employs
+ECAPA-TDNN [39] as an ablation study. The structure of the
+model remains similar to Fig. 1; the generative pipeline is es-
+sentially the same, but instead of using EEND-based mixture-
+derived embeddings, enrollment segments for each speaker are
+2232
+used to generate ECAPA-based embeddings, which are concate-
+nated to form the conditioning vector. The FiLM input dimen-
+sion is aligned to the embedding dimensions. When training
+or evaluating extraction-based models that require speaker en-
+rollment, we randomly select an audio recording from the same
+speaker as the enrollment.
+4. Experimental Study
+This section presents the experimental setup, dataset, results,
+and comparison to competing methods.
+4.1. Data and Setup
+We have trained our model using the LibriSpeech [40] cor-
+pus, generating each input mixture by dynamically mixing [9]
+source speech with an SIR range of [-5,5] dB. We have evalu-
+ated our model on the LibriMix 16kHz min configuration test
+set [41]. Since the EEND model operates at 8 kHz, we down-
+sample the input mixture to ensure a suitable input. All architec-
+ture parameters, except those of the Flow Matching U-Net, are
+frozen during training for both the proposed speech separation
+model and the ECAPA-based speaker extraction variant. In both
+cases, the model is trained using input mixtures of length 10.24
+seconds. Model inference, in cases where guidance was used,
+employed a weight of 0.5 for null guidance (standard CFG) and
+1 for ASG, corresponding to (7). Values were empirically se-
+lected. The full hyperparameter search is omitted due to space
+constraints.
+4.2. Competing Methods
+The SoloSpeech results were obtained using the publicly avail-
+able checkpoint trained on noisy mixtures. In addition, we
+present the results of the DiffSep+SV and DDTSE extraction
+models, as reported in [42].
+4.3. Evaluation Measures
+Our main metrics for evaluating separation quality are non-
+intrusive speech quality measures and Word Error Rate (WER).
+For perceptual quality assessment, we employ the DNSMOS
+and OVRL metrics [43]. For intelligibility evaluation, we per-
+form ASR using Whisper-small [44] and compute the resulting
+WER. We use a ResNet-34 speaker verification model [45] to
+compute the Speaker Similarity Metric (SIM).
+In addition, we derive an auxiliary metric based on the ASR
+outputs, termed Transcription Similarity (TSIM). This metric
+identifies cases in which the WER between the transcriptions of
+two different separated signals is below30%, an empirically se-
+lected threshold. Such high transcriptional similarity suggests
+that both estimates largely share the same linguistic content, in-
+dicating a likely separation failure in which at least one source
+was not properly isolated.
+TSIM(ˆsi, ˆsj) =
+(
+1, if WER(ˆsi, ˆsj)< 0.3
+0, otherwise fori̸=j.
+(8)4.4. Results
+The performance of the proposed method, in comparison with
+competing generative extraction approaches, is presented in
+Table 1. Two main observations can be drawn. First, al-
+though waveform-based V AEs and sample-space generation
+methods are typically more computationally demanding than
+mel-spectrogram-based V AEs and latent-space generation ap-
+proaches, our model achieves comparable or superior per-
+Table 1: Performance comparison on Librimix two-speaker
+clean separation task.(-G indicates inference without guid-
+ance). WER, TSIM are in percent. Best and second-best re-
+sults are indicated in boldface and underline. E/S - Extrac-
+tion/Separation
+Name E/S OVRL DNSMOS WER SIM TSIM
+Mixture − 2.63 3 .41 − .54 −
+Sources − 3.26 3 .78 5 .95 − −
+Ours S 3.20 3 .76 13 .26 .81 0.08
+Ours - G S 3.15 3 .68 13 .52 .81 0 .14
+ECAPAv E 3.20 3 .77 19 .48 .77 9 .7
+ECAPAv - G E 3.15 3 .68 20 .67 .76 12 .7
+SoloSpeech E 3.29 3.85 9 .30 .89 0.8
+DiffSep+SV E 3.14 3 .83 − .83 −
+DDTSE E 3.30 3.79 − .73 −
+formance in both speech quality and intelligibility. Second,
+mixture-derived EEND speaker attractors significantly outper-
+form enrollment-based ECAPA speaker representations.
+A common issue with generative separation and extraction
+models is their tendency to ignore the conditioning informa-
+tion and instead focus on a dominant signal in the mixture.
+This phenomenon is revealed by the Transcription Similarity
+(TSIM) indicator for both a recent generative extraction method
+and our own architecture variant using an ECAPA-based ex-
+tractor (ECAPAv). Despite not relying on an enrollment sig-
+nal, the proposed EEND- based model reduces the speaker
+confusion rate, measured by TSIM, by approximately two or-
+ders of magnitude compared with the ECAPA-based variant
+and by an order of magnitude compared with the competing
+method. One possible explanation for the superior performance
+of EEND attractors is that they are trained specifically to dis-
+tinguish among speakers in a mixture, whereas speaker embed-
+dings such as ECAPA are optimized primarily for speaker ver-
+ification and therefore provide a more general representation.
+We further note that performance depends on attractor discrim-
+inability rather than diarization accuracy; robustness analysis
+is left to future work. Finally, we observe that incorporating
+ASG significantly reduces speaker confusion in both methods
+and yields a slight improvement in the speech quality score.
+5. Conclusions
+We propose a novel flow-matching-based speech separation
+model that leverages End-to-End Neural Diarization (EEND)
+attractors. Our approach enables the use of large and difficult-
+to-train components—such as V AEs, vocoders, and diarization
+models—while requiring only training of a relatively simple
+latent-space flow-matching model. Despite operating in a com-
+pact latent representation space, the proposed pipeline achieves
+speech quality comparable to that of larger competing methods
+and outperforms them in intelligibility, as measured by WER.
+Using the proposed TSIM metric, we show that mixture-
+derived speaker attractors significantly outperform enrollment-
+based representations for speaker conditioning, reducing
+speaker confusion by approximately two orders of magnitude
+relative to ECAPA-based enrollment and by one order of mag-
+nitude relative to a generative extraction model.
+In addition, we demonstrate that the proposed Adversarial
+Speaker Guidance (ASG) training-free mechanism yields no-
+table improvements for both enrollment-based methods and the
+proposed latent-space separation model.
+2233
+6. Generative AI Use Disclosure
+Generative AI tools were employed exclusively for linguistic
+polishing. The authors certify that the scientific conceptualiza-
+tion, data analysis, and conclusions are entirely their own, and
+they take full responsibility for the authenticity of the presented
+research.
+7. Acknowledgments
+This work was partially supported by the Israel Science Founda-
+tion (ISF) and the German Research Foundation (DFG) through
+the ISF–DFG Joint Research Program, Grant No. 1280/25; and
+in part by the “AUDIENCE: Audio-Visual Analysis and Sepa-
+ration” Project, Data Science Program, Council of Higher Edu-
+cation, Israel.

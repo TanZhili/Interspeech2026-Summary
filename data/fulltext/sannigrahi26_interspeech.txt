@@ -1,0 +1,418 @@
+AdaTS: Adaptive Token Sampling for Efficient Speech Language Models
+Sonal Sannigrahi1,2,∗∗, Giuseppe Attanasio2, Andr´e F . T. Martins1,2,3
+1 Instituto Superior T´ecnico, Universidade de Lisboa, Portugal
+2 Instituto de Telecomunicac ¸˜oes, Portugal
+3 TransPerfect
+sonal.sannigrahi@tecnico.ulisboa.pt
+Abstract
+Speech Language Models (SLMs) have demonstrated strong
+speech understanding capabilities by incorporating speech to-
+kens into large LMs (LLMs). However, most designs are i)
+token-intensive, as a large part of the LLM context is allotted
+to speech tokens, and ii) inefficient, as speech tokens are often
+temporally redundant, hindering SLMs’ capabilities to handle
+long-form tasks. To address both issues, we propose AdaTS, a
+dynamic sampling method that adaptively merges tokens where
+the speech signal is less informative. Our approach reduces the
+length of the speech signal seen by the LLM by2× or more, with
+performance often better than standard downsampling across au-
+tomatic speech recognition (ASR), speech question-answering
+(SQA), and speech translation (ST). Through an extensive em-
+pirical analysis, we show how SLMs using AdaTS retain strong
+speech understanding capabilities, while substantially reducing
+token redundancy and inference cost by 40%.1
+Index Terms: speech recognition, human-computer interaction,
+computational paralinguistics
+1. Introduction
+Recent advances in large language models (LLMs) have enabled
+the extension of their general capabilities to other modalities
+beyond text [ 1, 2, 3]. Among these efforts, speech language
+models (SLMs) have emerged as a promising direction, aim-
+ing to equip LLMs with the ability to process, understand, and
+generate speech signals directly, rather than relying solely on
+text-based representations [4, 5, 6]. Despite this progress, cur-
+rent SLMs are severely bottlenecked by long context lengths,
+due to the quadratic complexity of self-attention mechanisms in
+transformers [7]. More so than text, speech inputs aretoken in-
+tensive—for instance, modern speech encoders, sampling every
+20ms (50 Hz) or finer, produce thousands of tokens per minute
+of audio [8, 9]. As a result, even a 10-minute clip may exceed
+30K tokens, which is at the upper limit of the effective context
+length for many LLMs [10], making real-world scenarios with
+long-form audio entirely impractical. Moreover, speech tokens
+are largelyredundant, with less than 50% of tokens actually
+being attended to by the models [11, 7].
+Tokensamplinghas been proposed to overcome the chal-
+lenges imposed by the longer contexts of multimodal tokens.
+This approach is not only highly effective but also practical to
+implement as both a test-time technique or as part of the training
+framework. The use of token pruning-based strategies has been
+widely studied for both speech and text modalities, where tokens
+with low importance, usually determined via the cumulative at-
+tention scores [12, 13], are discarded. For sequence-to-sequence
+**indicates the corresponding author.
+1Code: https://github.com/sonalsannigrahi/AdaTS
+tasks, subsequent research has instead focused on subsampling
+from the input sequence through temporal pooling or convolu-
+tional downsampling [14, 1, 15]. While they can reduce overall
+sequence length, these methods arestaticandindiscriminate,
+treating all tokens uniformly regardless of their content. This
+creates a fundamental trade-off between the compression rate
+and semantic preservation, often squeezing content-critical re-
+gions together with low-information segments which can be
+sub-optimal [16].
+In this work, we propose ADATS, a dynamic sampling
+framework for efficient SLMs that adapts to each speech signal.
+ADATS operates directly on the output of a pretrained speech en-
+coder, following which we apply ascore-and-mergemechanism
+based on pairwise token similarity. Unlike uniform downsam-
+pling, speech tokens are adaptively split into local subgroups and
+merged according to their information density, producing coarse
+representations in redundant regions while preserving high-
+resolution detail in content-bearing segments. We build upon the
+success of small-scale LLMs [17, 18, 19] and train ADATS with
+a standard two-stage SLM training pipeline. We demonstrate
+through evaluations across several tasks that ADATS preserves
+temporal consistency and fine-grained phonetic content while
+reducing overall redundancy. On automatic speech recognition
+(ASR), speech translation (ST), and speech question answering
+(SQA), including long-form SQA, we achieveup to 4× com-
+pression and 2× on averagewhile consistently improving upon
+downstream performance. In addition, ADATS reduces infer-
+ence cost byapproximately 40%compared to convolutional
+downsampling at smaller model scales for better performance.
+Our findings open the pathways of efficient SLM by showing
+that scaling is not only about larger backbone LLMs or longer
+contexts, but also about how speech tokens are utilised.
+2. Adaptive Speech Sampling
+ADATS follows a two-stage training strategy where we first align
+the output space of the speech encoder and the input space of
+the text decoder keeping the components frozen, then we learn a
+full fine-tuning stage where the decoder is trainable.
+2.1. Sampling Module
+From a pre-trained speech encoder, we first generate a sequence
+of high-dimensional feature vectorsA=a 1,a 2,...,a n. Next,
+we compute pair-wise token similarity and merge a consecutive
+subgroup of tokens with sim(ai,a j)>t for a chosen threshold
+t, which are merged after all similarities are computed as follows:
+4099
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2753
+Figure 1:Illustration ofADATSincluding the sampling module which consists of three steps: obtaining representations from the audio
+encoder, computing pairwise cosine similarity, and merging tokens.
+sim(ai,a j) = aiaj
+|ai||aj|,a merged =
+PN
+i=1(1−sim(a i,a i−1))ai
+PN
+i=1(1−sim(a i,a i−1))
+,
+(1)
+where 0< i andN < nis the total number of tokens 2 with
+similarity below t. We then replace tokens ai,...,a N with
+amerged for each subgroup in the feature vectorA to produce the
+output sequenceA′ resulting in fewer tokens overall.amerged is
+the normalised, weighted sum of each element in feature vector
+where the weight is the inverse of the similarity. Conceptually,
+this leads to higher weights for moredissimilarunits and lower
+for others. For our choice of speech encoder, which is trained
+with contrastive cosine loss, to produceA′, cosine similarity is
+an appropriate choice to measure token similarity [20, 21].
+2.2. Model Architecture
+The three primary components are the speech encoder, projector,
+and the LLM decoder. In line with recent multimodal encoder-
+decoder models [ 14, 22, 23], we follow a two-stage training
+approach. First, we learn a linear projector between the frozen
+speech encoder and frozen LLM decoder. Then, in the second
+stage, we unfreeze the LLM and fully finetune the model with
+a task-specific data mix. In the first training stage, we align the
+embedding spaces of the speech encoder and text decoder with
+linear multi-layer perceptron (MLP) layers. Our speech encoder
+receives 80-dimensional Mel-filterbank frame representations
+and transforms them into multidimensional embeddings. These
+outputs are then processed by amodality and length adapter
+to project them to the input embedding space of the decoder.
+During this stage, all components are kept frozen and only the
+pre-encoder layers are trainable using ASR data. We follow
+all hyperparmeters suggested in [ 14]. Following the modality
+alignment, we concatenate the audio embeddings to the text input
+embeddings and perform instruction tuning (IT) using a suite of
+speech-to-text tasks for English. We train on ASR in English,
+SQA in English, and ST from English to 10 other languages.3
+2We consider the feature vectors to betoken representationsand use
+it interchangeably
+3French, German, Italian, Dutch, Korean, Portuguese, Russian, Chi-
+nese, and Spanish.
+2.3. Training Setup
+We train the model using a standard cross-entropy loss with a
+cosine scheduler on reference transcripts on 4 H100 GPUs for 4
+days. For both stages, we use 20 warmup steps with 128 gradient
+accumulation steps. We use AdamW [24] as our optimizer with
+β1 = 0.9 andβ2 = 0.95. We also use bfloat16 mixed precision.
+We set our learning rate as 6×10 −6 for the encoder, 2×10 −5
+for the decoder, and2×10 −4 for the adapter.
+2.4. Data
+We utilise a mix of natural and synthetic data sources cover-
+ing ASR, SQA, and ST to complement existing data for under-
+resourced tasks and language pairs. We use CC-BY licensed
+data to promote open science and reproducibility. In total, we
+collect 80K hours of data for all three tasks.
+ASR:We use LibriSpeech (LS) [ 25], V oxPopuli [26], Com-
+monV oice 16.1 [27] during the modality alignment phase. In the
+IT phase, we use all previous data and add Peoples Speech [28],
+Giga Speech [29], and the English split of MLS [30].
+ST:We use gold-standard CoV oST-2 [31] for En-De and a
+pseudo-labelled speech translation corpora, Spite4, to augment
+our ST data mix for remaining language pairs. We use the version
+of Spite translated using TowerPlus-9B and with transcripts from
+CommonV oice 16.1 as the translation quality of TowerPlus-9B
+is the highest among the models released [32].
+SQA:We use the SpokenSQuAD [ 33], SLUE SQA-5 [34],
+and LibriSQA [35] datasets which contain a mix of synthesized
+speech as well as natural human speech sources paired with text
+targets. We clean the QA pairs obtained from SpokenSQuAD
+and SLUE SQA-5 using Qwen2.5 7B to reformulate the text-
+based answers into stand alone sentences [36].
+3. Experiments
+We train and evaluate ADATS on three tasks: ASR, ST, SQA,
+and long-form SQA. We first discuss the decoding method used,
+followed by different system settings. Next, we detail compara-
+ble baseline approaches. Lastly, we list all the evaluation datasets
+and metrics used for evaluation.
+4https://huggingface.co/datasets/bpop/
+spite-CV16-TP9B
+4100
+Table 1:Main results on ASR, SQA, and ST. We report baselines above and highlight models withADATS.
+ModelsASR(↓)SQA(↑)ST(↑)
+Clean Other V oxPopuli FLEURS Spoken SQuAD SLUE SQA LongSpeechEval FLEURS
+Pooling 5.3 8.2 9.8 11.2 45.1 27.3 2.7 80.1
+WLQF 3.64.510.2 10.1 53.1 30.4 3.0 81.3
+FLS-1.5B 5.2 7.8 10.1 12.1 50.4 32.3 3.2 80.2
+FLS-7B 4.1 7.2 9.8 10.3 - -3.6-
+LLaMA 3.2 1B 4.3 10.2 15.5 12.3 53.5 32.6 3.2 81.1
+EuroLLM 1.7B 5.6 9.8 14.4 10.9 52.3 31.4 3.1 78.6
+Qwen 2.5 1.5B 2.9 6.2 9.5 8.5 58.9 37.5 3.5 82.0
+3.1. Evaluation Set-up
+We decode with zero shot prompting using task-specific tags un-
+less specified otherwise. For all tasks, we generate using beam
+search with beam size 3, a repetition penalty of 1.6, up to 1024
+tokens. We constrain the text generation using a target language
+and task token. The task tag is limited to <|transcribe|>,
+<|translate|>, or <|reply|> for ASR, ST, SQA respec-
+tively. We use the relevant ISO codes for each language tag.
+3.2. System Settings
+We fix the speech encoder in ADATS as Wav2Vec2Bert and vary
+the language decoder. We restrict our experiments to small-scale
+language models and use the base variants of Qwen2.5 1.5B,
+Llama 3.2 1B, and EuroLLM 1.7B. Within the sampling module,
+we report results with the following variations:
+• Threshold:We modulate the similarity threshold between 0.7
+and 0.9 in 0.05 increments.
+• Pooling method:We report three approaches: 1) average uni-
+formly across the entire token subgroup obtained for a certain
+thresholdt, 2) weight each token in the subgroup by (1−s)
+wheres is the previously computed pairwise cosine similarity
+per (1), 3) prune all but the first token in the subgroup (top-1).
+• Training stage:Within the two-stage training set-up, we
+include the sampling module during the MA phase, the IT
+phase, or in both.
+3.3. Baselines
+We consider two approaches: static downsampling (conv-based
+and WLQF) and content-dependent sampling (CTC-based) [37].
+We fix the speech encoder to Wav2Vec2Bert and use Qwen2.5
+1.5B as the backbone decoder for all cases.
+• Conv-based:We use 3 1D-convolutional layers with stride 2
+and kernel size 3 after the modality adapter.
+• WLQF:We use a Window-level Q-former (WLQF) [ 6] to
+replace the modality and length adapter. The module takes
+in variable-length outputs from the speech encoder and splits
+them into non-overlapping windows of sizeN which is then
+passed to a Q-former [38]. We setN= 0.33 seconds and the
+number of queries to 1 as per [6]. We set the adapter kernel
+size to 8 and stride to 8 per the best setting in [37].
+• CTC-based:FastLongSpeech (FLS) [ 39] uses an iterative
+fusion strategy trained with a CTC decoder to merge speech
+tokens. FLS is trained with Qwen2 Audio 7B as the base
+LLM, to be comparable we report results with the 7B and
+1.5B variant.
+3.4. Datasets
+We report Word Error Rate (WER) on the LS test split [ 25],
+V oxPopuli [26], and FLEURS [40] for ASR. We report average
+COMET-22 [41] on en→xx directions from FLEURS ST for ST
+across all language pairs considered. For SQA, we report F1
+accuracy on the test split of Spoken SQuAD [33] and frame-F1,
+defined as F1 accuracy on the answer spans, on SLUE SQA-5
+[35]. We further report results on LongSpeechEval (LS Eval) 5,
+where the average duration is 2 minutes, using a LLM-as-a-judge
+protocol as described in [39].
+4. Main Results and Discussion
+Table 1 presents our main results on ASR, SQA, and ST. We
+use ASR as a proxy for speech content preservation and SQA
+and ST to evaluate overall speech understanding. Unless men-
+tioned otherwise, we refer to ADATS with Qwen2.5 1.5B as the
+decoder.
+4.1. Speech Content Preservation
+We observe in Table 1, that across all ASR datasets, ADATS
+consistently outperforms other methods. Considering both static
+downsampling as well as content-dependent sampling, we find
+that ADATS remains the least sensitive to the subsampling of
+the speech sequence and scale of the LLMs used. This finding
+suggests that we are able to effectively preserve fine-grained de-
+tails required to transcribe content accurately while reducing the
+overall redundancy of the input. We discuss exact compression
+rates achieved in Section 4.5. Among content-dependent meth-
+ods, the FastLongSpeech (FLS) variants trained with 1.5B and
+7B backbone LLMs exhibit a clear performance gap, showing
+that the size of the decoder is crucial to final performance for this
+approach– a dependency ADATS does not share, as it achieves
+competitive results even with smaller backbones. Considering
+variants with several small-scale backbone LMs, we find that
+the choice of backbone strongly determines overall performance,
+with Qwen 2.5 1.5B emerging as a consistently strong founda-
+tion that yields the best results across ASR and ST tasks alike.
+However, despite the same backbone, ADATS improves upon
+uniform pooling, even surpasses FLS-7B, demonstrating that
+effective compression can compensate for reduced model scale.
+4.2. Speech Understanding
+In Table 1, for both tasks of short-form SQA and AST, ADATS
+outperforms other approaches. Notably, for SQA, pooling has
+5https://huggingface.co/datasets/ICTNLP/
+LongSpeech-Eval
+4101
+0.7 0.75 0.8 0.85 0.90
+10
+20
+30
+Threshold
+WER
+ASR
+LS Clean
+LS Other
+V oxPopuli
+0.7 0.75 0.8 0.85 0.9
+40
+60
+80
+Threshold
+Frame F-1
+SQA
+S-SQuAD
+SLUE
+0.7 0.75 0.8 0.85 0.9
+60
+70
+80
+90
+Threshold
+COMET 22
+ST
+FLEURS
+Figure 2:Performance vs. Threshold for ASR, SQA, and ST.
+Table 2:Merge Strategies on LS Clean,
+SLUE, and FLEURS.
+Strategy ASR (↓) SQA (↑) ST (↑)
+Avg 3.2 35.4 81.2
+Weighted Avg2.9 37.5 82.0
+Top-1 3.0 37.2 81.0
+Table 3:Training Stage Ablations. Re-
+sults on LS Clean, SLUE, and FLEURS.
+MA IT ASR (↓) SQA (↑) ST (↑)
+✗ ✗5.3 25.6 80.1
+✗ ✓3.2 35.4 81.2
+✓ ✗20.3 20.4 58.8
+✓ ✓3.6 29.7 80.3
+Table 4:Compression Ratio
+Across Test Tasks witht= 0.85.
+DatasetASR SQA ST
+Min 1.23 1.16 1.25
+Max 4.16 3.21 4.24
+Avg 1.76 1.65 1.85
+the largest performance gap with other approaches showing the
+limitations of static downsampling. WLQF improves consid-
+erably upon simple convolutional downsampling and achieves
+comparable results to CTC-based FLS. Compared to ASR, FLS
+is a stronger model for SQA tasks showing that CTC-based
+decoding is able to better retain the overall information in the
+speech input but is worse at preserving the required phonetic
+characteristics for accurate ASR. ADATS is able to improve
+upon the task-specific performance of FLS as well the overall
+phonetic content preservation of WLQF. On long-form QA, LSE-
+val, we find that ADATS is able to perform competitively with
+FLS-7B despite training on average with audios shorter than 30s.
+4.3. Threshold Sensitivity
+Figure 2 illustrates the performance of our evaluation suite
+against different threshold valuest. Across all tasks, we observe
+a similar trend with respect to t, where lower values degrade
+performance. Comparing the three tasks, we note that the ASR
+and ST are much more sensitive to t with significant perfor-
+mance drops with changes in the value. However, in the SQA
+task the effect of the threshold is much less pronounced. This
+suggests that tasks which require high content preservation also
+in turn require a more fine grained choice of t, whereas tasks
+requiring general speech understanding are more robust to larger
+downsampling. Fixing t= 0.85 , we now investigate the opti-
+mal merge strategy. Table 2 reports results with three pooling
+methods: averaging, averaging using weights as expressed in
+Eq. 1, and pruning all tokens but the first in the token subgroup
+(Top-1). While simple averaging provides a strong baseline, we
+are able to further improve upon it by weighted average which
+we find to be the best performing approach. Pruning as a strategy
+is surprisingly effective as well in downstream tasks suggesting
+that the token subgroups obtained by sampling are indeed low in
+information density.
+4.4. Training Stages
+Table 3 shows our results on activating the sampling module
+in MA, IT, or both. Across all tasks, the best strategy is to
+perform MA with the full sequences and then perform IT with the
+subsampled tokens. This is in line with previous literature where
+the sampling strategy is often applied during the IT phase [ 7].
+However, applying compression only in MA leads to a subpar
+model that is unable to perform speech-text tasks. Therefore,
+the alignment learnt during MA is crucial for the downstream
+performance of the model. We hypothesise that the redundancy
+of similar speech tokens is required in MA as they still bring a
+useful speech signal, despite being uniform, which is beneficial
+in terms of thequantity. This is lost if the signal is heavily
+compressed at this stage by subsampling.
+4.5. Efficiency
+Table 4 reports the compression rates achieved by ADATS, av-
+eraging across datasets in each evaluation task. We report com-
+pression statistics att= 0.85 , which we found work best among
+the tasks considered. On average, we obtained a 2x compres-
+sion rate across all tasks. In particular, for ASR and ST tasks,
+we are able to compress more aggressively for the same thresh-
+old when applied to SQA showing that the actual compression
+rate achieved is inherently dataset dependent. Lastly, ADATS
+requires 2.14 TFLOPS for inference6 on a 10s audio while con-
+volutional downsampling requires 3.23 TFLOPs, yielding a 34%
+reduction in compute. For a comparable performance, FLS-7B
+requires 8.54 TFLOPs representing 4 times the computational
+effort.
+5. Conclusion
+We presented ADATS, a parameter-free sampling method based
+on pairwise token similarity. Our results show that ADATS
+achieves competitive performance on several tasks across bench-
+marks while reducing the token footprint up to 2x on average
+and obtaining significant gains in terms on inference efficiency.
+Lastly, we report the best settings to use similarity-based sam-
+pling to guide research in token-based compression strategies.
+6We computed FLOPS using https://github.com/MrYxJ/
+calculate-flops.pytorch
+4102
+6. Generative AI Disclosure
+No Generative AI tools were used to write any part of this docu-
+ment. AI coding assistants in Github Copilot and Claude Sonnet
+were used for performing parts of the experiments reported in
+this manuscript.
+7. Acknowledgements
+We gratefully acknowledge feedback in early stages of
+this work from Marco Gaido. This work was supported
+by the Portuguese Recovery and Resilience Plan through
+project C645008882-00000055 (Center for ResponsibleAI),
+by the project DECOLLAGE (ERC-2022-CoG 101088763),
+and by FCT/MECI through national funds and when appli-
+cable co-funded EU funds under UID/50008: Instituto de
+Telecomunicac ¸˜oes. Parts of the work were additionally sup-
+ported by project 2025.00290.CPCA.A3 for initial model devel-
+opment on MareNostrum5.

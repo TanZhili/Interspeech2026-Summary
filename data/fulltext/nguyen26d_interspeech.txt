@@ -1,0 +1,517 @@
+DiFlow-TTS: Compact and Low-Latency Zero-Shot Text-to-Speech with
+Discrete Flow Matching
+Ngoc-Son Nguyen1, Thanh V . T. Tran1, Hieu-Nghia Huynh-Nguyen1, Truong-Son Hy2, Van Nguyen1,†
+1 FPT Software AI Center, Vietnam
+2 University of Alabama at Birmingham, USA
+{sonnn45, thanhtvt1, vannth19 }@fpt.com, huynhnguyenhieunghia1999@gmail.com, thy@uab.edu
+Abstract
+Zero-shot text-to-speech (TTS) has made significant
+progress in replicating unseen voices, yet balancing generation
+quality and inference efficiency remains challenging. Autoregres-
+sive models suffer from high latency, while diffusion-based ap-
+proaches are constrained by training-time configurations. More-
+over, most flow-based methods operate in continuous space,
+which introduces optimization challenges because continuous
+token spaces are inherently more complex than discrete ones.
+To address these limitations, we propose DiFlow-TTS, a novel
+zero-shot TTS framework based on discrete flow matching. The
+model consists of a deterministic Phoneme-Content Mapper for
+linguistic modeling and a Factorized Discrete Flow Denoiser that
+simultaneously generates prosody and acoustic token streams.
+Experimental results demonstrate the effectiveness of our ap-
+proach across multiple evaluation metrics.
+Index Terms: text-to-speech synthesis, discrete flow matching,
+factorized discrete flow
+1. Introduction
+Zero-shot text-to-speech (TTS) has made remarkable progress
+in recent years, with the goal of generating high-quality speech
+that faithfully replicates the voice of previously unseen speakers
+from only a few seconds of reference audio. Neural audio codecs
+[1, 2] have enabled high-fidelity audio compression by efficiently
+encoding raw waveforms into discrete tokens while preserving
+quality through the residual vector quantization (RVQ) method.
+Recent studies have explored autoregressive (AR) modeled by
+applying language modeling techniques to these discrete tokens
+[3, 4, 5, 6], demonstrating high-quality speech generation. Al-
+though these methods are widely validated for discrete tokens,
+they inherently suffer from high inference latency due to their
+step-by-step sequential generation.
+To address this issue, recent efforts to adapt these discrete
+codec tokens to non-autoregressive generation have sparked
+growing interest in applying diffusion models in both discrete
+settings [7, 8, 9, 10] and continuous settings [ 11, 12]. How-
+ever, diffusion-based methods tightly couple the training and
+sampling processes, restricting sampling configurations to those
+established during training [13]. Modifying components such as
+noise schedules or rate matrices requires retraining for each new
+configuration, resulting in considerable computational overhead.
+Flow matching, on the other hand, offers a more flexible and ef-
+ficient alternative. Most existing flow-based models still operate
+in purely continuous representation spaces and follow a single
+design paradigm, where flow is defined over continuous repre-
+sentations derived from discrete inputs [14] or mel-spectrograms
+†indicates the corresponding author.
+PCM
+Content Token Prediction
+Factorized Discrete
+Flow Denoiser
+Codec Encoder
+... ...
+Acoustic TokensProsody Tokens Speaker EmbeddingMask Tokens
+Discrete Solver
+......
+...
+...
+...
+...
+Prosody Token Prediction
+Content Embeddings
+Codec Decoder
+Acoustic Token Prediction
+Speech Prompt
+Synthesized Speech
+Text
+Figure 1: Overview of DiFlow-TTS. A Codec Encoder decom-
+poses the speech prompt into aspeaker embedding, prosody, and
+acoustic tokens for zero-shot style transfer, while the Phoneme-
+Content Mapper converts text into content tokens and content
+embeddings. Conditioned on the content embeddings and the
+speaker identity, prosody, and acoustic tokens extracted from the
+speech prompt, the Factorized Discrete Flow Denoiser simul-
+taneously generates prosody and acoustic tokens. Finally, the
+generated tokens together with the speaker embedding are fed
+into the Codec Decoder to reconstruct the waveform.
+[15, 16]. Although these representations are theoretically richer,
+they span a highly dimensional and unbounded space, which
+complicates density estimation and increases the likelihood of
+out-of-distribution artifacts, unlike discrete tokens that exist
+within a structured and finite space [ 17]. This limitation mo-
+tivates our exploration of Discrete Flow Matching (DFM) [18]
+for speech synthesis.
+In response, we present Discrete Flow Matching for zero-
+shot TTS (DiFlow-TTS), illustrated in Figure 1, a novel zero-
+shot TTS framework that leverages DFM tailored to discrete
+settings in speech synthesis. This work aims to demonstrate
+DFM as a promising research direction for speech synthesis,
+supported by empirical experiments that reveal both the advan-
+tages and limitations of this approach. To address this gap, we
+take an initial step toward developing a framework that oper-
+ates directly in the discrete space of factorized codec tokens
+by employing a pre-trained FACodec [10] as the target discrete
+representation. This choice is motivated by two key factors: ❶
+FACodec factorizes speech into prosody, content, and acoustic
+attributes, enabling flexible modeling of each attribute indepen-
+dently; and ❷ it is pre-trained on a large-scale multi-speaker
+corpus, providing a robust and reliable codec foundation for our
+target data. Building on this, DiFlow-TTS explicitly models
+these factorized attributes within a compact and unified frame-
+work. Specifically, we design Phoneme-Content Mapper (PCM),
+which directly maps phoneme sequences to discrete speech to-
+1307
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1043
+kens that represent the content of the utterance. This module
+further generates content embeddings that align closely with the
+semantic structure of the speech. These embeddings, along with
+auditory attributes extracted from the reference speech prompt,
+are then used to condition a Factorized Discrete Flow Denoiser
+(FDFD) module, allowing it to effectively clone the reference’s
+speaking characteristics. Crucially, we design the denoiser with
+separate prediction heads for the probability velocity of dis-
+tinct speech aspects, specifically prosody and acoustic details,
+allowing it to simultaneously learn multiple attribute-specific
+distributions within a unified flow architecture. In summary, our
+main contributions are as follows:
+• We introduce DiFlow-TTS, a novel zero-shot TTS framework
+that learns probability flows directly in the discrete space of
+factorized codec tokens, establishing an initial baseline for
+applying DFM to speech generation.
+• Unlike prior DFM applications that operate on homogeneous
+discrete sequences, we propose a reformulated DFM frame-
+work over a structured, factorized representation by intro-
+ducing the Factorized Discrete Flow Denoiser. This design
+explicitly models individual speech attributes through a flow-
+prediction mechanism with dedicated heads for prosody and
+acoustic details. To our knowledge, this is the first work to
+decompose probability velocity fields across multiple discrete
+subspaces within a single discrete flow process.
+• We show that DiFlow-TTS achieves promising results com-
+pared to baseline models in terms of naturalness, content
+accuracy, and prosody preservation, while retaining a com-
+pact architecture that is up to 11.7× smaller and delivering
+low-latency inference with up to 34× speedup over baselines,
+making it a promising candidate for deployment in resource-
+constrained and latency-critical environments.
+2. Related Work
+A growing trend in speech synthesis focuses on converting
+raw waveforms into discrete token representations using vector-
+quantized variational autoencoders (VQ-V AE), which was first
+introduced by [ 19] in the field of computer vision and later
+adapted to speech processing [20, 21]. These tokenized repre-
+sentations have demonstrated greater naturalness and robustness
+compared to conventional mel-spectrogram-based approaches.
+To effectively model sequences of discrete speech tokens, recent
+efforts have adapted large language models (LLMs) from the
+natural language processing domain [3, 4, 5, 6]. A notable exam-
+ple is V ALL-E [5], which leverages a pre-trained neural codec
+to encode speech into discrete codec tokens and reformulates
+zero-shot TTS as a conditional codec language modeling task.
+During inference, it performs autoregressive continuation from
+the acoustic tokens of a speech prompt, enabling high-fidelity
+speaker-consistent voice synthesis.
+Although AR models achieve impressive quality, they are
+inherently limited by slow inference speeds. This limitation has
+prompted a shift toward NAR paradigms [ 11, 10, 22, 12, 23].
+For example, NaturalSpeech 2 [ 11] uses diffusion [ 24, 25] to
+generate discrete acoustic tokens as continuous features. Its
+successor, NaturalSpeech 3 [10], further factorizes speech into
+subspaces of content, prosody, and acoustic details, employ-
+ing multiple diffusion models to independently capture various
+acoustic characteristics. In parallel, flow matching [26, 27] has
+gained attention as a promising generative technique, producing
+strong results in various domains. Yet, most existing speech-
+related flow matching applications operate in continuous spaces,
+using either mel-spectrogram representations or continuous rep-
+resentations derived from discrete tokens, and predict flows over
+these representations rather than directly over discrete represen-
+tations. [15, 28, 29, 30, 14].
+An emerging line of research seeks to extend iterative re-
+finement techniques to discrete spaces by modeling generation
+dynamics with Markov chains. Discrete-space generative mod-
+els have already proven effective in domains such as natural
+language [31, 32], proteins [33, 34], vision [35, 32, 36], code
+[18], and graphs [13]. However, the application of DFM [18] to
+speech modeling, such as zero-shot TTS, remains largely unex-
+plored. In this work, we propose a zero-shot TTS system with
+DFM, aiming to leverage the advantages of discrete modeling
+while preserving high-quality speech generation.
+3. Methodology
+Figure 2 illustrates the details of the DiFlow-TTS framework,
+which consists of two core modules: (b) Phoneme-Content Map-
+per and (c) Factorized Discrete Flow Denoiser , described in
+detail in Sections 3.4 and 3.5, respectively. We first employ a
+pre-trained (a) Speech Tokenizer, described in Section 3.2, to
+extract discrete token sequences as our target representations,
+which are subsequently modeled by these two modules.
+3.1. Notation
+Let a sequencex be an array ofL tokens (x1,x 2,...,x L) drawn
+from a discrete vocabulary of sizev, i.e.,x∈ [v]L with [v] =
+{1,...,v }. To represent point mass distributions over these
+sequences, we use the delta function δy(x) = QL
+i=1δyi (xi),
+where y ∈ [v]L; δyi (xi) = 1 if xi = yi, and 0 otherwise.
+Building on this, we further define the extended space [v]nL to
+represent the concatenation ofn sequences, each of lengthL.
+3.2. Input Data Extraction
+We employ FACodec [10], comprising a Codec Encoder and a
+Codec Decoder, as our Speech Tokenizer (Figure 2a) that con-
+verts raw speech waveforms into discrete token sequences serv-
+ing as target representations in our framework. Specifically, the
+Codec Encoder converts the original speech signal r into dis-
+entangled token sequences representing prosody, content, and
+acoustic details and extracts the speaker embedding:
+rp, rc, ra, s = CodecEncoder(r), (1)
+where rp∈ [v]L, rc∈ [v]2L, and ra∈ [v]3L denote the token
+sequences for prosody, content, and acoustic details, respectively,
+and s∈ RDspk is the speaker embedding. Here,L is the token se-
+quence length, and prosody, content, and acoustic details use one,
+two, and three Residual Vector Quantization (RVQ) codebooks,
+respectively, each with a vocabulary size ofv = 1024.
+We design a model that generates these tokens ( ˆrp ∈
+[v]L, ˆrc∈ [v]2L, ˆra∈ [v]3L) and synthesizes the speech wave-
+form ˆr by feeding the generated tokens together with the speaker
+identity s into the Codec Decoder:
+ˆr = CodecDecoder(ˆrp, ˆrc, ˆra, s). (2)
+3.3. Discrete Flow Matching for Factorized Codec Tokens
+We adopt discrete flow matching as the generative backbone for
+modeling prosody and acoustic codec tokens. The goal is to
+transport source samples x0∼p to target samples x1∼q. Fol-
+lowing [18], we instantiate the source distributionp to assign all
+1308
+Phoneme Encoder
+Duration Predictor
+Length Regulator
+Content Predictor
+Content Head Projection
+...
+...
+...
+...
+...
+......
+...
+...
+Prosody Embedder
+ Acoustic Embedder
+Speech Prompt
+Probability Velocity Prediction
+......
+...
+...
+...
+...
+M M 27 7 M6 12 8
+M M M M 8176 20 14
+M 6 M 35 M
+45 M 5 2 M
+10 6 22
+45 35 5
+Zero
+Embeddings
+C
+DiT Blocks
+Projection
+Final Layer
+Discard Prompt Portion
+ Acoustic Head Prosody Head
+S
+Temporal Axis
+(a) Speech Tokenizer
+(b) Phoneme-Content Mapper (c) Factorized Discrete Flow Denoiser
+x N
+...
+...
+...
+...
+...
+...
+3 10 32 5 9
+9
+5
+7 25 21 36 14
+Codec Encoder
+Slice Addition Attribute-Level
+Concatenation
+Attribute-Level
+Flattening
+Scalar Index for Mask, Prosody,
+Content, and Acoustic
+Embedding for Mask, Prosody,
+Content, and Acoustic
+Attribute Embedding of Prosody,
+Content, and Acoustic
+Trainable / Frozen S C
+Text
++
++
++
++
++
+MLP MLP
+Discrete Speech TokensSpeaker Embedding
++
+Figure 2: Detailed architecture of DiFlow-TTS. We formulate zero-shot TTS as token prediction over a factorized codec token space.
+Speech is tokenized by the (a) Speech Tokenizer into content, prosody, and acoustic tokens along with a speaker embedding. Built on
+these tokens, we design a framework comprising two main modules: (b) Phoneme-Content Mapper, which maps input phonemes to
+discrete content tokens and generates corresponding content embeddings; and (c) Factorized Discrete Flow Denoiser, which performs
+discrete flow matching conditioned on the speaker embedding, the discrete prosody and acoustic tokens derived from the speech prompt,
+and the content embeddings.
+Norm, Shift, Scale
+MHSA
+Scale
+Norm, Shift, Scale
+MLP
+Scale
+MLP
+Figure 3: The detailed architecture of the DiT block.
+probability mass to sequences in which every token is the mask
+token [MASK], that is, p(x) = δ[MASK](x). This implies
+that the source distribution places all probability mass in the
+sequence where every token is the mask token [MASK]. For the
+target distributionq, unlike prior DFM applications that operate
+on homogeneous discrete sequences, we reformulate the DFM
+framework by factorizing x1 into two structured components
+that are learned jointly. This structured formulation enables the
+construction of a probability velocity field over a composite tar-
+get space consisting of these two components. Accordingly, we
+define the target distributionq as follows:
+Definition 3.1. Let xp
+1 ∼ qp and xa
+1 ∼ qa denote the ran-
+dom variables corresponding to the prosody and acoustic de-
+tails sequences, respectively. These sequences are in spaces
+[v]L and [v]3L. The full target sequence is then defined as
+x1 = [ xp
+1; xa
+1] ∈ [v](1+3)L, where [; ] denotes the concate-
+nation of the sequence. Assuming the independence between
+the two components, the joint target distribution is factorized as
+q(x) = qp(xp)·qa(xa), wherex = [xp;xa].
+During training, we employ a scheduler κt ∈ [0, 1], a
+monotonically increasing function with boundary conditions
+κ0 = 0 and κ1 = 1 , where t ∈ [0, 1] denotes continu-
+ous time. This scheduler controls the interpolation, gradu-
+ally shifting the distribution from source to target as κt in-
+creases. We follow the deterministic convex-interpolant assump-
+tion, under which the marginal path distribution is given by
+pt(xi|xt) = δxt (xi). Following [18], we then construct a con-
+ditional probability path, referred to as the mixture path, which
+linearly interpolates between the source and target distributions:
+pt(xi|x0, x1) = (1−κt)δx0 (xi) +κtδx1 (xi). This formula-
+tion leads to a conditional probability path, which is governed
+by the probability velocity ut defined as:
+ui
+t(xi, xt) = ˙κt
+1−κt
+h
+p1|t(xi|xt,µ ;θ)−δxt (xi)
+i
+, (3)
+where ˙κt is the time derivative of the scheduler κt,θ denotes
+learnable parameters of a probability denoiser,p1|t(·|xt,µ ;θ) is
+the posterior distribution x1 given a partially corrupted sequence
+xt andµ representing a set of multimodal conditioning inputs.
+1309
+3.4. Phoneme-Content Mapper
+The PCM module (Figure 2b) aligns phoneme sequences de-
+rived from the text prompt with discrete content tokens. While
+its overall structure is inspired by conventional duration-based
+alignment mechanisms [37], we reformulate the alignment pro-
+cess to operate directly on discrete codec tokens rather than
+continuous mel-spectrogram frames.
+Given a text input, we convert it into a phoneme sequence
+and extract phoneme embeddings p∈ RN×D using a phoneme
+encoder, whereN andD denote the sequence length and hidden
+dimension, respectively. To align phonemes with discrete speech
+tokens, a Duration Predictor estimates durations, indicating how
+many speech tokens correspond to each phoneme. This pro-
+duces an integer-based alignment that maps each phoneme to a
+variable-length span in the speech-token sequence. Using these
+alignments, the Length Regulator upsamples phoneme embed-
+dings based on the ground-truth (during training) or predicted
+(during inference) phoneme durations. The upsampled sequence,
+whose length isL, is then passed to theContent Predictor, which
+consists of 2 Feed-Forward Transformer (FFT) layers. These
+layers hierarchically extract textual representations at each level,
+producing hidden states h∈ R2×L×D, which are then processed
+by two branches: a projection layerHϱ(·) produces content em-
+beddings, and a content headGφ(·) that outputs logits over a
+vocabulary of sizev:
+hc =Hϱ(h)∈ R2×L×D,
+p(xc|h;φ) = Softmax(Gφ(h))∈ R2×L×v.
+(4)
+3.5. Factorized Discrete Flow Denoiser
+The FDFD (Figure 2c) aims to generate the prosody and acoustic
+sequences of the synthesized speech by leveraging DFM and
+in-context learning, conditioned on a set of contextual inputs. In
+the following, we detail the key elements of this module.
+3.5.1. Contextual Modeling
+We now elaborate on the construction of the conditioning context
+µ introduced in Eq. (3) and describe how it is integrated into our
+framework.
+❶ Inputs: Given a reference speech prompt r, we apply
+the operation in Eq. (1) to extract prosody (p) token sequences
+rp∈ [v]Lr , acoustic (a) token sequences ra∈ [v]3Lr , and a
+speaker embedding s∈ RDspk, whereLr denotes the temporal
+length of the reference prompt andDspk is the hidden dimension
+of the speaker embedding. The corrupted input at timestep t,
+xt ∈ [v](1+3)L, is split into prosody tokens xp
+t ∈ [v]L and
+acoustic tokens xa
+t∈ [v]3L. We then employ specific embedders
+for prosody and acoustic (implemented as learned embedding
+tables) to map each discrete token index from the vocabulary [v]
+toD-dimensional hidden representations eα
+r (reference) and eα
+t
+(corrupted) forα∈{p,a}.
+❷ Conditioning: We concatenate the reference and cor-
+rupted embeddings along the temporal dimension for each at-
+tribute, where the reference embeddings provide contextual
+information for the corrupted embeddings. We further intro-
+duce the content (c) embedding (Eq. (4)) as the content con-
+ditioning signal ( ec
+t = hc) to provide linguistic guidance for
+prosody and acoustic modeling, while the reference content rep-
+resentation is replaced with zeros ( ec
+r = 0), since content is
+not transferred from the reference speech during style trans-
+fer. The concatenated embeddings for each attribute is given
+by eα = [ eα
+r ; eα
+t ] ∈ Rβ×(Lr +L)×D, where [; ] denotes the
+concatenation operator, and (α,β )∈{ (p, 1), (c, 2), (a, 3)}.
+❸ Constructing unified embedding: We first introduce
+a learnable attribute-type embedding gα∈ R1×1×D for each
+attributeα∈{p,c,a}, allowing the model to explicitly differen-
+tiate among the corresponding attributes. Each such embedding
+is added to the embeddings of its corresponding attribute, yield-
+ing ˜eα = eα + gα. The resulting embeddings are concatenated
+along the attribute dimension, yielding the final unified embed-
+ding e = [ ˜ep; ˜ec; ˜ea]∈ R(1+2+3)×(Lr +L)×D.
+3.5.2. Factorized Flow Prediction
+We first flatten e along the attribute dimension, yielding a
+tensor∈ R(Lr +L)×(1+2+3)D, and then linearly project it to
+z ∈ R(Lr +L)×D. The resulting representation is processed
+by a neural network fψ : R(Lr +L)×D → R(Lr +L)×(1+3)D
+composed of Diffusion Transformer (DiT) blocks [38], a long
+skip connection, and a final transformation layer (as shown in
+Figure 3). To achieve speaker adaptation, we form a global
+conditioning vector cg∈ RD by summing twoD-dimensional
+embeddings: the speaker embedding, obtained by projecting
+s through a Multi-Layer Perceptron (MLP), and the timestep
+embedding t, obtained by mapping the timestep through an MLP.
+This vector modulates the DiT features via adaptive layer nor-
+malization (AdaLN) [38]. After processing the DiT blocks via
+AdaLN, we apply a long skip connection by adding z to the final
+DiT output, followed by the final transformation layer compris-
+ing layer normalization, AdaLN-based modulation conditioned
+on cg, and a linear projection to dimension (1 + 3)D. We then
+discard the reference portion and permute the result to yield the
+final hidden representation hp,a∈ R(1+3)×L×D.
+To effectively enable the model to jointly attend to informa-
+tion from different representation subspaces, we propose a factor-
+ized flow prediction mechanism based on multi-head prediction.
+In this design, FDFD simultaneously models multiple aspects
+of speech, specifically prosody and acoustic details. Formally,
+we define two parallel heads: the prosody headfϕ(·) and the
+acoustic headfω(·), which independently predict probability dis-
+tributions corresponding to prosody and acoustic attributes. We
+first slice the representation hp,a into two parts: ❶ the prosody
+representation hp∈ R1×L×D and ❷ the acoustic representation
+ha∈ R3×L×D. Each part is processed by its respective head,
+fϕ(·) andfω(·), producing logits of the shapes R1×L×v and
+R3×L×v, respectively. These logits correspond to the categori-
+cal distributions predicted over the discrete token vocabulary for
+each attribute. Finally, we concatenate the two outputs along the
+attribute dimension to obtain a tensor in R(1+3)×L×v that serves
+as the estimated posterior distribution over x1.
+3.6. Training Objective
+The overall training objective consists of three loss components
+corresponding to different modules in our framework. First, we
+optimize the Duration Predictor using the Mean Squared Error
+(MSE) loss on the logarithmic scale, denoted as Ldur, which
+compares the predicted and ground-truth durations. Second, for
+the Content Predictor defined in Eq. (4), we use a cross-entropy
+lossLc between the predicted logits and the discrete content
+tokens obtained from the ground truth. Third, for the FDFD
+module, we learn a probabilistic denoiserp1|t trained to recover
+masked tokens under varying masking ratios. The objective is to
+1310
+minimize the cross-entropy loss:
+LFDFD =−
+X
+i∈T
+Et∼U [0,1],(x0,x1),xt
+h
+logp1|t(xi
+1|xt,µ ;θ)
+i
+,
+whereT = [(1+3)L], xt∼pt(x|x0, x1), x0∼p, and x1∼q.
+Finally, the total loss is defined as:
+L =λdurLdur +λcLc +λFDFDLFDFD, (5)
+whereλdur,λc, andλFDFD are hyperparameters that control
+the relative importance of each loss term.
+4. Experimental Setup
+4.1. Implementation Details
+The PCM has a hidden dimension of 768 and integrates a vari-
+ance adapter [ 37] for the Duration Predictor with an encoder
+hidden size of 256, a filter size of 1024, a kernel size of 3, and
+a dropout rate of 0.5. The Phoneme Encoder consists of 2 FFT
+layers with 4 attention heads, a hidden size of 256, an output
+dimension of 768, convolutional filter sizes of 1024 with kernel
+sizes [9, 1], a dropout rate of 0.2, and a maximum sequence
+length of 5000. The Content Predictor comprises multiple layers,
+each responsibl

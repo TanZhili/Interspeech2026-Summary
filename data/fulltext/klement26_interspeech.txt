@@ -1,0 +1,427 @@
+Analysing Adversarial Priors for Data-driven Unsupervised
+Speech Enhancement
+Dominik Klement1,∗∗, Matthew Maciejewski3, Sanjeev Khudanpur2,3, Jan ˇCernock´y1, Luk´aˇs Burget1
+1 Speech@FIT, Brno University of Technology, Czech Republic
+2CLSP & 3HLTCOE, Johns Hopkins University, USA
+iklement@fit.vutbr.cz
+Abstract
+Deep learning-based speech enhancement typically relies on
+paired data, creating a domain gap between training and de-
+ployment. Unsupervised methods based on generative adver-
+sarial networks (GANs) use unpaired data as source priors, but
+existing single-branch models often suffer from source leak-
+age due to a dominant consistency loss or a weak clean speech
+prior. In this work, we present a comprehensive analysis of prior
+data in unsupervised GAN-based speech enhancement and uti-
+lize a dual-branch framework that explicitly models both clean
+speech and noise. Our experiments show that mismatched pri-
+ors increase source leakage. By utilizing aligned noise prior
+data—which are easy to collect in practice—we significantly
+mitigate speech-noise leakage, prevent the over-suppression of
+speech, and improve perceptual quality. This demonstrates
+that leveraging environment-specific noise data is an effective
+strategy for improving unsupervised enhancement in target do-
+mains.
+Index Terms: Speech Enhancement, Unsupervised Learning,
+Deep Learning, Generative Adversarial Networks
+1. Introduction
+Speech enhancement (SE) aims to recover clean speech from an
+observed noisy signal. While supervised deep neural networks
+(DNNs) have driven significant progress in SE [1, 2, 3, 4], they
+rely on strictly paired noisy and clean speech corpora. Because
+obtaining perfectly paired real-world data is impossible, models
+are typically trained on artificially simulated data, which intro-
+duces a domain gap between training and deployment. To over-
+come this limitation, recent research has increasingly shifted
+toward unsupervised approaches.
+One prominent line of work, including MetricGAN-U [5]
+and MOS-GAN [6], guides model training using external non-
+intrusive quality metrics like DNSMOS [7]. While these meth-
+ods do not require clean speech data, their performance is in-
+herently tied to the accuracy of the external black-box metrics,
+and achieving better performance requires the costly re-training
+of these metric models.
+To avoid relying on external metrics, an alternative family
+of unsupervised methods utilizes unpaired clean speech data to
+define structural priors. Recent approaches based on variational
+auto-encoders [8] and diffusion models [9] successfully enforce
+these data-defined priors. However, their reliance on itera-
+tive inference makes them computationally expensive and slow.
+This poses a significant challenge for real-time, low-latency ap-
+plications such as hearing aids or voice calls; hence, we focus on
+**indicates the corresponding author.
+Generative Adversarial Network (GAN)-based methods, which
+perform enhancement efficiently in a single forward pass.
+In recent GAN-based unsupervised SE studies, methods
+such as unSE [10] and unSE+ [11] successfully enforce a clean
+speech prior using a discriminator, while ensuring consistency
+through reconstruction losses computed between the enhanced
+speech and the noisy input. However, these single-branch
+approaches estimate clean speech directly from the noisy in-
+put without explicitly modeling the noise component. Con-
+sequently, they cannot incorporate explicit knowledge about
+the environmental noise to guide the enhancement process,
+which can lead to noise leaking into the clean speech estimate
+when consistency constraints (reconstruction losses) dominate
+the clean speech prior.
+In this work, we explore the role of data priors via dual-
+branch unsupervised GAN-based speech enhancement models
+that modelbothspeech and noise, leading to improvements in
+enhancement quality and less source leakage. Our results show
+that mismatched priors directly cause source leakage. Con-
+versely, imposing an aligned noise prior results in a more ac-
+curate noise estimate, which prevents the clean speech branch
+from estimating leftover noise to satisfy the consistency loss.
+This significantly reduces the amount of noise leaked into the
+clean speech estimate and enables the use of environment-
+specific noise recordings, which are often easy to collect in
+practice, to improve the enhancement performance. The code-
+base is released on GitHub 1.
+2. Proposed Method
+The proposed method is illustrated in Figure 1. It is an
+adversarially-trained model consisting of a generator and a set
+of discriminators. The generator is an encoder-decoder archi-
+tecture that reconstructs the input audio, similar to Neural Au-
+dio Codec (NAC). Internally, the proposed method consists of
+two branches that output clean speech and noise audio. The
+combination of the two audio signals is forced to reconstruct the
+input. To force the model to separate the input into twodistinct
+source signals, we use adversarial training with source-specific
+discriminators to impose prior distributions on each branch. To
+train each discriminator, we use two independent corpora —
+clean speech and noise, defining how branch-specific outputs
+should sound.
+2.1. Generator Architecture
+Letx NS ∈R T be a noisy input audio of lengthTsamples.
+First, a convolutional encoderEis applied to map the noisy
+input to a latent representationz NS =E(x NS )∈R L×M ,
+whereLis the latent sequence length andMis the latent space
+1https://github.com/BUTSpeechFIT/USE DDP
+455
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2511
+Figure 1:Diagram of the proposed dual-brach architecture.
+dimensionality. Subsequently, the latent representation is for-
+warded to two parallel transformers with rotary positional em-
+beddings (RoFormer) [12] to produce two latent sequences:
+zN =R N (zNS ),zCS =R CS (zNS )∈R L×M , represent-
+ing noise and clean speech latent representations respectively.
+This enables each branch to capture distinct information. Next,
+each branch is decoded back to the time domain using a sin-
+gle shared decoderDec, resulting in ˆxN =Dec(z N ), ˆxCS =
+Dec(zCS )∈R T . Finally, the two audio signals are combined
+to obtain estimated noisy speech:
+ˆxNS =α ∗ ˆxN +β ∗ ˆxCS,(1)
+α∗,β ∗ = arg min
+α,β
+∥xNS−(α ˆxN +β ˆxCS )∥2
+2 (2)
+whereα ∗,β ∗ ∈Rare scalar weights accounting for error-
+neous amplitude estimation 2. The optimal values represent a
+closed-form solution to the convex optimization problem de-
+fined above. To simplify the notation, the following text uses
+ˆxCS =G CS (xNS ), ˆxN =G N (xNS ), ˆxNS =G NS (xNS )∈
+RT to denote the generated clean speech, noise, and noisy
+speech signal, respectively.
+2.2. Adversarial Training
+LetP CS andP N be the prior distributions of real clean speech
+and noise, respectively, andPNS be the distribution of the noisy
+input. Our goal is to train the model such thatp( ˆxCS )≈P CS
+andp( ˆxN )≈P N . It has been shown by Goodfellow et al. [13]
+that if the generator and the discriminator have enough capacity,
+the distribution of the generated samples converges to the distri-
+bution of the real data. In our setup, we use three discriminators
+DCS,DN,DNS , for clean speech, noise, and noisy speech, re-
+spectively. Each discriminator is an ensemble of multiple sub-
+discriminators (described in Section 3.1); however, we omit the
+summation of losses across the particular sub-discriminators for
+clarity. While the first two discriminators impose priors on the
+branch output signal distributions, the noisy speech one has the
+same role as in NACs — i.e., improve fidelity of the recon-
+structed audio. Following the Descript Audio Codec (DAC)
+setup [14], we use LS-GAN loss [15]. The discriminators are
+trained using the following loss function:
+2We do not want to penalize the model for incorrectly estimating the
+amplitude, as it does not change the audio itself.
+LDCS =E xCS ∼PCS,xN S∼PN S
+
+DCS (GCS (xNS ))2
++ (1−D CS (xCS ))2
+.
+(3)
+LDN is defined analogously usingD N andP N . For input re-
+construction, we train the noisy speech discriminatorD NS us-
+ing the same loss function but only one data distribution:
+LDN S =E xN S∼PN S
+
+DNS (ˆxNS )2 + (1−D NS (xNs ))2
+.
+(4)
+2.3. Generator Losses
+We follow the general NAC training setup [16, 14] to train the
+generator to reconstruct the noisy input as the combination of
+the branch outputs (Equation 1), and use multi-scale mel spec-
+trogram loss [16] and SI-SDR loss [17]. We denote their com-
+bination asL con(xNS )and refer to it as consistency loss. Ad-
+ditionally, we use adversarial and feature matching loss defined
+in [16] Equation (2) computed fromx NS and ˆxNS usingDNS
+to improve the fidelity of the generated audio.
+As we do not have reference for the corresponding clean
+speech and noise, we only use adversarial losses to learn the
+source separation, defined as:
+LGCS (xNS ) =E xN S∼PN S[(1−D CS (GCS (xNS )))2],(5)
+whereLGN andLGN S are defined analogously.
+To stabilize the training and avoid trivial mode collapse 3,
+we maximize the energy of the estimated clean speech and noise
+using the following loss function:
+Le(x) =−log
+ 
+∥x∥2
+2
+
+.(6)
+The overall generator loss function is a weighted sum of the
+generator loss terms defined above:
+LG =λ gcsLGCS +λgnLGN +λgnsLGN S +λeLe
++λfeatLfeat +λconLcon. (7)
+2.4. Why does it work?
+Adversarial training with branch-specific discriminators con-
+strains each branch to follow the distribution defined by the
+corresponding data, i.e.,p( ˆxCS )≈P CS andp( ˆxN )≈P N .
+3A scenario where clean speech becomes silence and the entire noisy
+input is reconstructed through the noise branch.
+456
+Simultaneously, the combination of the two outputs must re-
+construct the original noisy input. This dual constraint prevents
+the clean speech branch from generating arbitrary clean speech
+solely to satisfy the adversarial objective, as such signal would
+increase the consistency loss. Consequently, the clean branch is
+compelled to generate an enhanced version of the noisy input—
+one that both aligns with the clean speech prior and contributes
+to accurate input reconstruction. Ultimately, the model learns
+to partition the signal by balancing the competing consistency
+and adversarial objectives.
+3. Experimental Setup
+3.1. Model
+We built the model architecture on top of the Descript Audio
+Codec (DAC) [14]. The encoder contains four residual blocks
+with downsampling factors[2,4,5,8], resulting in 320 down-
+sampling ratio (50Hz for 16kHz input) and 1024-dimensional
+embeddings. The decoder mirrors the encoder. Furthermore,
+each branch contains a transformer with 8 layers, 8 attention
+heads, and feed-forward dimensionality of 1536. We initialize
+the encoder and decoder weights from a pre-trained DAC as
+it improves convergence and enhancement performance com-
+pared to training entirely from scratch.
+We use three discriminator ensembles. The noisy input re-
+construction one,D NS , exactly follows the DAC setup [14]—
+multi-period (MPD) with periods[2,3,5,7,11]and multi-
+band multi-scale STFT (MS-STFT) discriminator with 5 bands,
+STFT window sizes[2048,1024,512], hop length 1
+4 of the win-
+dow size, and 32 convolution filters. Although this discrimina-
+tor is not essential, we observed slightly worse quality of the
+produced audio when not employing it. For the branch-specific
+discriminators that define speech and noise priors, we use a
+single-band MS-STFT discriminator, as we observed that us-
+ing MPD did not improve the performance, with STFT window
+sizes[2048,1024,512,256,128]and 128 convolution filters.
+3.2. Data
+We resample all datasets to 16kHz. For the comparison
+with prior work and prior selection experiments, we use
+VCTK+Demand (VD) [18] subset containing 28 speakers for
+training (out of which two speakers are reserved for validation),
+and the standard 2 speakers test set of 824 utterances. We use
+two kinds of prior data: in-domain (ID) consisting of VCTK
+clean speech and Demand noise, and out-of-domain (OOD)
+consisting of clean speech and noise data from URGENT chal-
+lenge Task1 [19] without VCTK or Demand noise.
+3.3. Training
+We train our models on 3 seconds long randomly sampled au-
+dio chunks using AdamW [20] with weight decay of0.02. We
+train all models for up to 50k iterations, each consisting of first
+updating the discriminators and then the generator. The learn-
+ing rate (LR) is linearly warmed up for 5k iterations, achiev-
+ing peak LR 2e-4, and then decayed according to the cosine
+scheduler throughout the rest of the training. We use gradient
+clipping of 1.0 and mixed precision training in bfloat16. The
+best-performing model is selected based on the validation set.
+3.4. Metrics
+To evaluate the model performance and compare to prior works,
+we follow the setups defined in [5, 10] and use DNSMOS [7]
+to judge the quality of the enhanced speech (cleanliness),
+PESQ [21] to evaluate perceptual speech quality, and CSIG,
+CBAK, COVL composite metrics [22] to predict MOS for:
+the amount of speech distortion, the intrusiveness of the back-
+ground noise, and the overall clean speech quality, respectively.
+Furthermore, to examine the clean speech and noise leakage
+between the branch-wise estimates, we use SI-SDR [17]-like
+scaling to measure the amount of noise contained in the clean
+speech estimate:
+Ln,s(ˆxcs) =⟨β ˆxcs,xN⟩
+∥xN∥2 ,s.t.x CS⊥x CS−β ˆxCS,(8)
+wherex CS, ˆxCS represent the ground-truth and the estimated
+clean speech respectively, andx N is the ground-truth noise.
+Values close to 0 signal low leakage, while values close to 1
+signal significant leakage 4. The amount of clean speech leaked
+into the noise estimateLs,n(ˆxN )is defined analogously.
+4. Results
+We first compare the proposed method with prior GAN-
+based unsupervised speech enhancement approaches on the
+VCTK+Demand (VD) benchmark. We then analyze how the
+choice of clean speech and noise priors affects enhancement
+performance and source leakage.
+4.1. Comparison to Prior Work
+Table 1:Comparison of our unsupervised models with prior
+work.
+Model DNSMOS↑PESQ↑CSIG↑CBAK↑COVL↑
+Input Speech 2.54 1.97 3.35 2.44 2.63
+MGAN-U (half) [5] 2.89 2.45 3.47 2.63 2.91
+MGAN-U (full) [5]3.152.13 3.22 2.42 2.63
+MOS-GAN [6] 2.91 2.40 - - -
+unSE [10] 2.92 2.453.693.05 3.05
+unSE+ [11] 2.94 2.48 3.313.072.85
+Ours 2.99 2.583.61 2.393.08
+Ours (1 branch) 2.98 2.34 3.49 2.26 2.90
+Table 1 compares our approach with prior GAN-based un-
+supervised SE models on the VD benchmark. To ensure a fair
+comparison, we use an ID clean speech prior. We evaluate
+our dual-branch architecture alongside a single-branch base-
+line constructed by removing the noise branch from the dual-
+branch model, replicating unSE-style training [10] using one
+clean speech discriminator and consistency loss computed be-
+tween the input noisy speech and the clean speech estimate. Be-
+cause single-branch models lack a dedicated noise sink, the con-
+sistency loss easily overpowers the adversarial prior; therefore,
+careful loss weight tuning (λgcs = 5,λ con = 1) was required
+to prevent the model from simply reconstructing the noisy input.
+As shown in Table 1, our dual-branch model achieves the
+highest COVL and PESQ scores among the evaluated methods,
+indicating strong perceptual speech quality. It also ranks com-
+petitively in CSIG and DNSMOS, trailing only MetricGAN-U
+(full), which is expected as that model explicitly optimizes for
+the DNSMOS metric until convergence. When comparing our
+two internal variants (the last two rows of Table 1), the dual-
+branch approach yields notably better performance across all
+metrics, proving the usefulness of explicit noise modeling. Our
+4While the metric is not bounded, we did not observe values above
+1 or significantly below 0.
+457
+single-branch baseline falls short of the original unSE model,
+which we attribute to structural differences, given that unSE uti-
+lizes a mask-based estimation approach rather than direct wave-
+form generation. Finally, both our models yield lower CBAK
+scores, indicating that while the overall speech quality is supe-
+rior, background artifacts can appear in the speech estimate.
+Table 2:Comparison of ID and OOD clean speech and noise
+prior data when trained on VCTK+Demand noisy speech. CP
+and NP stand for clean speech and noise prior respectively, and
+✓represents ID data.
+CP NP DNSMOS↑PESQ↑CSIG↑CBAK↑COVL↑
+✓ ✓2.992.58 3.61 2.39 3.08
+✓ ✗3.032.47 3.54 2.35 2.99
+✗ ✓2.82 2.22 2.95 2.21 2.55
+✗ ✗2.86 2.04 2.60 2.06 2.27
+4.2. Clean Speech Prior Selection
+To investigate the impact of prior data matching, we evalu-
+ate our models using ID and OOD clean speech datasets (Sec-
+tion 3.2). Table 2 shows that ID clean speech significantly im-
+proves PESQ and composite metrics across all noise conditions.
+Fundamentally, the model partitions the signal by balancing
+adversarial priors and the mixture consistency loss (Lcon). With
+an OOD clean speech prior, the adversarial gradients are often
+not strict enough to penalize non-speech components. Conse-
+quently, if the noise branch imperfectly estimates the true noise,
+the consistency loss forces the clean speech branch to recon-
+struct this leftover noise.
+This dynamic causes source leakage and degrades cleanli-
+ness. As shown in Figure 2, an OOD clean speech prior (Fig-
+ure 2d) results in substantial noise leakage compared to an ID
+prior (Figure 2b), which strictly penalizes non-speech artifacts.
+a
+GT CS
+c
+OOD CS
+ID N
+d
+OOD CS
+OOD N
+a
+ID CS
+OOD N
+Figure 2:Comparison of ID vs OOD priors. a - ground-truth
+clean speech, b - ID clean speech and OOD noise, c - OOD
+clean speech and ID noise, d - OOD clean speech and noise.
+4.3. How Does Noise Prior Affect Clean Speech?
+Building on Section 4.2, we analyze the impact of explicit noise
+modeling. Switching from an OOD to an ID noise prior (Fig-
+ure 2d vs. 2c) yields a more accurate clean speech estimate. A
+strong ID noise prior allows the noise branch to act as a dedi-
+cated sink, relieving the clean speech branch from reconstruct-
+ing leftover noise to satisfy the mixture consistency loss (Lcon),
+as reflected in the last two rows of Table 2.
+To isolate this effect, we evaluate models on VCTK mixed
+with simulated wind noises from the URGENT challenge [19]
+with SNR from 0dB to 15dB, ensuring the noise corpora con-
+tain no speech. Figure 3 demonstrates that an OOD noise prior
+(Figure 3c) causes substantial speech leakage into the noise es-
+timate. Conversely, an ID noise prior (Figure 3b) explicitly pre-
+vents this leakage as the noise prior in this case is easily learn-
+able; hence strong.
+a b c
+Figure 3:Example of speech leaking into the noise estimate. a -
+ground-truth clean speech, b - estimated noise trained with ID
+prior, c - estimated noise with OOD prior.
+Quantitative evaluation using the leakage metrics defined in
+Equation 8 confirms the visual observations. Table 3 establishes
+a baseline leakage of approximately 1.00 for the noisy input, as
+all speech and noise energy remain fully mixed in the noisy in-
+put mixture. Introducing an ID noise prior substantially reduces
+speech-to-noise (s→n) leakage from 0.23 to 0.02 by enabling
+the noise branch to accurately reconstruct the background noise.
+Because the consistency loss (L con) enforces partitioning be-
+tween the branch outputs, improved noise reconstruction re-
+moves the pressure on the clean speech branch to absorb resid-
+ual noise, thereby reducing noise-to-speech (n→s) leakage
+from 0.10 to 0.03. Consequently, with minimal speech energy
+leaking into the noise branch,L con preserves the speech con-
+tent in the clean speech estimate and prevents the model from
+over-suppressing speech.
+Table 3:Comparison of ID vs OOD noise prior effects on source
+leakage (VCTK + simulated wind noise). Clean speech prior is
+ID.s→ndenotes speech-to-noise leakageL s,n(ˆxN );n→s
+denotes noise-to-speech leakageLn,s(ˆxCS ).
+ID Noise Priors→n n→s
+YES0.02±0.01 0.03±0.04
+NO0.23±0.13 0.10±0.06
+Noisy Input (Baseline)1.00±0.01 1.00±0.01
+5. Conclusion
+In this work, we have investigated the role of prior data in un-
+supervised GAN-based speech enhancement and introduced a
+dual-branch framework that explicitly models clean speech and
+noise. Our experiments showed that prior alignment strongly
+influences source separation behavior and that mismatched pri-
+ors lead to increased leakage between speech and noise esti-
+mates. By using aligned noise priors, the proposed framework
+improves signal partitioning, reduces cross-source leakage, and
+yields better perceptual speech quality. These findings support
+explicit noise modeling compared to the previous single-branch
+models and demonstrate that environment-specific noise record-
+ings—often easy to collect in practice—can effectively guide
+the enhancement process. Future work will focus on improving
+robustness to mismatched priors and extending the analysis to
+more diverse noise conditions.
+458
+6. Acknowledgments
+This work was partially supported by NSF CCRI Grant No
+2120435 and corporate gifts to Johns Hopkins University for
+JSALT 2025. It was also supported by Technology Agency of
+the Czech Republic (TACR) project No. TQ28000003 ”Na-
+tional Center for Artificial Intelligence”. Computing on IT4I
+supercomputer was supported by Czech Ministry of Education,
+Youth and Sports through the e-INFRA CZ (ID:90254).
+7. Generative AI Use Disclosure
+All the content was produced by the co-authors. GPT 5.2
+and GEMINI were used only for minor sentence polishing and
+grammar check.

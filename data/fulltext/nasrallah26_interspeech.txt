@@ -1,0 +1,430 @@
+DECRA: Dynamic Emotion Control for Real-time Speech Anonymization
+Ghady Nasrallah, Waris Quamer, Mu-Ruei Tseng, Ricardo Gutierrez-Osuna
+Department of Computer Science & Engineering, Texas A&M University, College Station, US
+{ghadynasrallah,quamer.waris,mtseng,rgutier}@tamu.edu
+Abstract
+Real-time speaker anonymization requires neutralizing or con-
+trolling emotional states with causal, low-latency synthesis to
+prevent leakage of sensitive paralinguistic information. How-
+ever, most expressive VC systems operate offline and rely on
+global style conditioning, which limits real-time use and dy-
+namic emotion control. In addition, speaker representations
+commonly used for VC entangle speaker identity with emo-
+tional attributes, making emotion control weaker and less re-
+liable. We propose DECRA 1, a real-time streaming VC sys-
+tem that performs closed-loop, time-varying prosody control.
+It conditions synthesis on continuous valence–arousal (V A) tra-
+jectories predicted online by a causal speech emotion recog-
+nition (SER) model, while disentangling speaker identity from
+emotion. The resulting system is streamable end-to-end, with
+<80 ms GPU latency. Experiments show improved V A-space
+emotion steering over SOTA baselines and demonstrate dy-
+namic, time-varying emotion control.
+Index Terms: Speech anonymization, emotional speech con-
+trol, streaming architectures
+1. Introduction
+Beyond linguistic content, speech carries both biometric (e.g.
+sex, age) and paralinguistic information (e.g. dialect, emotion),
+which can be exploited for speaker recognition, profiling or
+behavioral assessments. This creates significant voice-privacy
+risks, as reflected in efforts such as the V oice Privacy Challenge
+[1], and federal programs such as IARPA ARTS [2]. In many
+cases, protecting speech thus requires two complementary ca-
+pabilities: obfuscating the identity of a speaker and controlling
+their emotional expressiveness (e.g., neutralizing, attenuating)
+to prevent leakage of the speaker’s affective state.
+However, existing methods have yet to bridge the gap be-
+tween anonymization and emotion control. First, streaming
+voice conversion (VC)/anonymization systems focus on identity
+conversion without explicit prosody or emotion control, so they
+can unintentionally preserve/leak emotion-related cues. Sec-
+ond, VC models that offer emotion/prosody control generally
+operate offline, making them unsuitable for applications with
+strict latency constraints. Moreover, these systems only perform
+emotion control at the utterance level, limiting time-varying ma-
+nipulation in conversational speech. Existing approaches also
+lack closed-loop, input-adaptive emotion control, or the abil-
+ity to track the speaker’s current affect and shift it dynamically
+(e.g., neutralizing, attenuating, or amplifying emotion).
+We present DECRA (Dynamic Emotion Control for Real-
+time Speech Anonymization), a causal, low-latency, streaming
+1Demo:https://ghadynasrallah.github.io/
+decra-demo
+emotion VC system. Unlike prior approaches that operate at
+the utterance level, DECRA enables fine-grained, time-varying
+prosody control using continuous valence-arousal trajectories.
+To enable simultaneous anonymization and emotion control,
+DECRA uses parallel speaker and emotion encoder branches.
+The system uses adversarial learning to disentangle timbre and
+emotion, allowing VC through the speaker branch while manip-
+ulating expressive prosody independently through the emotion
+branch. To enable emotion control at scale, we use large natu-
+ral speech corpora by generating pseudo valence–arousal labels
+with an offline SER model, encouraging more realistic (non-
+exaggerated) prosody, instead of relying on small acted emotion
+corpora (e.g., ESD [3]). This setup makes our training pipeline
+applicable to any dataset without emotion annotationsandim-
+proves generalization of VC to unseen speakers, which remains
+a challenge for prior emotion VC models [4].
+The main contributions of this work are: (1)Simultaneous
+voice/emotion conversion:A streaming system that can per-
+form voice and emotion conversion simultaneously with fine-
+grained control of voice timbre and continuous valence/arousal
+levels; (2)Dynamic emotion control: An integrated causal
+streaming module that predicts frame-wise valence and arousal
+trajectories online, enabling closed-loop emotion control during
+streaming inference; and (3)Scalability: A training pipeline
+that does not require speech corpora with emotion annotations
+thusimproving generalization to unseen speakers, which re-
+mains a challenge for existing emotion VC models.
+2. Related Work
+Anonymization and VC.Recent speech anonymization work
+[1] approach the problem through learning-based voice con-
+version (VC) that explicitly separates linguistic content from
+speaker identity. These systems (e.g., DarkStream [5], TVTSyn
+[6]) extract content representations from self-supervised speech
+models, e.g., HuBERT [7], often with bottlenecks (e.g. VQ
+[8]) to suppress speaker/style cues. Synthesis is then condi-
+tioned on speaker embeddings (e.g. x-vectors [9], ECAPA-
+TDNN [10]) to select a target pseudo-speaker.However, these
+streaming systems lack explicit prosody control or the ability
+to disentangle dynamic attributes (e.g. emotion) from static
+speaker traits.
+Emotion VC.EVC methods rely on neural models that di-
+rectly learn emotion conversion in a non-parallel fashion using
+autoencoder-style frameworks. In GAN-based models such as
+StarGAN-EVC [11], control is often limited to discrete emo-
+tion labels rather than continuous intensity. Later work in-
+troduced explicit control over emotion strength with discrete
+emotion labels. EmoV ox [12] learns emotion intensity via
+relative-attribute (ranking), while EmoReg [13] regulates inten-
+sity by shifting self-supervised emotion embeddings along un-
+4271
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2927
+Figure 1:(a) Training and (b) inference architecture of the pro-
+posed system (DECRA)
+supervised direction vectors in the emotion embedding space.
+More recent end-to-end models such as PA VITS [14] condi-
+tion prosody on continuous valence-arousal (V/A) coordinates
+instead of categorical labels to support smooth emotion con-
+trol, and have adopted flow matching [15] generators (e.g.
+VEVO [16]) for higher fidelity and better emotion coverage.
+However, most EVC systems operate offline, rely on global
+utterance-level conditioning, cannot provide time-varying emo-
+tion control in response to a speaker’s evolving prosody, and
+lack the ability to perform voice and emotion conversion simul-
+taneously, which the work presented here aims to address.
+3. Methods
+DECRA is a streaming VC model with time-varying emotion
+control that can predict and adjust a speaker’s emotional state
+through V/A controls, while either preserving or anonymizing
+the original speaker identity under real-time constraints –see
+Figure 1. Using TVTSyn [6] as the VC backbone, DECRA uses
+a content encoder to extract linguistic tokens and a speaker en-
+coder to generate time-varying timbre (TVT) embeddings con-
+ditioned on both a global speaker embedding and the content
+tokens. DECRA uses adversarial training to reduce emotion
+leakage into the speaker embedding. Emotion is controlled via
+a closed-loop feedback mechanism: a causal speech emotion
+recognition (SER) head attached to the content representations
+provides online predictions ofE(t) = [V(t),A(t)], which are
+fed back to the emotion controller to support streaming synthe-
+sis. Finally, a waveform decoder synthesizes the output speech.
+3.1. TVTSyn backbone
+Content encoder. TVTSyn converts input speech into a se-
+quence of 512-dim frame-level content embeddings (tokens)
+designed to preserve linguistic information while suppressing
+speaker cues.2 A factorized vector-quantized (VQ) bottleneck
+is applied to further remove residual speaker information and
+2The encoder is a causal 1-D CNN with four strided downsampling
+stages (stride ratios 8, 5, 4, 2), resulting in an overlap hop size of 320
+samples ( 20 ms at 16 kHz), followed by a stack of 8 causal multi-head
+self-attention (MHSA) blocks with a fixed 2 s look-back window and a
+limited look-ahead context (up to 80 ms) for improved coarticulation.
+regularize the content space.
+Speaker encoder. TVTSyn models speaker identity as a time-
+varying timbre (TVT) sequence{s t}conditioned on the se-
+quence of content tokens. The model projects a 704-dim global
+speaker embeddingg(concatenated x-vector [9] and ECAPA-
+TDNN [10]) into a Global Timbre Memory (GTM) withK=
+48key-value slots{(k i,v i)}48
+i=1. Each slot is parameterized as
+the sum of a speaker-dependent component produced by MLPs
+and a learnable prototype prior:
+ki = MLP k(g)i +k prior
+i , v i = MLP v(g)i +v prior
+i .(1)
+At each framet, the content embeddingc t attends over{k i}
+to retrieve a context-dependent timbre vectorv t. To model
+per-frame deviations from the global identity, it interpolates be-
+tweengand the GTM-retrieved vectorv t using Slerp. A gating
+network predictsα t∈[0,1]to yield a time-varying smooth tim-
+bre trajectorys t = Slerp(g,v t;α t). For more details, please
+refer to the original paper [6].
+3.2. Emotion neutralization and conditioning
+To reduce emotion leakage, DECRA uses an MLP projector
+with a residual skip connection to map the global speaker em-
+beddingginto an emotion-free timbre subspace. The projec-
+tor is trained with a dual objective: end-to-end reconstruction
+through a waveform decoder, and an adversarial loss where
+an MLP V/A regressor with gradient reversal is attached to
+the projected speaker embedding to suppress emotion infor-
+mation. Emotion information is explicitly provided back to
+the decoder through the V/A conditioning signal to allow self-
+reconstruction. The adversarial regressor is supervised using
+utterance-level V/A pseudo-labels from an external offline SER
+model [17]; the resulting projected embedding is then used to
+generate GTM-based TVT embeddings.
+To enable smooth control, we use continuous valence–
+arousal (V/A) levels3 instead of discrete labels (e.g., angry, sad).
+Since our goal is time-varying emotion control under streaming
+constraints, we condition the model on a V/A trajectory rather
+than a single utterance-level estimate. Following [18], we use
+an external offline SER model [17] to generate V/A pseudo-
+labels over time. We compute a V/A sequence with a hop size
+of 250 ms and a context window of 500 ms. The resulting V/A
+sequence is projected to a 32-D conditioning embedding using
+a1×1Conv1D (i.e., a position-wise linear layer). We then lin-
+early interpolate the conditioning sequence to match the 20 ms
+frame rate of the content and TVT embeddings, and concatenate
+it with the decoder conditioning to guide waveform generation.
+3.3. Causal emotion control
+To enable streaming emotion control, we attach a causal SER
+head to content encoder features before the VQ bottleneck and
+perform frame-level V/A regression. The SER head is a fully
+causal 1-D CNN with three layers (kernel size5) and dilations
+{1,2,4}, each followed by ReLU. With a 20 ms frame hop, this
+stack has a receptive field of29frames (∼580ms) using only
+past context (no look-ahead). A final linear layer maps CNN
+outputs to per-frame V/A predictions, which are used as the on-
+line emotion control signal. The SER head is supervised using
+per-frame V/A pseudo-labels with Huber loss. We also apply
+a first-order temporal smoothness regularization loss to encour-
+age stable predictions in adjacent frames.
+3The third dimension in the Circumplex model (Dominance) is
+highly correlated with arousal, so we only use valence and arousal.
+4272
+Table 1:Subjective A/B emotion classification accuracy
+Direction Class Accuracy (%)±SD
+Emotion→Neutral Angry→Neutral 92.5±13.9
+Happy→Neutral 91.7±11.4
+Sad→Neutral 40.9±18.2
+Neutral→Emotion Neutral→Angry 84.2±24.7
+Neutral→Happy 63.8±22.7
+Neutral→Sad 91.7±15.5
+3.4. Waveform decoder
+The waveform decoder reconstructs speech from the condi-
+tioned latent sequence in a streaming fashion. Conditioning
+incorporates both time-varying timbre and emotion. Lets∈
+RB×192×T denote the (emotion-disentangled) TVT speaker
+embeddings and lete∈R B×32×T denote the interpolated V/A
+conditioning embeddings. We form a joint conditioning se-
+quenceu= [s;e]and apply a Conditional Layer Normalization
+with Fusion module. Given latent featuresx∈R B×512×T ,
+the module normalizesx, predicts per-frame affine parameters
+(γt,β t)fromu t, and fuses a gated, normalized version ofu t:
+yt = Proj
+
+(1 +γ t)·Norm(x t) +β t∥gt·Norm(u t)
+
+,(2)
+Rest of the decoder design follows exactly as TVTSyn. The
+decoder is optimized using an objective that combinesL 1
+multi-resolution mel-reconstruction, multi-period and multi-
+band adversarial discriminators, a feature-matching term, and
+L2F0/energy prediction losses.
+4. Results
+4.1. Experimental setup
+Speech corpora. We train on a mixture of LibriTTS [19] and
+Natural V oices EVC subset [20]. We use the LibriTTS train
+subset for training and dev for validation. For Natural V oices,
+we use a 90/10 train/validation split. Pre-trained speaker en-
+coders are taken from SpeechBrain [21] trained on V oxCeleb
+[22]. We evaluate emotion control on the ESD [3] corpus.
+Model configuration. All modules are trained with
+AdamW (lr of10 −4 and batch size of16). We use ReduceL-
+ROnPlateau for the content encoder and ExponentialLR for
+the waveform decoder (γ= 0.999996). The content encoder
+and waveform decoder contain 37.5M and 52.5M parameters,
+respectively, and are trained separately for 500k steps on an
+NVIDIA RTX 5000 Ada GPU. The GRL coefficient is expo-
+nentially ramped from 0 to 1 during training.
+4.2. Emotion neutralization
+To evaluate emotion neutralization, we convert expressive
+(emotional) source utterances in the ESD corpus to neutral us-
+ing within-speaker reference utterances randomly sampled from
+the speaker’s neutral subset (i.e., source and reference utter-
+ances have different content). For each source utterance, we
+obtain a target V/A trajectory with the pre-trained SER model
+[17], apply linear interpolation to match the duration of the
+source utterance, and condition on the speaker embedding from
+the source utterance. Figure 2(a) shows the V/A estimates on
+original ESD utterances (one point per utterance), whereas Fig-
+ure 2(b) shows the corresponding V/A estimates after emotion
+neutralization. As shown, emotion-neutralized utterances clus-
+ter more tightly and overlap around the center of the V/A space,
+indicating effective emotion neutralization.
+Objective evaluation. To quantify how effectively the sys-
+tem steers emotion in the V/A space, we compute the change
+(i) from source to target V/A at the utterance-level, and (ii)
+from source to synthesized speech, and compare them using
+the concordance correlation coefficient (CCC) for valence and
+arousal. In addition, we measure intelligibility via word er-
+ror rate (WER) using Whisper [24], speaker similarity as the
+cosine between speaker embeddings (concatenated ECAPA-
+TDNN + x-vectors), and overall quality using NISQA-MOS
+[25]. We compare against three baselines, SeedVC [23], Vevo
+[16, 26, 27], and TVTSyn [6].
+Results from the objective evaluation are summarized in Ta-
+ble 2. Our model achieves the overall best emotion steering
+agreement (CCC A/CCCV) with the target V A changes among
+all baselines, with consistently higher agreement for arousal
+than valence. It remains comparable in intelligibility and
+speaker similarity, and while NISQA is lower for TVTSyn than
+for the offline baselines due to streaming constraints, we ob-
+serve no significant additional degradation with our model.
+Listening tests. We corroborate emotion neutralization re-
+sults with a subjective A/B listening test. For each trial, partici-
+pants (N=24) listened to a pair of synthesized utterances (TVT-
+Syn, backbone without emotion neutralization, vs. DECRA)
+and were asked to select which sample sounded more neutral.
+As shown in Table 1, listeners consistently rated DECRA as
+more neutral than TVTSyn for angry and happy to neutral. In
+contrast, sad to neutral yields lower accuracy, likely due to sub-
+stantial perceptual overlap between sad and neutral speech and
+a bias to judge low-arousal speech as more neutral.
+We also conducted a MOS listening test on (i) original ESD
+recordings, (ii) resynthesized speech from TVTSyn, and (iii)
+from DECRA across emotion neutralization and conversion.
+We observe a significant drop in MOS ratings from original
+speech (4.59±0.34) to either system. However, MOS ratings
+for TVTSyn (3.06±0.44) and DECRA (3.02±0.43) are nearly
+identical. Thus, it is the streaming nature of DECRA,and not
+its emotion control capabilities, that degrades synthesis quality.
+4.3. Emotion conversion
+We also evaluated the ability of DECRA to perform emotion
+conversion from neutral source utterances to expressive speech.
+We follow the same experimental setup of Sec. 4.2, but use
+within-speaker expressive reference utterances to extract tar-
+get V A trajectories and guide synthesis toward angry, happy,
+and sad emotions. Objective results are summarized in Table 2.
+Our model improves emotion steering compared with the base-
+lines, with arousal agreement being much stronger than valence,
+while maintaining comparable intelligibility and speaker simi-
+larity. As in emotion neutralization, NISQA is lower than the
+offline baselines, which we attribute to streaming constraints.
+Perceptual listening tests shown in Table 1 corroborate these
+trends. Participants were asked to listen to a pair of synthesized
+utterances (TVTSyn without emotion control, vs. DECRA) and
+select which sample sounds more like the target emotion. They
+consistently rated DECRA as more expressive than TVTSyn, al-
+though conversion to the happy subspace was weaker, which is
+likely due to weaker valence separability in the original V A sub-
+space and correspondingly weaker valence control. Figure 2(c-
+d) further illustrates these results when converting source utter-
+ances into the angry and sad emotional subspaces. In both cases,
+utterances from all original emotions cluster tightly in the target
+V/A regions: higher arousal for angry and lower arousal for sad.
+4.4. Dynamic emotion control
+To show DECRA’s ability to control emotion dynamically, we
+condition the model on two time-varying arousal targetsA(t)
+that increase arousal linearly (from 0.2 to 0.8) and decrease it
+4273
+Table 2:Objective evaluation for emotion neutralization and emotion conversion.NOTE: DECRA uses a small look-ahead<80
+ms, whereas SeedVC and Vevo are non-causal (i.e., they process complete utterances off-line), which explains their higher synthesis
+quality. For this reason, we also include TVTSyn as a baseline, though it does not support emotion control. Moreover, SeedVC does not
+disentangle speaker identity and style, which makes emotion control easier but (unlike DECRA) prevents independent control of both.
+Emotion Neutralization Emotion Conversion
+Method WER (%)↓Spk Sim↑NISQA↑CCC A↑CCC V↑WER (%)↓Spk Sim↑NISQA↑CCC A↑CCC V↑
+SeedVC [23] 12.7 0.71 4.72 0.75 0.40 11.9 0.70 4.64 0.69 0.13
+Vevo [16] 12.3 0.83 4.45 0.43 0.31 11.6 0.84 4.45 0.18 0.13
+TVTSyn [6] 14.1 0.82 3.86 - - 11.6 0.83 4.11 - -
+DECRA14.0 0.82 3.78 0.81 0.37 11.5 0.84 3.87 0.74 0.14
+Figure 2:Visualization of valence/arousal (V/A) transforma-
+tions: (a) original speech, (b) neutralized speech, (c) conver-
+sion to angry, and (d) conversion to sad.
+Figure 3:Dynamic arousal control with linear ramp targets.
+(from 0.8 to 0.2) over time, while keeping valence constant. For
+each synthesized sample, we estimate an arousal trajectory ˆA(t)
+using the SER model. Figure 3 shows two representative ex-
+amples. In both cases, the predicted trajectory ˆA(t)follows
+the overall trend of the target ramp, indicating that the model
+responds to time-varying control signals. To quantify this be-
+havior, we repeated the experiment on 200 utterances and com-
+puted the (per-utterance) average Pearson correlation between
+targetA(t)and (i) predicted arousal ˆA(t), (ii) pitch contour,
+and (iii) energy contour. We obtain correlations of 0.78 forA(t)
+vs. ˆA(t), 0.72 forA(t)vs. pitch, and 0.69 forA(t)vs. energy.
+We repeated the experiment for valence and obtained a correla-
+tion of 0.21 betweenV(t)and ˆV(t). These results suggest that
+DECRA reliably tracks time-varying arousal, consistent with
+prosodic cues (pitch and energy). Valence, on the other hand, is
+harder to control compared to arousal.
+4.5. Speaker anonymization
+Following the VPC’24 protocol, we also report anonymiza-
+tion performance using equal-error-rates (EER) under the lazy-
+informed attacker model. We also report WER for intelligibil-
+ity and UAR to quantify emotion preservation. Since VPC’24
+targets privacy while preserving emotions, we condition our
+streaming decoder on the time-varying V A trajectory predicted
+by our causal SER model to preserve the emotional character-
+istics of the source speech. For anonymization, we generate a
+random target speaker embedding using a GAN model–see [5].
+Results are shown in Table 3. We compare against four
+streaming VC (anonymization) baselines, SLT’24 [28], Dark-
+Stream [5], GenVC [29], and TVTSyn [6]. Overall, DE-
+CRA provides strong anonymization, achieving a substantially
+higher EER than SLT’24 and remaining close to the other three
+anonymization baselines. However, DECRA preserves emotion
+substantially better than the three baselines, reflecting the ben-
+efit of our causal SER model. Although SLT’24 achieves bet-
+ter emotion preservation (higher UAR), it does so with much
+weaker anonymization (lower EER), highlighting the privacy-
+utility trade-off and DECRA’s more favorable balance. DECRA
+also maintains high intelligibility with the lowest WER.
+Table 3:VPC’24 evaluation results
+Model WER (%)↓EER (lazy-informed)↑UAR (emotion)↑
+SLT24 5.70 31.40 57.00
+DarkStream 10.80 49.09 34.39
+GenVC-s 8.20 48.4 34.23
+TVTSyn 5.35 47.55 37.32
+DECRA4.90 46.64 48.70
+4.6. Streaming Efficiency
+We evaluate streaming with 60 ms chunks on a GPU. Latency is
+measured per chunk as the sum of chunk duration and compute
+time, and RTF as compute time divided by audio duration. We
+obtain 76.1 ms latency and 0.268 RTF.
+5. Discussion
+We propose DECRA, a causal streaming voice-conversion sys-
+tem that supports real-time anonymization and closed-loop, dy-
+namic emotion control by conditioning synthesis on continuous
+valence–arousal (V A) trajectories predicted online by a causal
+SER head, while disentangling speaker identity from emotion
+via adversarial learning. DECRA is streamable end-to-end with
+<80ms GPU latency and achieves improved V A-space emo-
+tion steering agreement over SOTA baselines. Experiments fur-
+ther demonstrate dynamic, mid-utterance control in streaming
+inference, where time-varying targets are tracked by the syn-
+thesized speech. One limitation is that valence control tends
+to be less reliable than arousal control, consistent with known
+SER difficulties and the fact that valence is often entangled with
+linguistic content [17]. Future work will explore more fine-
+grained emotion control using richer emotion embeddings (e.g.,
+from SSL models) with explicit disentanglement from content
+and speaker representations.
+4274
+6. Acknowledgments
+Supported by the Intelligence Advanced Research Projects Ac-
+tivity (IARPA) via Department of Interior/Interior Business
+Center (DOI/IBC) contract number 140D0424C0066. The U.S.
+Government is authorized to reproduce and distribute reprints
+for Governmental purposes notwithstanding any copyright an-
+notation thereon. Disclaimer: The views and conclusions con-
+tained herein are those of the authors and should not be inter-
+preted as necessarily representing the official policies or en-
+dorsements, either expressed or implied, of IARPA, DOI/IBC,
+or the U.S. Government.
+7. Generative AI Use Disclosure
+LLMs were used only for language edi

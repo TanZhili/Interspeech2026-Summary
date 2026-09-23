@@ -1,0 +1,505 @@
+RAS: a Reliability Oriented Metric for Automatic Speech Recognition
+Wenbin Huang ID 1,∗, Yuhang Qiu ID 1,∗, Bohan Li ID 1, Yiwei Guo ID 1, Jing Peng ID 1, Hankun Wang ID
+1, Xie Chen ID 1, Kai Yu ID 1,∗∗
+1 X-LANCE Lab, School of Computer Science, Shanghai Jiao Tong University, China
+1 MoE Key Lab of Artificial Intelligence; Jiangsu Key Lab of Language Computing, China
+{hartmann psi, qiuyuhang, kai.yu}@sjtu.edu.cn
+Abstract
+Automatic speech recognition systems often produce confi-
+dent yet incorrect transcriptions under noisy or ambiguous con-
+ditions, which can be misleading for both users and downstream
+applications. Standard evaluation based on Word Error Rate fo-
+cuses solely on accuracy and fails to capture transcription reli-
+ability. We introduce an abstention-aware transcription frame-
+work that enables ASR models to explicitly abstain from un-
+certain segments. To evaluate reliability under abstention, we
+propose RAS, a reliability-oriented metric that balances tran-
+scription informativeness and error aversion, with its trade-off
+parameter calibrated by human preference. We then train an
+abstention-aware ASR model through supervised bootstrapping
+followed by reinforcement learning. Our experiments demon-
+strate substantial improvements in transcription reliability while
+maintaining competitive accuracy.
+Index Terms: speech recognition, reliability, abstention, selec-
+tive prediction, uncertainty modeling
+1. Introduction
+Modern automatic speech recognition (ASR) systems achieve
+high accuracy in clean acoustic conditions, yet they often still
+produce superficially fluent transcripts in the presence of noise,
+overlapping speech, signal degradation, or low-resource set-
+tings. These outputs are frequently the result of forced decoding
+under weak acoustic evidence, yielding errors that appear confi-
+dent rather than explicitly uncertain. Suchplausible-but-wrong
+transcriptions can mislead downstream decision-making. Un-
+der ambiguous acoustics, neither humans nor language models
+can always make reliable corrections. And, due to their read-
+ability, may further reduce human vigilance during review. The
+risk is especially acute in high-stakes applications with stringent
+transcription requirements, such as medical documentation and
+legal records. However, dominant evaluation paradigms do not
+adequately characterize this failure mode.1
+While abstention (i.e., learning with a reject option) and se-
+lective prediction have been shown to improve reliability in ma-
+chine learning by explicitly trading coverage for reduced risk
+[1, 2, 3, 4, 5, 6], these approaches typically operate at the in-
+stance level, rejecting entire utterances. This is unsuitable for
+ASR, where discarding a whole sentence eliminates valuable
+partial information. A related line of work, ASR confidence
+estimation [7, 8, 9, 10, 11] constitutes a viable avenue for ad-
+dressing this issue. However, most existing methods still fol-
+*These authors contributed equally.
+**indicates the corresponding author.
+1Code available at:https://github.com/HartmannPsi/
+Reliability-Aware-Score
+Figure 1:Conventional v.s. abstention-aware hypothesis.
+low a two-stage, post-hoc paradigm: they produce transcrip-
+tions first and subsequently assign uncertainty scores as a sep-
+arate metadata layer. Such implicit modeling lacks an inter-
+nal mechanism for the model to actively “opt-out” of unreli-
+able segments. Meanwhile, standardWord-Error-Rate(WER)
+[12, 13] and its edit-distance variants[14, 15, 16], as well as
+semantic metrics[17, 18, 19], all implicitly assume forced tran-
+scription and do not explicitly model abstention or reliability
+under selective prediction. Consequently, these metrics cannot
+assess whether an ASR system makes an appropriate trade-off
+between informativeness and reliability under uncertainty.
+In this work, we argue that reliable ASR should be able to
+to explicitly abstain from localized uncertain predictions. We
+introduce a fine-grained abstention paradigm that augments the
+output space with a dedicated placeholder, as shown in Figure 1.
+Unlike full-sentence rejection, our approach allows the model
+to selectively abstain on ambiguous segments while transcrib-
+ing the remaining content with high commitment. This transi-
+tion from passive scoring to active, fine-grained abstention al-
+lows downstream modules to treat these placeholders as miss-
+ing information rather than misleading hallucinations. To evalu-
+ate this paradigm, we proposeReliability-AwareScore (RAS),
+a novel metric derived from a modified edit distance that ac-
+counts for placeholder marks. RAS explicitly balances tran-
+scription usefulness and error aversion through a trade-off hy-
+perparameter calibrated via human listening tests. This provides
+a principled objective for both the evaluation and optimization
+of reliability-aware ASR.
+We further demonstrate the practical utility of our frame-
+work by developing an abstention-aware Whisper [20] model.
+By employing a two-stage training pipeline—comprising super-
+vised bootstrapping followed by reinforcement learning (RL)
+[21] using RAS as the reward—we significantly enhance system
+reliability. Experimental results demonstrate that our approach
+substantially improves transcription trustworthiness, particu-
+larly in low-resource and noisy conditions, while maintaining
+competitive accuracy. Our main contributions are summarized
+as follows:
+• We extend selective prediction to sequential ASR, enabling
+segment-level abstention instead of full-utterance rejection.
+• We propose RAS, a reliability-oriented metric calibrated with
+human preference data to quantify the trade-off between in-
+formativeness and error aversion.
+958
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1409
+• We establish a robust training pipeline combining supervised
+learning and RL, which significantly elevates the reliability
+of ASR models in challenging acoustic environments.
+2. Reliability-Aware Score
+To equip ASR models with explicit rejection capability, we ex-
+tend the original vocabulary with a special placeholder mark
+PH. Unlike ordinary lexical words, thePHrepresents ab-
+stention: when the model encounters low-quality or ambiguous
+speech and cannot reliably determine the underlying content, it
+outputsPHto indicate uncertainty rather than producing a po-
+tentially misleading guess. With the introduction ofPH, we
+now modify the standard WER into RAS, an abstention-aware
+metric, calculated by a proposed dynamic programming formu-
+lation that extends the definition of standard edit distance [14].
+2.1. Dynamic programming formulation
+Let the reference textrefof lengthN >0contains noPHs,
+while the hypothesishypof lengthMmay containPHs. Let
+ri andhj denote thei-th andj-th words (0-indexing) fromref
+andhyp, respectively. Unlike standard edit distance, a single
+PHmay align to zero or multiple consecutive reference words,
+reflecting abstention over an uncertain acoustic segment. Con-
+secutivePHs are merged to avoid redundancy.
+When extending the definition of edit distance, it is inap-
+propriate to treat errors introduced byPHs in the same manner
+as ordinary word errors. Although failing to provide useful in-
+formation, aPHdoes not assert an incorrect lexical item and
+therefore avoids introducing potentially misleading content. In
+this sense,PH-related errors are comparatively less harmful
+and more reliability-preserving. To reflect this distinction, we
+assign a cost factorα∈(0,1)to allPH-related operations.
+We therefore definegα
+i,j as the minimum weighted edit distance
+fromref[0:i)tohyp[0:j)under an abstention-aware alignment
+scheme, with boundary conditions:
+gα
+0,0 = 0, g α
+i,0 =i, g α
+0,j =
+j−1X
+t=0
+(
+1, h t̸=PH,
+α, h t =PH, (1)
+and define the transition as the minimum of three potential
+costs:
+gα
+i,j = min{Sub,Del,Ins},(2)
+where
+Sub=
+(
+gα
+i−1,j−1 +Iri−1̸=hj−1, h j−1̸=PH
+min
+0≤k<i
+{gα
+k,j−1 +α(i−k)}, h j−1 =PH ,(3)
+Del=g α
+i−1,j + 1,(4)
+Ins=
+(
+gα
+i,j−1 + 1, h j−1̸=PH
+gα
+i,j−1 +α, h j−1 =PH ,(5)
+which corresponds to standard edit operations whenh j−1 ̸=
+PH, but introduces a flexible alignment forPHs. When
+hj−1 =PH, the substitution term Sub allowsPHto align
+with an arbitrary-length segmentr [k:i) in the reference, effec-
+tively “absorbing”i−kdeletions at a discounted cost ofαper
+word. This corresponds to a many-to-one mapping wherePH
+covers a contiguous span of uncertain content. When noPH
+appears inhyp, the formulation reduces exactly to standard edit
+distance. We further define the weighted edit distance fromref
+tohypasg α(ref,hyp) :=g α
+N,M , computed inO(N 2M)time.
+Figure 2:Relationship between WER and RAS under different
+αsettings on LibriSpeech-test-clean [22] (Base+PH-Supv+RL)
+as in Section 4.4. Each point corresponds to one utterance.
+2.2. Beyond WER: The definition of RAS
+From the optimal DP alignment, we obtain the counts of correct
+matchesC(ref,hyp)andg α(ref,hyp). Inspired by existing util-
+ity formulations for reliability-aware decision making in NLP
+[23], we define RASR(ref,hyp)as:
+R(ref,hyp) =Usefulness−Cost,(6)
+where usefulness measures the proportion of correctly tran-
+scribed words, and cost penalizes alignment errors with differ-
+ential weighting as described in Section 2.1:
+Usefulness= C(ref,hyp)
+N ,Cost= gα(ref,hyp)
+N ,(7)
+withα∈(0,1). This formulation directly balances informa-
+tive content against erroneous commitments under the proposed
+alignment. It has a maximum of 1, and a higher RAS implies a
+more reliable and useful ASR model. When noPHappears in
+hyp, RAS reduces to be similar to standard WER:
+R(ref,hyp) = 1− 2(S+D) +I
+N ,(8)
+WER(ref,hyp) = S+D+I
+N ,(9)
+both RAS and WER are monotonic functions of the total num-
+ber of word errors(S+D+I). Therefore, in the absence
+ofPHs, maximizing RAS is equivalent to minimizing WER in
+terms of optimization direction. The proposed objective holds a
+clear negative correlation with WER as shown in Figure 2.
+In practice,αshould be calibrated to align with human pref-
+erences over reliability in specific application contexts, rather
+than selected heuristically.
+2.3. Human preference alignment via listening tests
+Listening tests were conducted using the BeaqleJS framework
+[24]. For each audio samplei, participants were presented with
+the ground-truth transcript (G i) and two simulated ASR out-
+puts: a conventional transcription withoutPHs (A i) and an
+abstention-aware transcription (Bi). TranscriptionB i was con-
+structed by replacing recognition errors inA i withPHs and
+additionally masking a small fraction of correct words to sim-
+ulate conservative abstention. Participants were asked to select
+the transcription they considered more reliable, with an addi-
+tional “Can’t Decide” option.
+We estimateαfrom collected human preferences. Let the
+number of audios beK. For each audioi, letk A
+i ,k B
+i , and
+kC
+i denote the numbers of subjects preferring conventional tran-
+scriptionA i, abstention-aware transcriptionB i, and indicating
+959
+ygt: chronic disease of hair follicles and sebaceous gland
+yhyp: the chronic disease of her and spoculus gland
+type: Insert Match Substitute Delete Match Substitute Match
+yph: <ph> chronic disease of <ph> <ph><ph><ph> and <ph><ph><ph> gland
+Figure 3:Strategy for generating Stage 1y ph. Incorrectly pre-
+dicted segments are replaced withPH.
+indifference, respectively, withs i =k A
+i +k B
+i +k C
+i . Let
+Pi denote the probability of human preferringB i for audioi,
+andR,C,g α,Nhave the same meanings as in Section 2.2.
+We use notation∆M i :=M(G i,Bi)−M(G i,Ai)where
+M∈ {R,C,g α}. Following the Bradley–Terry model [25],
+Pi is modeled as a function of∆R i. Note thatR(G i,Ai),
+R(Gi,Bi)share the same denominator:
+Pi =σ(∆R i) =σ
+ 1
+Ni
+(∆Ci−∆gα
+i )
+
+,(10)
+whereσ(·)denotes the logistic function. We define the prefer-
+ence likelihood loss and incorporate indifference responses as
+a regularization encouraging small RAS differences. The final
+objective is the weighted sum of the two:
+Lpref =− 1
+K
+X
+i
+kB
+i
+si
+logPi + kA
+i
+si
+log(1−P i)
+
+,(11)
+Ltie = 1
+K
+X
+i
+kC
+i
+si
+·(∆Ri)2,(12)
+α∗ = arg min
+α∈(0,1)
+Lpref +λ·L tie,(13)
+whereλcontrols the strength of the indifference constraint.
+This formulation enables robust calibration ofαto align the
+proposed RAS with human reliability preferences.
+3. Training Abstention-Aware ASR
+Our training pipeline is designed in two consecutive stages to
+enhance the model’s uncertainty awareness and self-correction
+capabilities.
+3.1. Stage 1: placeholder supervision (PH-Supv)
+The primary objective of this stage is to construct a dataset that
+guides the base model to identify and flag prediction errors.
+3.1.1. Training set construction
+Given an audio inputaand its ground truth transcriptiony gt,
+we first conduct inference using the base modelMto generate
+a hypothesisy hyp. To locate recognition errors, we aligny hyp
+withygt using the standard Word Error Rate (WER) calculation.
+This alignment yields a sequence of operations, where each
+operation is one of{Match, Substitute, Insert, Delete}. We de-
+fine a GT-guidedPH-replacement sequencey ph, constructed
+from these operations as follows:
+Match:The corresponding text iny hyp is retained inyph.
+Substitute / Insert:The erroneous text segmentt err iny hyp
+is replaced by the special tokenPH. To maintain relative se-
+quence length, the number ofPHtokens is determined by the
+tokenizerTof the base model. Specifically, we insertNtokens
+ofPH, whereN=|T(t err)|.
+Delete:In this case,y hyp omits text present iny gt. We insert
+PHtokens intoy ph corresponding to the missing text segment
+tmiss fromygt. Similar to the above, the number ofPHtokens
+is set toN=|T(t miss)|.
+Figure 3 shows an example of the process above. This pro-
+cess results in a refined training set consisting of pairs(a,y ph).
+3.1.2. Model training
+Prior to training, we expand the vocabulary of the base model
+Mto include the new tokenPH, ensuring that the tokenizer
+treats it as a single, indivisible token. The model is then fine-
+tuned on the constructed dataset using the same ASR objective
+asM. In this work, we employ Whisper [20] as the base model
+M, and thus use a cross entropy objective in this stage.
+3.2. Stage 2: group relative policy optimization (RL)
+Once the model acquires the capability to outputPH, we em-
+ploy Group Relative Policy Optimization (GRPO) [26] algo-
+rithm to optimize its output policy, using utterance-level RAS
+proposed in Section 2.2 as the reward signal. Specifically, for
+each input promptq, GRPO samples a group ofGoutputs
+{o1,o 2,...,o G}from the current policyπ θold. Each output
+oi is evaluated by the RAS reward function to obtain a re-
+wardr i. The group-relative advantage is then computed as:
+ˆAi =
+ri−mean({rj}G
+j=1 )
+std({rj}G
+j=1 ) .The policy is optimized by maximiz-
+ing the following objective:
+LGRPO(θ) =E
+
+ 1
+G
+GX
+i=1
+1
+|oi|
+|oi|X
+t=1
+
+ˆLi,t−βD i,t
+KL
+
+
+,(14)
+ˆLi,t = min
+n
+ρi,t ˆAi,clip(ρ i,t,1−ϵ,1+ϵ) ˆAi
+o
+,(15)
+whereρ i,t =
+πθ (oi,t|q,oi,<t)
+πθold (oi,t|q,oi,<t) is the importance sampling ra-
+tio,ϵis the clipping parameter, andD i,t
+KL is the per-token KL
+divergence against the reference policyπ ref as defined in [26].
+4. Experiments
+4.1. Datasets
+We conduct experiments on two datasets: LibriSpeech [22], a
+widely used English audiobook corpus, and the TALCS Cor-
+pus [27], an English-Mandarin code-switching dataset. For Lib-
+riSpeech, we utilize train-clean-360 for training and test-clean
+for evaluation. To assess ASR reliability under adverse acous-
+tic conditions, we simulate a noisy variant (Noisy LibriSpeech)
+by injecting Additive White Gaussian Noise on the total dura-
+tion of original audio samples. Four distinct train and test sub-
+sets were generated with Signal-to-Noise Ratios (SNRs) fixed at
+{0,5,10,20}dB, respectively. For all other datasets, we adhere
+to the official training, development, and test partitions.
+4.2. Evaluation metric and human alignment results
+We adopt RAS (defined in Section 2.2) as our evaluation crite-
+rion, withαestimated by human alignment listening test. The
+test design follows Section 2.3. Audio samples were manu-
+ally selected from the Medical ASR Recording Dataset [28]
+(173 samples) and the AMI Corpus [29] (191 samples), cover-
+ing terminology-intensive medical speech and noise-corrupted
+conversational speech. For each sample, two transcript variants
+were constructed as described.
+After validity filtering, 980 preference annotations were
+collected from 42 participants. The human oracle upper bound,
+computed via majority voting and annotator agreement with the
+consensus, reached 78.11%, indicating strong inter-annotator
+consistency. Withλ= 0.1(corresponding to a low tie rate
+of 6.63%), minimizing the objective in Equation (13) yields
+960
+Figure 4:RAS on Noisy LibriSpeech.
+α= 0.5064and an average RAS gap of∆U= 0.0461, demon-
+strating alignment between the proposed RAS formulation and
+human reliability judgments.
+4.3. Experimental setup
+We use the following experiment notations:
+Base & Base+Logit: We use Whisper-Tiny as the baseline
+(Base). Base+Logit, which can be considered as a confidence
+baseline, applies logit-basedPH-replacement using token-level
+confidence aggregated multiplicatively (word-level for English;
+character/word-level for Chinese), following official Whisper
+heuristics2. For each dataset, we replace tokens below a confi-
+dencebarwithPH, tuningbar(typically in[0.1,0.3]) to max-
+imize RAS.
+Base+PH-Supv: This stage usesPHreplacements from Base
+predictions on the training set (details in Section 3.1). We
+fine-tune the decoder and embeddings for 8 epochs using
+AdamW [30] with a batch size of 64, a1.0×10 −5 learning
+rate, 1,000 warmup steps, and linear decay.
+Base+PH-Supv+RL: Initialized from Base+PH-Supv, we fur-
+ther optimizePHsupervision via GRPO (Section 3.2). We un-
+freeze the decoder/embeddings and train with a global batch
+size of 64. For each prompt,G= 8responses are sampled (512
+samples/step) using temperature 0.7 and top-p0.95. We employ
+an adaptive KL penalty [31] withβ 0 = 0.2, updated every 50
+steps:β t+1 =β t exp(η(KLt−KL target)), whereη= 0.02and
+KLtarget = 30. We use the Adam optimizer [32] with a2×10−6
+peak learning rate (1,000-step warmup and linear decay) and
+early stopping based on the stabilization of the reward mean.
+GT-guidedPH-replacement: We constructPH-replaced se-
+quences by applying the algorithm in Section 3.1.1 to Base out-
+puts, guided by test set ground-truth.
+4.4. Main results
+Table 1:RAS performance on LibriSpeech and TALCS.Bold-
+facemarks the best result per dataset, excluding GT-guided
+PH-replacement systems.
+Method
+LibriSpeech TALCS
+RAS↑Usefulness↑Cost↓RAS↑Usefulness↑Cost↓
+Base0.8603 0.9362 0.0759−0.1093 0.5874 0.6968
+Base+Logit0.8650 0.9349 0.0698−0.0650 0.5595 0.6245
+Base+PH-Supv+RL (Ours)0.8811 0.9376 0.0565 0.4786 0.7391 0.2940
+GT-guidedPH-replacement0.9031 0.9361 0.0329 0.3772 0.5874 0.2103
+Table 1 reports results under clean (LibriSpeech) and code-
+switching (TALCS) conditions. Our methodBase+PH-
+Supv+RLconsistently outperforms both baselines across all
+2https://github.com/openai/whisper/
+discussions/1183
+metrics. On TALCS, where the base model yields a negative
+RAS (−0.11), our method achieves0.48, demonstrating that
+PH-supervised pretraining followed by RL is especially effec-
+tive in challenging code-switching scenarios. The confidence
+baseline (Base+Logit) provides marginal gains, confirming that
+naive confidence thresholding is insufficient.GT-guidedPH-
+replacementserves as a near-oracle upper bound guided by
+ground-truth.
+Figure 4 reports the performance under noisy conditions
+(Noisy LibriSpeech). At SNR= 0dB, our method improves
+RAS by0.2657overBase, compared to0.0208improvement at
+clean conditions, highlighting the robustness benefit in highly
+noisy environments. The improvement in RAS brought by
+our method becomes increasingly pronounced as the SNR de-
+creases, demonstrating that the proposed training pipeline, i.e.,
+PH-Supv+RL, confers greater robustness gains in more chal-
+lenging acoustic environments.
+4.5. Ablation study
+Table 2:Ablation study for the two-stage training pipeline.
+Method
+LibriSpeech TALCS
+RAS↑Usefulness↑Cost↓RAS↑Usefulness↑Cost↓
+Base+PH-Supv0.8696 0.9277 0.0581 0.4054 0.65200.2466
+Base+PH-Supv+RL0.8811 0.9376 0.0565 0.4786 0.73910.2940
+Table 2 presents an ablation study isolating the contribution
+of GRPO-based RL training. ComparingBase+PH-Supvand
+Base+PH-Supv+RL, we observe that RL consistently improves
+RAS and Usefulness on both datasets. On TALCS, while Cost
+slightly increases, this reflects the RL objective’s optimization
+toward RAS: the model learns that the Usefulness gain from
+predicting more words outweighs the Cost incurred when some
+PH-replaced tokens are instead decoded incorrectly. The net
+effect is a substantially higher RAS, confirming that the GRPO-
+based RL stage provides complementary benefits on top of su-
+pervised placeholder training.
+Notably, on TALCS bothBase+PH-SupvandBase+PH-
+Supv+RLin Table 2 surpass the GT-guidedPH-replacement
+upper bound in Table 1. Since Base performs poorly there, GT-
+guided replacement is fundamentally limited by its weak code-
+switching capability.PH-Supvtraining, by contrast, genuinely
+improves the model: even without full GT transcripts, the cor-
+rect tokens retained after replacing Base’s errors provide suf-
+ficient supervision to substantially boost TALCS performance,
+with RL further amplifying this advantage.
+5. Conclusion
+This work redefines ASR reliability by introducing placeholder-
+based abstention, shifting the paradigm from speculative tran-
+scription to risk-aware reporting. We propose the RAS, a prin-
+cipled metric calibrated via human preferences to balance infor-
+mativeness with error aversion. By implementing an abstention-
+aware training pipeline, we demonstrate that models can sub-
+stantially improve reliability without sacrificing competitive ac-
+curacy. Our framework establishes a new criterion for trustwor-
+thy speech processing, from which both downstream applica-
+tions and human users benefit. We expect the RAS framework
+to provide a robust evaluation foundation for future research in
+trustworthy speech processing, particularly in serving as a reli-
+able reward signal for optimizing model behavior through rein-
+forcement learning.
+961
+6. Acknowledgments
+This work has been supported by the China NSFC Project (No.
+92370206).
+7. Generative AI Use Disclosure
+Generative AIs are used in this work for manuscript polishing
+and code troubleshooting. We utilize these tools to improve lin-
+guistic clarity and assist in technical debugging. The conceptual
+framework, experimental design, and final writing are entirely
+conducted by human authors, who take full responsibility for
+the content and consent to its submission.

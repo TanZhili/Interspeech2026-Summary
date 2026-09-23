@@ -1,0 +1,573 @@
+SpkGuideDOA: Speaker-wise Representation Guidance for Multiple Moving
+Speaker Localization
+Yongseok Choi ID , Davin Kim ID , Joon-Hyuk Chang ID ∗∗
+Department of Electronic Engineering, Hanyang University, Seoul, Republic of Korea
+{cys425922, davin0621, jchang}@hanyang.ac.kr
+Abstract
+Localizing multiple moving speakers in dynamic acoustic en-
+vironments requires resolving time-varying spatial cues under
+severe spatial-spectral overlap. To address this challenge, we
+propose SpkGuideDOA, a framework that enhances a spatial
+cue estimator with speaker-wise representation guidance while
+maintaining computational efficiency. An auxiliary guidance
+generator extracts implicit speaker representations from multi-
+channel magnitudes and injects them via residual modulation at
+a pooled resolution. Training is driven by a localization objec-
+tive with an additional loss that stabilizes the guidance branch.
+Joint permutation-invariant training ensures consistent speaker
+assignment across modules. Experiments on simulated mixtures
+and the LOCATA dataset demonstrate improved localization
+performance while maintaining computational efficiency.
+Index Terms: moving multi-speaker localization, direct-path
+inter-channel phase difference (DP-IPD), guidance representa-
+tion, permutation-invariant training.
+1. Introduction
+Speaker localization estimates the direction of arrival (DOA) of
+active speakers from microphone array recordings. These direc-
+tional cues make the acoustic scene geometrically interpretable
+and offer useful spatial priors for audio processing [1, 2]. They
+can complement content cues when speech spectra overlap
+across speakers. This becomes increasingly important in com-
+plex and time-varying multi-source environments.
+While conventional localization methods [3–6] were devel-
+oped under quasi-static acoustic assumptions, recent applica-
+tions [7–14] have shifted attention towards online localization
+of moving speakers. In dynamic scenes, speaker directions vary
+continuously, requiring temporally consistent estimation rather
+than isolated frame-wise predictions. Moreover, speaker trajec-
+tories may intersect or partially overlap in angle, producing
+nearly identical spatial cues across sources. Under such condi-
+tions, spatial information alone becomes insufficient for stable
+speaker-to-track assignment. Several approaches [9–12] address
+moving multi-speaker localization through deep neural net-
+works. IPDNet [9] refines direct-path inter-channel phase differ-
+ences (DP-IPD) with permutation-invariant training (PIT) [15],
+while TF-Mamba [13] and IPDNet2 [10] adopt state-space
+modeling with Mamba [16] for efficient and causal designs.
+However, as they still rely primarily on spatial representations,
+they lack an explicit mechanism to enforce speaker-specific dif-
+ferentiation when DOAs overlap or become indistinguishable.
+To address this limitation, a recent work [14] has ex-
+plored multi-speaker tracking strategies. This approach decou-
+ples speech separation and DOA estimation and subsequently
+associates their outputs to stabilize source identity. While this
+**indicates the corresponding author.
+can improve track consistency, it still relies on accurate interme-
+diate DOA and separation estimates, which may already fail be-
+fore the association under severe spatial ambiguity. Moreover,
+real-time applicability is limited since resolving mask permuta-
+tion requires long-term mask estimation. On the other hand, in
+the sound event localization and detection (SELD) field, archi-
+tectures such as [17, 18] jointly model activity detection and
+DOA estimation through feature fusion. While effective for
+class-aware localization, these multi-task formulations are de-
+signed for SELD rather than pure speaker localization.
+In this work, we reinterpret multi-speaker DP-IPD-based
+localization as a single-class directional inference problem and
+introduce speaker-wise guidance solely to enhance localization
+robustness. The proposed framework is not a multi-task formu-
+lation but a localization enhancer. A guidance generator (GG)
+estimates speaker-wise representations, which are injected into
+the spatial cue estimator (SCE) through residual modulation.
+Importantly, the voice-activity detection (V AD) loss is confined
+to the GG and does not backpropagate gradients to the SCE,
+while maintaining localization as the primary objective. To en-
+sure consistent speaker-wise alignment between the guidance
+and localization streams, we adopt a joint-PIT strategy during
+optimization. Through this disentangled and guidance-driven
+design, the proposed method mitigates overlap-induced ambi-
+guity while preserving computational efficiency.
+2. Problem Formulation
+LetX m(f,t)∈Cdenote the short-time Fourier transform
+(STFT) coefficient observed at microphonem, indexed by
+frequency binfand time framet, wherem∈{1,...,M},
+f∈{1,...,F}, andt∈{1,...,T}. We model the multi-
+channel observation as
+Xm(f,t) =
+KX
+k=1
+Am,k(f,t)S k(f,t) +V m(f,t),(1)
+whereS k(f,t)is the STFT of thek-th speaker signal,
+Am,k(f,t)denotes the acoustic transfer function from speaker
+kto microphonem, andV m(f,t)is the additive disturbance.
+As shown in Figure 1, the SCE takesX RI∈R2M×F×T ,
+where the factor2corresponds to concatenated real and imag-
+inary STFT components acrossMmicrophones, while the GG
+takes log–magnitude featuresX Mag∈RM×F×T . To jointly rep-
+resent speaker activity and direction-dependent phase cues, we
+estimate the DP-IPD. We use the first microphone as reference
+and consider pairs(1,m)form∈{2,...,M}. For speakerk
+and microphone pair we define the DP-IPD vector as in [9]:
+ym,k(f,t) =a k(t)
+
+cos(−2πνfτ1,m(θk(t)))
+sin(−2πνfτ1,m(θk(t)))
+
+∈R 2,(2)
+wherea k(t)∈[0,1]is the V AD weight for the speakerkat
+6749
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3131
+Aux-Decoder
+PConv(2M)
+(a) Overall Architecture
+(c) Localization Layer (LL)
+LayerNorm
+1D F-DConv(H1)
+GPConv(H1)
+1D F-GConv
+Squeeze
+F-Linear
+Expand
+Cross-band
+T-Mamba
+T-Mamba
+Narrow-band
+T-Mamba
+Linear
+ReLu
+Linear
+SP-SimA
+PConv(H2)
+MBConv1
+Classifier
+(e) SP-SimA
+Linear
+Overlap-add
+LinearLinear
+LayerNorm
+Swish
+Band-wise
+Feature
+Extractor
+(b) Segmentation
+Guidance Generator (GG)
+Spatial Cue Estimator (SCE)
+LL
+SGM
+(d)
+(c) (c) (c)
+(e)
+7 Layers
+PConv(H1)
+PConv
+Reshape
+(b) Band-wise Feature Extractor
+F2
+F1
+: # of Groups
+Template
+Matching
+ Decoder
+LayerNorm
+GPConv(F4)
+GPConv(F3)
+GPConv(F2)
+GPConv(F1)
+Main Flow
+Training Only
+Element-wise Multiplication Concatenation
+F4
+F3
+Matmul
+(d) Speaker Guidance Module (SGM)
+Joint-PIT
+Figure 1:Overview of SpkGuideDOA. The guidance from the GG is injected into the SCE at a compressed time-frequency resolution to
+avoid extra computation. During training, an auxiliary VAD decoder (Aux-Decoder) supervises only the GG.
+the time framet,ν f is the physical frequency (Hz) of thef-
+th STFT bin, andτ 1,m(θk(t))denotes the time difference of
+arrival between the reference microphone1and the microphone
+mfor the direction vectorθ k(t)of the speakerk.
+Stackingym,k(f,t)overf,mand applying temporal pool-
+ing yields the DP-IPD targetY, and the network is trained to
+predict ˆYto match it:
+ˆY,Y∈R K×T ′×2F×(M−1),(3)
+where2Freal and imaginary DP-IPD components across the
+frequency binsF, andT ′ =T/T p with the temporal pooling
+factorT p. We then perform template matching on ˆYusing the
+same mechanism and template grid settings described in [9].
+3. Proposed Method
+3.1. Spatial Cue Estimator (SCE)
+The lower branch in Figure 1 represents the SCE, which fol-
+lows the DP-IPD pipeline as in [9, 10]. The SCE starts with
+a point-wise convolution (PConv) and then stacks Localiza-
+tion Layer (LL). As shown in Figure 1(c), Each LL includes a
+grouped 1D frequency convolution (1D F-GConv) block com-
+posed of a depthwise 1D frequency convolution (1D F-DConv)
+and a grouped point-wise convolution (GPConv) withH 1/12
+groups, whereH 1 is a hidden dimension for the SCE. It is
+followed by Cross-band and Narrow-band modules adopted
+from [10, 19]. Guidance is injected after pooling operation at
+resolutionT′×F′, whereF ′=F/Fp with the frequency pool-
+ing factorFp, to limit speaker-wise branching overhead.
+3.2. Guidance Generator (GG)
+The GG produces speaker-wise guidance features that en-
+code spectral dominance patterns without explicitly predicting
+DOA. Unlike separation networks [14, 20], it extracts speaker-
+conditioned representations aligned with pooled SCE features
+without reconstructing source signals.
+3.2.1. Band-wise Feature Extraction
+To efficiently capture frequency-dependent speaker character-
+istics, we extend the single-channel band-split method [20]
+to handle multi-channel magnitude inputs in a causal man-
+ner. As shown in Figure 1(b), the frequency bins are grouped
+with region-dependent widths{Fi}4
+i=1 satisfyingP4
+i=1Fi=F,
+which yieldsG i sub-bands per region. Each region is pro-
+cessed by a dedicated 1D group convolution, and the out-
+puts are concatenated along the channel dimension, yielding
+Gall=P4
+i=1Gi. We use smallerFi at low frequencies to reflect
+the low-frequency concentration of speech energy.
+3.2.2. Speaker Guidance Module (SGM)
+Speaker guidance module (SGM) in Figure 1(d) starts with mo-
+bile inverted bottleneck convolution (MBConv1) blocks in [21,
+22] and a PConv to squeeze the hidden dimension fromH 2 to
+H3, whereH 2 andH 3 denote the hidden dimensions of MB-
+Conv1 and later PConv. This corresponds to an efficient modi-
+fication of the feature extractor stage in [23].
+Then, a segmented-and-pooled simple softmax-free atten-
+tion (SP-SimA), which replaces the attention layer [24] in [23],
+extracts speaker-wise features for the SCE. To reduce the atten-
+tion complexity, the input sequence is segmented intoSover-
+lapped chunks of lengthLas in [25]. We setL=T p to avoid the
+additional look-ahead latency beyond that imposed by temporal
+pooling in the SCE. After segmentation, linear projections pro-
+duce query, key, and value features by transformingR(Gall×H3)
+intoR (K×H4), whereH 4 is the per-speaker hidden dimension.
+The sequence dimensionLof the query is reduced to1by aver-
+age pooling. This strategy is inspired by [26,27] and its speech-
+domain adaptation in [28]. We reduce only the query instead
+of the entire feature. This lowers the complexity toO(S·L)
+while mitigating speaker information loss caused by pooling.
+SP-SimA follows [29] by replacing softmax withl 1 normal-
+ization on query and key, reducing complexity and avoiding
+head scaling with the number of active speakers. Unlike [29],
+which normalizes along the sequence dimension, we normal-
+ize along the feature dimension to ensure scale-stable attention
+under multi-speaker conditions while preserving causality. The
+resulting features are replicated back to lengthLand recon-
+structed along the original time axisTvia overlap-add. Then,
+they are pooled intoT′ to temporally align with the SCE.
+After the SP-SimA, we insert a Mamba layer to enforce
+temporal consistency in the guidance representation for each
+speaker. The features after Mamba are divided intoKtracks
+corresponding to the maximum number of speakers. Each track
+6750
+is processed by a classifier to produce
+G∈R K×T ′×F ′×1,(4)
+which represents speaker-wise, frequency-dependent guidance
+features at the compressed resolution.
+3.3. Guidance Injection into the SCE
+The SCE feature at this stage,Z∈R 1×T ′×F ′×H1 is replicated
+along the speaker axis of sizeKand gated as
+Z(k)
+guided =Z⊙Γ (k),Γ=σ(G)∈R K×T ′×F ′×1,(5)
+whereσ(·)denotes the sigmoid activation function,
+and⊙denotes element-wise multiplication. Each slice
+Γ(k)∈R1×T ′×F ′×1 provides a speaker-specific dominance
+map over the pooled grid. When spatial cues become ambigu-
+ous, the guidance induces speaker-dependent modulation over
+the pooled grid, increasing inter-speaker separability. To avoid
+over-reliance on the GG, we keep a residual path so the SCE
+can recover when the guidance is imperfect,
+Z(k)
+in =Z (k)
+guided +Z,(6)
+whereZ (k)
+in denotes the speaker-conditioned input to the subse-
+quent LL. Afterward, the speaker dimension is merged into the
+batch dimension. The subsequent LL in Figure 1(c) processes
+each speaker stream independently. Finally, a PConv layer and
+the decoder from [10] combine the speaker dimension into the
+feature dimension, restoring speaker-wise DP-IPD predictions.
+3.4. Training Objective and Gradient Routing
+The proposed framework is trained with two supervision sig-
+nals: a mean squared error (MSE) loss with the SCE decoder
+on DP-IPD estimation [9] for localization and a binary cross-
+entropy loss (BCE) [30] with the auxiliary decoder for stabiliz-
+ing the guidance. Letˆak(t′)∈[0,1]denote the auxiliary de-
+coder output aligned with the pooled time indext ′, anda k(t′)
+the corresponding V AD weight. For a permutationψ∈ΨK, we
+define the frame-level losses,Lψ
+IPD,Lψ
+VAD as
+Lψ
+IPD(t′) = 1
+K(M−1)
+KX
+k=1
+MSE(Yψ(k),t′, ˆYk,t′),(7)
+Lψ
+VAD(t′) = 1
+K
+KX
+k=1
+BCE(aψ(k)(t′),ˆak(t′)).(8)
+In conventional PIT, each speaker-wise loss is optimized with
+its own permutation. Since DP-IPD estimation and guidance
+prediction are generated by separate decoders, their speaker in-
+dices may become inconsistent. To address this, we enforce a
+shared permutation across the two losses, referred to as Joint-
+PIT. The final training objective is defined as
+L= 1
+T′
+T ′
+X
+t′=1
+min
+ψ∈ΨK
+
+Lψ
+IPD(t′) +αL ψ
+VAD(t′)
+
+,(9)
+whereαis a weighting factor that balances the two loss terms.
+The Joint-PIT enforces consistent speaker assignment between
+the SCE and the GG.
+WhileL ψ
+VAD can indirectly influence the SCE when deter-
+miningψfor consistent assignments, its direct gradient flow
+is explicitly detached from the SCE parameters. Through the
+guidance gateΓin Sec. 3.3,L IPD provides gradients to both the
+SCE and the GG, jointly shaping them toward speaker-wise DP-
+IPD estimation. In contrast, the gradient ofLψ
+VAD is restricted to
+the GG, as ensured by the decoder placement in Figure 1. This
+prevents degenerating into a multi-task formulation. Instead, the
+V AD loss refines the guidance representation without altering
+the SCE, so the GG functions as a localization enhancer rather
+than an independent prediction head.
+Conceptually, Joint-PIT addresses the similar assignment
+problem as SELD [31, 32], where the learning objective must
+determine which output corresponds to which source. However,
+the SELD methods couple class identity and direction within a
+single prediction head, whereas our formulation enforces per-
+mutation consistency across two separate decoders. As a result,
+the GG is aligned with the speakers that the SCE aims to disen-
+tangle, enabling constructive interaction instead of interference.
+4. Experimental Setup
+4.1. Implementation and Baselines
+Signals were sampled at 16 kHz. The STFT was computed us-
+ing a 512-point analysis window with a 256-sample hop size,
+following [11]. We used pooling factors ofT p=12,F p=16,
+hidden dimensions ofH 1=96,H 2=48,H 3=12andH 4=256.
+For the band-wise feature extractor in Figure. 1(b), the GG in-
+put yieldedG 1=32,G 2=8,G 3=4, andG 4=4sub-bands. The
+αin (9) was set to 0.4 to keepL ψ
+VAD on a scale comparable
+toL ψ
+IPD. The auxiliary decoder was a Linear–PReLU–Linear
+stack. For DP-IPD template matching, templates were gener-
+ated over a uniformly spaced angular grid of 73 azimuths in
+[-180◦,180◦]and 37 elevations in[-90 ◦,90◦].
+Each epoch used 50,000 generated mixtures (batch size 4)
+and training ran for 15 epochs. Adam [33] was used with an ini-
+tial learning rate of 0.001 and a decay factor of 0.975 per epoch.
+For comparison, we evaluated IPDNet [9], IPDNet2 [10] and
+TF-Mamba [13]. Since [13] originally predicted azimuth only,
+its training target was modified to DP-IPD for both azimuth and
+elevation. For fair comparison, all models, including the pro-
+posed method, were trained under the same training scheme. To
+assess the effectiveness of the guidance, ablation studies were
+conducted, summarized in Table 1. The number of parameters
+and floating-point operations (FLOPs) during inference were
+measured using the official PyTorch utility [34].
+4.2. Data Generation and Evaluation Protocol
+We adopted the 12-channel 3D array from [35]. Clean Lib-
+riSpeech [36] was divided into training, validation, and test sets,
+with each sample having a duration of 5 seconds. Moving mix-
+tures were generated with gpuRIR [37] following trajectory-
+recipes in [38], with room sizes uniformly sampled from
+(3,3,2.5)to(10,8,6)m 3 and reverberationT 60∈[0.2,1.2]s.
+Gaussian noise was applied at SNRs in[−5,20]dB. For real-
+world evaluation, we used LOCATA [35] that contains moving
+sources. The maximum number of speakers was set toK=2,
+consistent with the experimental settings in [9,10] and the max-
+imum number of speakers in the real-world dataset [35].
+To evaluate robustness under spatial overlap, additional test
+sets were formed by grouping static mixtures according to the
+angular distance between two speakers (Figure 2). For each
+separation angle, 500 mixtures were generated in same ran-
+domized room configurations above. Performance was evalu-
+ated using the miss detection rate (MDR) and mean absolute er-
+ror (MAE) based on spherical angular distance with a tolerance
+of≤30 ◦, following [11]. MAE was computed with respect to
+the ground-truth number of active speakers to properly evalu-
+ate multi-speaker localization. To prevent models from benefit-
+ing from over-estimating the number of speakers, false alarm
+rate (FAR) was additionally reported. For each model, the ac-
+tivity threshold was tuned on the validation set to yield the best
+MDR/FAR performance and then fixed for testing.
+6751
+Table 1:Comparison on simulated and real datasets. Best performance scores per dataset are shown inbold.
+Model Simulated Real (LOCA TA, Task 3-6) Complexity
+MDR(%)↓FAR(%)↓MAE( ◦)↓ MDR(%)↓FAR(%)↓MAE( ◦)↓ Params.(M)↓FLOPs(G/s)↓
+IPDNet [9] 11.2 23.8 9.0 14.9 11.1 9.0 2.2 65.3
+TF-Mamba [13] 5.2 18.6 6.2 9.7 13.1 6.0 1.3 37.6
+IPDNet2 [10] 12.6 24.4 10.9 16.9 16.3 9.7 1.3 1.1
+SpkGuideDOA (Ours) 4.0 15.8 5.7 9.2 8.9 5.5 2.8 1.1
+w/o GG 14.1 25.9 11.8 17.8 19.2 10.4 1.6 0.6
+w/o V AD Loss 9.3 24.4 9.6 17.0 11.1 9.5 2.8 1.1
+V AD Loss on SCE Output 11.0 24.5 10.4 18.8 13.5 9.0 2.8 1.1
+w/o Joint-PIT 6.4 20.2 7.3 10.3 15.3 5.9 2.8 1.1
+w/ Mask-based MSE Loss 8.4 16.1 9.7 11.5 13.8 6.5 3.0 1.2
+0 5 10 15 20 25 30
+Angular distance between speakers (°)
+2
+4
+6
+8MAE (°)
+IPDNet
+TF-Mamba
+IPDNet2
+SpkGuideDOA
+0 5 10 15 20 25 30
+Angular distance between speakers (°)
+10
+15
+20
+25
+30
+√
+MDR2 + FAR2
+IPDNet
+TF-Mamba
+IPDNet2
+SpkGuideDOA
+Figure 2:Performances over angular distance (°). Left: Mean
+absolute error; Right: Detection error.
+5. Results and Analysis
+5.1. Quantitative Evaluation on Simulated and Real Data
+Table 1 shows that SpkGuideDOA achieved the best overall per-
+formance on both simulated and real datasets while maintain-
+ing competitive computational complexity. It consistently ob-
+tained the lowest MDR, FAR, and MAE, indicating improved
+speaker discrimination rather than over-detection. Comparisons
+with baselines, including IPDNet2 which shares a similar back-
+bone and capacity-matched ablations further indicate that the
+gains arise from the proposed guidance mechanism rather than
+increased model size.
+5.2. Robustness Across Angular Separation
+Figure 2 analyzes the performance as a function of angular sep-
+aration. The MAE results (left) reflected overall localization
+accuracy and showed that our method maintained controlled
+errors even in moderate separations (15–30°), demonstrating
+robustness beyond closely spaced scenarios. The MDR–FAR
+metric (right) evaluated whether speakers were detected as dis-
+tinct sources rather than merged; in the most challenging range
+(0–15°), our approach achieved the lowest scores, indicating
+superior stability under severe spatial ambiguity. Qualitative
+examples in Figure 3 further confirmed that, while compet-
+ing methods often collapsed two nearby speakers into a single
+peak, our model consistently preserved distinct source identi-
+ties. Overall, the proposed method improved both detection re-
+liability and directional accuracy across separation ranges.
+5.3. Ablation Analysis of Guidance and Training Strategy
+The ablation study in Table 1 evaluated the contribution of each
+architectural and training component, clarifying the role of the
+GG and its supervision in localization performance.
+Necessity of the Guidance Generator .Removing the GG
+(w/o GG) resulted in a substantial performance drop despite
+reduced computational complexity, indicating that the perfor-
+mance gain was closely tied to speaker-wise guidance injection
+rather than backbone scaling alone.
+Guidance and auxiliary supervision.Removing the aux-
+iliary V AD loss (w/o V AD Loss) significantly degraded perfor-
+mance, suggesting that localization supervision alone was insuf-
+ficient to induce stable speaker-wise modulation. Explicit activ-
+ity regularization helped the GG form more structured and dis-
+criminative guidance representations. Also, this indicated that
+the performance drop could not be attributed merely to reduced
+0 45 90 135 180
+Azimuth ( )
+-44
+-17
+9
+36
+Elevation ( )
+(a) Oracle
+0 45 90 135 180
+Azimuth ( )
+-44
+-17
+9
+36
+(b) IPDNet
+0 45 90 135 180
+Azimuth ( )
+-44
+-17
+9
+36
+(c) TF-Mamba
+0 45 90 135 180
+Azimuth ( )
+-44
+-17
+9
+36
+Elevation ( )
+(d) IPDNet2
+0 45 90 135 180
+Azimuth ( )
+-44
+-17
+9
+36
+(e) SpkGuideDOA
+×: Peak location of Speaker 1
+: Peak location of Speaker 2
+0.0 0.5 1.0
+Speaker 1 VAD value (Red)
+0.0 0.5 1.0
+Speaker 2 VAD value (Green)
+Red Yellow Green
+Overlap: Red + Green appears Yellow
+Figure 3:Qualitative comparison in close-speaker scenarios.
+model capacity, but to the absence of the GG’s role.
+Supervision placement and gradient interaction.Attach-
+ing a V AD decoder head in parallel with the SCE decoder (V AD
+Loss on SCE Output) further degraded performance, imply-
+ing that jointly optimizing activity estimation and localization
+within a single stream introduced unfavorable gradient inter-
+actions. These observations supported a role-separated training
+strategy, in which the GG absorbed auxiliary supervision while
+the SCE focused exclusively on DP-IPD estimation.
+Importance of cross-stream speaker consistency.Re-
+placing Joint-PIT with independent PIT losses (w/o Joint-PIT)
+consistently degraded localization accuracy, indicating that con-
+sistent speaker indexing between the GG and SCE is essential
+for coherent speaker-wise enhancement across streams.
+Separation-oriented auxiliary supervision analysis.
+When the GG was trained to predict speaker-wise magnitude
+masks (w/ Mask-based MSE Loss), localization performance
+did not improve over the proposed V AD-based supervision.
+Given that the guidance was pooled before being injected
+into the SCE, mask estimation did not align well with the
+compact guidance representation. In practice, effective mask
+supervision would require high-resolution interaction before
+pooling, which would substantially increase FLOPs due
+to speaker-wise feature replication. Instead, the V AD loss
+provided a structurally compatible supervision signal at the
+pooled resolution, enabling efficient learning of speaker-aware
+modulation under our low-complexity design.
+6. Conclusion
+We proposed SpkGuideDOA, a guidance-driven framework
+for moving multi-speaker localization. By injecting pooled
+speaker-wise residual guidance into a DP-IPD localizer, it mit-
+igated assignment instability while preserving a localization-
+focused backbone. Experiments showed consistent gains in ro-
+bustness and directional accuracy with minimal overhead, high-
+lighting the effectiveness of speaker-aware modulation for ef-
+ficient moving-speaker localization. The formulation is general
+and can extend to larger speaker counts without altering the core
+pipeline, which we consider for future study.
+6752
+7. Acknowledgements
+This work was supported by the National Research Foundation
+of Korea (NRF) grant funded by the Korea government (MSIT)
+(RS-2025-00557

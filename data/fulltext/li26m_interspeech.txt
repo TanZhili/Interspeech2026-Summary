@@ -1,0 +1,392 @@
+GenTSE: Enhancing Target Speaker Extraction via a Coarse-to-Fine
+Generative Language Model
+Haoyang Li1, Xuyi Zhuang1, Azmat Adnan1, Ye Ni2, Wei Rao1, Shreyas Gopal1, Eng Siong Chng1,
+Boon Siew Han3,4, Yuanjin Zheng1
+1 Nanyang Technological University, Singapore
+2 Southeast University, China
+3 Schaeffler Hub for Advanced REsearch (SHARE) at Nanyang Technological University, Singapore
+4 Schaeffler
+li0078ng@e.ntu.edu.sg
+Abstract
+Language Model (LM)-based generative modeling has emerged
+as a promising direction for TSE, offering potential for im-
+proved generalization and high-fidelity speech. We propose
+GenTSE, a two-stage decoder-only generative LM for TSE:
+Stage-1 predicts coarse semantic tokens, and Stage-2 generates
+fine acoustic tokens. Separating semantics and acoustics sta-
+bilizes decoding and yields more accurate target speech. Both
+stages use continuous SSL or codec embeddings, offering richer
+context than discretized-prompt methods. To reduce exposure
+bias, we employ a Frozen-LM Conditioning training strategy
+that conditions the LMs on predicted tokens from earlier check-
+points to reduce the gap between teacher-forcing training and
+autoregressive inference. We further apply DPO to better align
+outputs with perceptual preferences. Experiments on Libri2Mix
+show that GenTSE surpasses previous LM-based systems in
+speech quality, intelligibility, and speaker consistency.
+Index Terms: target speaker extraction, generative modeling,
+language models, exposure bias, direct preference optimization
+1. Introduction
+Target Speaker Extraction (TSE) aims to recover a designated
+speaker’s voice from a multi-speaker mixture using auxiliary
+information that identifies the target speaker [1]. Most exist-
+ing TSE methods rely on discriminative, supervised models that
+learn a direct mapping from the mixture to the target speech
+[2–6], but such approaches generalize poorly under distribution
+shifts and compromise the fidelity of the extracted speech sig-
+nal. Generative models such as Diffusion and Language Model,
+which learn the distribution of a target signal conditioned on
+relevant contextual information, have emerged as promising al-
+ternatives due to their strong capability to generalize to unseen
+data [7] and synthesize speech with high fidelity [8].
+Recent LM-based methods have explored generative for-
+mulations for TSE. LLaSE-G1 [9] and UniSE [10] adopt single-
+stage LMs to predict codec tokens, but direct modeling of fine
+acoustics is challenging because the LM must jointly learn con-
+tent, speaker traits, and detailed signal structure within a high-
+entropy token space. AnyEnhance [8] uses a two-stage pipeline
+with a semantic stage based on continuous embedding regres-
+sion, while TSELM [11] applies a pre-LM cross-attention fu-
+sion block to a single-stage LM; in both cases, these compo-
+nents introduce non-generative components. LauraTSE [12]
+predicts coarse audio codec tokens autoregressively, but restores
+fine details with a deterministic encoder-only Transformer, sim-
+ilarly breaking end-to-end generativity. SpeechX [13] and
+Metis [14] use discretized reference prompts, which lose fine-
+grained speaker information. Unlike prior works, we propose
+GenTSE, a fully generative two-stage decoder-only LM archi-
+tecture: Stage-1 generates coarse semantic tokens, and Stage-2
+predicts fine acoustic tokens conditioned on them. Both stages
+are further conditioned on continuous SSL or codec embed-
+dings, forming a coherent coarse-to-fine generative hierarchy.
+We further address exposure bias, an overlooked yet criti-
+cal issue in autoregressive (AR) LM-based SE and TSE that de-
+grades speech fidelity and speaker consistency. Exposure bias
+arises from the mismatch between teacher-forcing (TF) during
+training and autoregressive inference, where the model must
+rely on its own past predictions. Inspired by scheduled sampling
+in neural speech translation [15,16], we optimize GenTSE with
+Frozen-LM Conditioning (FLC), which explicitly exposes the
+models to predicted tokens from earlier frozen checkpoints dur-
+ing training, thus narrowing the training-inference mismatch.
+Finally, we apply preference alignment via Direct Prefer-
+ence Optimization (DPO) [17]. Existing TSE approaches [6,18]
+typically optimize signal-based objectives (e.g. SI-SDR or like-
+lihood), which reduce prediction error but do not reliably cap-
+ture human-perceived naturalness, clarity, or speaker fidelity.
+Although [19] incorporates human feedback through a refine-
+ment network, it still depends on low-level signal proxies and
+introduces additional inference-time parameters. In contrast,
+DPO offers a simple and stable way to align model output with
+human preference without modifying the inference architec-
+ture. Inspired by its recent use in speech enhancement [20],
+we adapt DPO to TSE for the first time and show that it effec-
+tively guides the model’s output toward higher perceived qual-
+ity. On Libri2Mix [21], GenTSE shows promising performance
+in speech quality, intelligibility, and speaker consistency.
+2. Methodology
+Fig. 1 shows the proposed GenTSE framework, which com-
+prises a semantic extraction stage followed by an acoustic gen-
+eration stage. The semantic stage autoregressively predicts
+coarse semantic tokens for the target speaker, and the acous-
+tic stage generates fine-grained acoustic tokens conditioned on
+them. Trained independently, the two stages form a fully gen-
+erative hierarchical pipeline that avoids directly modeling low-
+level acoustics, improving speaker extraction. Section 2.1 de-
+tails the overall framework, while Section 2.2 and Section 2.3
+introduce two novel optimization techniques in TSE: Frozen-
+LM Conditioning (FLC) to reduce exposure bias and Direct
+Preference Optimization (DPO) to enhance perceptual quality.
+5649
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-893
+Figure 1:The overall architecture of GenTSE consisting of a semantic extraction stage (left) and an acoustic generation stage (right)
+2.1. Hierarchical Modeling
+2.1.1. Semantic extraction stage
+Given a reference and mixture speech, WavLM [22] serves as
+the high level feature extractor to extract the corresponding
+frame-level embeddings from layer 6, denoted asWavlm ref
+,Wavlm mix∈R T×H , whereTandHare the time and hid-
+den dimensions. An AR decoder-only LM then conditions on
+Wavlmref andWavlm mix to generate ˆS= [ˆs1,ˆs2,...,ˆs T ],
+the predicted semantic tokens of the target speech signal. The
+corresponding ground-truth tokensSare obtained from the tar-
+get signal by first extracting frame-level embeddings from layer
+6 of WavLM followed by discretization via kmeans. The base-
+line training objective of the LM employs cross-entropy (CE)
+loss with teacher-forcing following Eq. (1).
+LCEsem =−
+TX
+t=1
+logPθ(ˆst|s <t,Wavlm ref,Wavlm mix).
+(1)
+2.1.2. Acoustic generation stage
+To recover low-level acoustic details, the DAC [23] encoder is
+used to extract rich acoustic features from reference and mixture
+speech signals, obtaining embeddingsDAC ref ,DAC mix ∈
+RT×H . The semantic tokens of the target speech (Sduring
+training, ˆSduring inference) are concatenated withDAC ref
+andDAC mix as the condition for another AR decoder-only
+LM to generate ˆA= [ˆa 1,ˆa2,...,ˆa N ], the predicted acoustic
+tokens of the target speech signal. We use SimCodec [24], a
+neural audio codec with a single codebook as the acoustic to-
+kenizer. Using a single-codebook codec simplifies the LM by
+eliminating the need to jointly model multiple token streams,
+unlike prior multi-layer codebook approaches [8, 14]. Finally,
+the Simcodec decoder reconstructs target speech signal from ˆA.
+The baseline training objective follows Eq. (2).
+LCEaco =−
+NX
+n=1
+logPϕ(ˆan|a <n,S,DAC ref,DACmix).
+(2)
+2.2. Frozen-LM Conditioning
+Exposure bias [16, 26] arises from the mismatch between
+ground-truth conditioning during training and self-generated
+histories at inference. To address this issue, we adopt a Frozen-
+LM Conditioning (FLC) strategy inspired by scheduled sam-
+pling [15]. We first train the semantic and acoustic LMs using
+teacher forcing with Eqs. (1) and (2), obtaining base parameters
+θandϕ. We then duplicate these parameters to form trainable
+modelsθ′ andϕ′, while keepingθandϕfrozen. During FLC,
+the frozen models generate predicted semantic and acoustic to-
+kens ˆSand ˆAunder teacher forcing. These predictions are used
+as conditioning inputs when trainingθ ′ andϕ′, replacing the
+corresponding ground-truth conditioning tokenss <t anda <n.
+This design exposes the target models to model-generated con-
+ditioning signals while avoiding instability caused by jointly
+updating the conditioning models. The resulting training ob-
+jectives are defined below, whereˆs′
+t andˆa′
+n are the generated
+semantic and acoustic tokens byθ′ andϕ′ at timestamptandn:
+LCE′sem =−
+TX
+t=1
+logPθ′ (ˆs′
+t|ˆs<t,Wavlm ref,Wavlm mix).
+(3)
+LCE′aco =−
+NX
+n=1
+logPϕ′ (ˆa′
+n|ˆa<n,S,DAC ref,DACmix).
+(4)
+2.3. Direct Preference Optimization
+Existing LM-based TSE methods rely on token-level likeli-
+hood objectives, which do not strictly align with perceptual
+speech quality. To address this, we train the acoustic LM
+with DPO [17] to explicitly bias its output distribution to-
+ward perceptually preferred speech. For each contexty=
+[S,DACref,DACmix], we construct a pair of Simcodec to-
+ken sequences(A +,A−), whereA± = [a±
+1,...,a ±
+N ]andA +
+is judged better thanA−. The DPO objective then optimizes the
+model to increase the likelihood ofA + while correspondingly
+decreasing the likelihood ofA−, as specified in Eq. (5).
+5650
+Table 1:Libri2Mix (clean) results. “G”/“D” denote generative/discriminative models; * indicates models reproduced on our dataset.
+Model Category DNSMOS↑ UTMOS↑NISQA↑SECS↑dWER↓SpeechBERT↑SIG BAK OVL
+Mixture - 3.383 3.098 2.653 1.519 2.251 0.754 0.821 0.655
+X-TF-GridNet [25] D 3.328 3.607 2.895 2.852 3.216 0.758 0.389 0.784
+USEF-SepFormer* [6] D 3.324 3.698 2.927 3.492 2.880 0.8060.1560.830
+TSELM-L* [11] G 3.478 4.035 3.198 3.556 3.509 0.651 0.263 0.832
+LLaSE-G1 [9] G 3.531 4.015 3.226 3.228 3.638 0.839 0.476 0.825
+Metis [14] G 3.588 3.980 3.265 3.882 3.869 0.879 0.180 0.890
+GenTSE G3.656 4.135 3.399 4.296 3.976 0.9280.1770.920
+LDPO =−E
+"
+logσ
+
+βlog πψ(A+|y)π ref (A−|y)
+πref (A+|y)π ψ(A−|y)
+#
+.
+(5)
+Here,ψdenotes the parameters of the target model being
+optimized andrefrepresents the parameters of a frozen refer-
+ence model used to stabilize training. Both models are initial-
+ized toϕ′, the parameters after FLC.πis the sequence probabil-
+ity distribution, the scalarβ >0regulates preference strength,
+andσ(·)corresponds to the logistic sigmoid function.
+To construct a preference pair(A +,A−), therefmodel
+conditions on contextyto produce logitsLogits ref ( ˆA)∈
+RN×|V| , where|V|is the vocabulary size. From these log-
+its,Mcandidate Simcodec token sequences are independently
+sampled via top-kmultinomial sampling at each timestep. Each
+candidate sequence is then decoded by the SimCodec decoder,
+and evaluated using UTMOS [27], a DNN-based MOS predic-
+tor strongly correlated with human judgments. The candidate
+sequence with the highest UTMOS score is selected asA +,
+while the one with the lowest score becomesA−.
+3. Experiments
+3.1. Dataset
+We train all LMs using the train-100 and train-360 splits of
+the clean LibriMix2spk dataset [21], a standard benchmark for
+TSE, and conduct evaluation on the corresponding test set. For
+inference, a reference utterance of the target speaker is ran-
+domly chosen and used consistently in all evaluations. WavLM
+(WavLM-Large), DAC1 and SimCodec2 are obtained using their
+publicly available pretrained checkpoints. KMeans (for dis-
+cretizing WavLM embedding) is trained on 960 hours of Lib-
+riTTS. All data is processed at a 16 kHz sampling rate.
+3.2. Evaluation Metrics
+We evaluate speech quality using 3 DNN-based metrics: DNS-
+MOS [28], UTMOS [27] and NISQA [29]. DNSMOS provides
+three sub-scores, SIG for signal quality, BAK for background
+noise, and OVRL for overall quality. UTMOS and NISQA
+are also speech quality predictors and align strongly with hu-
+man judgments. For NISQA, we use the NISQA-TTS (v1.0)
+checkpoint. Speech intelligibility is assessed using the Differ-
+ential Word Error Rate (dWER) and SpeechBERT [30]. dWER
+1https://huggingface.co/hance-ai/descript-audio-codec-16khz
+2https://huggingface.co/yaoxunji/gen-se
+Table 2:Ablation on LM input conditions. ref, mix, tar denote
+conditions from reference, mixture, and target speech. W, D, S
+indicate WavLM, DAC, SimCodec; E and T denote continuous
+embeddings and discretized tokens. Exp. 5 is the final setup.
+Exp Semantic LM Acoustic LM UTMOS↑dWER↓SECS↑
+ref mix ref mix tar
+1 - - D-E D-E - 4.007 0.2840.928
+2 W-T W-T D-E D-E W-T 3.734 0.738 0.839
+3 W-E W-E S-T S-T W-T4.1120.237 0.906
+4 W-E W-E W-E D-E W-T 4.080 0.220 0.927
+5 W-E W-E D-E D-E W-T 4.0650.2170.927
+Table 3:FLC and TF fine-tuning. Initialized from Exp. 5.
+Exp Method Sem/Aco steps UTMOS↑dWER↓SECS↑
+6 TF 12k / 6k 4.118 0.189 0.933
+7 TF 20k / 20k 4.121 0.184 0.933
+8 FLC 12k / 6k4.127 0.172 0.935
+Figure 2:Semantic LM validation top-1 accuracy during FLC.
+is computed by comparing the Whisper-base [31] transcrip-
+tions of the predicted and target speech. SpeechBERT com-
+putes BERTScore as a semantic-similarity metric, using SSL
+features derived from the generated and target speech signals.
+We employ the HuBERT-base [32] model for feature extraction.
+Target-speaker preservation is measured using speaker embed-
+ding cosine similarity (SECS), calculated using Resemblyzer 3.
+We do not report classical metrics such as PESQ or SI-SNR,
+as generative models may introduce temporal or prosody mis-
+alignments that render these metrics unreliable [8, 11, 24, 33].
+3https://github.com/resemble-ai/Resemblyzer
+5651
+Table 4:DPO and CE fine tuning. Initialized from Exp. 8. Bold/underline indicate best/second best results.
+Exp Method DNSMOS↑ UTMOS↑NISQA↑SECS↑dWER↓SpeechBERT↑SIG BAK OVL
+8 - 3.635 4.111 3.366 4.127 3.8060.935 0.1720.919
+9L CE 3.633 4.102 3.359 4.125 3.824 0.934 0.173 0.920
+10L DPO 3.672 4.161 3.429 4.384 4.1080.913 0.182 0.915
+11L DPO +L CE 3.656 4.135 3.399 4.296 3.976 0.928 0.1770.920
+3.3. Implementation Details
+The semantic and acoustic language models are decoder-only
+Transformers with 12 layers, 8 attention heads, and a hidden
+size of 1024. The K-means and SimCodec models use a cluster
+and codebook size of 1024 and 8192. All experiments use the
+AdamW optimizer. Either A40 or A100 GPUs are used.
+For all ablation on the choice of the LMs’ input conditions
+(Exps 1-5), we train the semantic LMθon 1 GPU with batch
+size 32, and the acoustic LMϕon 4 GPUs with batch size 64.
+Both use a peak learning rate of1×10−4 with 1k warmup steps.
+Trainings are terminated upon validation cross-entropy conver-
+gence. The final configuration (Fig. 1, Exp 5) corresponds to
+64k steps forθand 78k steps forϕ.
+For FLC (Exp 8) and comparative TF (Exp 6),θ′ andϕ′ are
+trained for 12k and 6k steps with batch sizes 32 and 64, respec-
+tively, using a constant learning rate of5×10 −6 on a single
+GPU, initialized fromθandϕin Exp 5. In Exp 6, the validation
+cross-entropy continues to decrease under this updated learning
+rate. Accordingly, in Exp. 7 we repeat the Exp 6 setting but
+extend training ofθ′ andϕ′ to 20k steps, until convergence.
+For DPO experiments (Exp 9 to 11), training is initialized
+fromϕ′ in Exp 8 and performed on 1 GPU for 400 steps with
+batch size 128 and learning rate5×10−6. We setβ=0.1(Eq. 5),
+k=16for top-ksampling, and generateM=32candidates.
+3.4. Baseline Models
+We compare GenTSE against recent generative LM-based base-
+lines (TSELM-L [11], LLaSE-G1 [9], Metis [14]) as well as dis-
+criminative baselines (X-TF-GridNet [25], USEF-SepFormer
+[6]). TSELM-L and USEF-SepFormer are retrained on our
+training set for a fair comparison. For LLaSE-G1, a multi-task
+model, we use the official checkpoint reported in the paper. For
+Metis, we adopt the released checkpoint fine-tuned for TSE 4.
+Note that LLaSE-G1 and Metis are both trained on substantially
+larger datasets. For X-TF-GridNet, we use the author-provided
+checkpoint trained on WHAMR! [34].
+4. Results and discussion
+Table 1 compares GenTSE against recent generative LM-based
+and discriminative TSE models. GenTSE surpasses prior LM-
+based baselines in speech quality, speaker similarity, and in-
+telligibility, demonstrating clear advantage among LM-driven
+methods. When compared with leading discriminative methods,
+GenTSE achieves higher perceptual speech quality and speaker
+similarity; however, USEF-SepFormer attains lower dWER.
+Table 2 evaluates LM performance under different input
+conditions. Exp 5 corresponds to our final configuration; Exps
+1-4 are ablations. In Exp 1, removing the semantic stage leads
+4https://huggingface.co/amphion/Metis
+to increased dWER (Exp1: 0.284 vs. Exp 5: 0.217), highlight-
+ing the necessity of the semantic extraction stage. Exp 2 shows
+that discretizing WavLM embeddings in the semantic stage in-
+troduces substantial information loss, hindering accurate recov-
+ery of target-speaker semantics. Exp 3 demonstrates that con-
+ditioning the Acoustic LM on SimCodec tokens reduces intelli-
+gibility and speaker similarity compared to using DAC embed-
+dings (Exp 5). Exp 4 shows that conditioning the Acoustic LM
+on WavLM embeddings (layer 6) of the reference speech yields
+comparable performance to using DAC embeddings. Collec-
+tively, these results validate our LM input design.
+Table 3 compares TF and FLC. FLC (Exp 8) outperforms
+TF fine tuning (Exp 6) in same training steps, with notable lower
+dWER. Even when TF training is extended until no further im-
+provement is observed (Exp 7), FLC (Exp 8) remains superior.
+Fig. 2 further shows the gap in the top-1 validation accuracy
+of the Semantic LM, which progressively narrows under FLC,
+demonstrating its effectiveness in mitigating exposure bias.
+In table 4, Exps 9 to 11 apply either CE (Eq. 2), DPO (Eq.
+5) or the sum of both loss. No loss scaling is used in Exp 11
+due to comparable magnitudes. Exp 10 and 11 yield consistent
+improvements in speech-quality metrics (DNSMOS, UTMOS,
+NISQA) after only 400 steps, indicating the effectiveness of
+DPO in enhancing perceptual speech quality. Minor drops in
+speaker similarity and intelligibility reflect a trade-off, as the
+current DPO setup prioritizes perceptual quality. Incorporat-
+ing multi-metric preference selection [35] is a promising direc-
+tion for future work. Using only DPO loss (Exp 10) provides
+more quality gain, but also additional reductions in similarity
+and intelligibility. In contrast, fine tuning with cross-entropy
+loss alone (Exp 9) yields small difference from Exp 8.
+5. Conclusion
+We present GenTSE, a fully generative TSE framework based
+on a two-stage decoder-only LM architecture. The semantic
+stage predicts k-means-discretized WavLM tokens of the tar-
+get speech, and the acoustic stage generates neural audio codec
+tokens conditioned on these predictions. This two-stage de-
+sign reduces modeling complexity compared to direct codec-
+token prediction, improving performance. Both LMs are con-
+ditioned on continuous frame-level WavLM/DAC embeddings
+from the reference and mixture speech, providing richer guid-
+ance than discrete input. To address the mismatch between
+teacher-forcing and autoregressive inference, we introduce FLC
+which fine-tunes the LMs on predicted tokens from early frozen
+checkpoints. Additionally, we use DPO to align generation with
+perceptual preferences via proxy-MOS feedback. Extensive ex-
+periments on Libri2Mix validate the architecture and optimiza-
+tion strategies, showing superior performance over prior LM-
+based methods. Future research may further investigate the ro-
+bustness of GenTSE under noisy and target-absent conditions.
+5652
+6. Acknowledgments
+This research is supported by the RIE2025 Industry Alignment
+Fund - Industry Collaboration Projects (IAF-ICP) (Grant No.
+I2501E0041), administered by A*STAR, as well as supported
+by Schaeffler (Singapore) PTE. LTD. and NTU Singapore
+through Schaeffler-NTU Corporate Lab: Intelligent Mechatron-
+ics Hub.
+7. Generative AI Use Disclosure
+Generative AI tools were used for limited editorial support, in-
+cluding grammar checking, redundant text removal, and assis-
+tance with LaTeX equations. All scientific work, such as the
+introduction, methodology, experiments, results, and conclu-
+sions, was conducted by the authors. All authors reviewed the
+manuscript and take full responsibility for the final submission.

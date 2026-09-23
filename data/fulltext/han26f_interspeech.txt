@@ -1,0 +1,491 @@
+TAP-ETS: Time Aligned Phoneme Guiding for EMG-to-Speech Synthesis
+Dongyub Han1,2, Injune Hwang1,2, Jaejun Lee ID 1,2, Jiwon Lee ID 1,3, Kyogu Lee ID 1,2,3,4
+1 Music and Audio Research Group (MARG), Seoul National University
+2 Department of Intelligence and Information, Seoul National University
+3 Interdisciplinary Program in Artificial Intelligence, Seoul National University
+4 Artificial Intelligence Institute, Seoul National University, Republic of Korea
+{handy912, dlswns8, jjlee0721, scjjw8285, kglee}@snu.ac.kr
+Abstract
+Electromyography (EMG)-to-speech (ETS) synthesis generates
+speech from articulatory muscle activity without acoustic in-
+put. We propose TAP-ETS, a time-aligned phoneme guid-
+ing framework that conditions mel-spectrogram generation on
+frame-wise phoneme sequences through cross-attention. Un-
+like prior work that treats phonemes as auxiliary supervision,
+our model injects aligned phoneme embeddings directly into
+the decoder. We also introduce refinement strategies that redis-
+tribute merged semantic guidance over frame-wise EMG sig-
+nals, enabling the seamless integration of arbitrary phoneme-
+or text-level correction methods without modifying the synthe-
+sis model. On the Gaddy silent EMG benchmark, TAP-ETS
+reduces WER from 25.12% to 19.77%, achieving state-of-the-
+art performance and demonstrating the importance of accurate
+frame-level alignment.
+Index Terms: emg, silent speech, speech synthesis
+1. Introduction
+EMG-to-speech (ETS) synthesis aims to generate intelligible
+speech from articulatory muscle activity, enabling silent speech
+interfaces that support communication without vocalization.
+Unlike conventional speech synthesis, ETS must recover acous-
+tic information solely from neuromuscular signals that capture
+articulatory movements, making the EMG-to-acoustic mapping
+inherently challenging [1].
+Recent ETS approaches have improved performance by in-
+troducing auxiliary phoneme classification loss or by replacing
+acoustic targets with discrete speech units [2, 3]. While these
+strategies provide useful supervision, phoneme information is
+typically treated as a secondary objective rather than an explicit
+conditioning signal for generation. As a result, linguistic guid-
+ance is implicitly learned and tightly coupled to the training ob-
+jective, limiting controllability and making it difficult to incor-
+porate external correction models in a unified manner.
+To address these limitations, we propose TAP-ETS, a time-
+aligned phoneme (TAP) guided ETS framework that explicitly
+conditions mel-spectrogram generation on frame-wise phoneme
+sequences. Instead of using phoneme information only as aux-
+iliary supervision, our model injects TAP embeddings directly
+into the decoder through cross-attention. In addition, we in-
+troduce TAP refinement strategies that aligns corrected merged
+phoneme sequences with EMG frames, so that phoneme- or
+text-level corrections can be expanded into frame-wise guid-
+ance while preserving the original temporal structure. Because
+this alignment operates only on phoneme sequences and EMG
+frame durations, diverse correction modules can be integrated
+into TAP-ETS without modifying the synthesis model. Au-
+dio samples, demo materials, and source code are available on,
+https://github.com/ongdyub/TAP-ETS.
+The main contributions of this work are as follows:
+• We propose a time-aligned phoneme (TAP)-conditioned
+ETS architecture that generates mel-spectrograms guided by
+frame-wise, time-aligned phoneme embeddings.
+• We introduce TAP refinement strategies that redistribute cor-
+rected phoneme sequences over EMG frames while preserv-
+ing the temporal structure.
+• We demonstrate that this architecture enables the seamless
+integration of diverse phoneme- and text-level corrections
+within a single framework.
+2. Related Works
+2.1. EMG-to-Speech Synthesis
+EMG has long served as a primary modality for silent speech
+interfaces (SSI) [4]. Early studies focused on discriminative
+tasks such as phoneme or word-level classification using surface
+EMG signals, typically relying on signal processing pipelines
+combined with HMM-based modeling [5, 6]. With the advent of
+deep learning, especially Transformer architectures with long-
+range receptive fields, silent speech recognition (SSR) perfor-
+mance has improved substantially [7, 8, 9].
+Beyond recognition, EMG-to-speech (ETS) synthesis aims
+to reconstruct intelligible speech directly from articulatory mus-
+cle activity. Earlier studies [10, 11] attempted EMG-to-speech
+conversion using voiced EMG recordings but were limited by
+small training sets and produced speech with low naturalness.
+Gaddyet al.[12] pioneered generative ETS by releasing a
+benchmark dataset of paired vocalized and silent EMG record-
+ings and introducing a Dynamic Time Warping (DTW)-based
+alignment strategy between EMG and acoustic features. Subse-
+quent works have extended this paradigm using diffusion-based
+generative models [13, 14] and disentangled voice conversion
+frameworks based on pretrained self-supervised learning (SSL)
+speech representations [3, 15].
+To better capture linguistic information, Gaddy and Klein
+[2] introduced a surrogate optimization framework combining
+acoustic reconstruction with a phoneme classification loss. This
+strategy significantly reduced WER and demonstrated the im-
+portance of phoneme-level supervision in ETS. However, in
+such approaches, phoneme prediction serves only as an aux-
+iliary training objective and does not directly condition the de-
+coder during acoustic generation. Consequently, phoneme rep-
+resentations are not explicitly injected as controllable genera-
+tion signals, and inference-time linguistic correction cannot be
+seamlessly integrated without retraining the synthesis model.
+3610
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3485
+EMG
+EMG Encoder
+Phoneme Prediction
+Feature
+Frame-Wise Phoneme
+Cross Attention Decoder
+Mel Prediction
+Q K, V
+Phoneme Encoder
+EMG2MEL
+Training
+Figure 1:Schematic diagram of ETS training with time-aligned
+phoneme conditioning.
+2.2. Semantic Correction and Controllability
+Recent advances in language model-based correction [16, 17,
+18, 9] have shown that high-level semantic priors can effec-
+tively improve recognition accuracy. Nevertheless, these cor-
+rection strategies operate at the text level and are detached from
+acoustic synthesis. They lack a mechanism to project the cor-
+rected linguistic information back onto the frame-level temporal
+structure required for speech generation.
+In contrast, our proposed TAP-ETS framework treats
+phoneme sequences not merely as auxiliary supervision,
+but as explicit, frame-aligned conditioning signals for mel-
+spectrogram generation. By decoupling phoneme estimation
+from acoustic synthesis and enabling time-aligned projection
+of corrected phoneme sequences, our method allows diverse
+phoneme- or text-level correction modules to be integrated into
+ETS without modifying the synthesis backbone.
+3. TAP-ETS Framework
+In this section, we present TAP-ETS, a framework designed for
+ETS synthesis leveraging time-aligned phoneme (TAP) guid-
+ance. The TAP-ETS architecture consists of two primary stages:
+(1) ETS training with TAP conditioning (Figure 1) and (2) TAP
+refinement for semantic guidance during inference (Figure 2).
+3.1. Training with Time-Aligned Phoneme Conditioning
+The schematic diagram of our training procedure is illustrated
+in Figure 1. Given an EMG sequenceX, we donwsample it
+and compute frame-wise phoneme prediction logitsZ ph from
+the encoder output. The phoneme logits are obtained via a
+linear projection of the encoder’s final hidden featuresh; the
+same features are also used as the query for the decoder cross-
+attention.
+X∈R T×C,h= Enc(X)∈R T ′×D,Z ph∈R T ′×Dph (1)
+Unlike prior ETS models that incorporate phoneme in-
+formation via an auxiliary classification loss-providing only a
+weak inductive bias—our framework adopts a cross-attention-
+based decoder that directly embeds phoneme information into
+the acoustic generation process, guiding frame-wise attention
+throughout synthesis. Concretely, the decoder uses the EMG
+encoder featureshas queries (Q), and phoneme encoder fea-
+tures from the phoneme sequence ˜ϕas keys and values (K,V).
+Consequently, mel-spectrogram frames ˆYare predicted by
+jointly conditioning on the articulatory dynamics of the EMG
+features and the linguistic constraints of the phoneme sequence.
+Phoneme Refinement
+Guided Transcription 
+Inference
+Mel Prediction
+Frame-Wise Phoneme
+EMG2MEL
+Phoneme Prediction
+Correction
+LM EtcLLM
+EMG
+Figure 2:Schematic diagram of semantic guiding with time-
+aligned phoneme refinement during inference.
+During training, ˜ϕis set to the ground-truth phoneme sequence
+to ensure stable alignment. At inference time, ˜ϕis replaced
+with either the sequence predicted by the encoder or a refined
+sequence obtained through our proposed refinement method.
+The overall process is formulated as follows, whereθdenotes
+trainable model parameters:
+ˆY= Dec(Q;K,V) =f θ(X, ˜ϕ)∈R T ′×Dy. (2)
+In addition to our proposed conditioning methods, we main-
+tain the auxiliary phoneme classification loss using the DTW-
+alignment from Gaddy and Klein [2], following their formu-
+lation for acoustic-phoneme cost and alignment. The decoder
+produces acoustic predictions ˆY, while the encoder outputs
+phoneme logitsZ ph. The target acoustic features are denoted
+byY∈R T ′×Dy , with corresponding phoneme labelsϕ 1:T ′.
+Phoneme posteriors are computed as ˆπ= softmax(Z ph).
+While the loss formulation itself remains unchanged, unlike
+prior approaches, in our model the phoneme cross-entropy term
+supervises only the encoder phoneme head, whereas the acous-
+tic reconstruction term is backpropagated through both the de-
+coder and the shared encoder representations.
+L=
+X
+(i,t)∈P
+
+λmel
+ ˆYi−Yt
+
+2
++λ ph CE(ˆπi,ϕt)
+
+,(3)
+whereCEdenotes phoneme cross-entropy,Pdenotes the align-
+ment path (identity for voiced data and DTW-based for silent
+data), and we useλ mel =λ ph = 0.5in all experiments.
+3.2. TAP Refinement for Semantic Guidance
+A key advantage of our framework is the use of explicit
+phoneme features as conditioning signals. By decoupling
+phoneme estimation from acoustic synthesis, it enables seam-
+less integration of advanced semantic refinement strategies dur-
+ing inference without retraining. However, external semantic
+guidance (e.g., from a language model) provides phoneme se-
+quences without explicit frame-level timing information. Since
+our synthesis backbone operates on frame-wise representations,
+an additional refinement step is required to transform merged
+phoneme sequences into frame-wise conditioning signals while
+preserving the original EMG-derived duration structure.
+To this end, as illustrated in Figure 3, we introduce two
+complementary phoneme refinement strategies: (1) a Leven-
+shtein distance–based method that rectifies alignment errors via
+phonetic distance, and (2) an independently trained refinement
+model that leverages contextual priors such as typical speech
+3611
+S AY L N D SIL S P IY EY CH
+S AY L AH T SIL S P IY CHN
+insertion substitution deletion
+Phoneme Posterior
+Frame-Wise Sequence
+Guided Transcription
+of Phoneme(or Text)
+S AY L AH N T S P IY CH
+Frame-Wise Ailgment
+Based on Lev-Distance
+silent
+S T S AY AY AY AY R R K L AH AH AH F AH N N D T
+S S S AY AY AY AY AY L L L AH AH AH AH AH N N T T
+S AY L AH N T Frame-Wise Phoneme Refinement Model
+(a)
+(b)
+Guided Transcription
+of Phoneme(or Text)
+Corrupted Phoneme
+Frame-Wise Sequence
+Target Phoneme
+Sequence from Speech
+Figure 3:Schematic diagram of semantic guiding with TAP . (a)
+illustrates the Levenshtein Distance based alignment. (b) shows
+the training procedure of the masking-based refinement model.
+duration patterns or isolated phoneme bursts. A key property
+of TAP-ETS is that the refined semantic information remains
+strictly aligned with frame-level acoustic features, enabling the
+model to enhance semantic consistency while preserving acous-
+tic fidelity, including prosodic timing and alignment.
+3.2.1. Levenshtein Distance-based Refinement
+Given an EMG sequence withTframes and phoneme posteriors
+Zph, we obtain a discrete sequencearg maxZph, which is then
+converted into run-length encoded segmentsS base = [(ϕk,ℓk)].
+A language model produces a corrected phoneme sequence
+z= (z 1,...,z M), whereMdenotes the length of the merged
+phoneme sequence. After removingsiltokens fromS base, we
+construct frame-wise phoneme sequence aligned tozvia stan-
+dard Levenshtein alignment (keep, substitute, delete, insert).
+The operations are applied independently within each maximal
+non-silregion (island).
+For each island, its total durationL island = Pℓk is pre-
+served and redistributed over the corrected tokens, producing
+Saligned = [(ϕ′
+k,ℓ′
+k)]. If an island becomes empty, its duration is
+absorbed into a neighboringsilsegment and adjacentsil
+segments are merged. Finally, each(ϕ ′
+k,ℓ′
+k)is expanded to
+ℓ′
+k repeated tokens, yielding a length-Tframe-wise sequence
+aligned with EMG. This projects the corrected transcription
+onto the frame grid while preserving the original timing and
+silence structure.
+3.2.2. Frame-Wise Masking-based Refinement Model
+While deterministic projection (Sec. 3.2.1) preserves the tem-
+poral frame structure, it assumes the availability of locally re-
+liable phoneme labels. Since both EMG-derived posteriors
+and refined guidance sequences may be imperfect, we train a
+frame-wise masking-based refinement model. This model is de-
+signed to further mitigate duration-assignment errors and EMG-
+induced phoneme confusions by leveraging learned linguistic
+and temporal priors. Lety frame∈V T denote the clean frame-
+wise sequence andy merge∈V L the merged sequence. A cor-
+rupted sequence ˜yframe is constructed by modifying each frame
+with probabilityp corrupt: if selected, the label is replaced with
+[MASK]with probabilityp mask or with a random phoneme
+fromVwith probabilityp replace. A binary maskmindicates
+modified positions.
+We use a Transformer encoder–decoder, encodingy merge
+as memory and ˜yframe as decoder queries, to predict
+pθ(yframe
+t |y merge, ˜yframe). The loss is
+L= 1
+|C|
+X
+t∈C
+ℓt +α clean
+1
+| ¯C|
+X
+t∈ ¯C
+ℓt,(4)
+whereℓ t =−logp θ(·),Cis the set of corrupted frames and
+¯Cits complement. The module refines frame-wise alignment
+while correcting EMG phoneme posteriors. We useα clean =
+0.1,p replace = 0.5, andp mask = 0.2.
+4. Experiments
+4.1. Datasets
+We use the publicly available EMG dataset released by Gaddy et
+al. [19], a widely adopted benchmark in silent speech research.
+The dataset contains bothvoicedandsilentEMG recordings.
+For voiced data, time-aligned speech audio is available, and
+phoneme sequences are obtained using the Montreal Forced
+Aligner (MFA) [20]. For silent data, each utterance is paired
+with its corresponding voiced recording of the same sentence;
+following prior work [3, 2], we use this pairing with DTW to
+align the sequences and transfer speech targets to the silent con-
+dition. To ensure comparability with prior ETS work, we adopt
+the test dataset of [2]. The model with the highest frame-wise
+phoneme accuracy on the 198-sample validation set is selected,
+and results are reported on the 98-sample silent EMG test set.
+We train the masking-based refinement model (Sec. 3.2.2)
+on the LibriSpeech [21]train-clean-100split, which pro-
+vides diverse phoneme sequences with natural prosodic timing.
+The phoneme sequences are also extracted via MFA.
+4.2. Experimental Settings
+We compare our model against Gaddy [2] and Scheck [3],
+which represent the current state-of-the-art in ETS intelligibil-
+ity. For comprehensive evaluation, we report Phoneme, Charac-
+ter, and Word Error Rates (PER, CER, and WER), using ASR
+transcriptions generated by the Whisper-medium [22] model.
+To measure frame-wise phoneme accuracy, frame-level align-
+ments were extracted using MFA. All systems utilize a consis-
+tent HiFi-GAN vocoder [23] to ensure a fair comparison.
+In this experiment, we apply text-level guidance by lever-
+aging MONA-LISA [9], which performs EMG recognition
+coupled with GPT-3.5-based text-level correction (achieving a
+recognition WER of 12.70%). The predicted words are con-
+verted into phoneme sequences via G2P and subsequently redis-
+tributed using our proposed sequential time-aligned phoneme
+refinement strategies (Sec. 3.2.1 followed by Sec. 3.2.2).
+5. Results
+5.1. Intelligibility Evaluation of EMG-to-Speech
+As summarized in Table 1, TAP-ETS significantly outper-
+forms existing baselines across all intelligibility metrics, includ-
+ing Accuracy, PER, CER, and WER. Notably, our framework
+achieves a new state-of-the-art WER of 19.77%, with statisti-
+cal significance confirmed by paired t-tests (p <0.05). These
+results highlight the combined benefit of TAP conditioning dur-
+ing synthesis and semantic guiding via TAP refinement at in-
+ference. This synergy enables effective synchronization be-
+tween high-level semantic guidance and frame-wise acoustic
+features, allowing TAP-ETS to preserve linguistic intelligibil-
+ity and prosodic consistency, thereby bridging the gap between
+silent EMG signals and natural speech synthesis.
+3612
+Table 1:Evaluation results of EMG to speech.
+Acc↑PER↓CER↓WER↓
+Gaddy [2] 67.54 19.73 13.92 25.12
+Scheck [3] 65.59 19.59 12.76 26.09
+TAP (ours)73.03 15.59 11.15 19.77
+5.2. Ablation Studies
+5.2.1. TAP Refinement Strategies
+We evaluate the individual and collective impact of our pro-
+posed refinement strategies. Lev denotes Levenshtein distance-
+based refinement, NN refers to the masking-based refinement
+model, and Lev+NN represents their sequential application.
+As shown in Table 2(a), both refinement strategies improve
+intelligibility over the baseline (25.12%). Levenshtein-based
+method primarily corrects token-level inconsistencies while
+preserving duration structure. The masking-based model fur-
+ther mitigates frame-level noise and duration allocation errors.
+Their sequential application yields the best performance, sug-
+gesting that deterministic temporal projection and learned con-
+textual refinement address complementary error sources.
+While our framework supports both phoneme- and text-
+level correction, we focus on text-level corrected output
+sequence for refinement, as it consistently outperformed
+phoneme-level alternatives. We hypothesize that modern lan-
+guage models capture high-level linguistic context more effec-
+tively in the text domain than in the phoneme domain, reinforc-
+ing the utility of TAP refinement in bridging these domains.
+5.2.2. Efficacy of Time-Aligned Phoneme Conditioning
+In this experiment, we compared various conditioning for-
+mats to justify the use of TAP. First, we compared frame-wise
+phoneme guidance against frame-wise text guidance. For a fair
+comparison, we utilized ground-truth labels for both formats to
+ensure precise time alignment, which explains the inherently
+lower WER observed in these configurations.
+As shown in Table 2(b), phoneme guidance yielded supe-
+rior performance compared to text guidance, and frame-wise
+phoneme guidance further outperformed the merged-sequence
+approach. This suggests that, unlike standard TTS systems that
+predict alignment internally from token-level sequences, ETS
+models benefit significantly from explicit frame-level guidance.
+We posit that the inherent ambiguity within EMG sig-
+nals makes it difficult for models to learn high-level linguistic
+or time-misaligned representations. Bridging biosignals with
+phonemes—which are acoustically more representative than
+characters—simplifies the learning task by providing a more di-
+rect mapping to the target speech.
+5.2.3. Temporal Alignment Fidelity
+To evaluate the impact of temporal precision, we compare two
+misalignment settings: (1) Padding, where initial frames are
+zero-padded while the remaining alignment is kept intact, and
+(2) Time Shift, which globally offsets the entire sequence.
+Table 2(c) shows that performance degrades as temporal
+shift increases, with Time Shift yielding much higher WER
+than Padding. This indicates that the TAP-conditioned model
+depends on precise frame-level alignment, as misalignment
+severely harms synthesis quality. Moreover, the Random Dura-
+tion setting—where phoneme sequences are fixed but durations
+Table 2:Results of the ablation studies. n denotes the number
+of phoneme conditioning frames padded or shifted.
+Acc↑PER↓CER↓WER↓
+(a)
+Lev 73.03 16.34 11.68 21.47
+NN 71.28 18.08 12.96 23.78
+Lev + NN 73.03 15.59 11.15 19.77
+(b)
+Frame-Wise Text 69.17 13.42 7.90 14.72
+Frame-Wise Phoneme 76.73 9.82 6.08 11.92
+Merged Phoneme 68.80 12.38 15.43 28.71
+(c)
+Padding (n=50) 72.93 16.17 11.44 20.50
+Time Shift (n=50) 72.47 17.12 12.33 22.81
+Padding (n=100) 71.84 19.53 14.59 26.16
+Time Shift (n=100) 69.89 20.25 15.36 28.04
+Random Duration 69.86 21.44 16.67 29.74
+(d) EMG-Mismatch 21.04 110.84 110.15 135.28
+Phoneme-Mismatch 54.21 52.37 43.53 67.88
+are randomized— results in the highest WER, underscoring the
+critical role of accurate temporal alignment in ETS.
+5.2.4. Complementarity of EMG and Semantic Guidance
+We conducted mismatch experiments to evaluate the reliance
+on raw EMG versus TAP-based guidance. We tested EMG-
+mismatch and Phoneme-mismatch settings by shifting one
+modality to the next sample while keeping the other matched.
+As shown in Table 2(d), both settings lead to performance
+degradation, confirming that both sources are essential for ac-
+curate prediction. Notably, the degradation is more severe in
+the EMG-mismatch setting. This suggests that our TAP-based
+refinement functions not as a rigid TTS-like constraint but as an
+auxiliary guide that complements the EMG signal, enhancing
+intelligibility through effective frame-wise conditioning.
+6. Conclusion
+We presented TAP-ETS, a time-aligned phoneme-guided EMG-
+to-speech framework that conditions the decoder on frame-wise
+phoneme sequences. By casting semantic guidance as a tem-
+poral projection problem, it refines merged phonemes or text
+into frame-aligned signals while preserving the original EMG-
+derived timing structure, enabling flexible integration of exter-
+nal corrections without retraining the backbone. On the Gaddy
+silent EMG benchmark, TAP-ETS achieves state-of-the-art in-
+telligibility. Ablations show that (1) frame-wise phoneme con-
+ditioning outperforms merged token conditioning, (2) temporal
+misalignment or duration perturbation degrades performance,
+and (3) both EMG and aligned semantic guidance are required
+for accurate mel-spectrogram generation. These results under-
+score the importance of precise temporal conditioning in bridg-
+ing biosignals and natural speech synthesis.
+We note a limitation that our framework relies on language
+models to generate corrections for alignment and refinement,
+making performance dependent on the quality of these models.
+Nevertheless, the framework is flexible and can incorporate var-
+ious correction modules that provide phoneme or text guidance.
+As these models improve, future work will explore approaches
+that better reflect the characteristics of EMG data.
+3613
+7. Acknowledgement
+This work was partly supported by the National Research
+Foundation of Korea(NRF) grant funded by the Korea govern-
+ment(MSIT) [No. RS-2024-00461617, 45%], Institute of In-
+formation & communications Technology Planning & Evalua-
+tion (IITP) grant funded by the Korea government(MSIT) [No.
+RS2022-II220641, 50%] and [No. RS-2021-II211343, 5%].
+The GPUs were supported by the Advanced GPU Utilization
+Support Program funded by the Ministry of Science and ICT
+and supervised by NIPA [No. 02-26-01-0285].
+8. Generative AI Use Disclosure
+Generative AI tools were used only for grammatical correction,
+language polishing, and minor code assistance (e.g., debugging,
+skeleton template). All research ideas, experimental design,
+analyses, and conclusions were developed by the authors, who
+take full responsibility for the content of this paper.
+9. Referen

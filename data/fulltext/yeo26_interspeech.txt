@@ -1,0 +1,530 @@
+Pushing the Limits of Compression: Sub-1-Bit Conformer via Variable-Rank
+Binary Decomposition
+Jinsu Yeo ID 1,∗, Banseok Lee ID 1,∗, Youngmin Kim ID 1,∗∗
+1 Samsung Research, Samsung Electronics, Republic of Korea
+js.yeo@samsung.com, bs93.lee@samsung.com, ym1012.kim@samsung.com
+Abstract
+While Conformer-Transducers offer state-of-the-art ASR per-
+formance, their excessive memory footprints create a bottle-
+neck for on-device deployment. Conventional integer quanti-
+zation is fundamentally constrained by a discrete grid, impos-
+ing a structural lower bound of 1 bit per parameter. To address
+this challenge, we propose LittleASR, a mixed-precision frame-
+work based on variable-rank binary decomposition. Guided
+by a gradient-aware sensitivity metric, LittleASR identifies and
+compresses non-critical layers to the sub-1-bit regime, pushing
+the limits of compression beyond the boundaries of standard
+quantization while maintaining a favorable trade-off between
+extreme memory reduction and recognition accuracy.
+Index Terms: speech recognition, mixed-precision quantiza-
+tion, sub-1-bit quantization
+1. Introduction
+End-to-end Automatic Speech Recognition (ASR), particularly
+the Conformer-Transducer [1, 2], has established new bench-
+marks in accuracy by combining the local feature extraction
+of CNNs with the global context modeling of Transformers
+[3, 4, 5, 6]. However, these models typically contain over 100
+million parameters, creating a bottleneck for on-device infer-
+ence where memory bandwidth and power consumption are
+strict constraints [7].
+A critical challenge in Transducer compression is the un-
+even sensitivity of its components. While the Encoder acts as
+a robust feature extractor, the Predictor (Decoder) is autore-
+gressive and highly susceptible to approximation errors. Con-
+sequently, prior works [8, 9, 10] typically adopt a conserva-
+tive mixed-precision strategy: aggressively compressing the En-
+coder (e.g., 1–4 bits) while maintaining the sensitive Decoder at
+high precision (e.g., 4–16 bits) to prevent context collapse.
+However, this strategy faces a fundamental compression
+deadlock in extreme on-device scenarios. Since the Decoder
+requires a high-precision budget to maintain stability, the only
+mathematical path to further reduce the total model footprint
+is to compress the Encoder beyond standard limits. Never-
+theless, existing integer-based quantization methods are strictly
+bounded by a discrete grid, imposing a structural hard floor at
+1-bit per weight. This makes the sub-1-bit regime inaccessi-
+ble and leaves the redundancy of the Conformer Encoder un-
+exploited, so even state-of-the-art 1-bit techniques [8] cannot
+compress further once this limit is reached.
+To resolve this deadlock, we propose LittleASR, a mixed-
+precision framework utilizing LittleBit [11], a binary low-rank
+*These authors contributed equally.
+**indicates the corresponding author.
+101520253035
+6
+8
+10
+12
+1.0 bpw 0.8 bpw
+0.6 bpw
+0.4 bpw
+Model Size (MB)
+WER (%) on dev-other
+RTN (INT2)
+AbsMean (Group-wise)
+AbsMean (Tensor-wise)
+LittleASR (Uniform, ours)
+LittleASR (Mixed, ours)
+Figure 1:Pareto Frontier of WER vs. Model Size.Compar-
+ison on LibriSpeech dev-other. By utilizing SVD-based com-
+pression, LittleASR successfully achieves sub-1-bit model sizes
+while maintaining stable performance.
+decomposition technique. While previous methods apply this
+structure with uniform ranks for fixed-precision compression,
+we reframe the inner rankras a tunable parameter for layer-
+wise sensitivity. LittleASR dynamically adjustsrto create a
+quasi-continuous spectrum of effective bit-widths (e.g., 0.1–2.0
+bits), decoupling model size from the discrete quantization grid.
+This allocation is guided by a gradient-aware sensitivity metric,
+which assigns higher precision to the sensitive decoder while
+compressing the redundant encoder into the sub-1-bit regime,
+thereby optimizing performance for memory-constrained de-
+ployment.
+Our contributions are summarized as follows:
+1.Fine-Grained Mixed-Precision Framework:We demon-
+strate that rank-adaptive binary decomposition allows for
+quasi-continuous bit allocation, enabling fine-grained control
+unavailable in discrete quantization schemes.
+2.Gradient-Aware Allocation:By leveraging gradient-guided
+layer-wise sensitivity, we identify that the Conformer En-
+coder exhibits greater redundancy, making it amenable to ex-
+treme compression, whereas the Decoder displays acute sen-
+sitivity, necessitating higher ranks to preserve context.
+3.Robustness in Extreme Compression:While our method
+performs comparably to uniform baselines at 1.0 bpw (WER
+6.01% vs. 6.34%), it significantly widens the performance
+gap in the extreme compression regime (0.2–0.6 bpw), vali-
+dating its efficacy for ultra-compact model deployment.
+2. Method
+2.1. Enabling Sub-1-Bit ASR via Binary Decomposition
+To overcome the memory bottleneck where standard quanti-
+zation is bounded by 1 bit, we propose redesigning the Con-
+former’s linear transformations (including pointwise convolu-
+tions [12] and LSTM [13] projections). Targeting these linear
+projections that dominate the parameter count, we employ the
+1739
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2063
+Original Dense
+W
+dout×d in
+Decompose
+h
+dout
+Ub l
+Binary Low-Rank
+r
+Vb g
+din
+: FP16 Tensor : FP16 Vector : Binary Tensor (±1)
+Figure 2:Architecture of LittleASR (Binary SVD).We replace
+the weight matrixWwith a product of two low-rank binary ma-
+trices (Ub,V⊤
+b ) and floating-point scalers (g,h,ℓ). By varing
+rankr, we enable sub-1-bit compression.
+Variable-Rank Binary Decomposition framework introduced in
+LittleBit [11]. While originally formulated for Large Language
+Models, we identify that its quasi-continuous rank allocation
+offers a novel solution to the compression deadlock in ASR by
+decoupling the model size from the discrete quantization grid.
+Decomposed Architecture:Following the LittleBit frame-
+work [11], instead of storing a dense weight matrixW∈
+Rdout×din, we adopt a decomposed representation where the
+weight is approximated by the product of low-rank binary
+factors and learnable full-precision scales. Specifically, we
+leverage the binary factorsU b ∈ {±1}dout×r andV b ∈
+{±1}din×r as the signs of latent floating-point matrices. To
+compensate for the quantization error and preserve the high dy-
+namic range of speech features, we incorporate three distinct
+scaling vectors: row scaleh∈R dout, column scaleg∈R din,
+and a cruciallatent scaleℓ∈R r. The latent scaleℓis particu-
+larly significant in our strategy as it addresses the factorization
+structure by learning the relative importance of each binary ba-
+sis vector.
+The approximate weight matrix ˜Wis constructed as:
+W≈ ˜W=diag(h)U bdiag(ℓ)V⊤
+b diag(g)(1)
+where diag(·)constructs a diagonal matrix from a vector. To
+allow for gradient-based optimization of the discrete binary fac-
+tors, we employ the Straight-Through Estimator (STE) [14]
+during backpropagation. Note that pointwise convolutions and
+LSTM gate projections are mathematically equivalent to linear
+transformations. By reformulating these modules as standard
+matrix multiplications, we enable the seamless application of
+this decomposition.
+Efficient Forward Pass:A key advantage of integrating
+this structure into the Conformer is that explicitly reconstruct-
+ing the dense ˜Wis unnecessary during inference. Given an
+inputX∈R seq×din, the outputYcan be computed efficiently
+using only binary matrix multiplications and element-wise scal-
+ing operations:
+Y=X ˜W⊤ =
+
+(((X⊙g)V b)⊙ℓ)U ⊤
+b
+
+⊙h(2)
+where⊙denotes element-wise multiplication with broadcast-
+ing. This formulation replaces a large high-precision GEMM
+with two smaller binary GEMMs, significantly reducing mem-
+ory bandwidth consumption, which is the primary bottleneck in
+edge ASR inference.
+From Rigid Bits to Fine-Grained Ranks:Crucially, the
+effective bits per weight (bpw) is governed by the rankrrather
+than a discrete bit-width. Unlike integer quantization restricted
+to discrete steps (e.g., 1, 2 bits), varyingrallows highly gran-
+ular allocation (e.g., 1.2, 0.1 bpw). By treatingras a con-
+tinuous control variable, our Gradient-Aware Mixed-Precision
+strategy compresses the Encoder layers to the sub-1-bit regime
+(r≪min(d in,d out)), creating the memory budget needed to
+preserve the sensitive Decoder.
+2.2. Sensitivity-Aware Rank Optimization
+Formally, our goal is to find the optimal rank configurationr=
+{r1,...,r L}that minimizes the model size while maximizing
+performance.
+Gradient-Based Sensitivity Prior:To guide this optimiza-
+tion, we first quantify the layer-wise sensitivity. Following prior
+quantization studies [15, 16, 17, 18], we adopt a gradient-based
+metric under the assumption that layers with larger gradient
+magnitudes are more sensitive to quantization noise.
+To quantify layer-wise sensitivity, we compute the mean
+squared gradient across all parameters within each layer. For
+a layerlcontainingN l parameters, the sensitivity scoreΩ (l) is
+defined as:
+Ω(l) = 1
+Nl
+NlX
+i=1
+ 
+∂Ltask
+∂w (l)
+i
+!2
+(3)
+wherew (l)
+i denotes thei-th parameter of the layer. This sensi-
+tivity metric empirically reveals that the Encoder layers exhibit
+significantly lower sensitivity compared to the Decoder layers.
+Differentiable Rank Search:Leveraging this sensitivity
+map, we formulate bit allocation as a continuous optimization
+problem. We adopt the sensitivity-regularized allocation frame-
+work recently proposed by GenPTQ [16], which minimizes the
+following mixed-precision objective:
+Ltotal =λ 1
+
+1
+L
+LX
+l=1
+bl−B target
+ +λ 2
+LX
+l=1
+Ω(l)(b(l)
+max−b l)
+(4)
+The first term enforces the global average bit-width to con-
+verge to the target budgetB target. The second term, weighted
+byΩ (l), penalizes rank reduction in sensitive layers. Here,b l
+denotes the effective bit-width allocated to layerl,b (l)
+max is the
+per-layer upper bound imposed by the full-rank limit,b min is
+the global lower bound (both used in the projection ontoS l be-
+low), andλ 1,λ 2 are scalar weights balancing the budget and
+Algorithm 1LittleASR Allocation Algorithm
+Require:ModelM, Target BitB target, Calib DataD cal, Iter-
+ationsT,λ 1,λ 2
+1:Phase 1 (Calibration):Compute sensitivityΩ (l) using ac-
+cumulated squared gradients onD cal and normalize.
+2:Phase 2 (Differentiable Search):Initialize bit vector
+element-wise,b l←B target∀l(so the budget term is ex-
+actly zero att=0).
+3:fort= 1toTdo
+4:L←λ 1|Avg(b)−B target|+λ 2
+P
+l Ω(l)(b(l)
+max−b l)
+5:Updatebvia Adam optimizer to minimizeL.
+6:Projectbto range[b min,b (l)
+max].
+7:end for
+8:Phase 3 (Exact Budget Matching):
+9:Find scalar shiftδ ∗ via binary search to satisfy:
+10:
+PNl·clamp(b l +δ∗)≈N total·B target
+11:returnRanksrmapped from final bits clamp(b+δ ∗).
+1740
+Decoder
+(LSTM)
+Joint Net
+Encoder
+Audio Features
+Output Prob.
+↑Fidelity
+Required
+↓Aggression
+Allowed
+Encoder Zone Decoder Zone
+Sensitivity (Ω)
+Bit-width (bpw)
+1
+2
+RTN (Baseline)
+Ours (LittleASR)Inaccessible
+(Sub-1-Bit)
+Aggressive
+(≈0.35)
+Fidelity
+(≈1.9)
+(a) Sensitivity-Guided Allocation (b) Variable-Rank Decomposition
+Rankracts as a continuous slider:
+Lowr→Encoder (Sub-1-bit), Highr→Decoder.
+1. Low-Rank (Encoder, Small r)
+X lUbh V T
+b g Y
+2. High-Rank (Decoder & Joint Net, Large r)
+X lUbh V T
+b g Y
+Figure 3:Overview of LittleASR. (a) Sensitivity-Guided Allocation:Unlike discrete RTN, our continuous rank adaptation unlocks the
+sub-1-bit regime for the robust Encoder while allocating high precision to the sensitive Decoder.(b) V ariable-Rank Decomposition:
+Rankracts as a continuous precision controller within binary factorization, seamlessly transitioning between aggressive compression
+and high-fidelity reconstruction, effectively decoupling model size from the 1-bit limit.
+sensitivity terms. In contrast to GenPTQ, which ultimately
+rounds these optimized values to rigid integers, we mapb l di-
+rectly to the fine-grained inner rankr l to entirely bypass the
+discretization penalty. Althoughr l is itself integer-valued, for
+typical layer dimensions (e.g.,512×2048) a unit change in
+rl corresponds to only≈0.002bpw, two to three orders of
+magnitude finer than the 1-bpw step of integer quantization; we
+therefore refer to this allocation asquasi-continuous. Follow-
+ing Algorithm 1, we optimize the effective bit-widthsbl to min-
+imize this objective using the Adam optimizer on a tiny calibra-
+tion set. Once the optimal rank configuration is determined, we
+fine-tune the allocated model using Quantization-Aware Train-
+ing (QAT) [19].
+Exact Budget Satisfaction:Since the soft constraint in
+Ltotal does not guarantee strict adherence to the hardware
+memory limit, we apply a post-optimization calibration. We
+solve for a scalar shiftδ ∗ via binary search to satisfy the hard
+budget constraint:
+LX
+l=1
+Nl·PSl(b∗
+l +δ∗) =N total·B target (5)
+wherePSl(·)is the projection operator that clips values onto
+the feasible setS l = [bmin,b (l)
+max]. This step leverages our con-
+tinuous rank property to ensure the final model size matches the
+target (e.g., 20MB) with negligible margin of error, a capability
+lacking in discrete quantization methods.
+3. Experiments
+3.1. Experimental Setup
+We apply weight-only QAT to the Conformer-Transducer
+Large1 (120M parameters) based on NVIDIA NeMo [20]. The
+model is trained for 100 epochs on 8 A100 GPUs using a co-
+sine annealing scheduler (LR5.0×10 −4), with checkpoint se-
+lection based on dev-other WER. For quantization, we target
+parameter-heavy pointwise convolutions, LSTM projections,
+and linear layers for extreme compression, while Conv2d lay-
+ers are quantized to 4-bit via Round-to-Nearest (RTN) to fur-
+ther enhance compression rates. Lightweight modules, such as
+1STT En Conformer-Transducer Large LibriSpeech (v1.9.0) check-
+points, available via the NVIDIA NGC catalog.
+depthwise convolutions and embedding layers, remain in FP16.
+The per-layer scaling vectors of the decomposition (h,g,ℓ) are
+likewise retained in FP16, and their overhead is included in all
+reported model sizes. For the rank optimization, we set the
+penalty weights toλ 1 = 100andλ 2 = 1, heavily penal-
+izing the size objective to strictly enforce the target memory
+footprint. We use 80 calibration utterances to calculate layer
+sensitivity. We report Word Error Rate (WER) on LibriSpeech
+[21] and model size (MB). LittleASR is compared against the
+following baselines: 1) FP32 (Full Precision), 2) RTN (Round-
+to-Nearest), 3) AbsMean [22] with group-wise and tensor-wise
+scaling.
+Table 1:Main results on LibriSpeech. We compare our Lit-
+tleASR framework against existing quantization methods. We
+evaluate two configurations of LittleASR: uniform rank (con-
+stant compression) and gradient-aware mixed rank (sensitivity-
+guided rank optimization).
+Method Configura- W- Size Dev Dev Test Test
+tion Bit (MB) Other Clean Other Clean
+Baseline - 32.0 481.6 4.77 2.12 5.03 2.31
+RTN INT4 channel-wise 4.0 62.3 5.05 2.21 5.34 2.30
+RTN INT2 channel-wise 2.0 33.0 7.08 2.93 7.30 3.04
+AbsMean [22] Group-wise (size 64) 1.0 21.8 5.74 2.31 5.77 2.53
+AbsMean [22] Tensor-wise 1.0 18.1 6.30 2.62 6.30 2.77
+LittleASR (Ours)
+Uniform
+Rank
+1.0 18.8 6.34 2.56 6.38 2.63
+0.8 15.8 6.93 2.67 6.83 2.87
+0.6 12.9 7.77 3.06 7.95 3.22
+0.4 10.0 10.82 5.05 11.07 5.08
+0.2 7.1 16.69 7.77 16.44 8.00
+Gradient-Aware
+Mixed Rank
+1.018.8 6.01 2.36 6.12 2.63
+0.815.8 6.41 2.57 6.58 2.70
+0.612.9 7.09 2.84 7.05 2.94
+0.410.0 8.78 3.26 8.75 3.57
+0.27.1 15.19 6.29 15.15 6.43
+3.2. Main Results
+Table 1 compares the performance of LittleASR against stan-
+dard quantization baselines. To rigorously evaluate our frame-
+work, we investigate two allocation strategies: uniform rank
+(fixed effective bit-width across all target layers) and gradient-
+aware mixed rank (sensitivity-guided optimization).
+Standard methods such as RTN and AbsMean perform ro-
+bustly within their operational range (e.g., 4-bit or 1-bit) un-
+der QAT, but are strictly bounded by the discrete integer grid
+1741
+(w∈ {−1,+1}). This 1-bit hard floor makes it impossible
+to reach extreme compression scenarios (e.g.,<10MB) where
+fractional bit-widths are required.
+In contrast, LittleASR overcomes this discretization bot-
+tleneck by reparameterizing quantization as a continuous rank
+optimization problem. For instance, the uniform rank config-
+uration at 0.8 bpw achieves 6.93% WER on dev-other, outper-
+forming the INT2 RTN baseline (7.08%) despite a 2×reduc-
+tion in model size (33.0MB→15.8MB). This demonstrates
+the intrinsic efficiency of our binary decomposition into the
+sub-1-bit regime. Furthermore, the gradient-aware mixed rank
+strategy significantly extends the Pareto frontier by aggressively
+diverting the bit budget from the redundant Encoder to rein-
+force the sensitive Decoder. Notably, at 1.0 bpw, the mixed
+strategy achieves a WER of 6.01% on dev-other, outperform-
+ing the Tensor-wise AbsMean baseline (6.30%). Crucially,
+our variable-rank approach extends compression to 7.1MB (0.2
+bpw), a regime where integer baselines physically cannot oper-
+ate.
+3.3. Analysis of Bit Allocation Strategy
+Figure 4 visualizes the layer-wise sensitivity and correspond-
+ing bit-width allocation derived by LittleASR, revealing a clear
+structural hierarchy exploited by our optimizer. Globally, a
+sharp contrast exists between the acoustic encoder and predic-
+tion network. Early Encoder layers are aggressively compressed
+(0.3–0.4 bpw) due to their low sensitivity to quantization noise.
+Conversely, the prediction network retains high precision: the
+Joint Network receives≈2.0 bpw, and the Decoder LSTM is al-
+located 1.25 bpw. Because we concatenate the four gate weights
+(Wii,W if,W ig,W io) for decomposition, this 1.25 bpw effec-
+tively represents the structural full-rank limit. This full-capacity
+assignment confirms the autoregressive core allows minimal
+compression compared to the robust encoder.
+Within the Encoder, a depth-wise progression is evident: al-
+located rank gradually increases as the network deepens (Layer
+0:∼0.3 bpw→Layer 16:∼1.5 bpw). This correlates with the
+speech processing hierarchy, where deeper layers encoding ab-
+stract semantic information necessitate higher fidelity than shal-
+low layers processing raw spectra.
+Finally, our method captures micro-level granularity. In
+Self-Attention layers (e.g., Layer 10), the Value projection (Wv)
+consistently receives significantly higher precision (≈1.9 bpw)
+than Key/Query projections (W k,W q≈0.1–0.8 bpw). Func-
+tionally, this suggests that while routing logic (W k,W q) is
+robust to approximation, the content payload (W v) demands
+higher precision to maintain representation quality.
+3.4. Ablation Study: Impact of Decoder Fidelity
+To isolate the impact of component-wise precision, we con-
+ducted a controlled experiment fixing the total model size to
+10MB (0.4 bpw). We compare three allocation strategies with
+varying precision distributions between the Encoder and De-
+coder. As shown in Table 2, the inverse priority configuration
+consistently underperforms the uniform baseline, exhibiting a
+noticeable degradation in WER. This performance gap confirms
+a strong sensitivity asymmetry: the Conformer-Transducer is
+critically dependent on the Decoder’s fidelity. Consequently,
+effective compression requires exploiting the encoder’s redun-
+dancy to allocate sufficient budget to the decoder, whereas the
+reverse strategy proves to be structurally inefficient.
+0 2 4 6 8 10 12 14 16 Dec
+hh
+Dec
+ih
+Joint
+Enc
+Joint
+Net
+Joint
+Pred
+10 1
+100
+101
+Sensitivity (Log Scale)
+(a) Layer-wise Sensitivity
+0 2 4 6 8 10 12 14 16 Dec
+hh
+Dec
+ih
+Joint
+Enc
+Joint
+Net
+Joint
+Pred
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00Effective Bit Width
+(b) Bit Allocation
+Color: Module Type  |  Line Style: Sub-component
+Self-Attention
+Feed Forward
+Convolution
+Decoder
+Joint Net
+ 
+Module 1 / Linear 1 / Q,K,V
+Module 2 / Linear 2 / Out
+Positional Encoding
+Figure 4:Visualization of the learned bit allocation. The pro-
+posed metric automatically allocates high precision to the sen-
+sitive Decoder, while aggressively compressing the robust En-
+coder to sub-1-bit precision.
+Table 2:Impact of bit allocation (10MB budget). We compare
+strategies by varying the precision priority (↑: High,↓: Low).
+Strategy Precision Profile WER (%)
+Encoder Decoder Clean Other
+Uniform 0.4 bpw 0.4 bpw 5.08 11.07
+Inverse Priority High (↑) Low (↓) 5.72 12.79
+LittleASR (Ours) Low (↓) High (↑) 3.57 8.75
+3.5. Computational Efficiency Analysis
+To analyze the hardware efficiency of LittleASR, we compare
+the theoretical arithmetic cost of a Conformer-Large FFN layer
+(512×2048) at 0.5 bpw (r≈205) in Table 3. A standard FP16
+layer requires2×d in×d out≈2.10M FLOPs. In contrast,
+LittleASR utilizes binary weights (±1), replacing these multi-
+plications with lightweight sign-bit operations (BOPs). Since
+BOPs incur negligible hardware cost [23], the primary effi-
+ciency gain comes from the drastic reduction in FP16 operations
+(2.10M→0.52M). We note that these figures reflect theoret-
+ical operation counts rather than measured on-device latency,
+throughput, or power; a full hardware-level evaluation is left to
+future work.
+Table 3:Theoretical arithmetic operation count for an FFN
+layer (512×2048) at 0.5 bpw.
+Metric FP16 Baseline LittleASR (0.5 bpw)
+FP16 Operations(FLOPs) 2.10 M0.52 M
+Binary Operations(BOPs) - 0.52 M
+4. Conclusion
+We proposed LittleASR to overcome the structural 1-bit com-
+pression limit of Conformer-Transducers. By leveraging contin-
+uous binary low-rank decomposition guided by gradient-aware
+sensitivity, our method unlocks the sub-1-bit regime inacces-
+sible to rigid integer quantization, financing the sensitive De-
+coder’s fidelity through aggressive Encoder compression. Lit-
+tleASR maintains stable recognition on LibriSpeech even at ex-
+treme sub-1-bit levels, offering a compact solution for memory-
+constrained edge devices.
+1742
+5. Generative AI Use Disclosure
+The authors used generative AI tools to assist with language
+editing and proofreading. All scientific claims, methodology,
+and experimental results were fully developed and verified by
+the authors.

@@ -1,0 +1,434 @@
+SuTRA: Structurally-Unified Tokenization with Root Awareness
+Vaibhav Rathore1,2, Siddhant Gole1,2, Dadhichi Telwadkar1, Rooshil Bhatia1, Maulik Ruparel1,
+Siddharth Sureka1, Neha Bhargava1
+1Motilal Oswal Financial Services Ltd., India
+2Indian Institute of Technology (IIT) Bombay, India
+{rathore.vaibhav, siddhant.gole, dadhichi.telwadkar, rooshil.bhatia, maulik.ruparel,
+siddharth.s, neha.bhargava}@motilaloswal.com
+Abstract
+Existing subword tokenizers optimize statistical compression
+but ignore morphological structure, particularly the relationship
+between roots and affixes. This is harmful for morphologically
+rich Indic languages, where basic units are complex orthographic
+syllables (aksharas) rather than letters. Frequency-based meth-
+ods over-fragment words, arbitrarily splitting roots and affixes—a
+phenomenon we termMorphological Shattering. We proposeSu-
+TRA1 (Structurally-Unified Tokenization with Root Awareness),
+a morphology-aware algorithm that preservesaksharaindivisibil-
+ity and penalizes merges crossing morphological boundaries. We
+also release a new morphological segmentation dataset for Hindi,
+Marathi, and Gujarati.SuTRAreduces shattering, achieving
+peak gains of +14.7% in morphological alignment (Boundary F1)
+and +34% in semantic recoverability (Hindi) overBpe. These
+structural gains yield an average improvement of +8.08chrF2
+in machine translation.
+Index Terms:Large Language Models,Tokenization,Morpho-
+logical Integrity,Indic Languages
+1. Introduction
+ModernNLPpipelines rely on tokenizers as the foundational
+bridge to resolve the input-representation gap, converting raw
+text into the discrete tokens that populate the high-dimensional
+vector spaces of Language Models [ 1, 2, 3]. Currentde facto
+standards—such as Byte-Pair Encoding (Bpe) [4, 5],WordPiece
+[6], andUnigram[ 7]—function primarily as statistical data
+compression techniques. While they efficiently reduce sequence
+lengths and out-of-vocabulary (OOV) rates, they remain funda-
+mentally agnostic to the morphological structure of language
+[8, 9]. Despite explorations into tokenization-free architectures
+[10, 11, 12, 13], state-of-the-art models [ 14, 15, 16, 17] con-
+tinue to rely onBpe-style segmentation and inherit its structural
+limitations.
+Because these tokenizers ignore morphological rules, they of-
+ten segment multimorphemic words into sub-tokens that misalign
+with lexical roots and affixes. We refer to this tokenizer-level
+misalignment asMorphological Shattering(Figure 1). The
+problem is amplified in morphologically rich languages, espe-
+cially those written in Indic scripts such as Devanagari. These
+scripts are abugidas: base consonants and dependent vowels
+(matras) together form orthographic syllables (aksharas) that
+function as atomic written units [18]. Off-the-shelf tokenizers
+frequently split inside these units—for example, separating a
+matrafrom its base consonant. Many Indo-Aryan languages
+also exhibitSandhi, where segments at word and morpheme
+boundaries change or fuse in the surface form [19, 20], further
+1Project Page: https://mo-vaibhavr-43300.github.io/SuTRA/
+Figure 1:Morphological Shattering vs. Root Preservation.For
+the Hindi word as ¯adh¯aran. , standardBpefuses the negation
+prefix into the root ([as¯a]+[dh¯aran.]), whileSuTRAcleanly
+separates prefix and root ([a]+[s¯adh¯aran.]). We term such
+frequency-driven prefix–root fusion Morphological Shattering;
+SuTRA’s root-preserving segmentations yield more stable sub-
+word units and reduce semantic blindness. Figure generated
+using PaperBanana [29].
+obscuring the underlying morpheme boundaries. Together with
+the well-documentedIndic Taxof higher token fertility (more
+tokens per word) [21, 22, 23, 24], these properties lead to more
+severe Morphological Shattering. We useSemantic Blindness
+for the corresponding representation-level effect: root semantics
+become harder to recover with simple linear probes, and embed-
+dings become overly sensitive to small orthographic changes that
+leave the underlying morphemes intact [25, 26, 27, 28].
+To address Morphological Shattering and its semantic con-
+sequences in complex languages, we make three contributions:
+• SuTRA(Structurally-Unified Tokenization with Root
+Awareness): We introduce a structure-guided extension of
+Bpethat augments frequency-based merging with lightweight
+linguistic priors. It combines script-aware grouping of akshara-
+like units with morphology-aligned merge scoring and a root-
+preserving boundary constraint to penalize splits across valid
+morphological units.
+• Indic Morphological Gold-Standard Dataset: We con-
+struct a large-scale, LLM-assisted morphological segmenta-
+tion dataset tailored for three Indic languages (Hindi, Marathi,
+and Gujarati), providing a robust common benchmark for
+evaluating morphological alignment.
+• Intrinsic and Downstream Evaluation: We design a compre-
+hensive evaluation suite spanning morphological alignment,
+semantic recoverability, robustness under orthographic per-
+turbations, and machine translation. Across these four axes,
+SuTRAreduces Morphological Shattering and yields more
+stable, structurally aligned representations: it better respects
+morphemic boundaries without arbitrary over-segmentation
+and improves both intrinsic semantic recoverability and down-
+stream quality compared to standard baselines.
+7280
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-291
+2. Related Work
+2.1. Frequency-Driven Tokenization
+Standard vocabulary construction relies on compression algo-
+rithms likeBpe[ 4, 5],WordPiece[ 6],Unigram[ 7], and
+SuperBpe[ 30]. By treating text as a language-agnostic char-
+acter stream, these methods maximize statistical coverage but
+frequently override linguistic boundaries, systematically provok-
+ingMorphological Shattering[ 31, 9]. Prior mitigations, such
+as stochastic regularization (Bpe-Dropout[ 32]) or post-hoc
+realignment (Flota[ 33]), remain auxiliary interventions that
+fail to correct the structural dissociation ingrained during initial
+vocabulary creation. Furthermore, standard evaluation metrics
+like Compression Ratio and Perplexity [ 34, 35] mask these
+representational inefficiencies because they measure sequence
+predictability rather than sub-lexical integrity.
+2.2. Character-level and Token-free Architectures
+To bypass the limitations of subword vocabularies, several works
+have proposed tokenization-free or character-level architectures
+such asCanine[ 11],ByT5[ 12], andCharformer[ 13]. These
+models operate directly on raw bytes or characters, theoretically
+avoiding the ”shattering” problem entirely by allowing the model
+to learn its own internal representations of morphology [ 10].
+However, these architectures suffer from a significantCompute
+Penalty, as character-level processing drastically increases se-
+quence lengths, making them computationally expensive for
+long-context tasks. Consequently, state-of-the-art models con-
+tinue to utilize subword-basedBpe[ 15, 16, 17], inheriting its
+structural limitations while benefiting from its efficiency.
+2.3. Morphological Challenges in IndicLLMs
+Morphologically Rich Languages(Mrls), particularly those
+in theIndicfamily, suffer from a disproportionateIndic Tax
+characterized by high fertility rates and poor semantic anchoring
+[27, 36]. TraditionalBpefails to captureSandhi(phonetic
+fusions) and routinely violates the integrity of theAbugidascript
+by decouplingmatras(dependent vowels) from base consonants
+[31]. Prior work has explored morphology-aware tokenization
+and attention-guided segmentation [27, 25, 37], but either treats
+morphology as a pre-tokenization heuristic or targets specific
+languages (English, Hebrew, Turkish) rather than Indic abugidas
+[37, 38, 39]. Although contemporary approaches likeAg-Bpe
+[40] target semantic awareness through attention-guided scoring,
+it fails to explicitly preserve the atomic boundaries of Indic
+scripts. In contrast, our approach works with penalty driven
+morphological violations, which exhibit higher sensitivity to
+preserving token-level semantic coherence.
+3. Morphological Dataset Preparation
+A critical bottleneck forMRLsubword tokenization is the lack
+of verified ground-truth segmentation. Large-scale resources
+like Unimorph 4.0 [ 41] and MorphyNet [ 42] are primarily
+paradigm-centric—mapping lemmas to inflected forms with-
+out defining explicit boundaries. Similarly, specific datasets like
+GujMORPH [43] rely on rule-based stemming, failing to restore
+oblique roots or handle phonetic fusion (Sandhi). To address this,
+we constructed aGold Standard Morphological Split Dataset
+forHindi,Marathi, andGujarati. As shown in Table 1, our
+dataset enforcesRoot Restoration(e.g., mapping obliqueghara
+to rootghar) via an LLM-in-the-loop pipeline.
+Dataset Langs (Indic) Size Method Verification
+UniMorph 4.0 [41] Multi (Partial)∼10M Schema-based Algorithmic
+MorphyNet [42] 15 (None) 10.6M Rule+Enrichment Manual (Expert)
+GujMorph [43] 1 (Gujarati)∼80k Unsup. None
+Ours (Gold) 3(Hi, Mr, Gu) 560k HybridLLM-Verif.
+Table 1:Morphological Datasets.We provide the first high-scale,
+LLM-verified morphological coverage for Indic scripts.
+3.1. Dataset Pipeline
+We employ a three-stage hybrid pipeline—corpus extraction, un-
+supervised decomposition, and LLM verification (details inSup.
+Mat.). First, we extract a diverse vocabulary fromIndicCorp[44].
+For decomposition, we adaptSampoNlp[ 45] to the Indo-Aryan
+context, leveraging itsMinimum Description Lengthatomicity
+scoring while modifying degeneracy constraints to accommodate
+single-character Indic affixes andmatras. Next,Gemini 3.0
+Flash[ 46] resolves ambiguities (e.g.,Sandhi) and corrects over-
+segmentation. This yields a Gold Standard lexicon of∼560,000
+verified words (Table 2), acting asSuTRA’s morphological probe.
+Crucially, we employ adual-layer logic: the lexicon stores pure
+canonical splits, whileSuTRAmaps these tosurface boundary
+indicesduring training. We prioritizesurface-form integrity
+over canonical purity to guarantee zero-overhead detokenization,
+enabling exact recovery via simple concatenation.
+Language Source Unique Words
+Hindi IndicCorp[44]≃160,000
+Marathi IndicCorp[44]≃200,000
+Gujarati IndicCorp[44]≃200,000
+Total≃560,000
+Table 2:Gold Standard Statistics.Hybrid of rule-based extrac-
+tion andLLM-verified morphological segmentation.
+4. Methodology
+We introduceSuTRA, a two-phase framework that integrates
+morphological priors into statistical subword learning (Figure 2).
+The pipeline systematically transitions tokenization from purely
+frequency-driven to morphologically grounded segmentation.
+Phase 1: Pre-tokenization.Building onMorphTok, this
+phase defines atomic units and marks morphologically sensitive
+boundaries. Standard tokenizers often isolate dependent vowels
+(matras), breaking the akshara structure of Indic abugida scripts.
+To avoid such script-breaking splits, we apply orthographic rules
+(Φ) that map each wordw to a sequence of akshara-like unitsU=
+[u1,u 2,...,u n], binding modifiers to their base consonants. In
+parallel, we perform a morphological lookup to flagforbidden
+boundaries—boundaries between akshara units that coincide
+with morpheme boundaries in our gold lexicon. A curated
+lexicon is used for known words, and a fine-tuned character-level
+seq2seq model infers boundaries for out-of-vocabulary items.
+Phase 2: Training (Morphology Aware Merging).While
+MorphTokrelies on rigid, pre-computed boundary enforcement,
+SuTRAdifferentiates itself by integrating these morphological
+priors directly into a score-basedBpemerging process. Instead
+of pure frequency-based merging,SuTRAdynamically penalizes
+candidate merges that cross the forbidden boundaries identified
+in Phase 1. Let f(a,b) be the corpus frequency of a candidate
+pair (a,b) , and χ(a,b) be itsconflict count(the number of
+occurrences where merging (a,b) crosses a forbidden boundary).
+7281
+Figure 2:Overview ofSuTRA.Phase 1 (Pre-tokenization)applies orthographic rules Φ to map each word into akshara-like units
+and uses a gold morphological lexicon or a seq2seq model to mark forbidden boundaries (morpheme boundaries that merges should
+not cross).Phase 2 (Morphology-Aware Merging)runs a BPE-style algorithm with scores S(a,b) =f(a,b) Ψ(a,b) γt, where Ψ
+downweights merges that violate forbidden boundaries andγt controls rigidity over training, biasing vocabulary toward merges that
+respect Indic script structure and morpheme boundaries. Figure generated using PaperBanana [29].
+The morphological validity probabilityΨ(a,b)∈[0,1]is:
+Ψ(a,b) = 1− χ(a,b)
+f(a,b)
+To govern the merging process, we introduce a dynamicRigidity
+Constraint(γt). The final merge scoreS(a,b)is defined as:
+S(a,b) =f(a,b)·Ψ(a,b) γt
+During training, γt is annealed from γstart to γend. This
+exponential decay forms a curriculum: the algorithm strictly
+prioritizes merging safe, continuous lexical roots early in training
+(high rigidity) before relaxing the constraint to attach functional
+affixes later (low rigidity). Figure 3 shows thatSuTRAcon-
+straints translate into cleaner segmentations that preserve the
+akshara structure and morpheme boundaries as compared to
+other tokenizers. The detailed algorithm along with complexity
+analysis is given inSup. Mat.
+Figure 3:Qualitative Comparison of Morphological Segmenta-
+tion Across Tokenizers.SuTRAconsistently matches the Gold
+Standard by respecting phonetic and morphological boundaries.
+5. Experiments and Results
+To evaluate the efficacy ofSuTRA, we conduct experiments on
+three morphologically rich Indic languages: Hindi (HI), Marathi
+(MR), and Gujarati (GU). Our evaluation is organized around
+four questions that mirror our central claims: (1) doesSuTRA
+better align subwords with gold morpheme boundaries? (2)
+do these boundaries make whole-word semantics more directly
+recoverable from subword embeddings? (3) do the resulting
+representations yield measurable gains on downstream machine
+translation? and (4) doesSuTRAmaintain morphological ro-
+bustness under orthographic perturbations? We therefore assess
+SuTRAalong four complementary axes: morphological align-
+ment, semantic recoverability, translation quality, and robustness
+to surface noise.
+5.1. Morphological Alignment Evaluation
+We first evaluate whether tokenizer boundaries align with gold
+morpheme segmentations in Hindi (HI), Marathi (MR), and
+Gujarati (GU).Setup and Metrics.We normalize tokenizer
+outputs by stripping subword artifacts (e.g.,##, ) to enable direct
+string matching with gold morphemes. We report: (1)Boundary
+F1—the harmonic mean of precision and recall over predicted
+vs. gold boundary indices; and (2)Fertility Ratio—the mean
+number of predicted tokens per gold segment (|Tpred|/|Tgold|).
+Tokenizer Hindi Marathi Gujarati
+F1↑Fert.↓ F1↑Fert.↓ F1↑Fert.↓
+BPE (ACL ’16) 0.482 1.285 0.470 1.225 0.591 1.126
+WordPiece (arXiv’12) 0.411 1.214 0.527 1.300 0.596 1.173
+SentencePiece (EMNLP’18) 0.438 1.315 0.083 1.183 0.591 1.156
+Unigram (ACL ’18) 0.439 1.310 0.507 1.256 0.6691.137
+SuperBPE (COLM’25) 0.089 2.517 0.084 3.084 0.096 3.113
+MorphTok (ICML-W’25) 0.190 2.601 0.216 3.482 0.247 3.494
+SuTRA(Ours) 0.586 1.412 0.617 1.755 0.584 1.454
+Table 3:Morphological Alignment Evaluation.Evaluation of
+Boundary F1 and Fertility Ratio across Hindi, Marathi, and
+Gujarati. Higher F1 indicates superior structural integrity, while
+controlled fertility prevents arbitrary character-level fragmenta-
+tion. Best F1 scores are in bold.
+Results and Discussion.Table 3 shows thatSuTRAachieves the
+highest Boundary F1 for Hindi (0.586) and Marathi (0.617), and
+remains competitive for Gujarati, while keeping fertility within
+a moderate range. High-fertility baselines such as SuperBPE
+andMorphTokproduce many more tokens per morpheme yet
+still underperform on F1, indicating over-fragmentation rather
+than genuine morphological alignment. By enforcingakshara
+atomicity and penalizing merges that cross morpheme boundaries,
+SuTRA’s extra segments tend to correspond to functional affixes
+rather than the Morphological Shattering observed in purely
+frequency-driven tokenizers. Extended metrics are reported in
+theSup. Mat.
+7282
+5.2. Semantic Recoverability
+Arbitrary subword fragmentation forces models to expend ca-
+pacity reconstructing basic lexical semantics. We therefore ask
+whetherSuTRA’s boundaries make whole-word meaning more
+directly recoverable from subword embeddings.
+Setup & Metrics.We train a Word2Vec model [47] on a joint
+vocabulary containing both words and subwords. After training,
+we freeze these embeddings and train lightweight diagnostic
+models to reconstruct a target whole-word embedding from
+the mean-pooled embeddings of its constituent subwords. We
+measuresemantic recoverabilityusing R2, the proportion of
+variance in the target embedding that is predictable from the
+subwords. ALinearprobe (no hidden layers) tests simple
+additive composition, while aMulti-Layer Perceptron (MLP)
+probe tests whether more complex morphological interactions
+remain recoverable (SeeSup. Mat.for details.)
+Language LinearR 2 (Layer 0) MLPR 2 (Layer 2+)
+SuTRABpe SuTRABpe
+Hindi 0.44640.3329 0.50480.3358
+Marathi 0.46340.4619 0.53310.4649
+Gujarati 0.46240.4640 0.50550.4510
+Table 4:Semantic Recoverability (R2).Linear models evaluate
+immediate compositionality, while deeper MLP models test the
+preservation of recoverable structural signals.
+Results & Discussion.Table 4 shows thatSuTRAgenerally
+preserves semantic information more effectively thanBpe. In
+Hindi,SuTRAyields a +34% relative gain in LinearR2 overBpe,
+and the MLP provides only marginal improvement forBpe(0.33
+→ 0.34), suggesting that little additional structure is recoverable
+beyond simple addition. In Marathi and Gujarati, Linear scores
+are similar, reflecting dense orthography and complex stem
+alternations, butSuTRAbenefits substantially from the MLP
+(R2 >0.50 in both cases), whereasBpeimproves only modestly.
+This confirmsSuTRApreserves recoverable structural signals
+that arbitrary fragmentation destroys.
+5.3. Machine Translation Performance
+To assess downstream utility, we evaluateSuTRAon a
+Hindi↔Marathitranslation task using a 3-layer Transformer
+[48] trained on theBhasaAnuvaadcorpus [49].
+Implementation.We use a standard Transformer encoder–
+decoder (L= 3,H= 4,d ff = 400) implemented in fairseq
+[50]. All models are trained for 100k updates with a shared 32k
+vocabulary per tokenizer andIndicNLPnormalization, keeping
+architecture and optimization hyperparameters identical across
+baselines to isolate the impact of segmentation (seeSup. Mat.
+for full details).
+Results.Table 5 shows thatSuTRAattains the best scores
+forMarathi→Hindiand remains competitive with the strongest
+baseline in the reverse direction, indicating that improved mor-
+phological alignment and semantic recoverability translate into
+meaningful gains for neural MT. A secondary evaluation on
+causal language modeling, along with metric derivations and
+full hyperparameter settings, is provided in theSup. Mat.; these
+tasks follow standard evaluation protocols in prior work [27].
+Tokenizer Hindi→Marathi Marathi→Hindi
+chrF2↑COMET↑ chrF2↑COMET↑
+Statistical Baselines
+Bpe (ACL ’16) 24.62 0.5054 36.55 0.6253
+WordPiece (arXiv’12) 30.37 0.6093 27.18 0.5223
+SentencePiece (EMNLP’18) 25.01 0.4964 28.10 0.5147
+Unigram (ACL ’18) 26.55 0.5157 29.19 0.5349
+Morphological Baselines
+SuperBpe (COLM’25) 15.84 0.3047 16.27 0.3422
+MorphTok (ICML-W’25) 26.75 0.5750 29.42 0.6007
+SuTRA(Ours) 29.96 0.5752 38.84 0.6554
+Table 5:Machine Translation.SuTRAachieves the highest
+scores in Marathi → Hindi and remains comparable to the
+strongest baseline in the reverse task, demonstrating that root
+contiguity improves cross-lingual alignment.
+5.4. Morphological Robustness Evaluation
+We evaluate tokenizer resilience to small surface changes (e.g.,
+typos or suffix substitutions) that should not affect the underlying
+root but often trigger unstable segmentations. Using an adver-
+sarial suite of 10,000 words per language (HI, MR, GU) with
+synthetic orthographic and inflectional perturbations, we measure
+robustness viaJaccard Overlap(Jac. ↑) between original and
+perturbed segmentations andRoot-Affected Distance(R.Aff. ↓),
+which tracks how often perturbations alter the subwords covering
+the lexical root.
+Results & Discussion.As shown in Table 6, purely statistical
+baselines (Bpe,Unigram) exhibit high R.Aff., indicating that
+minor variations frequently bleed into the core lexeme. In contrast,
+SuTRAattains near-zero R.Aff. while maintaining higher Jaccard
+overlap, showing that morphological priors effectively insulate
+roots from peripheral noise. This structural stability complements
+our semantic-recoverability and MT results, confirming that
+SuTRAmaintains consistent tokenization under perturbations.
+Extended details are in theSup. Mat..
+Tokenizer Hindi (HI) Marathi (MR) Gujarati (GU)
+Jac.(↑) R.Aff.(↓) Jac.(↑) R.Aff.(↓) Jac.(↑) R.Aff.(↓)
+Bpe 0.386 0.228 0.305 0.324 0.319 0.296
+Unigram 0.363 0.232 0.294 0.340 0.320 0.308
+WordPiece 0.413 0.249 0.293 0.355 0.314 0.316
+SentencePiece 0.371 0.235 0.298 0.325 0.321 0.287
+SuperBpe 0.624 0.146 0.655 0.127 0.631 0.126
+MorphTok 0.801 0.067 0.823 0.055 0.792 0.051
+SuTRA(Ours) 0.875 0.042 0.885 0.038 0.788 0.040
+Table 6:Morphological Robustness Comparison.Results show
+thatSuTRAeffectively mitigates root fragmentation.
+6. Conclusion and Future Work
+Our results tell a consistent story. When tokenization is con-
+strained to respect Indic script structure and morpheme bound-
+aries, Morphological Shattering is reduced, and whole-word
+semantics become more linearly recoverable from subword em-
+beddings. This, in turn, increases robustness and yields tangi-
+ble gains on downstream translation, without increasing token
+fertility or vocabulary size.SuTRAthus validates our core
+hypothesis: guiding frequency-based subword learning with
+lightweight morphological priors is a practical way to improve
+both interpretability and utility ofLLMtokenizers for morpho-
+logically rich languages. Future work includes extendingSuTRA
+to other morphologically rich languages, exploring unsupervised
+anchoring for low-resource scripts, and assessing its impact on
+additional text and speech tasks such as Text to Speech (TTS)
+and Automatic Speech Recognition (ASR).
+7283
+7. Acknowledgements
+This research was conducted at Motilal Oswal Financial Services
+Limited. The authors gratefully acknowledge the organization
+for providing the resources, infrastructure, and support that made
+this work possible.
+8. Use of Generative AI Disclosure
+In accordance with Interspeech 2026 guidelines, the authors
+disclose the following uses of Generative AI tools during the
+execution of this research and the preparation of this manuscript:
+• Dataset Construction:We utilized Gemini 3.0 Flash [ 46]
+as an LLM-in-the-loop verifier within our dataset pipeline to
+resolve morphophonological ambiguities (e.g.,Sandhi) and
+correct algorithmic over-segmentation.
+• Visualizations:Figure 1 and Figure 2 was generated utilizing
+PaperBanana [29].
+• Writing Assistance:LLMs were utilized for minor language
+polishing, structural refinement, and LaTeX formatting during
+the drafting process.
+The human authors rigorously reviewed, modified, and validated
+all AI-assisted outputs and take full responsibility for the final
+content, scientific accuracy, and integrity of this work.
+9. References
+[1] J. Pennington, R. Socher, and C. D. Manning, “Glove: Global vec-
+tors for word representation,” inProceedings of the 2014 conference
+on empirical methods in natural language processing (EMNLP),
+2014, pp. 1532–1543.
+[2] T. Mikolov, I. Sutskever, K. Chen, G. S. Corrado, and J. Dean,
+“Distributed representations of words and phrases and their com-
+positionality,”Advances in neural information processing systems,
+vol. 26, 2013.
+[3] J. Sarzynska-Wawer, A. Wawer, A. Pawlak, J. Szymanowska,
+I. Stefaniak, M. Jarkiewicz, and L. Okruszek, “Detecting formal
+thought disorder by deep contextualized word representations,”
+Psychiatry research,

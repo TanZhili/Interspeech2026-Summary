@@ -1,0 +1,415 @@
+Sweep-RSE: Streaming Region-of-Interest Speech Extraction in Multi-Talker
+Scenarios via Explicit Spatial Sweeping
+Hogeon Yu ID 1, SeongHun Noh ID 1, Hyunsik Choi ID 1, Sihyun Joo1,∗∗
+1 Hyundai Motor Company, Republic of Korea
+{hogeon.yu, seonghun.noh, hyunsik.choi, sihyun.joo}@hyundai.com
+Abstract
+Region-of-Interest (ROI) speech extraction is crucial for
+AR/VR and hearing aids but challenging in streaming multi-
+talker scenarios. Existing methods rely on implicit boundary
+conditioning, often failing to isolate targets under dense inter-
+ference or suppress noise in empty regions. We propose Sweep-
+RSE, a lightweight, fully causal framework utilizing an explicit
+Align & Sweep mechanism. By actively scanning the ROI, our
+model locks onto target signals via phase coherency and explic-
+itly models spatial discrepancies to reject outliers. Integrated
+with a Region Speech Detector, it ensures real-timeO(1)pro-
+cessing. Experiments demonstrate Sweep-RSE achieves pre-
+cise target extraction in complex scenarios and effectively sup-
+presses false alarms in silent regions, operating efficiently with
+only 1.66M parameters and 3.05 GMACs.
+Index Terms: Region-customizable speech extraction, array
+signal processing, spatial audio, causal processing
+1. Introduction
+Region-of-Interest Speech Extraction (R-SE) has emerged as
+a critical technology for AR/VR interfaces and smart hearing
+aids, enabling users to selectively attend to sounds within a
+customizable spatial window. Unlike traditional fixed beam-
+forming [1, 2, 3, 4, 5], which relies on discrete sectors or
+fixed look directions [6, 7, 8], R-SE requires handling contin-
+uous and variable user-defined regions. To provide this flexi-
+bility, recent state-of-the-art methods such as ReZero [9] and
+DPARNet-RSE [10] introduced continuous windowing mecha-
+nisms. These approaches typically formulate region represen-
+tations by either aggregating directional features from sampled
+grid points or encoding boundary angles into attention queries
+to condition the extraction network.
+However, these methods rely onimplicit conditioning: they
+depend on the network to learn the mapping between spatial
+features and target signals without enforcing physical geomet-
+ric constraints. This lack of explicit guidance often leads to sub-
+optimal performance in dense multi-talker scenarios or spatial
+leakage when the target region is empty (i.e., the number of tar-
+get sourcesQ= 0). Furthermore, while coordinate alignment
+techniques simplify the extraction task [11, 12], they typically
+align only to the window center, leaving the spatial variance of
+off-center sources to be handled by implicit network learning.
+To overcome these limitations, we propose Sweep-RSE, a
+lightweight streaming framework that replaces implicit condi-
+tioning with anExplicit Spatial Sweepmechanism. Instead of
+relying on the network to learn spatial mappings, our approach
+actively transforms the coordinate system by virtually steering
+**indicates the corresponding author.
+the microphone array toward the target region. It then scans
+the aligned window using candidate steering vectors to physi-
+cally lock onto the active source via phase coherency. Simulta-
+neously, it explicitly models the discrepancy between observed
+and aligned signals to robustly suppress out-of-region interfer-
+ence.
+To ensure real-time operation suitable for edge devices,
+we integrate this mechanism into a causal Dual-Path Block,
+adapted from the efficient SpatialNet [13]. We further intro-
+duce a Complex Hybrid Split Dense Block (CH-SDB) to pre-
+serve phase consistency during feature extraction and a Region
+Speech Detector (RSD) to robustly gate the output during si-
+lence or out-of-region activity. Experimental results demon-
+strate that Sweep-RSE achieves superior selectivity in high-
+interference scenarios while maintaining low latency.
+2. Proposed Method
+This section details the proposedSweep-RSE, a causal frame-
+work designed for speech extraction within a variable Region-
+of-Interest (ROI). As illustrated in Fig. 1, the system comprises
+three key components: a Boundary-Aware Encoder to explic-
+itly scan and lock onto targets, a Dual-Path Block for spectro-
+temporal refinement, and a Region Speech Detector to handle
+empty regions. Crucially, the entire pipeline processes input
+frames without referencing future context to guarantee low-
+latency streaming.
+2.1. Problem Formulation
+Given a multi-channel signal captured byMmicrophones, its
+Short-Time Fourier Transform (STFT) representationYm(t,f)
+at them-th microphone can be modeled as:
+Ym(t,f) =X m,IN(t,f) +X m,OUT(t,f) +N m(t,f)(1)
+whereX m,IN(t,f)andX m,OUT(t,f)denote the reverberant
+speech components originating from sources located inside and
+outside the user-defined target windowW= [θ start,θ end], where
+θstart andθ end denote the lower and upper angular boundaries
+of the ROI in degrees, respectively, andN m(t,f)represents
+the background noise. The primary objective is to estimate the
+sum of the target speech signals including early reflections for
+all speakers withinW, while simultaneously detecting the pres-
+ence of active speakers in that region.
+2.2. Target-Centric Phase Alignment
+Compact arrays operating at low sampling rates suffer from
+limited Time Difference of Arrival (TDOA) resolution. Unlike
+time-domain methods restricted to integer sample delays [11],
+we leverage frequency-domain processing for precise fractional
+3178
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1631
+Figure 1:The overall architecture of Sweep-RSE. (a) CH-SDB extracts phase-aware features. (b) SSA scans the ROI for phase co-
+herency. (c) GCF refines features via difference modeling. (d) RSD handles silence.
+delay compensation [12]. Specifically, we virtually steer the
+microphone array to center the target window,θ c = (θ start +
+θend)/2, at a virtual boresight (0 ◦) via phase shifting, yielding
+the aligned signals:
+Y aligned
+m (t,f) =Y m(t,f)·e −j2πfτ m(θc) (2)
+whereτm(θc)is the time delay of them-th microphone relative
+to the reference. This transformation provides invariance to the
+absolute Direction of Arrival (DoA), establishing a normalized
+coordinate system centered on the target window.
+2.3. Boundary-Aware Encoder
+Unlike previous implicit conditioning methods that treat spatial
+boundaries as passive features [10, 14], our Boundary-Aware
+Encoder actively sweeps the ROI to explicitly identify the opti-
+mal steering direction.
+2.3.1. Complex Hybrid Feature Expansion (CH-SDB)
+The aligned signals are processed by the ComplexHybrid-SDB
+(CH-SDB), which redesigns the efficient subgroup process-
+ing [15] for the complex domain operations [16]. To preserve
+spatial phase relationships, we employ complex 2D convolu-
+tions where real and imaginary parts share weights. Specif-
+ically, a complex convolution with a3×1kernel (tempo-
+ral×spectral) first extracts frequency-independent spatial cues.
+To balance spatial and spectral expansion, the feature channels
+of both real and imaginary parts are then split in half and fed
+into a dual-branch Complex SDB2d: a Strict Branch (3×1
+kernel) operates exclusively along the temporal axis to main-
+tain phase consistency, while a Context Branch (3×3kernel)
+captures spectro-temporal harmonics. The outputs are concate-
+nated and fused via LayerNorm and Mish activation, yielding
+robust phase-preserved representations.
+2.3.2. Physics-Informed Spatial Sweep Attention (SSA)
+To explicitly locate sources within the windowW=
+[θstart,θ end], we scan the region usingLequidistant candidate
+steering vectorsa(θ l)∈C M×F . The SSA module identifies
+the direction of maximum phase coherency via a specialized
+multi-head attention.
+Phase Rotation & Cosine Similarity:We designate the ref-
+erence microphone feature as the query (Q) and the remaining
+M−1microphone features as keys (K) and values (V). To
+ensure that attention is driven purely by directional phase align-
+ment rather than signal magnitude,QandKareL 2-normalized
+along the feature dimension. We physically steer the features to
+theLcandidate directions by multiplyingKwith the complex
+conjugate of the steering vectors to compensate for the propaga-
+tion delays, i.e., ˜Kl =K⊙a(θ l)∗, where⊙denotes element-
+wise multiplication. The attention mapA l, representing the
+phase coherency, is then computed using cosine similarity:
+Al =Softmax
+
+τ·Re
+  ¯Q· ¯KT
+l
+
+(3)
+where ¯Qand ¯Kl denote theL 2-normalized features.τis a
+learnable temperature parameter initialized to a high value to
+enforce a highly selective spatial attention.
+Explicit Alignment:Finally, the value featuresV m are phase-
+rotated by the candidate vectors and aggregated using the atten-
+tion weightsA l. This effectively performs a dynamic neural
+beamforming operation focused precisely on the explicitly de-
+tected source angle:
+Faligned
+m =
+LX
+l=1
+Al·(Vm⊙am(θl)∗)(4)
+This mechanism ensures that target signals are coherently
+summed via phase-aligned reinforcement, while out-of-region
+signals remain misaligned and are effectively suppressed.
+2.3.3. Gated Context Fusion (GCF)
+To robustly suppress out-of-region interference, we design a hy-
+brid spatial fusion strategy that effectively integrates features
+representing both constructive and destructive interference pat-
+terns.
+3179
+Hybrid Feature Construction:We construct a composite fea-
+ture map by concatenating three distinct components: the ref-
+erence microphone feature (F ref), the averaged aligned target
+feature ( ¯Ftarget = 1
+M−1
+P Faligned
+m ), and the individual spatial
+difference features (F diff
+m =F ref−F aligned
+m ). While ¯Ftarget en-
+hances the target signal via constructive interference (akin to
+delay-and-sum beamforming [17]), the set of residuals{F diff
+m}
+explicitly models directional discrepancies [18]. This preserves
+spatial nulls and provides a strong inductive bias for canceling
+out-of-region noise.
+Gated Processing:The concatenated features are compressed
+to 64 channels via a1×1convolution. To capture local har-
+monic structures without temporal latency, a1×5depthwise
+convolution is applied along the frequency axis. Finally, a
+global gating branch computes a soft mask using1×1con-
+volutions and a sigmoid activation to filter the features, empha-
+sizing dominant target speech components while suppressing
+noise residuals before routing the representation to the dual-
+path block.
+2.4. Dual-Path Block
+We adapt the Dual-Path architecture of SpatialNet [13] into a
+causal framework by replacing standard attention with Causal
+MHSA and T-ConvFFN. Leveraging the spatial pre-processing
+of our encoder, we employ a significantly lighter separator than
+the original model to focus solely on spectro-temporal refine-
+ment. To support infinite streaming, all temporal layers main-
+tain step-wise internal caches, ensuringO(1)processing com-
+plexity per frame without future look-ahead.
+2.5. Complex Mask and Region Speech Detector (RSD)
+The refined representations are fed into two parallel task-
+specific heads to generate the final target complex mask and
+verify the presence of the speaker. Specifically, the RSD head
+is designed to robustly handle empty regions (Q= 0). The
+RSD modulates frame-level features using a lightweight gating
+mechanism to suppress silent frames and predicts the probabil-
+ity of active speech within the target window.
+3. Experiments
+3.1. Dataset and Simulation Protocol
+Following recent studies [9, 10], we generated spatial audio
+mixtures on-the-fly.Acoustic Environment:We generated
+RIRs using the Image Source Method [19] via gpuRIR [20].
+The room dimensions were randomly sampled within[3,10]×
+[3,8]×[2.5,4]m, with the reverberation time (T60) ranging
+from0.05to0.7s. We simulated a 4-channel square micro-
+phone array (r≈5.65cm). To ensure realistic spatial config-
+urations, all sources and microphone array were positioned at
+least0.5m from walls.Source Material:We used the VCTK
+corpus [21] for speech, split into train/val/test sets (8:1:1) for
+speaker-independent evaluation. WHAM! noise [22] was added
+at SNRs between[5,15]dB. All signals were resampled to 16
+kHz.
+3.2. Implementation Details
+We use a window size of 32 ms and a hop size of 8 ms. To
+ensure real-time efficiency, we significantly compress the back-
+bone compared to SpatialNet [13], usingB= 3blocks and
+C= 32channels with an FFN expansion of64. The tar-
+get window width is randomly sampled between10 ◦ and90 ◦.
+For the spatial sweep, we employ a fixed-resolution scanning
+strategy (5.625◦) with a maximum ofL= 16candidates with
+τ= 10. The model is trained for 200 epochs using AdamW
+(lr= 3×10 −4) to minimize the joint lossL SI-SDR + 0.1LBCE.
+During inference, the RSD detection threshold is set to 0.5.
+3.3. Evaluation Scenarios
+We evaluate our model on two distinct datasets: a Standard Set
+(3k samples) mimicking benchmark conditions [9, 10], and our
+proposed Realistic Set (6k samples). As detailed in Table 1,
+the Realistic Set extends the standard protocol by incorporating
+both simpler (1-speaker) and more complex (3-speaker) mix-
+tures to evaluate robustness. Notably, it introduces an Extreme
+Interference stress test (Q= 1target with 2 out-of-region in-
+terferences), comprising roughly 17% of the data, to rigorously
+challenge the model’s spatial selectivity.
+Table 1:Evaluation scenarios and data distribution. The Real-
+istic Set includes the Standard Set plus additional stress tests.
+Condition Description Metrics Distribution (%)
+Standard Realistic
+Q= 0 Interference only
+(Real: 1–2 interferences)
+Energy
+Decay [9] 33.3 25.0
+Q= 1 1 Target inside
+(Real: 0–2 interferences)
+SI-SDR [23],
+PESQ [24],
+STOI [25]
+33.3 41.7
+Q= 2
+Multiple targets inside
+(Real: 2 targets +
+0–1 interferences)
+SI-SDR 33.3 33.3
+3.4. Comparative Methods
+To rigorously evaluate Sweep-RSE, we compare it against two
+categories of baselines:Standard Benchmarks:We bench-
+mark against Oracle MVDR [26, 27, 28, 29], BSRNN [30], Spa-
+tialNet [13], and CoS [11].SOTA Proxies for Fair Compar-
+ison:To isolate spatial mechanism efficacy, we implemented
+proxiesusing our Dual-Path Block backbone replacing only
+the spatial conditioning module: 1) ReZero-Proxy [9] adopts
+the grid-based spatial representation by aggregating steering
+vectors from uniformly sampled grid points within window,
+which is then injected via feature-wise addition; 2) DPARNet-
+Proxy [10] implements the Boundary-Conditioned Attention,
+which projects trigonometric boundary encodings into attention
+queries to implicitly condition the extraction network.
+3.5. Experimental Results and Analysis
+Tables 2 and 3 demonstrate the superiority of explicit sweeping.
+Target Selectivity and False Alarm Suppression (Q= 0):
+While state-of-the-art single- and multi-channel BSS models
+(BSRNN [30] and SpatialNet [13], respectively) achieve com-
+petitive SI-SDR scores using oracle target selection, they fun-
+damentally lack spatial selectivity. This critical flaw is exposed
+in the empty region scenario (Q= 0), where SpatialNet fails to
+suppress out-of-region interferences. In contrast, Sweep-RSE
+achieves a massive decay of over 96 dB. This confirms that ex-
+plicitly enforcing physical boundaries, combined with the RSD
+gating, completely eliminates background noise leakage and
+false alarms.
+Precision Alignment and Explicit Sweeping:We compared
+Sweep-RSE with Cone-of-Silence (CoS) [11]. Despite grant-
+ing CoS an oracle selection of the optimal pre-defined window
+size, Sweep-RSE consistently outperformed it (e.g., +2.86 dB
+3180
+Table 2:Performance comparison on Standard and Realistic scenarios.
+Approaches Task Params MACs Causal Target Metrics (Standard / Realistic)
+(M) (G/s) Selection Decay (dB) SI-SDR (Q=1) SI-SDR (Q=2) STOI PESQ
+Q=0 Single Extraction Group Extraction Q=1 Q=1
+Unprocessed - - - - - -1.58 / -0.76 8.20 / 4.93 - 0.64 / 0.64 1.12 / 1.16
+Oracle IRM - - - - - >100 9.49 / 9.66 13.55 / 11.63 0.95 / 0.95 2.78 / 2.81
+Oracle IRM-MVDR Beam. - - - - >100 6.72 / 6.86 9.35 / 8.10 0.84 / 0.83 1.55 / 1.62
+Oracle CRM-MVDR Beam. - - - - >100 5.50 / 5.72 9.86 / 8.03 0.82 / 0.81 1.39 / 1.44
+Oracle SCM-MVDR Beam. - - - - >100 7.86 / 8.02 6.08 / 5.92 0.84 / 0.83 1.71 / 1.76
+BSRNN [30] Single SS. 27.66 7.03 - Oracle 34.91 / 39.25 5.86 / 5.88 8.81 / 6.47 0.76 / 0.74 1.41 / 1.50
+SpatialNet-small [13] Multi SS. 1.77 10.16 - Oracle 16.93 / 21.68 17.25 / 17.29 7.85 / 6.11 0.96 / 0.95 3.04 / 3.02
+Cone-of-Silence Extract. 265.81 - - Region 43.13 / 45.73 9.77 / 10.02 12.71 / 11.15 0.84 / 0.83 1.64 / 1.70
+Proposed Extract. 1.66 3.82 - Region 101.16 / 99.35 13.53 / 13.72 15.49 / 14.09 0.91 / 0.91 2.36 / 2.38
+Proposed(causal) Extract. 1.66 3.05 ✓ Region 96.39 / 97.92 10.60 / 12.88 13.04 / 12.64 0.87 / 0.89 2.01 / 2.09
+Table 3:Comparison of explicit vs. implicit spatial mechanisms
+on the Realistic Set
+Method Mechanism Single Target Multi-Target
+(causal) (Q= 1) (Q= 2)
+ReZero-Proxy Implicit (Feature-based) 10.32 11.74
+DPARNet-Proxy Implicit (Boundary-based) 10.40 11.71
+Proposed Explicit (Align & Sweep) 12.88 12.64
+SI-SDR in RealisticQ= 1for the causal variant) while utiliz-
+ing∼160×fewer parameters. We attribute this to the flexibil-
+ity of our spatial mechanism: unlike CoS, which is constrained
+to discrete window sizes and fixed-center alignment, Sweep-
+RSE adapts to continuous window widths and actively scans
+the interior. This allows the model to lock onto the exact source
+direction via phase coherency, ensuring robust extraction even
+for off-center targets.
+Robustness against High-Interference:Table 3 reveals the
+core limitation of existing region-based methods relying on
+implicit spatial conditioning. In the Realistic Set (Q= 1),
+ReZero-Proxy and DPARNet-Proxy suffer significant degrada-
+tion, scoring 10.32 dB and 10.40 dB, respectively. This high-
+lights the vulnerability of implicit conditioning: static spatial
+embeddings become heavily corrupted by dense, overlapping
+interferers, making it difficult for the network to map them to
+the target. Conversely, our explicitAlign & Sweepstrategy ac-
+tively searches for constructive phase coherency, ensuring ro-
+bust target extraction even under extreme interference. This
+yields a substantial performance gap of over +2.4 dB (12.88
+dB) compared to implicit counterparts.
+Causal vs. Non-Causal Trade-off and Streaming Efficiency:
+While causal processing inherently limits performance due to
+the lack of future context, the causal Sweep-RSE minimizes this
+degradation even in complex Realistic scenarios. Specifically,
+the performance drop is contained within a reasonable margin
+(from 13.72 dB to 12.88 dB inQ= 1). Unlike naive causal
+padding, our pipeline operates as a strictly stateful streaming ar-
+chitecture withO(1)complexity. This demonstrates that while
+a trade-off exists, our approach effectively balances low-latency
+requirements with precise spatial extraction.
+3.6. Visualization of Spatial Sweep Mechanism
+To validate the physical interpretability of Sweep-RSE, we visu-
+alize the spectrograms (Fig. 2 a–c) and attention weights (Fig. 2
+d–g) averaged across frequency and microphone pairs. We com-
+pare narrow (30 ◦) and wide (70 ◦) windows with targets posi-
+tioned at the center or shifted by1/4width. As shown in Fig. 2
+(d–g), the attention peaks accurately track the target’s position.
+When the target is shifted by 1/4 of the window width (e.g.,
+Figure 2:Visualization of Spatial Sweep attention maps. (a)–
+(c) Spectrograms of the mixture, target, and estimate signal ob-
+tained using the shifted wide window configuration correspond-
+ing to (g). (d)–(g) Attention maps for narrow/wide windows
+with centered or1/4-shifted targets. The horizontal red dashed
+lines indicate ground truth angle of the target speaker. Brighter
+regions indicate higher attention weights.
+f→g), the activation peak shifts correspondingly, confirming
+that our model dynamically steers toward the true source direc-
+tion via phase coherency rather than merely enhancing a fixed
+center. Furthermore, wider windows exhibit sharper activation
+lines due to the higher density of candidate vectors. We also
+observe consistent activation at the ROI boundaries, which we
+hypothesize serve as spatial anchors to reinforce region limits
+and prevent leakage from outside the ROI.
+4. Conclusion
+We presented Sweep-RSE, a strictly causal framework for
+Region-of-Interest speech extraction. By introducing an explicit
+Align & Sweep mechanism and a Region Speech Detector, it ef-
+fectively overcomes the limitations of implicit conditioning in
+dense multi-talker and empty-region (Q= 0) scenarios. Cru-
+cially, Sweep-RSE achieves this superior spatial selectivity with
+a highly compact footprint (1.66M parameters) and minimal
+computational cost (3.05 GMACs). Combined with itsO(1)
+streaming complexity, our approach provides a highly efficient
+and practical solution for real-time edge applications. Future
+work will extend this mechanism to separate multiple speakers
+within the ROI by leveraging fine-grained phase coherency to
+disentangle overlapping sources.
+3181
+5. Generative AI Use Disclosure
+In accordance with ISCA guidelines, the authors disclose the
+assistive use of Google Gemini in the following specific areas
+during the manuscript preparation:
+•Code Verification:Assisting in the adaptation and verifica-
+tion of open-source baseline codes to match our experimental
+configurations.
+•Figure Conceptualization:Providing structural(figure)
+guidelines to design a space-efficient model diagram within
+page limits.
+•Text Editing:Proofreading for grammatical errors and con-
+densing the manuscript to meet length constraints.
+•Formatting:Troubleshooting LaTeX syntax errors and gen-
+erating tabular code.
+The AI was not used to generate novel scientific claims or ex-
+perimental results. The authors critically reviewed all modifica-
+tions and assume full accountability for the final content.

@@ -1,0 +1,465 @@
+Exploring the potential and limitations of Model Merging for Multi-Domain
+Adaptation in ASR
+Carlos Carvalho ID 1,2, Francisco Teixeira ID 1, Thomas Rolland ID 1, Alberto Abad ID 1,2
+1INESC-ID & 2Instituto Superior T´ecnico, Universidade de Lisboa, Portugal
+carlos.mf.carvalho@inesc-id.pt
+Abstract
+Model merging is a scalable alternative to multi-task training
+that combines the capabilities of multiple specialised models
+into a single model. This is particularly attractive for large
+speech foundation models, which are typically adapted through
+domain-specific fine-tuning, resulting in multiple customised
+checkpoints, for which repeating full fine-tuning when new data
+becomes available is computationally prohibitive. In this work,
+we study model merging for multi-domain ASR and benchmark
+11 merging algorithms for 10 European Portuguese domains,
+evaluating in-domain accuracy, robustness under distribution
+shift, as well as English and multilingual performance. We fur-
+ther propose BoostedTSV-M, a new merging algorithm based
+on TSV-M that mitigates rank collapse via singular-value boost-
+ing and improves numerical stability. Overall, our approach
+outperforms full fine-tuning on European Portuguese while pre-
+serving out-of-distribution generalisation in a single model.
+Index Terms: automatic speech recognition, model merging,
+multi-domain adaptation
+1. Introduction
+Large Speech Foundation Models (LSFMs) have recently be-
+come the dominant paradigm in Automatic Speech Recognition
+(ASR). This shift is driven by the availability of vast multilin-
+gual datasets and the massive computational resources required
+to scale Transformer-based architectures [1, 2, 3, 4, 5]. While
+these models exhibit outstanding in-distribution (ID) perfor-
+mance and out-of-distribution (OOD) generalisation [1, 5], they
+are rarely “one-size-fits-all.” When labeled data for a specific
+target domain is accessible, fine-tuning remains the most effec-
+tive strategy for bridging the gap to the target distribution [6].
+In practice, this adaptation is often done separately for each tar-
+get domain. Over time, this approach yields a proliferation of
+domain-specific checkpoints – in effect one fine-tuned model
+per domain. Such fragmentation complicates maintenance and
+deployment, as the system will have to identify the relevant
+domain and load the corresponding model for each request at
+inference time. A straightforward and common alternative is
+to train a single model jointly on all available target datasets,
+but this can become impractical. Joint fine-tuning typically re-
+quires access to all previously used adaptation data, which may
+be no longer available, due to privacy or storage limitations.
+Moreover, incorporating a new target domain or dataset typi-
+cally requires an additional large-scale fine-tuning run over the
+full collection of previously used and new datasets, with care-
+ful rebalancing of the training mixture to avoid performance
+degradation on previously supported domains, thereby further
+increasing computational and training time costs.
+Continual learning is a natural way to address this chal-
+lenge, since it aims to update a model as new data or tasks
+become available without losing previously learned capabili-
+ties [7, 8]. However, most methods are inherently sequential,
+requiring careful mechanisms such as replay buffers [9, 10],
+regularisation [11, 12], or dynamic architectures [7] to mitigate
+catastrophic forgetting. Furthermore, performance can depend
+strongly on the order in which domains are encountered [13].
+Instead, we aim to exploremodel mergingas an alternative ap-
+proach: independently fine-tuned domain-specific models are
+combined into a single unified model, eliminating the need for
+sequential training, cached data, or additional parameters.
+Model merging has been explored extensively in natural
+language processing (NLP) and computer vision (CV) [14],
+but has received comparatively little attention in ASR. Existing
+work covers low-resource languages [15], disordered speech
+[16], children’s ASR [17, 18], and speech synthesis [19], as
+well as cross-lingual [20] and cross-task settings [21]. No-
+tably, model merging for multi-domain ASR adaptation has pre-
+viously been explored for English [22]. However, this study
+was restricted to model averaging [23] and excluded the origi-
+nal foundation model, leaving OOD generalisation unexplored.
+In this work, we go beyond prior studies by systemati-
+cally evaluating eleven merging approaches across ten differ-
+ent European Portuguese (EP) domains [6]. To support this
+comparison, we introduceMergeWhisper 1, an extension of
+mergekit[24] that adds native Whisper support – which the
+original toolkit lacks – and incorporates all of the merging ap-
+proaches available in the toolkit, together with additional meth-
+ods explored in this work. Moreover, we evaluate both ID
+performance for EP as well OOD generalisation across diverse
+conditions and language varieties, including African, Asian and
+Brazilian Portuguese [6]. We also evaluate the resulting models
+on the Hugging Face Open ASR Leaderboard (OpenASR-HF)
+[25] and a subset of FLEURS [26] derived from [2]. This eval-
+uation is intended to assess if the model’s original multilingual
+capabilities are preserved following the merging process. Fi-
+nally, we propose an improved version of the merging method
+that demonstrated the strongest performance in ID data (TSV-
+M [27]), called BoostedTSV-M, which (1) addresses rank col-
+lapse by boosting small singular values [28], and (2) improves
+algorithmic stability when merging closely related models by
+replacing the singular vector orthogonalization algorithm.
+2. Merging methods
+Model merging is a growing area of research that combines the
+weights of multiple fine-tuned variants – typically of the same
+base model – into a single model without retraining [29]. Ex-
+isting approaches can be broadly grouped into three categories
+based on the parameter space they operate on: parameter-space
+1https://github.com/Miamoto/mergewhisper
+4628
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1969
+merging (PS),τ-space merging (τSpa), andτ-subspace merg-
+ing (τSub). Parameter-space methods operate directly on the
+full model parametersθ t as a flattened vector, and include ap-
+proaches such as Model Soups (SOUP) [29], Model Stock [30],
+Karcher mean [31], and Multi-Spherical Linear Interpolation
+(SLERP) [24].τ-space merging methods operate over the task-
+vector, i.e., the difference between fine-tuned and pre-trained
+parameters. Task Arithmetic (TA) [32], TrIm, Elect, and Sign
+(TIES) [33], Parameter Competition Balancing (PCB) [34], and
+Select, Calculate and Erase (SCE) [35] belong to this group.
+Finally,τ-subspace methods operate overτmatrices in their
+original form (i.e., not flattened), and perform merging in low-
+rank subspaces. This family of methods represents the current
+state-of-the-art in CV and NLP, and includes approaches such as
+Task Singular Vectors Merging (TSV-M) [27], Isotropic Merg-
+ing in Common Subspace (ISO-C), and Isotropic Merging in
+Common and Task-Specific Subspaces (ISO-CTS) [36]. All of
+the merging methods described above are applied with the foun-
+dational model, except for SOUP, which we evaluate both with
+and without it. Also, all of these merging methods are supported
+byMergeWhisper. We refer the reader to the original publi-
+cations for full algorithmic details and default hyperparameters.
+3. BoostedTSV-M
+Letθ 0 denote a pre-trained foundation model andθ t the pa-
+rameters obtained after fine-tuningθ 0 on a task/domaint(for
+t= 1,...,T). We define the difference between the fine-
+tuned update and the baseline, also called the task vector, as
+τt =θ t−θ 0.
+3.1. TSV-M
+TSV-M [27] exploits the low-rank structure of task vectors by
+decomposing each weight matrixW i within eachτ t using Sin-
+gular Value Decomposition (SVD):
+Ui,t,Σ i,t,V ⊺
+i,t =SVD(τ i,t)(1)
+Of the full rank, only a small fraction (e.g.,1/T) of singular
+values and left and right singular vectors are retained, ensuring
+that only the dominant directions of each task vector are main-
+tained. The retained singular vectors and singular values from
+all task vectors are then concatenated:
+U= [U 1|U2|...|UT ]V ⊺ = [V1|V2|...|VT ]⊺
+Σ=block diag(Σ1,Σ 2,...,Σ T ) (2)
+Additionally, to mitigate task interference, the concatenated ma-
+trices of singular vectors are whitened, and therefore decorre-
+lated, by solving the orthogonal Procrustes problem [27], re-
+sulting inU orth andV orth. Finally, these three matrices are
+used to reconstruct the merged task vector matrix:
+τ TSV-M =U orthΣV⊺
+orth (3)
+The final merged model is then obtained asθ⋆ =θ 0 +λτ TSV-M.
+3.2. BoostedTSV-M
+We enhance TSV-M with a singular-value boosting scheme in-
+spired by prior work in CV [28]. In our setting, the singular
+values of the task vector matrices decay sharply, so that after
+truncation and concatenation (eq. 2) many components are sup-
+pressed, leading to rank collapse and loss of task-specific sig-
+nals. To mitigate this, we boost the singular valuesΣ i,t of each
+weight matrixW i prior to eq. 2.
+For eachΣ i,t, we define the functionc i,t(s)∈[0,1]as the
+fraction of total energy explained by the firstssingular values:
+ci,t(s) =
+Ps
+j=1σ(j)
+i,t
+Pr
+j=1σ(j)
+i,t +ϵ
+,(4)
+whereris the total number of singular values ofΣ i,t,σ (j)
+i,t de-
+notes thej-th singular value, andϵis a small value to avoid
+division by 0. We then find the smallest indexs ∗ such that the
+cumulative energyc i,t(s)exceeds a thresholdβ∈[0,1]:
+s∗ = min
+
+s∈{1,...,r}:c i,t(s)≥β
+	
+,(5)
+and boost all singular values belowσ (s∗)
+i,t by clamping them to
+that value:
+ˆσ(j)
+i,t = max(σ(j)
+i,t, σ(s∗)
+i,t ),∀j∈{1,...,r},(6)
+effectively setting a lower bound on the singular values and pre-
+venting the suppression of task-specific information carried by
+smaller singular values in the final merged model. After this
+boosting operation, TSV-M proceeds as described previously,
+concatenating the singular values and vectors across tasks.
+4. Experimental setup
+4.1. Corpora
+In all of our experiments, we use a training set of ten European
+Portuguese (EP) corpora, corresponding to∼350h of speech.
+Each of these datasets has a corresponding test partition that is
+used to evaluate ID performance. For EP OOD, we consider five
+additional OOD test partitions, totalling 10.9h. The combined
+ID and OOD test set amounts to 46.2h, matching the CAM˜OES
+benchmark test set [6]. Summary statistics for all corpora are
+provided in Table 1; for additional details, we refer the reader
+to [6]. In our experiments, we also explore the performance
+of the merged models in unseen Portuguese variants, namely
+African and Asian Portuguese (AAP) and Brazilian Portuguese
+(BP). For AAP, we use the AAP subset of Portuguˆes Falado [37]
+(∼3.5h). For BP, we evaluate on the BP subset of Portuguˆes Fal-
+ado as well as the CORAA [38] and MuPe [39] test sets (total
+∼46h). To assess whether merging preserves non-EP capabili-
+ties, we evaluate on two OOD benchmarks: OpenASR-HF for
+English[25], and a subset of 21 languages of FLEURS [26, 2].
+4.2. Implementation
+HuggingFace [54] is the primary framework that we use to im-
+plement and evaluate our work. The foundation model for all
+experiments is Whisper Large-v3 (WhisperLv3), chosen for its
+strong and robust performance in multilingual ASR [1, 5, 6]. In
+this work, we considered two fine-tuning regimes: (i) fullfine-
+tuning(Full-FT), in which WhisperLv3 was fine-tuned jointly
+on the ten European Portuguese corpora mentioned above; and
+(ii)individual fine-tuning(ID-FT), in which WhisperLv3 was
+fine-tuned separately on each corpus. For Full-FT, we trained
+for 10 epochs using a per-device batch size of 64 with gradient
+accumulation of 4 (effective batch size 256) and a learning rate
+of1×10 −5. For ID-FT, we trained each corpus-specific model
+for 3 epochs using a per-device batch size of 4 with gradient
+accumulation of 64 (effective batch size 256) and a learning
+rate of2×10 −6 to ensure stable optimisation and convergence;
+higher learning rates led to unstable training and, in some cases,
+prevented the model from converging. In both settings, we used
+4629
+Table 1:European Portuguese (EP) corpora used in this work:
+in-domain (ID) training data and ID/out-of-domain(OOD)
+evaluation sets, with hours of speech and number of speakers
+per split. OOD corpora are used for evaluation only (train
+shown as “–”).
+Train Test
+Corpus #hours #speakers #hours #speakers
+ID
+Alert (AL) [40] 45.6 1,356 6.6 175
+BD-Publico (BDP) [41] 21.8 100 2.0 10
+Fala Bracarense (FP) [42] 66.1 75 6.1 8
+Lectra (LE) [43] 22.0 7 2.6 7
+MLS extended (MLSE) [44] 54.8 12 1.0 10
+MuA ViC (MV) [45] 19.2 100 0.4 2
+PostPort (PP) [46] 31.3>247 3.9>30
+PT Adults (PTA) [47] 7.3 66 1.6 17
+PT Elderly (PTE) [48] 48.2 794 1.3 172
+SpeechDat (SpD) [49] 30.2 3,349 9.7 604
+OOD
+CommonV oice (CV) [50] – – 1.8 42
+PT Children 3–6 (PTC1) [51] – – 0.3 16
+PT Children 7–10 (PTC2) [51] – – 1.7 36
+PT Fundamental (PTF) [52] – – 4.2 169
+V oxCelebPT (V oxPT) [53] – – 2.9 13
+Total 346.5 6,106 46.2 1,311
+a cosine learning rate schedule with a warm-up phase cover-
+ing 20% of the total training steps. Utterances longer than 30
+seconds are excluded during training and fine-tuning, to match
+Whisper’s common training recipe. Finally, Full-FT was con-
+ducted on a single NVIDIA A100 (80GB) GPU, whereas ID-FT
+was conducted on a single NVIDIA RTX A6000 (48GB) GPU.
+Inference with WhisperLv3 is known to produce hallucina-
+tions [55]. We mitigate this by applying V AD-based segmen-
+tation prior to decoding using WhisperX [56]; we adopt this
+configuration (WhisperLv3-X) for all subsequent experiments,
+using a beam size of 5. All models use consistent text nor-
+malisation during evaluation. For the English benchmark, we
+apply Whisper’s standard English normaliser; for EP, we use
+a Portuguese-specific normaliser derived from Whisper’s base-
+line normalisation procedure. For FLEURS, we report results
+without additional normalisation. Performance is reported in
+terms of word error rate (WER) and character error rate (CER)
+for languages without explicit word boundaries.
+4.3. Model merging
+For all merging methods mentioned in Section 2, we use the de-
+fault recommended hyperparameters from the original papers.
+For BoostedTSV-M, we sweptβ∈[0.1,1.0]in preliminary
+experiments and foundβ= 0.3as the best performing con-
+figuration (cf. Figure 1). The orthogonal Procrustes solution
+used by TSV-M and ISO-CTS methods was found to be numeri-
+cally unstable in our setting when retaining more than 50% rank
+for TSV-M and also prevented ISO-CTS merging from con-
+verging. We therefore replaced this step with Newton–Schulz
+orthogonalisation for both methods, as well as our own pro-
+posed method (NVIDIA’s implementation [57]) using 5 itera-
+tions and aquinticcoefficient schedule; we view this stable
+substitution as a practical contribution that enables high rank-
+percentage retention.
+5. Results
+5.1. Comparative analysis of merging methods
+Table 2 presents our main results, including ID and OOD zero-
+shot and Full-FT performance, together with the model merging
+methods under evaluation, which are grouped according to the
+three paradigms introduced in Section 2:parameter-space(PS),
+τ-space(τSpa), andτ-subspace(τSub) merging.
+Table 2:ASR error rates (%) on in-domain EP (ID) and out-
+of-distribution evaluation sets (EP , AAP and BP), as well as
+OpenASR-HF and FLEURS. We report WER for all datasets
+except FLEURS, where we report the macro-average error rate
+across the selected languages (WER for languages with explicit
+word boundaries; CER otherwise).
+Group System EP ID EP OOD EP Full A vg. AAP BP OpenASR-HF Fleurs
+zero-shot 15.62 25.21 18.82 29.00 22.17 7.17 7.43
+Full-FT 8.54 17.65 11.58 23.96 27.00 8.83 9.63
+PS
+SOUP w/o pt. 10.15 17.60 12.63 23.04 21.43 7.14 7.40
+SOUP 11.25 17.97 13.65 23.88 21.55 7.14 6.98
+Model Stock 15.02 24.49 18.18 28.45 22.27 7.20 6.79
+Karcher Mean 10.23 17.63 12.70 22.88 20.99 7.12 7.43
+Multi-SLERP 10.35 17.83 12.85 23.18 21.17 7.13 7.49
+τSpa
+TA 10.23 17.63 12.70 22.90 21.01 7.12 7.48
+TIES 10.45 17.76 12.89 23.78 27.62 8.77 14.03
+PCB 9.79 16.94 12.17 22.19 23.02 7.17 8.92
+SCE 9.76 16.73 12.08 21.86 23.32 7.18 9.86
+τSub
+ISO-C 11.44 19.92 14.26 25.65 21.61 7.83 8.21
+ISO-CTS w/ NS 12.59 20.99 15.39 26.20 21.75 7.49 7.61
+TSV-M w/ OP 9.40 16.18 11.66 21.53 22.07 7.31 9.67
+TSV-M w/ NS 9.41 16.07 11.63 21.61 22.12 7.24 9.68
+BoostedTSV-M 9.27 16.11 11.55 21.58 24.98 7.60 10.37
+As expected, Full-FT substantially improves EP perfor-
+mance over the zero-shot model, reducing WER from 15.62%
+to 8.54% on the ID test sets and from 25.21% to 17.65% on
+EP OOD. A similar trend is observed for AAP, where WER de-
+creases from 29.00% to 23.96%. In contrast, Full-FT worsens
+performance on all non-EP OOD data except AAP, indicating
+that specialising the model to EP can harm multilingual robust-
+ness, and potentially cause catastrophic forgetting. On the other
+hand, the fact that AAP improves under EP fine-tuning, while
+other OOD data (BP, OpenASR-HF and Fleurs) degrade, sug-
+gests that AAP is distributionally closer to the EP data.
+When evaluating merging approaches as alternatives to
+Full-FT, theτSpa andτSub families contain the strongest merg-
+ing algorithms for EP. Among these, TSV-M yields the best
+EP OOD performance as well as the best AAP result overall
+– this being consistent with the claim that AAP is distribution-
+ally closer to the EP fine-tuning data than BP. As an additional
+note, as stated in Section 4.3, we replaced the orthogonal Pro-
+crustes (OP) step with Newton–Schulz (NS) orthogonalisation
+in TSV-M and ISO-CTS; empirically, this substitution yields
+comparable performance across benchmarks when comparing
+the two versions of TSV-M, while improving numerical stabil-
+ity, and allowing us to apply ISO-CTS merging.
+Our proposed modification of TSV-M, BoostedTSV-M
+achieves the best EP Full Avg. (11.55% WER), slightly im-
+proving over Full-FT (11.58% WER) with statistical signifi-
+cance (p <0.001, obtained through the MAPSSWE test [58]).
+This improvement for EP comes at the cost of degrading non-EP
+OOD with respect to TSV-M.
+PS methods generally yield the best non-EP OOD perfor-
+mance, though they are not able to match theτSub variants on
+ID data and EP OOD. In particular, Karcher mean achieves the
+best BP result, improving 1.2% absolute WER relative to the
+WhisperLv3-X baseline, while Model Stock attains the lowest
+average FLEURS error rate (6.79%), a 0.64 WER improvement
+over WhisperLv3-X and the best result among all methods. Fi-
+nally,τSpa methods slightly outperform PS methods in EP eval-
+uation, but starkly degrade non-EP OOD (except for AAP).
+For OpenASR-HF, most merging methods remain close to
+the zero-shot baseline and in several cases even slightly improve
+it (e.g., Karcher mean, Multi-SLERP, and TA), whereas Full-FT
+incurs a clear degradation, which is consistent with catastrophic
+forgetting; notably, TIES is the only merging method whose En-
+4630
+Table 3:WER (%) per EP corpus on in-domain (ID) and out-of-distribution (OOD) test sets. “Avg. ” is the mean across corpora within
+each split. For ID-FT, we report the score of the model fine-tuned on each corresponding ID corpus (one model per domain), which
+serves as an upper bound for what a single merged model could achieve on ID performance.
+ID OOD
+System AL BDP FB LE MLSE MV PP PTA PTE SpD Avg. CV PTC1 PTC2 PTF V oxPT Avg.
+zero-shot 8.21 4.52 29.55 20.53 9.21 12.72 18.04 18.94 26.7 7.76 15.62 9.98 42.25 12.15 49.12 12.56 25.21
+Full-FT 5.00 1.71 16.709.46 9.32 13.91 14.912.33 7.67 4.40 8.54 10.35 25.26 4.40 39.27 8.95 17.65
+ID-FT 4.852.42 15.61 8.74 8.94 11.5515.48 2.95 8.16 5.15 8.39 – – – – – –
+TSV-M w/ NS 5.36 3.01 18.84 10.02 9.37 14.97 14.11 2.97 9.76 5.65 9.41 9.85 20.64 3.98 37.61 8.29 16.07
+BoostedTSV-M 5.17 2.58 18.78 9.88 9.41 15.4113.932.71 9.42 5.42 9.27 9.97 20.73 4.00 37.46 8.4 16.11
+glish performance starkly degrades when compared to the base-
+line, with a very similar performance to Full-FT.
+Overall, these experiments show that, while a relevant al-
+ternative to Full-FT, merging exhibits a clear trade-off between
+target-domain specialisation and cross-lingual robustness.
+0.9 0.8 0.7 0.6 0.5 0.4 0.3 0.2
+Beta ( )
+9.0
+9.1
+9.2
+9.3
+9.4
+9.5EP (ID)
+16.0
+16.1
+16.2
+16.3
+16.4
+16.5
+EP (OOD)
+BoostedTSV-M (ID)
+BoostedTSV-M (OOD)
+TSV-M w/ NS (ID = 9.41)
+TSV-M w/ NS (OOD = 16.07)
+Figure 1:ID/OOD EP WER (%) for BoostedTSV-M as a func-
+tion ofβ. TSV-M w/ NS performance is shown as horizontal
+lines.
+5.2. Comparison of BoostedTSV-M and TSV-M
+We additionally compare the performance of TSV-M w/ NS and
+BoostedTSV-M for both ID and OOD (EP and non-EP) data.
+Table 3, presents per-corpus WER on the EP test sets, enabling a
+fine-grained assessment of the impact of these methods in same-
+language performance (EP). We further report the score of the
+model fine-tuned on each corresponding corpus, ID-FT, which
+serves as an upper bound for model merging and Full-FT.
+On the ID sets, BoostedTSV-M improves over TSV-M w/
+NS on most corpora, with the exception of MV and MLSE. No-
+tably, it achieves the second best result on PT-Adults (PTA), and
+the lowest WER on PostPort (PP), reaching 13.93% and out-
+performing both Full-FT and the corresponding ID-FT model.
+On the EP OOD sets, TSV-M w/ NS and BoostedTSV-M fur-
+ther improve over Full-FT, reducing the average EP OOD WER
+by 1.58 and 1.54 points, respectively, with both merging meth-
+ods outperforming the zero-shot and Full-FT baselines on all
+EP OOD corpora. The fact that TSV-M w/ NS outperforms
+BoostedTSV-M on all EP OOD corpora, and the opposite hap-
+pening for most ID corpora, strengthens our claim that boost-
+ing trades-off target-domain performance for EP OOD perfor-
+mance. Moreover, while neither method is able to achieve the
+performance of Full-FT or ID-FT on ID data, we argue that the
+method’s ability to preserve the capabilities of the base founda-
+tion model compensates the ID performance gap.
+On the other hand, from Table 2, we observe that perfor-
+mance on AAP for BoostedTSV-M remains close to TSV-M,
+but we observe degradation on BP, OpenASR-HF, and FLEURS
+when compared to TSV-M.
+To better understand the effect of boosting, we performed
+an ablation of the hyperparameterβ(Figure 1) as mentioned
+in Section 4.3. ID performance improves asβdecreases, with
+diminishing returns beyondβ≈0.6, while EP OOD perfor-
+mance generally degrades asβdecreases. These results reflect a
+fundamental trade-off that is consistent with our design choice:
+smaller values ofβamplify task-specific singular values at the
+expense of shared structure that supports transfer to OOD.
+5.3. OOD cross-lingual performance
+The last column of Table 2 reports the average results obtained
+for 21 languages of the FLEURS dataset (mentioned in Sec-
+tion 4.1). We observe that a large number of merged models
+actually outperform the WhisperLv3-X baseline. This indicates
+that through model merging it is possible to obtain gains even
+for languages that are not related to the fine-tuning data. We
+hypothesise that these improvements stem from shared acous-
+tic characteristics (e.g., channel conditions, speaking styles,
+or noise profiles) captured by the diverse adaptation domains.
+More broadly, this suggests that merging domain-specialised
+models trained on a diverse set of acoustic conditions can im-
+prove robustness and transfer knowledge to languages that are
+otherwise unrelated, matching what has been previously re-
+ported in the literature [15].
+6. Conclusion
+This work presented a study on model merging for multi-
+domain ASR, benchmarking eleven merging algorithms for
+WhisperLv3-X adapted to ten European Portuguese datasets,
+evaluating both in-domain accuracy and robustness under do-
+main and language shift, including other Portuguese varieties,
+OpenASR-HF (English), and FLEURS (multilingual). It also
+introducedMergeWhisper, a Whisper-compatible m

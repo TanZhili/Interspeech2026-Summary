@@ -1,0 +1,457 @@
+SDR-LLM: Speech-LLM Based End-to-End Speaker Diarization and
+Recognition with Sentence-Level Temporal Modeling
+Renjie Yu1,∗, Yixuan Zhou1,∗, Shun Lei1, Xiang Li1, Runchuan Ye1, Yikai Huang1, Guoyang Zeng2,∗∗,
+Zhiyong Wu1,∗∗
+1 Shenzhen International Graduate School, Tsinghua University, China
+2 ModelBest Inc., China
+{yurj24, yx-zhou23, leis21, lixiang23, yrc24, huang-yk24}@mails.tsinghua.edu.cn,
+zengguoyang@modelbest.cn, zywu@se.cuhk.edu.hk
+Abstract
+Speaker Diarization and Recognition (SDR) is crucial for multi-
+speaker audio. Cascaded systems suffer from error accu-
+mulation, while many end-to-end (E2E) models fail to pro-
+vide fine-grained temporal alignment. We propose a unified
+Speech-LLM framework that predicts speaker identities, text,
+and millisecond-level timestamps. Our method introduces a
+FIFO output sequence, integrating voiceprint IDs and tempo-
+ral boundaries into autoregressive generation. Training high-
+accuracy E2E SDR models requires large amounts of annotated
+data, which is scarce. To address this, we use a two-stage ap-
+proach: first, simulating speaker turns and timing with synthetic
+data, followed by fine-tuning with a small amount of real-world
+data. Experiments on AISHELL-4, AliMeeting, and OleSpeech
+show that our approach outperforms E2E models in transcrip-
+tion accuracy and achieves diarization comparable to cascaded
+systems. Our method balances transcription precision and tem-
+poral alignment in real-world corpus.
+Index Terms: speech-LLM, speaker diarization, speech recog-
+nition, end-to-end system, multi-task learning
+1. Introduction
+As Multimodal Large Language Models (MLLMs) [1–3] and
+advanced end-to-end speech dialogue systems [4, 5] demon-
+strate immense potential in processing complex interactive sce-
+narios, the demand for high-quality, large-scale conversational
+data has grown significantly in both industry and academia. In
+real-world applications, the task of simultaneously identifying
+who spoke what and when in conversational audio is known as
+Speaker Diarization and Recognition (SDR) [6]. This involves
+two critical sub-tasks: Speaker Diarization (SD) [7], which
+aims to recognize “who spoke when,” and Automatic Speech
+Recognition (ASR), which focuses on transcribing the specific
+spoken content. However, acquiring precisely annotated data
+that includes accurate timestamps, speaker labels, and corre-
+sponding text presents a formidable cost challenge.
+Traditional SDR solutions primarily rely on a cascaded
+framework. This architecture typically employs an SD module
+as the front-end to achieve audio segmentation through V oice
+Activity Detection (V AD) and speaker embedding clustering,
+followed by a back-end ASR system for transcription. Rep-
+resentative open-source state-of-the-art (SOTA) tools, such as
+3DSpeaker [8] and Pyannote Audio [9, 10], have shown ro-
+bustness in processing real-world meeting data by integrating
+neural segmentation models and speaker embedding extractors.
+*These authors contributed equally.
+**indicates the corresponding author.
+Furthermore, some studies have explored using LLMs to post-
+process and refine the outputs of cascaded systems. Neverthe-
+less, cascaded systems inherently suffer from error propagation:
+temporal offsets or speaker confusion in the SD stage directly
+lead to misaligned ASR results. Moreover, this segment-based
+logic often fails to capture the temporal correlations between
+speakers in highly dynamic conversational scenarios, such as
+overlapping speech.
+To overcome the limitations of cascaded architectures, end-
+to-end (E2E) modeling has emerged as a frontier in SDR re-
+search. These approaches attempt to perform diarization and
+transcription synchronously within a single framework via se-
+quence modeling. For instance, Sortformer [11] introduced
+a Sort Loss mechanism based on the chronological order of
+speakers’ first appearances to solve permutation ambiguity and
+utilized sinusoidal speaker kernels to integrate diarization in-
+formation into the ASR encoder. META-CAT [12] employed a
+“meta-information concatenation” technique to inject speaker
+supervision from diarization modules directly into ASR fea-
+tures, achieving a unified architecture for multi-speaker and
+target-speaker ASR without requiring acoustic masks or source
+separation. Recently, SpeakerLM [6] further explored the po-
+tential of Speech-LLMs for E2E SDR by mapping speech fea-
+tures and speaker embeddings into a unified feature space, and
+many existing E2E works focus on “coarse-grained” SDR tasks,
+which output only the speaker order and text without providing
+the millisecond-level timestamps typically offered by cascaded
+models. VibeV oice-ASR [13] provides a unified framework for
+the single-pass processing of audio up to 60 minutes long, en-
+abled by an ultra-low frame-rate speech encoder, thereby ad-
+dressing the issues of context fragmentation and pipeline com-
+plexity in traditional chunking-based methods. However, its
+end-to-end SDR capability relies on large-scale high-quality
+annotated data, which is often difficult to obtain. TagSpeech
+[14] achieves unified modeling of multi-speaker speech content,
+identity, and precise timestamps by decoupling its semantic and
+speaker streams and leveraging a novel interleaved time anchor
+mechanism. However, the relatively limited amount of training
+data used in their study results in less competitive performance
+compared with other large-scale approaches.
+Existing end-to-end Speech-LLM approaches still face no-
+table limitations. Some methods focus on coarse-grained SDR
+and are unable to provide accurate millisecond-level timestamps
+while simultaneously transcribing speech content and identify-
+ing speakers. Others attempt to model the full SDR task but
+rely heavily on large amounts of high-quality annotated data to
+achieve reliable performance. In practice, such precisely an-
+notated multi-speaker datasets are scarce and difficult to ob-
+6142
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2854
+tain. Consequently, how to overcome this training bottleneck
+and enable effective end-to-end SDR under limited supervision
+remains a significant challenge.
+To address the aforementioned challenges of the SDR task,
+this paper proposes an E2E solution based on Speech-LLM de-
+signed to achieve synchronous prediction of speaker identities,
+textual content, and precise timestamps. Recognizing that tem-
+poral perception significantly impacts speaker recognition accu-
+racy, we design a novel output sequence paradigm following a
+FIFO strategy to unify temporal boundaries, voiceprint IDs, and
+semantic information. To enhance model robustness in complex
+dialogue scenarios under data constraints, we propose a multi-
+stage training strategy that utilizes massive single-utterance
+ASR corpora to construct diverse pre-training tasks, thereby
+strengthening the model’s ability to represent real-world con-
+versations.
+The primary contributions of this work are summarized as
+follows:
+1.Exploration of SDR with Sentence-level Timestamp via
+Speech-LLM: To the best of our knowledge, this is one of the
+first works to utilize a Speech-LLM to simultaneously output
+speaker identifiers, transcriptions, and their corresponding
+fine-grained timestamps, addressing the limitations of E2E
+frameworks in temporal alignment.
+2.Structured SDR Output Designed for LLM Sequence
+Generation: We design a sequence format that organically
+integrates speaker information and timestamp tokens. This
+scheme follows the FIFO principle, effectively supporting
+joint modeling in multi-speaker scenarios while remaining
+compatible with the autoregressive generation paradigm of
+LLMs.
+3.Two-stage Multi-task Enhanced Training Strategy: Ad-
+dressing the lack of high-quality dialogue data, we propose
+reinforcing model capabilities through simulated dialogue
+tasks. We design three distinct training tasks to enhance
+SDR performance. Experimental results show that this multi-
+stage strategy effectively leverages foundational ASR data
+to improve generalization in overlapping speech and rapid
+speaker-turn scenarios.
+2. Method
+2.1. Model Architecture
+As illustrated in Figure 1, the proposed model adopts a
+sequence-to-sequence (Seq2Seq) framework [15]. To estab-
+lish robust ASR capabilities, we employ the SOTA open-source
+speech model, FireRedASR-LLM-L, as the backbone network.
+This model utilizes an Encoder-Adapter-LLM architecture [16],
+integrates a Conformer-based audio encoder from FireRedASR-
+AED, which provides acoustic representations at a temporal res-
+olution of 80 ms with a Qwen2-7B-Instruct LLM foundation,
+totaling approximately 8.3B parameters.
+To enhance speaker discriminability beyond standard ASR
+representations, we incorporate an auxiliary WavLM-Large en-
+coder [17] that utilizes a linear fusion layer to aggregate multi-
+layer hidden states. Following the architecture in MT-LLM 1
+[18], this encoder is succeeded by an adapter consisting of a 1D
+convolutional downsampling layer to align the temporal reso-
+lution to 80 ms and a linear layer integrated with GELU ac-
+tivation and Layer Normalization to project the features into
+the LLM’s latent space. These components are initialized from
+1https://github.com/cuhealthybrains/MT-LLM
+a version fine-tuned by Seed-TTS-Eval 2 [19] on downstream
+speaker recognition tasks to ensure rich speaker-discriminative
+feature extraction.
+In the input stage, features from both the Conformer
+and WavLM-Large encoders are concatenated along the tem-
+poral dimension. This effectively introduces rich speaker-
+discriminative cues while preserving the foundational ASR ca-
+pabilities of the FireRedASR backbone. The outputs of the
+two encoders are denoted asE c andE w, respectively. These
+outputs, along with the token sequenceE p converted from the
+prompt, are concatenated to form the model’s input,X in, as
+shown in the following equation:
+Xin =Concat(E c, Ew, Ep)(1)
+Subsequently, the LLM generates the target sequenceE T
+autoregressively based onX in:
+ET =LLM(X in)(2)
+2.2. Output Sequence Design
+To unify multi-speaker diarization and ASR within the autore-
+gressive generation framework of the Large Language Model,
+we propose a structured output sequence scheme. This design is
+specifically crafted to handle the intricate challenges of complex
+multi-speaker scenarios, enabling fine-grained speaker identifi-
+cation, precise temporal alignment, and accurate text transcrip-
+tion. By leveraging the autoregressive nature of the model, it
+ensures that speaker turns and speech content are seamlessly
+integrated, maintaining coherence and consistency across over-
+lapping speech segments.
+2.2.1. Timestamps and Special Token Definitions
+Following the timestamp quantization approach in Whisper
+[15], we divide a 30-second audio segment into 375 discrete
+timestamp tokens with a temporal stride of 80 ms, ranging from
+<|0.00|>to<|30.00|>. To explicitly distinguish temporal
+boundaries, two pairs of qualifiers are introduced:<|st|>and
+<|/st|>for encapsulating the start time, and<|et|>and
+<|/et|>for the end time. Furthermore, to support conver-
+sations involving up to four participants, the sequence defines
+four speaker identifiers:<|spk0|>through<|spk3|>.
+2.2.2. Sequence Construction and Overlapping Speech Han-
+dling
+Following [20], each utterance is represented by a structured
+sequence comprising the speaker ID, quantized start time, text
+content, and quantized end time:
+<|spk0|><|st|><|0.00|><|/st|>Hello<|et|><|2.00|><|/et|>
+Unlike traditional cascaded systems that rely on explicit
+source separation or multi-speaker diarization modules which
+often introduce acoustic artifacts and computational complex-
+ity, our approach adapts overlapping speech to the LLM’s au-
+toregressive paradigm. By employing a FIFO policy, we se-
+rialize concurrent utterances into a chronological token stream
+based on the absolute start times of the utterance. Specifically,
+when an overlap occurs, the model prioritizes the completion of
+the ongoing speaker’s full utterance before initiating the next.
+This strategy ensures semantic coherence within the sequential
+output while preserving individual temporal boundaries:
+2https://github.com/BytedanceSpeech/seed-tts-eval
+6143
+Large Language ModelLoRA
+Conformer
+Encoder
+WavLM-Large
+Encoder
+Adapter AdapterW     transcribe the audio into text...
+<eos><|spk0|> <|st|> <|0.00|> <|/st|> hello <|et|> <|2.00|> <|/et|>
+EC EW EP ET
+<sos> <|spk0|> <|st|> <|0.00|> <|/st|> hello <|et|> <|2.00|> <|/et|>
+Speech
+Prompt Target
+Sequence
+ Trainable
+Freezed
+Hidden vector
+Figure 1:Overview of the Proposed Framework - Model Architecture and Input/Output Schematic.
+<|spk0|><|st|><|0.00|><|/st|>Hi<|et|><|2.00|><|/et|>
+<|spk1|><|st|><|1.68|><|/st|>OK<|et|><|2.32|><|/et|>
+2.2.3. Training and Inference Pipeline
+During training, the input to the LLM consists of a concatenated
+sequence of speech embeddings, prompts, and target tokens.
+The speech embeddingE S is obtained by fusing FireRedASR
+encoder featuresE C with WavLM featuresE W , while the
+prompt and target sequences are tokenized and mapped to em-
+beddingsE P andE T through an embedding layer. The model
+is trained using cross-entropy loss, which is computed solely
+over the target tokens, excluding the speech and prompt embed-
+dings.
+During inference, only the speech embeddingE S and
+prompt embeddingE P are provided, and the model generates
+diarization and transcription outputs autoregressively.
+2.3. Training Strategy and Task Design
+The implementation of a robust end-to-end joint speaker di-
+arization and ASR model heavily relies on high-quality, ac-
+curately annotated multi-speaker dialogue data. However, due
+to the scarcity of real-world datasets that provide precise tem-
+poral annotations for multi-speaker conversations, we propose
+a two-stage training paradigm. This paradigm is designed to
+progressively advance from simpler scenarios to more complex
+ones, allowing the model to first learn fundamental diarization
+and transcription tasks before tackling the challenges presented
+by overlapping speech and intricate speaker interactions. This
+stepwise approach ensures that the model can adapt effectively
+to increasingly sophisticated real-world dialogue scenarios.
+•Stage 1: Multi-task Pre-training.Utilizing single-utterance
+audio-text pairs, we construct three targeted simulation tasks
+on synthetic data to strengthen the model’s perception of
+speaker identity and temporal boundaries.
+•Stage 2: Real-world Fine-tuning.Leveraging the founda-
+tional capabilities acquired in the first stage, we use real-
+world dialogue data from complex acoustic environments to
+Task1
+Task2
+Task3
+0.00 30.005.04 16.00
+S
+P
+T
+Please transcribe the audio into text and indicate the start and end times.
+<|st|><|5.04|><|/st|>text text<|et|><|16.00|><|/et|>
+0.00 30.00
+S
+P
+T
+Please identify the different speakers in the audio and their corresponding
+start and end times.
+<|spk0|><|st|><|0.00|><|/st|><|et|><|7.04|><|/et|> <|spk1|><|st|><|6.92|><|/st|><|et|><|9.64|><|/et|>
+<|spk0|><|st|><|10.16|><|/st|><|et|><|14.40|><|/et|> <|spk2|><|st|><|14.56|><|/st|><|et|><|19.28|><|/et|>
+<|spk1|><|st|><|21.12|><|/st|><|et|><|23.44|><|/et|> <|spk2|><|st|><|24.00|><|/st|><|et|><|27.04|><|/et|>
+0.00 30.00
+S
+P
+T
+Please transcribe the audio into text and label the speakers and their start
+and end times.
+<|spk0|><|st|><|2.72|><|/st|>text0 text0<|et|><|10.16|><|/et|> <|spk1|><|st|><|9.20|><|/st|>text 1 text
+1<|et|><|17.20|><|/et|> <|spk2|><|st|><|19.92|><|/st|>text 2 text 2<|et|><|24.00|><|/et|>
+Figure 2:Stage 1 Training Tasks.
+further enhance the model’s generalization performance.
+As illustrated in Figure 2, training tasks are defined as
+triplets (S, P, T), representing the speech input S, the prompt
+P and the target sequence T. Task decoupling and isolation are
+achieved through the use of distinct prompts. We have designed
+the following three enhancement tasks:
+2.3.1. Task 1: Temporal Perception Enhancement
+This task is designed to improve the model’s ability to precisely
+localize utterance boundaries within long-form audio.
+•Speech Input (S):A single-sentence utterance is embedded
+at a random temporal position within 30 seconds of back-
+6144
+ground silence.
+•Prompt (P):“Please transcribe the audio into text and indi-
+cate the start and end times.”
+•Target Sequence (T):Comprises the quantized start and end
+timestamps and the corresponding transcription of the speech
+segment.
+2.3.2. Task 2: Speaker Discrimination Enhancement
+This task is designed to strengthen the model’s ability to identify
+different speakers in complex dialogue scenarios while enhanc-
+ing its capacity to differentiate vocal characteristics and capture
+speaker turn-taking events.
+•Speech Input (S):Utterances from 3 to 4 distinct speak-
+ers are extracted, randomly partitioned into multiple sub-
+segments, and interleaved within a 30-second silent back-
+ground. The construction ensures that adjacent segments be-
+long to different speakers and we allow a temporal overlap of
+up to 1 second between different speakers.
+•Prompt (P):“Please identify the different speakers in the au-
+dio and their corresponding start and end times.”
+•Target Sequence (T):Contains only speaker IDs and start
+and end timestamps, arranged in FIFO order. To focus specif-
+ically on speaker decoupling, no transcription is included in
+this task.
+2.3.3. Task 3: Dialogue Scenario Simulation
+This task is designed to bridge the gap between simulated data
+and real-world scenarios by simulating complex dialogue flows
+and concurrent speech events.
+•Speech Input (S):Speech segments from 1 to 3 speakers are
+randomly selected and embedded into a silent background via
+random time shifting. To mirror natural conversations, we
+allow a temporal overlap of up to 1 second between different
+speakers.
+•Prompt (P):“Please transcribe the audio into text and label
+the speakers and their start and end times.”
+•Target Sequence (T):Follows the complete output sequence
+format described in the previous section, performing joint
+modeling of speaker IDs, timestamps, and textual content.
+3. Experiments
+3.1. Data Preparation and Preprocessing
+The proposed two-stage training scheme leverages datasets
+from diverse sources, with Stage 1 constructing simulated tasks
+from foundational corpora and Stage 2 further refining the
+model using real-world dialogue data. In this work, we cap the
+number of speakers at four, as this covers the vast majority of
+scenarios in our benchmark datasets. This design choice helps
+stabilize training and reduces vocabulary size.
+3.1.1. Stage 1: Corpora for Simulation Tasks
+To ensure the model possesses cross-lingual modeling capabili-
+ties, we select three open-source datasets in Stage 1:
+•AISHELL-1[21] is a large-scale Mandarin Chinese speech
+recognition dataset, consisting of 150 hours of speech from
+400 speakers, with both read speech and conversational data,
+providing a rich linguistic resource for training ASR systems
+in Mandarin.
+•AISHELL-3[22] is another Mandarin Chinese dataset, de-
+signed for speaker diarization and speech recognition, con-
+taining 170 hours of multi-speaker conversational speech. It
+includes natural dialogues from 100 speakers, allowing for a
+more realistic simulation of multi-speaker scenarios.
+•LibriSpeech[23] is a widely used English speech recogni-
+tion dataset, derived from audiobooks read by a variety of
+speakers. It contains 1,000 hours of speech, making it one
+of the largest and most diverse datasets available for English
+ASR and speaker diarization tasks.
+All audio is preprocessed by trimming leading and trailing
+silence, enabling accurate duration estimation for constructing
+timestamp supervision in the simulated tasks.
+3.1.2. Stage 2: Real-world Dialogue Corpora
+The second training stage uses real-world meeting and podcast
+data. The datasets employed are as follows:
+•AISHELL-4[24]: A Chinese meeting dataset containing
+120 hours of speech data recorded with 8 microphones. It
+provides rich multi-channel recordings of Mandarin conver-
+sational speech.
+•AliMeeting[25, 26]: A dataset with 225 hours of recordings
+that feature overlapping speech and diverse speaker interac-
+tions, capturing more realistic meeting scenarios with com-
+plex speaker dynamics.
+•OleSpeech-IV-2025-EN-AR-100[27]: A large-scale, multi-
+speaker English dataset that includes high-quality transcripts
+and fine-grained timestamps. It covers a wide range of pod-
+casts and teleconference conversations.
+These datasets provide pre-defined training and test splits,
+which we adopted as per the official partition. As a result, the
+training and test sets were processed independently throughout
+our data preparation pipeline.
+Given that these real-world corpora typically consist of
+long-form audio (ranging from several minutes to tens of min-
+utes) with complex sentence-level speaker indices and temporal
+annotations, we adopt a data cleaning and segmentation proto-
+col inspired by [11]:
+•Temporal Segmentation:A sliding window is applied to
+segment long audio files, ensuring that training samples have
+a duration between 20 and 30 seconds.
+•Speaker Re-indexing:Speaker IDs are reassigned based on
+their chronological order of appearance within each segment.
+Valid segments containing between 2 and 4 speakers are re-
+tained.
+•Boundary Constraints:To prevent boundary effect interfer-
+ence from residual speech of preceding segments, no over-
+lapping speech is permitted within the first and last 1 second
+of a segment.
+•Content Filtering:The initial utterance of the first speaker
+must contain actual semantic content; segments consisting
+solely of non-lexical fillers (e.g., interjections or modal par-
+ticles) are excluded. If the gap between two consecutive sen-
+tences from the same speaker is less than one second, they
+will be merged into a single sentence.
+3.1.3. Feature and Text Normalization
+All audio signals are resampled to 16 kHz to ensure consistent
+feature extraction across datasets, following the same prepro-
+cessing procedure as FireredASR-LLM. The corresponding text
+transcripts are normalized by removing punctuation and special
+6145
+Table 1:System performance comparison. Results marked with an asterisk (*) are cited from the original publications.
+System AISHELL-4 AliMeeting OleSpeech
+CER↓ cpCER↓ DER↓ CER↓ cpCER↓ DER↓ WER↓ cpWER↓ DER↓
+Cascaded *Pyannote official – – 11.70% – – 20.30% – – –
+Pyannote + FireRedASR 27.52% 31.79%11.82%37.39% 47.13% 20.58% 43.67% 47.99% 19.22%
+Sortformer + FireRedASR 27.31% 29.41% 12.42% 29.53% 34.67% 20.72% 39.94% 45.36% 17.86%
+End-to-End
+Gemini-2.5-pro 18.37% 25.27% 27.47% 29.49% 37.50% 39.51% 23.83% 30.15% 28.81%
+TagSpeech 32.55% 38.49% 21.37% 37.20% 48.85% 34.42% 45.16% 53.67% 31.24%
+*SpeakerLM (216.25h) 17.75% 26.14% – 18.63% 32.22% – – – –
+*SpeakerLM (694.06h) 17.48% 25.28% – 18.14% 29.60% – – – –
+Proposed12.78%22.11% 11.83% 12.35% 29.51%23.26% 14.12%28.14% 14.11%
+w/o Stage112.67%23.86% 14.93% 13.60% 32.05% 29.44%13.62%29.63% 16.83%
+w/ Stage1 Task1 12.97% 23.37% 13.66% 13.11% 31.81% 26.23% 13.88% 29.38% 15.23%
+w/ Stage1 Task1&2 12.84% 22.14% 13.15% 14.16% 31.12% 25.55% 13.93% 28.21% 15.17%
+w/ Stage1 Task1&3 12.70% 22.84% 12.53% 13.37% 31.71% 24.97% 14.01% 28.87% 14.70%
+characters. Additionally, English text is lowercased to reduce
+character-level variability, ensuring uniformity in the transcrip-
+tion process.
+3.2. Training Details
+3.2.1. Optimizer and Learning Rate Scheduling
+Model optimization is performed using the AdamW optimizer
+[28]. Regarding the learning rate (LR) strategy, the initial LR is
+set to1e−6, which increases to a peak value of5e−6through
+a linear warm-up phase over the first 10% of the total training
+steps. Subsequently, following the configuration in SpeakerLM
+[6], a cosine annealing schedule is adopted to smoothly decay
+the learning rate, ensuring the stability of model convergence.
+3.2.2. Hardware and Hyperparameters
+The training is executed in two stages:
+•Stage 1 (Pre-training):120,000 steps on 8 

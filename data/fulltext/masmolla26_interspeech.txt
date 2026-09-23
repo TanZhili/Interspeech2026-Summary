@@ -1,0 +1,469 @@
+Improving streaming ASR with foundation models using emission policies
+Gerard Mas-Moll`a ID 1, Albert Sanchis ID 1, Alfons Juan ID 1
+1 MLLP research group, VRAIN, Universitat Polit`ecnica de Val`encia, Spain
+{gemamol, josanna2, ajuanci}@upv.es
+Abstract
+Speech Foundation Models (SFMs) have achieved state-of-
+the-art results in offline ASR, yet their application in streaming
+environments remains limited due to the performance degra-
+dation caused by restricted context. In this work, we propose
+a model-agnostic, training-free streaming pipeline designed to
+wrap around ASR models in a “black box” manner. Our ap-
+proach integrates three key components: a sliding window au-
+dio buffer for incremental data ingestion, token-level timestamp
+management to eliminate redundant output, and text-only emis-
+sion policies to govern output timing. We systematically eval-
+uate several emission policies, assessing their impact on the
+latency-accuracy trade-off across three English datasets. Re-
+sults show that our pipeline enables timestamp-producing SFMs
+like Parakeet and Canary to achieve near-offline transcription
+quality in real-time environments without requiring access to
+internal model tensors.
+Index Terms: streaming decoding, speech foundation models
+1. Introduction
+In recent years, Foundation Models (FM) are being increasingly
+applied in a great variety of machine learing applications [1] due
+to their remarkable abilities for generalization and their ability
+to perform well on tasks they where not trained to do so [2]. In
+the field of Automatic Speech Recognition (ASR), Speech FMs
+(SFM) earned the spotlight due to their multilingual capabilities
+and good performance across different tasks and contexts [3].
+However, most of these SFMs are designed to work in offline
+conditions, and their performance degrades when they are ap-
+plied to streaming ASR [4].
+A straightforward approach to apply SFMs in streaming
+ASR consists in performing chunked decoding by sequentially
+splitting the input stream into fixed-size chunks to be pro-
+cessed [5, 6, 7]. Although this approach enables SFMs to be
+used for streaming ASR, transcription quality degrades with re-
+spect to offline performance [8, 9]. This gap in performance
+prevents full exploitation of high-throughput SFM architectures
+for streaming ASR applications.
+In this work, we first investigate the degradation in per-
+formance of NVIDIA’s Parakeet-tdt-0.6b-v3 and Canary-1b-v2
+SFMs when they are applied under streaming conditions. Then,
+we propose to apply different emission policies such as Wait-
+K [10], Hold-N [11] and LocalAgreement [11] investigating its
+impact on the latency-accuracy trade-off. In contrast to simi-
+lar work which has been focused on leveraging internal features
+of SFMs to guide decoding [12, 13], our proposal is focused
+on leveraging timestamps and applying text-only emission poli-
+cies, which allows its application to other timestamp-producing
+SFMs without requiring model-aware implementations. Exper-
+I'm going to be king of the pirates
+ASR Model ❄
+of the piratesI'm going to be king
+Chunk
+Chunk
+theof
+of the pirates
+Emission policy
+theof
+Emission
+Repetition control
+Audio buffer
+of the... I'm going to be king
+Output text
+Figure 1:Streaming ASR pipeline using LocalAgreement policy.
+iments performed on tasks from the Open ASR Leaderboard [3]
+demonstrate that SFMs can be effectively leveraged to achieve
+near-offline transcription quality at low-latencies.
+2. Streaming ASR with emission policies
+Streaming ASR using End-to-End models has been directly ad-
+dressed by applying chunk decoding in a way that the speech
+signal is sequentially processed based on fixed-length chunks.
+These chunks are enlarged by adding some past and future audio
+information in order to better represent the global context. Al-
+though a straightforward approach, chunk decoding has proven
+to be effective [14] and different techniques such as Continuous
+Integrate-and-Fire (CIF) [15], Monotonic Chunkwise Attention
+(MoChA) [16] or AlignAtt [17] have been proposed in order to
+improve performance. All these techniques make use of specific
+information in the model to guide the decoding process, thus re-
+quiring internal access and model dependent implementations.
+As an alternative, we propose a model-agnostic chunk-
+decoding approach based on emission policies which can be
+generally applied with independence of the ASR model as long
+as it is able to produce timestamps. As shown in Figure 1,
+it consists of three main modules: a sliding audio buffer that
+handles incremental data ingestion; a repetition control mod-
+ule that, based on token-level timestamps, filters redundant to-
+kens; and an emission policy module which decides the token
+emission timing. This approach allows to integrate ASR mod-
+els in a “black box” fashion, resulting in a pipeline that can
+be integrated with any architecture capable of producing time-
+aligned transcriptions. The inference algorithm of the proposed
+approach is described in Algorithm 1.
+Implementation at: https://github.com/germol00/streaming SFMs
+4094
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3358
+Algorithm 1Streaming simulated inference algorithm
+input: acoustic inputX, chunk lengthL c, window sizeL max
+t←0
+Tlast←0
+whilet<len(X)do
+Xt =X[t·L c−L max,t·L max]
+toks, ts=MODEL(X t)
+f toks, f ts=FILTERPAST(toks, ts,T last)
+e toks, e ts=POLICY(f toks,f ts)
+Tlast =e ts[-1]
+yielde toks, e ts
+end while
+toks, ts=ENDTRANSCRIPTION()
+returntoks, ts
+2.1. Sliding audio buffer
+Conventionally, incremental data ingestion in streaming ASR
+has been mostly managed frame-by-frame or chunk-by-chunk.
+The frame-by-frame approach, mostly adopted by HMM-based
+systems [18], processes the incoming data frame-wise. This
+approach, while achieving the lowest theoretical latency possi-
+ble, entails performing one forward step per frame, generally re-
+sulting in computationally expensive decoding processes when
+working with large models. On the other side, chunk-by-chunk
+processing has become the standard approach for End-to-End
+models. It generally results in a less expensive decoding pro-
+cess, as it reduces the number of forward steps, although it intro-
+duces an inherent latency proportional to the size of the chunks.
+However, since one of the goals of our pipeline is to provide the
+model with more acoustic context than traditional chunk-based
+decoding, we adopted a sliding window approach.
+The pipeline starts with an audio buffer that receives fixed-
+length chunks of sizeL c. During the initial part of the audio
+stream, the buffer grows cumulatively until it reaches a maxi-
+mum window lengthL max. From this point on, when a new
+chunk is added, it pushes the oldest chunk out of the buffer to
+maintain a constant window size, making the audio buffer tran-
+sition into a fixed-length sliding window mechanism. Formally,
+the acoustic inputX t defined by the sliding window at a decod-
+ing steptcan be expressed asX t =X[t·L c−L max,t·L c].
+This approach ensures that the model has access to the most re-
+cent audio information while maintaining a sufficient amount
+of past information. Note that, as with other chunk-based ap-
+proaches, the decoder is usually lighter than the encoder. There-
+fore, transribing the entire window at each step does not add any
+significant computational overhead.
+2.2. Timestamp-based repetition control
+Following the pipeline representation in Figure 1, the acoustic
+information in the sliding window mechanism is then fed to the
+ASR model to be processed. As the maximum size of the slid-
+ing windowL max is set to be larger than the chunk sizeL c,
+the model processes overlapping acoustic information in every
+decoding step, leading to redundant tokens in the output across
+decoding steps. To resolve this redundancy, we leverage token-
+level timestamps generated by the model. At every decoding
+step, the system stores a state variableT last representing the
+timestamp of the last committed token. With this information,
+for each new inference result, the system discards all the tokens
+with timestamps referring to instants previous toT last. This
+mechanism ensures a monotonic progression of the transcrip-
+tion while also preventing the emission of duplicate text under
+overlapping window settings.
+2.3. Token emission control with emission policies
+Once the transcription has been filtered, it is then added to an
+output buffer that contains all candidate tokens for emission.
+At this point, the generated partial transcription is ready to be
+consolidated as output text. However, since the pipeline pro-
+cesses the acoustic stream in an overlapping fashion, it allows
+the model to re-generate predictions for a given acoustic region
+as new acoustic data is added to the window and more context
+can be provided. This feature allows the system to make correc-
+tions to the output text once it has been already generated by the
+model, although it produces a “flickering” effect at the output of
+the system [19]. Due to this effect, the user perceives changes
+over the last tokens of the transcriptions as the system performs
+these corrections. In order to prevent flickering, we apply an
+emission policy to the output buffer.
+In the context of streaming ASR (and Speech Translation),
+emission policies implement the decision-making logic used to
+control emission timing of tokens as new audio arrives. Es-
+sentially, during the decoding process, an emission policy de-
+cides when a hypothesized token should be emitted, and thus
+manages the trade-off between latency and accuracy. Without
+a robust policy, a model might prematurely emit a word based
+on incomplete acoustic context (leading to the aforementioned
+flickering) or wait too long for future context, thereby breaking
+the purpose of streaming decoding [20].
+In this work, we specifically propose to use emission poli-
+cies that are able to work solely by having access to the output
+text of the ASR model. Since we are only treating the models as
+black boxes, we do not have access to specific internal tensors
+required to apply other policies. In this way, we consider two
+types of emission policies: static and dynamic. Static emission
+policies work as a fixed “look-ahead” buffer within the output
+stream. For this type of policy, we propose to use Wait-K [10]
+and Hold-N [11]. On the other side, dynamic policies act as a
+validation gate between consecutive decoding steps. As a dy-
+namic policy, we propose to use LocalAgreement [11].
+2.3.1. Wait-K
+Wait-Kis a simple yet effective fixed-delay policy originally
+popularized in simultaneous machine translation. In the context
+of streaming ASR, the model is required to “wait” forKaddi-
+tional input chunks, frames or seconds. Subsequent emissions
+follow a deterministic schedule where each token is conditioned
+on a fixed amount of look-ahead. While simple to implement,
+the primary drawback of Wait-Kis its lack of flexibility, as it
+applies a uniform delay regardless of the phonetic complexity
+or the model’s confidence in a specific segment of audio.
+2.3.2. Hold-N
+The Hold-Npolicy (often referred to as a “stability” buffer)
+works by delaying the emission of the lastNtokens in a hypoth-
+esis. As the model processes new audio, it may update the most
+recent predictions. By “holding” the lastNtokens, the system
+ensures that it only commits to text that has been “pushed out”
+of the buffer by subsequent tokens. Similar to Wait-K, this pol-
+icy introduces a constant latency overhead proportional toN.
+4095
+10 20 30 40
+2
+4
+6
+8
+10
+12
+14
+VoxPopuli, Lc = 1
+VoxPopuli, Lc = 2
+TedLium-v3, Lc = 1
+TedLium-v3, Lc = 2
+Earnings22, Lc = 1
+Earnings22, Lc = 2
+WER (%)
+Lmax
+Parakeet-v3
+10 20 30 40
+VoxPopuli, Lc = 1
+VoxPopuli, Lc = 2
+TedLium-v3, Lc = 1
+TedLium-v3, Lc = 2
+Earnings22, Lc = 1
+Earnings22, Lc = 2
+WER (%)
+Lmax
+Canary-v2
+Figure 2:Effect ofL c andL max in terms of WER using the
+Wait-K policy withK= 2seconds.
+2.3.3. LocalAgreement
+LocalAgreement (LA) is a dynamic emission policy designed to
+maximize stability without the rigid latency penalties of fixed-
+delay methods. It operates by comparing hypotheses generated
+at consecutive time steps or across overlapping acoustic win-
+dows. A token is only considered “stable” if it appears in the
+same position across a number of consecutive decoding steps.
+Because it adapts to the model’s consensus, LA can quickly
+emit high-confidence tokens while naturally waiting longer for
+ambiguous segments. Following the findings of [21], it is con-
+sidered that the policy achieves its best performance when only
+comparing the last two hypotheses at any given time. Follow-
+ing this result, we apply the LA policy by computing the longest
+common prefix (LCP) to the last two hypothesesH t andH t−1.
+2.3.4. LocalAgreement-Levenshtein
+A notable limitation of LA is its strict requirement for exact
+token-to-token identity, which can lead to unnecessary delays in
+the presence of minor character variations or punctuation shifts.
+To address this, a popular solution is to introduce a more relaxed
+consensus mechanism based on the Levenshtein distance.
+LocalAgreement-Levenshtein (LA-Lev) is a modified ver-
+sion of LA that, instead of demanding a perfect match across
+consecutive decodes, it computes the edit distance between two
+consecutive hypothesesH t andH t−1. Then, a segment is
+cleared for emission only if the edit distance falls below a pre-
+defined thresholdτ. By adjusting the value ofτ, LA-Lev al-
+lows for more relaxed decoding strategies, potentially sacrific-
+ing some WER score on behalf of emission latency.
+3. Experiments
+3.1. Experimental setup
+The proposed approach has been evaluated using Parakeet-
+TDT-0.6B-v31 (Parakeet-v3 for short) and Canary-1B-v2 2
+(Canary-v2 for short). We conducted experiments to evalu-
+ate the WER-latency trade-off using three speech benchmarks
+of the Open ASR leaderboard [3]: V oxPopuli [22], which is
+based on European Parliament sessions with formal structured
+interventions; TedLium-v3 [23], which consists of speech from
+TED talks with professional yet spontaneous speech; and Earn-
+ings22 [24], which is formed from earnings calls from global
+companies and is designed to evaluate ASR robustness “in the
+wild”. The duration of these tasks is provided in Table 1.
+1Weights at https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+2Weights at https://huggingface.co/nvidia/canary-1b-v2
+Table 1:Duration of the Open ASR leaderboard tasks
+Dataset Hours
+V oxPopuli [22] 4.9
+TedLium-v3 [23] 2.6
+Earnings22 [24] 5.4
+WER figures were computed after removing all casing and
+punctuation, following the established normalization for Open
+ASR Leaderboard system entries. Latency figures were com-
+puted following [12] by aligning the output transcripts with an
+external HMM-based system [25] using the TLK toolkit [26].
+All experiments were performed on a node with a NVIDIA RTX
+4090GPU and an Intel Core 10920X CPU. The experimen-
+tal evaluation was conducted in three phases: first, we tested
+the audio buffer configuration to study the impact of chunk and
+window sizes. Then, we adjusted the emission policies by tun-
+ing their specific parameters. Finally, we compared our best
+systems with the open-source state-of-the-art SimulStreaming
+Whisper [12]. Parakeet-v3 and Canary-v2 offline and stream-
+ing baselines were computed using the NeMo toolkit [27].
+2 4 6 8 10
+2.5
+5.0
+7.5
+10.0
+12.5
+15.0
+17.5
+20.0
+VoxPopuli
+TedLium-v3
+Earnings22
+WER (%)
+LA-Levenshtein
+Parakeet-v3
+Canary-v2
+2 4 6 8 10
+VoxPopuli
+TedLium-v3
+Earnings22
+WER (%)
+Wait-K (K)
+K
+Parakeet-v3
+Canary-v2
+2 4 6 8 10
+VoxPopuli
+TedLium-v3
+Earnings22
+WER (%)
+Hold-N (N)
+N
+Parakeet-v3
+Canary-v2
+Figure 3:WER against the parameter of each emission policy
+(K,Nandτ).
+3.2. Results
+As a first experiment, we studied the effect of the input chunk
+sizeL c and the sliding window sizeL max (both measured in
+seconds) on transcription quality. We evaluated a grid of con-
+figurations whereL max∈{10,20,30,40}andL c∈{1,2}.
+Since it is reasonable to assume that any real-time system
+should maintain a stable latency no larger than2.5seconds, no
+further values forL c were tested. These configurations were
+tested using the Wait-Kpolicy withK= 2seconds. As shown
+in Figure 2, incrementingL max produces overall improvements
+in WER, with the exception of Canary-v2 usingL c = 1for
+Earnings22 and V oxPopuli. In general, higherL max values
+means to consider more acoustic and textual past context which
+is directly related to improve WER figures, beingL max = 20
+enough to get the main significant improvements. Regarding
+Lc, a chunk size ofL c = 2consistently outperformsL c = 1.
+Considering these previous results, we used
+(Lc = 2,L max = 20) to adjust the specific parameters
+for each emission policy. Note that, since LA only computes
+the LCP between two consecutive hypotheses, it has no
+parameters to tune. For the rest of policies, we measureKin
+seconds,Nin tokens andτis the threshold for the edit distance
+4096
+Table 2:Comparison of our best systems against the baselines.
+Model Earnings22 TedLium-v3 V oxpopuli
+Parakeet-v3
+offline 11.19% - 2.8% - 6.09% -
+streaming 25.35% (0.80s±0.28) 17.16% (0.82s±0.18) 10.24% (0.77s±0.13)
+LA11.45%(2.25s±1.10)3.00%(2.48s±0.90)6.40%(2.34s±0.70)
+LA-Levτ= 211.60% (2.19s±1.04) 3.18% (2.44s±0.86) 6.49% (2.31s±0.68)
+Wait-211.71% (1.98s±0.79) 3.27% (2.18s±0.57) 6.60% (2.17s±0.51)
+Hold-812.03% (1.69s±0.75) 4.45% (1.75s±0.49) 6.98% (1.89s±0.52)
+Canary-v2
+offline 11.79% - 4.29% - 6.25% -
+streaming23.68%(1.92s±0.71)16.55%(2.02s±0.58)14.60%(1.96s±0.51)
+LA 11.75% (2.17s±1.07) 4.34% (2.33s±0.78) 6.50% (2.35s±0.75)
+LA-Levτ= 211.53%(2.05s±0.95)4.16%(2.44s±0.86)6.31%(2.24s±0.62)
+Wait-211.82% (2.62s±1.33) 4.28% (2.94s±1.06) 6.40% (3.02s±0.99)
+Hold-512.60% (1.88s±0.90) 6.06% (1.92s±0.54) 7.25% (2.14s±0.61)
+Table 3:Comparison of our low-latency systems (L c = 1) with SimulStreaming Whisper
+Model Earnings22 TedLium-v3 V oxpopuli
+SimulStreaming Whisper [12]14.92%(1.01s±0.27)4.11%(1.02s±0.15)10.26%(0.92s±0.23)
+Parakeet-v3 LA12.07%(1.32s±0.59)3.85%(1.47s±0.48)7.15%(1.28s±0.30)
+LA-Levτ= 212.43% (1.27s±0.54) 4.17% (1.44s±0.45) 7.45% (1.27s±0.29)
+score. The results shown in Figure 3 show that for static
+policies, there exists a direct correlation between larger values
+ofKandNand better performance. However, since these
+parameters directly affect the emission timing, larger values
+lead to higher latencies. For Wait-K applied to Parakeet-v3,
+a notable drop in WER is observed betweenK= 1and
+K= 2. For further values ofK, we do not consider any
+other significant improvement that can justify the increase in
+latency. In the case of Hold-N, the improvement is considerably
+smoother, which makes the decision of finding the best value
+not trivial. However, we consider that values between[4−8]
+are promising depending on their final latency. In the case of
+LA-Lev, we can observe a better behaviour for smaller values
+ofτ. Since larger values forτdirectly translate into a less
+aggressive policy, we can intuitively assume that it will reduce
+latency, although at the cost of less accurate transcriptions. In
+this case, we considerτ= 2to be an adequate configuration.
+Finally, we compared our best systems with the offline and
+streaming baselines. The offline baselines were computed by
+replicating the figures reported at the Open ASR leaderboard 3.
+For the streaming baseline figures, we used existing setups that
+are available in the NeMo toolkit without any additional train-
+ing. These setups make use of a chunk-based decoding strategy
+with both past and future contexts. We specifically used a win-
+dow configuration of(L= 20,C= 1,R= 1)whereL,Cand
+Rare the sizes in seconds of the left context, the chunk and the
+right context, respectively. The results in Table 2 show that our
+systems are able to improve the streaming baseline figures in all
+cases. Moreover, with high latency levels but still acceptable
+in streaming contexts [28], Parakeet-v3 is able to achieve close
+to offline results with LA, LA-Lev and Wait-K, while Canary-
+v2 is able to improve the Earnings22 and TedLium-v3 offline
+baselines with both LA and LA-Lev.
+We also compared our approach with SimulStreaming
+Whisper [12]. This system uses the AlignAtt policy, a model-
+aware policy that makes use of the attention heads of the model
+to guide emission timing. In order to obtain an even compara-
+tive study, we adjusted our systems to reduce the user perceived
+3https://huggingface.co/spaces/hf-audio/open asr leaderboard
+latency under1.5seconds by adjusting the sliding window con-
+figuration toL c = 1andL max = 20. However, only the
+systems that use Parakeet-v3 were able to achieve said latency
+figures. As shown in Table 3, it can be observed that our sys-
+tems obtain competitive results, with LCP improving the results
+of SimulStreaming Whisper in all cases with slightly higher la-
+tency figures (∼0.4seconds). This latency overhead present
+in our systems can be attributed to the nature of the emission
+policies. Since AlignAtt is able to leverage the model’s internal
+information, it allows for more informed decisions regarding
+emission timing, allowing SimulStreaming Whisper to achieve
+lower latency figures. However, contrary to the model-specific
+implementation of model-aware emission policies, these model-
+agnostic policies allow the adaptation of the framework to dif-
+ferent SMFs with minor changes yielding comparatively better
+WER performance at the cost of losing some latency.
+4. Conclusions
+We have proposed a model-agnostic streaming ASR pipeline
+capable of achieving close to offline results using black box
+models with timestamped output. We showed that the slid-
+ing window approach combined with timestamp-guided repe-
+tition control allows to minimize WER on small chunk setups.
+Furthermore, when combined with text-only emission policies,
+the system is capable of sequentially processing long acoustic
+samples while minimizing “flickering”. The result is a model-
+agnostic pipeline able to perform streaming and long-form in-
+ferences with competitive results. Promising directions for pos-
+sible future work are on the one hand evaluating more SFMs,
+and on the other hand studying the capabilities of multi-task
+models like Canary-v2 to perform simultaneous ST.
+5. Acknowledgments
+The research leading to these results has received funding
+from the Government of Spain’s grant PID2021-122443OB-
+I00 funded by MICIU/AEI/10.13039/501100011033 and by
+“ERDF/EU”, and grant PRE2022-103662 funded by MI-
+CIU/AEI/10.13039/501100011033 and by “ESF+”.
+4097
+6. Generative AI Use Disclosure
+Generative AI tools have been used for editing and polishing the
+manuscript, though no significant part of it has been produced
+using them. All co-authors are responsible and accountable for
+the work and content of the paper.

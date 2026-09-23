@@ -1,0 +1,436 @@
+Probing LoRA-to-LoRA Cross-Lingual Transfer for Unseen Low-Resource
+Conditions in Whisper-Based ASR
+Hirak Mondal, Spandan Dey, Gopal Agrawal
+Samsung R&D Institute, Bangalore, India
+hirak.mondal@samsung.com, spandan.dey@samsung.com, gopal.kumar@samsung.com
+Abstract
+Low-resource Automatic Speech Recognition (ASR) remains
+a challenge despite large-scale pre-training, especially for lan-
+guages with minimal representation. We investigate LoRA-
+to-LoRA transfer using Whisper, where a Low-Rank Adapta-
+tion (LoRA) module trained on a donor language, even one
+under-represented in the base model, initializes adaptation for
+a low-resource recipient. Unlike full fine-tuning, this approach
+preserves pretrained parameters, ensuring stable, parameter-
+efficient cross-lingual transfer. We propose a two-stage donor
+selection strategy that filters candidates by genealogical relat-
+edness and identifies the optimal donor through orthographic-
+distributional similarity. Results demonstrate that donor-
+informed initialization consistently outperforms recipient-only
+adaptation, yielding relative Word Error Rate (WER) reductions
+of up to17%. Our findings indicate that leveraging linguisti-
+cally and orthographically aligned donors is critical for effective
+low-resource ASR.
+Index Terms: low-resource ASR, cross-lingual transfer, LoRA,
+Whisper, parameter-efficient fine-tuning
+1. Introduction
+Automatic Speech Recognition (ASR) has undergone a pro-
+found transformation over the past decade, evolving from hy-
+brid Hidden Markov Model-Gaussian Mixture Model (HMM-
+GMM) pipelines [1] to the current era of large-scale speech
+foundation models. Early neural frameworks transitioned
+through CTC, attention, and transducer-based architectures [2–
+4], eventually leading to massive weakly supervised scaling.
+Models such as Whisper [5], SeamlessM4T [6], and the Ca-
+nary series [7] now demonstrate performance that approaches
+or surpasses human transcription accuracy across nearly 100
+languages, marking a shift from language-specific pipelines to
+universal pre-trained backbones.
+However, this broad coverage hides a difficult reality. Of
+the 7,000+ languages worldwide [8], the vast majority remain
+low-resourcewith minimal transcribed data. This exclusion
+creates a significant technological equity gap, effectively bar-
+ring speakers of under-represented languages from accessing
+vital digital services in healthcare, education, and governance
+[9]. Furthermore, without robust ASR systems to facilitate tran-
+scription and documentation, many endangered languages face
+an accelerated risk of digital extinction, as they are sidelined in
+an increasingly voice-driven technological landscape [10].
+The adaptation of these models to low-resource regimes fol-
+lows several paths, each with distinct trade-offs. While full
+fine-tuning often minimizes Word Error Rate (WER), its high
+computational cost and susceptibility to catastrophic forget-
+ting [11, 12] remain problematic. Continual learning strategies,
+including experience replay [13, 14], gradient-based constraints
+[15], and parameter isolation [16–18] have been investigated to
+mitigate these issues, yet the fundamental tension between sta-
+bility and plasticity persists [19–21].
+Recent research has explored parameter-efficient fine-
+tuning (PEFT) like LoRA [22] for direct adaptation [12], but the
+potential of transfer-guided donor mechanisms remains largely
+unexplored for unseen languages. While Song et al. [23] inves-
+tigated LoRA-based transfer, their study was limited to high-
+resource anchors already present in pre-training data. Other ap-
+proaches, such as LM-based output correction [24], face statis-
+tical intractability in extreme low-resource settings. Notably,
+while Joshi et al. [25] introduced a rare and vital “Bhojpuri Ru-
+ral Woman” dataset, their methodology relies on training from
+scratch. Such an approach is not only computationally expen-
+sive but also increasingly impractical for large-scale multilin-
+gual models, as it fails to leverage the powerful linguistic priors
+already embedded in pre-trained backbones and is highly sus-
+ceptible to catastrophic forgetting [17].
+In this work, we move beyond high-resource donor
+paradigms to investigate transfer learning dynamics when even
+the donor language is under-represented in the original pre-
+training data. We propose a “bootstrapping” strategy using se-
+quential LoRA-to-LoRA initialization: training a LoRA adapter
+on a donor language before transferring those weights to a recip-
+ient. This setup addresses three critical questions: (i) the influ-
+ence of donor visibility in pre-training on transfer effectiveness;
+(ii) the role of cross-lingual representation similarities in the
+encoder-decoder architecture; and (iii) the advantages of staged
+adaptation over single-stage LoRA for low-resource language
+pairs. By jointly evaluating empirical adaptation performance
+and orthographic-distributional similarity through genealogical
+relatedness, we demonstrate that our staged LoRA-to-LoRA
+transfer consistently outperforms single-stage baselines. These
+results establish the proposed method as a robust strategy for
+parameter-efficient cross-lingual adaptation, particularly when
+orthographic alignment and shared genealogy are leveraged to
+bridge languages under-represented or absent from the model’s
+original pre-training.
+2. Background
+2.1. Whisper
+Developed by OpenAI, Whisper is a multilingual encoder-
+decoder Transformer-trained sequence-to-sequence architecture
+built using large-scale 680k hours of weakly supervised speech-
+transcription data. Given an input log-Mel spectrogramX∈
+RT×F , the encoder produces latent acoustic representations
+H= Enc θe(X), whereX∈R T×F represents input features
+withTtime frames,Fthe number of Mel-frequency bins, and
+θe denotes the encoder parameters. The decoder then autore-
+gressively generates output tokens:
+2110
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1133
+P(yt|y <t,H;θ d)(1)
+whereθd denotes decoder parameters.
+Thus, Whisper models speech recognition as a conditional
+sequence generation problem:X→H→y.
+2.2. LoRA
+Low-Rank Adaptation (LoRA) [22] is a parameter-efficient
+fine-tuning method that modifies pretrained linear layers using
+low-rank updates. For a weight matrixW∈R d×k, instead of
+updatingWdirectly, LoRA models the update as:
+W′ =W+BA(2)
+whereA∈R r×k andB∈R d×r, withr≪min(d,k)de-
+notes the rank of LoRA. The original weightWremains frozen,
+and onlyAandBare trained.
+3. Methodology
+3.1. Related Works: LoRA-to-LoRA Transfer
+LoRA offers fine-tuning in a parameter-efficient manner, which
+is beneficial for low-resource applications. Hence, recent litera-
+ture has extensively explored parameter-efficient multilingual
+adaptation for large speech models using LoRA. Among the
+notable prior works relevant to our context, [23] proposed a
+LoRA-based extension of Whisper for multilingual ASR and
+language expansion. The proposed idea can be formulated in
+two stages:
+3.1.1.Multilingual LoRA Formation
+The model assigns a language-specific LoRA parameter set
+ϕi ={A i,Bi}to each base languageℓ i∈L b ={ℓ 1,...,ℓ n}.
+For an inputx, the effective model for languageℓi is defined by
+the weight updatefθ,ϕi(x) =f θ(x;W+B iAi).
+3.1.2.LoRA-to-LoRA Transfer for Language Expansion
+To incorporate a new languageℓ new /∈Lb, a similarity-driven
+initialization has been used. Given Whisper’s language identi-
+fication (LID) probabilityp(ℓk|x), the similarity betweenℓ new
+and a base languageℓk acrossMsamples is defined as:
+sim(ℓk) = 1
+M
+MX
+j=1
+⊮(k= argmax ip(ℓi|x j))(3)
+The optimal donor language is selected asℓ d =
+argmaxℓk∈Lb sim(ℓk), and new parameters are initial-
+ized asϕ (0)
+new =ϕ d. Subsequent optimization is performed only
+onϕ new whileθand all existingϕ i remain frozen, preventing
+catastrophic forgetting and maintaining parameter efficiency.
+3.2. Limitations of the Existing LoRA-to-LoRA Transfer
+Approach
+Importantly, [23] deals with donor languages and recipient lan-
+guages that lie within the distribution already well represented
+during Whisper pre-training:
+Lb∪L new⊆L pretrain (4)
+Under this study, the backbone representationf θ already
+encodes sufficient acoustic and linguistic priors for these lan-
+guages, making LoRA transfer primarily a specialization step
+in a well-supported feature space. However, in realistic low-
+resource scenarios, recipient languages with only limited la-
+beled data may not satisfyℓ u∈L pretrain, whereℓ u denotes the
+low-resource target language, leaving the behavior of LoRA-to-
+LoRA transfer across donors with varying pre-training exposure
+underexplored. In particular, how transfer effectiveness varies
+when donors and recipients have minimal or zero exposure dur-
+ing the model’s pre-training has not been systematically studied.
+3.3. Orthographic Similarity-Driven Donor Selection
+We adopt a two-stage donor selection strategy grounded in lin-
+guistic structure and distributional similarity. First, we restrict
+the donor search space by genealogical relatedness; candidate
+donors must belong to the same linguistic family as the re-
+cipient. This serves as a structural prior, ensuring baseline
+compatibility in phonological and morpho-syntactic character-
+istics. Second, within this constrained set, we select the donor
+based on orthographic distributional similarity. The motiva-
+tion for this is rooted in the decoder’s operation over discrete
+token sequences, where it models the conditional probability
+pθ(yt|y <t,X)over a fixed vocabularyV. Since the empir-
+ical token distribution of a language fundamentally shapes the
+statistical structure of decoder gradients, minimizing the ortho-
+graphic divergence between the donor and recipient ensures that
+the initialized LoRA parameters are already tuned to a similar
+gradient manifold. By selecting a donor that shares a signif-
+icant token overlap or distributional profile with the recipient,
+we facilitate a more stable and efficient transfer of the decoder’s
+linguistic modeling capabilities.
+3.3.1.Modeling Orthographic Distributions
+For a languageℓwith corpusD ℓ, we represent the language as
+a probability vectorP ℓ∈∆ |V| over the tokenizer vocabulary
+V={v 1,...,v V}. The empirical distribution for each token
+v∈Vis:
+Pℓ(v) = 1
+Zℓ
+NℓX
+i=1
+TiX
+j=1
+⊮[tij =v](5)
+whereZℓ is the total token count andtij is thej-th token of the
+i-th sequence.
+3.3.2.Orthographic Alignment and Donor Selection
+To quantify the proximity between a candidate donorℓ k and a
+low-resource targetℓ u, we compute the Jensen-Shannon (JS)
+divergence [26] between their empirical token distributions:
+JS(Pu∥P k) = 1
+2 KL(Pu∥M) + 1
+2 KL(Pk∥M)(6)
+whereMis the average distribution and KL is the Kullback-
+Leibler divergence defined as:
+M= 1
+2(Pu +Pk),KL(P∥Q) =
+X
+v∈V
+P(v) log P(v)
+Q(v)
+This metric directly informs the LoRA adaptation process.
+Since the expected decoder gradientE y∼Pℓ[∇θ logpθ(y)]is
+shaped by the token distributionP ℓ, two languages withP u≈
+Pk will exhibit similar gradient directions. By minimizing or-
+thographic divergence, we ensure the recipient initializes from
+a donor whose LoRA parameters already occupy a compatible
+gradient subspace, reducing the distributional shift the low-rank
+update must absorb. Thus, given a set of candidate donorsK,
+we select the optimal donorℓ∗ as:
+ℓ∗ = argmin
+ℓk∈K
+JS(Pu∥P k)(7)
+4. Experiment Details
+4.1. Experimental Setup
+4.1.1.Model Selection and Benchmark Context
+We employ Whisper-small (244M parameters) as our primary
+backbone. Given the high-efficiency requirements of low-
+2111
+resource ASR, we specifically avoid high-parameter variants to
+maintain a focus on lightweight adaptation via LoRA.
+Our work significantly departs from the scope of prior stud-
+ies such as [23] which primarily evaluate LoRA-to-LoRA trans-
+fer on languages already well-represented in Whisper’s pre-
+training data. As shown in Table 1, we evaluate Whisper-
+small’s zero-shot performance on their selected languages using
+FLEURS and MLS benchmarks.
+Table 1:Zero-shot Whisper-small error rates for donor and re-
+cipient languages used in [23]. (Lower is better)
+Donor Error Recipient Error
+Polish 18.89 (WER) Danish 43.90 (WER)
+Portuguese 21.71 (WER) Greek 40.98 (WER)
+Italian 21.16 (WER) Welsh 70.26 (WER)
+Chinese 23.00 (CER) Japanese 16.44 (CER)
+The resulting low Word Error Rates (WER) indicate that
+these donors are already well-aligned with the model’s pre-
+training distribution. In contrast, our study focuses on a more
+challenging regime of transferring knowledge to truly unseen,
+low-resource languages that do not satisfyℓ u ∈ Lpretrain. By
+investigating this unseen regime, we test the limits of LoRA-to-
+LoRA transfer in scenarios where the model has no prior lin-
+guistic exposure.
+4.1.2.Low-Resource Transfer Scenario and Data Configura-
+tion
+We evaluate LoRA-to-LoRA transfer under a low-resource set-
+ting characterized by both limited labeled data and weak pre-
+training priors. The donor languages Hindi (600hours), Ben-
+gali (600hours), and Marathi (550hours) are sourced from In-
+dicV oices [27]. Hindi and Marathi are written in the Devanagari
+script, whereas Bengali uses the Bengali (Bangla) script. While
+these languages have comparatively larger supervised corpora
+than our recipients, they remain under-represented in Whisper’s
+pre-training distribution relative to high-resource European and
+East Asian languages studied in prior work. The zero-shot
+WERs of Whisper on these donor languages are reported in Ta-
+ble 2.
+Table 2:Zero-shot Whisper-small word error rates for donor
+and recipient languages in our low-resource transfer setting.
+(Lower is better)
+Donor WER (%) Recipient WER (%)
+Hindi 82.10 Bhojpuri 178.40
+Marathi 142.86 Konkani 227.10
+Bengali 126.34 Assamese 249.86
+Among the recipient languages, Bhojpuri is sourced
+from AI4Bharat “Rural Women ASR v2” dataset [25], while
+Konkani and Assamese are sourced from the IndicV oices [27].
+Bhojpuri and Konkani use the Devanagari script whereas As-
+samese uses Assamese script. To ensure experimental consis-
+tency, training sets were shuffled with a fixed seed of 42, from
+which specific hourly subsets were extracted. We designed our
+experiments to test both depth and breadth across low-resource
+dialects and demographics. First, using Hindi (600 hours) as
+a donor and Bhojpuri Rural Woman as a recipient, we varied
+the training data volume (40 and 80 hours) of the recipients to
+analyze the learning curve. Furthermore, to demonstrate robust-
+ness, we evaluated the Bengali-Assamese (40 hours), Marathi-
+Konkani Rural Woman (100 hours), and Marathi-Konkani (60
+hours) pairs.
+Evaluation for the Bhojpuri Rural Woman recipient is con-
+ducted using theSRUTIbenchmark set created by Joshi et al.
+[25]. For all other recipient languages, we partitioned the origi-
+nal valid split of the IndicV oices dataset: 2 hours were reserved
+as a dedicated test set to provide a statistically significant per-
+formance metric, while the remaining samples were utilized as
+the validation set for hyperparameter tuning and early stopping
+during the LoRA adaptation process. This rigorous separation
+ensures that the observed improvements result from architec-
+tural adaptation rather than idiosyncratic over-fitting to specific
+speaker profiles.
+Unlike the donor languages considered in [23], which
+demonstrate strong zero-shot performance due to substan-
+tial pre-training exposure, our target languages exhibit near-
+saturated zero-shot error rates (WER≈100%), as detailed in
+Table 2.
+Consequently, the transfer setting investigated here differs
+fundamentally from prior work, as adaptation occurs between
+languages that are themselves weakly modeled in the base sys-
+tem. The observed transfer improvements therefore cannot be
+attributed to strong pretrained representations alone, but instead
+reflect cross-lingual structural alignment.
+4.2. Donor Selection
+As described in Section 3, donor languages are selected
+based on genealogical relatedness and the minimization of
+Jensen–Shannon (JS) divergence between empirical token dis-
+tributions. By employing this quantitative framework, we en-
+sure that our donor-recipient pairings are derived from measur-
+able orthographic alignment rather than heuristic intuition.
+4.3. Training Configuration
+All experiments are conducted on a single NVIDIA A10 GPU
+(24GB VRAM). We evaluate the effectiveness of language-
+specific adapters by training LoRA modules on top of the
+Whisper-small backbone, as well as exploring LoRA-to-LoRA
+transfer where recipient weights are initialized from a donor
+LoRA and subsequently adapted. In all cases, the AdamW
+[28] optimizer is used with a peak learning rate of10 −4 for
+10epochs.
+Following the findings of [23], which identified a rank of
+r= 32as optimal for speech adaptation, we adoptedr= 32for
+all LoRA modules. This selection was further validated by our
+preliminary experiments on Hindi data, wherer= 32consis-
+tently yielded superior performance compared to lower ranks.
+To ensure a high-capacity adaptation, LoRA adapters are ap-
+plied to the attention mechanism’s query (Wq), value (Wv), and
+output (Wout) projections, as well as the fully-connected layers
+(Wfc ) within the feed-forward blocks of both the encoder and
+decoder. During the testing stage, a beam width of5is em-
+ployed for decoding.
+5. Experiment Results and Analysis
+Table 3 summarizes the Automatic Speech Recognition (ASR)
+performance across all evaluated donor-recipient pairs. We
+report the Word Error Rate (WER) for four distinct config-
+urations: (i) Whisper zero-shot, (ii) donor-only LoRA, (iii)
+recipient-only LoRA, and (iv) the proposed donor–recipient
+LoRA-to-LoRA transfer. The donor languages, Hindi, Marathi,
+and Bengali were strategically selected as linguistic proxies for
+Bhojpuri, Konkani, and Assamese respectively. As illustrated in
+Figure 1, this selection is grounded in their shared Indo-Aryan
+genealogy and further validated by the statistical framework
+discussed in Section 3, where these pairs exhibited the lowest
+Jensen-Shannon (JS) divergence among all candidate languages
+2112
+Table 3:Performance comparison (WER) of Whisper Zero-shot vs. Recipient-LoRA vs. Donor-Recipient-LoRA Transfer .
+Donor Recipient Hours Whisper ZS Whisper ZS Donor Recipient Donor-Rec.
+(Recipient) (Donor) (Recipient) LoRA LoRA LoRA Transfer
+Hindi Bhojpuri Rural Woman 40 82.10 178.40 26.86 30.3725.14
+Hindi Bhojpuri Rural Woman 80 82.10 178.40 26.86 28.2523.89
+Marathi Konkani Rural Woman 100 142.86 227.10 26.74 41.8637.62
+Marathi Konkani 60 142.86 227.10 26.74 43.7139.94
+Bengali Assamese 40 126.34 249.86 30.91 49.2342.34
+within the same family.
+Figure 1:Cross-Lingual Similarity Matrix
+5.1. Performance Analysis and Transfer Effectiveness
+Whisper’s poor zero-shot performance confirms these lan-
+guages had minimal exposure during pre-training. While LoRA
+improves results, donor-initialized transfer consistently outper-
+forms recipient-only baselines (Fig. 2, Table 4). Hindi→
+Bhojpuri yields the highest gains (17%), likely due to Hindi’s
+stronger base model representation. However, consistent im-
+provements across all pairs (9-14%) establish orthographic-
+distributional alignment as the primary driver of transfer effec-
+tiveness, independent of the donor’s base familiarity.
+Table 4:Relative error reduction over recipient-only LoRA.
+Transfer Pair Data (h) Rel. Gain (%)
+Hindi→Bhojpuri 4017
+8015
+Bengali→Assamese 4014
+Marathi→Konkani 609
+10010
+5.2. Analysis of Transfer Stability and Error Rates
+The observed transfer gains remain consistent across the40-
+100h data regimes, suggesting that donor-informed initializa-
+tion based on the lowest JS divergence provides a superior op-
+timization trajectory rather than merely acting as a regularizer.
+In our experiments, the donor selected via JS divergence con-
+sistently achieved the best recipient WER among the evaluated
+candidates, while other donors (even within the same script) re-
+sulted in higher WER, indicating the effectiveness of JS diver-
+Figure 2:Comparison of Recipient-only LoRA vs. LoRA-to-
+LoRA Transfer .
+gence as a donor selection criterion. Because these improve-
+ments persist even as recipient data increases toward100h, it is
+evident that the structural benefits of the donor subspace do not
+collapse with increased supervision.
+While the absolute Word Error Rates (WER) are higher than
+those found in large-scale ASR benchmarks, this is expected
+given the strict low-resource constraints, significant dialectal
+variability in the evaluation sets, and the use of parameter-
+efficient LoRA rather than full fine-tuning. We emphasize that
+our objective is not the optimization of absolute WER, but the
+evaluation of relative transfer effectiveness. The consistent per-
+formance gains across all donor-recipient pairs confirm that
+the improvements stem from structured cross-lingual alignment
+rather than simple scale effects.
+6. Conclusion
+In this work, we investigate LoRA-to-LoRA transfer for low-
+resource languages in Whisper-based ASR. Unlike prior re-
+search focusing on pre-trained anchors, we address a stricter,
+more realistic setting where recipient languages are absent from
+the original pre-training phase and are available only with lim-
+ited labeled data. We demonstrate that donor-initialized transfer
+consistently outperforms recipient-only adaptation. These sta-
+ble gains suggest that transfer provides a superior optimization
+starting point rather than mere regularization. Furthermore, our
+results confirm that donor selection can be guided by measur-
+able distributional properties, offering a principled alternative
+to heuristic pairing.
+These findings establish that parameter-efficient transfer re-
+mains effective even for languages without prior exposure in the
+base model, offering a scalable path for ASR expansion without
+massive retraining. Future work will investigate the universal-
+ity of this distributional alignment across diverse typologies and
+explore cross-modal metrics to further refine donor selection.
+2113
+7. Generative AI Use Disclosure
+Generative AI tools were used solely for limited language edit-
+ing and manuscript refinement. All scientific contributions, in-
+cluding the study design, methodology, experiments, analyses,
+and conclusions, were conceived, validated, and approved by
+the authors, who assume full responsibility for the content of
+this manuscript in accordance with ISCA policy.

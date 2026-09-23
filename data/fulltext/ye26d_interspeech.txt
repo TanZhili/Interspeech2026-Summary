@@ -1,0 +1,488 @@
+ZipCodec: Simple and Pretrained-Model-Free Speech Tokenizer via
+Flow-Matching
+Lingxuan Ye ID 1, Han Zhu ID 1, Liyong Guo1, Zengwei Yao1, Wei Kang1, Fangjun Kuang1, Zhifeng
+Han1, Long Lin1, Daniel Povey ID 1,∗∗
+1 Xiaomi Corp., Beijing, China
+{yelingxuan,dpovey}@xiaomi.com
+Abstract
+Speech tokenizers serve as the critical interface for integrating
+continuous audio into large language models. However, most
+existing speech tokenizers require massive pretrained models
+or complex multi-stage training pipelines. To address this, we
+propose ZipCodec, a single-stage-trained, pretrained-model-
+free tokenizer that bypasses the need for heavy encoder ar-
+chitectures. By offloading acoustic reconstruction to a pow-
+erful Zipformer-based flow-matching decoder, ZipCodec en-
+ables an ultra-lightweight encoder of just 4.4M parameters.
+Furthermore, we introduce an Encoder Consistency Regular-
+ization (ECR) loss to enhance the encoder’s semantic capac-
+ity in a purely self-supervised manner, without relying on ex-
+ternal teachers or labels. Experimental results demonstrate
+that ZipCodec achieves competitive acoustic and semantic per-
+formance, outperforming models with encoders more than 20
+times larger and delivering improved zero-shot TTS generation.
+Index Terms: speech tokenizer, flow-matching, speech genera-
+tion
+1. Introduction
+The rapid advancement of large language models (LLMs) has
+established discrete speech tokens as a foundational paradigm
+for unifying speech understanding and generation [1]. By
+converting continuous audio waveforms into compact discrete
+units, speech tokenizers serve as the critical interface that en-
+ables speech to be modeled using the same text-based models
+that have revolutionized natural language processing.
+However, early speech codecs such as EnCodec [2] and
+SoundStream [3] were primarily designed for signal compres-
+sion and high-fidelity transmission. Because these models pri-
+oritize acoustic-level reconstruction, their tokens often lack
+the semantic richness required for effective language model-
+ing. To better serve the downstream tasks, recent advancements
+have focused on introducing semantic information into dis-
+crete representations, essentially rebalancing the semantic and
+acoustic modeling within the discrete latent space. Currently,
+methodologies achieving this can be broadly categorized into
+two paradigms. The first isSemantic Distillation/Guidance,
+which forces the encoder to learn semantic representations by
+distilling knowledge from pretrained models [4, 5] or intro-
+ducing semantic-related tasks (e.g., supervised ASR training)
+[6, 7, 8]. The second is the use ofSemantic Side-Models
+[9, 10, 11, 12, 13, 14], which directly incorporates pretrained
+models (e.g., HuBERT [15] or Whisper [16]) as additional se-
+mantic encoders.
+**indicates the corresponding author.
+While these approaches successfully narrow the “seman-
+tic gap”, they inevitably introduce significant drawbacks: re-
+liance on extra pretrained models, demands for labeled train-
+ing data, or increasingly complex multi-stage training pipelines.
+Meanwhile, the overall parameter count of these tokenizers has
+surged, particularly on the encoder side, which is burdened by
+massive pretrained backbones. This trend prompts a fundamen-
+tal question:Are such convoluted, multi-stage pipelines and
+increasingly massive encoder architectures truly indispensable
+for driving semantic-rich speech tokens?
+Meanwhile, recent advances in flow-matching (FM) [17]
+and Zipformer [18] provide a promising alternative for speech
+tokenizer design. FM learns a vector field that transports noise
+to the target speech distribution [19, 20, 21], making it well
+suited to recovering speech from highly compressed represen-
+tations under quantization-induced uncertainty. In parallel, Zip-
+former, a U-Net-style architecture with multi-scale temporal
+modeling, has been widely validated as a strong and efficient
+speech encoder. Using Zipformer as the FM decoder backbone
+further enhances acoustic modeling while preserving efficiency.
+Together, they motivate a powerful-decoder design that substan-
+tially simplifies the tokenization pipeline, enabling an extremely
+lightweight encoder to produce high-quality and semantically
+informative tokens.
+Building upon these insights, we proposeZipCodec 1, a
+fast, single-stage, and pretrained-model-free speech tokenizer.
+To enhance semantic capacity without external pretrained mod-
+els or supervised labels, we further introduce Encoder Consis-
+tency Regularization (ECR), a purely self-supervised loss that
+enforces representation consistency across augmented views of
+raw audio, encouraging robust semantic extraction while pre-
+serving overall simplicity.
+Our contributions are summarized as follows:
+• We proposeZipCodec, demonstrating that semantic-rich and
+high-quality speech tokenizer can be achieved by an ultra-
+lightweight encoder (only 4.4M parameters) and a simple
+single-stage training pipeline through flow-matching based
+autoencoder. This drastically simplified architecture main-
+tains superior generative performance while potentially ac-
+celerating inference for downstream understanding tasks.
+• We introduce the ECR loss, an effective self-supervised train-
+ing mechanism that substantially enhances the semantic ex-
+traction capability of the encoder without any external pre-
+trained teachers or labeled data.
+• We conduct comprehensive comparative evaluations on
+downstream LLM-based zero-shot TTS tasks, proving that
+tokens extracted by our lightweight ZipCodec directly trans-
+1The source code and model checkpoints are available athttps:
+//github.com/winlaic/ZipCodec
+1464
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2941
+Encoder
+(Zipformer)
+FM Decoder
+(Zipformer)
+FSQ
+Conv. down samp. 
+Repeat up samp. 
+cond.
+(a)Diagram of ZipCodec.
+Encoder Encoder
+Share
+Weights
+mel-spec. mel-spec.
+(b)Illustration of the ECR loss.
+Figure 1:Overall illustration of the proposed method: the Zip-
+Codec architecture (left) and the ECR loss (right).
+late into significant performance gains in practical speech
+generation.
+2. ZipCodec
+2.1. Overview
+ZipCodec is built upon the flow-matching-based diffusion au-
+toencoder architecture, with a quantization bottleneck. It con-
+sists of a speech encoder, a Finite Scalar Quantization (FSQ)
+[22] module, an FM decoder, and down-/up-sampling modules.
+The encoder and FM decoder both adopt the Zipformer back-
+bone. Figure 1a gives an overview of the ZipCodec model.
+We choose mel-spectrogram as the input/output domain of
+the model instead of the short-time Fourier transform (STFT)
+or the waveform, since the mel-spectrogram removes phase re-
+dundancy and compresses irrelevant spectral details, thereby
+significantly reducing the modeling difficulty. The V ocos [23]
+vocoder is used to reconstruct the waveform from the mel-
+spectrogram.
+When encoding speech, the mel-spectrogramx 1 ∈
+RT×d mel of the speech is first downsampled 4 times by a stack
+of convolution modules.
+h= CNNs (x 1,θ CNNs)(1)
+whereh∈R T ′×denc,T ′ =T/4. The encoder then prepro-
+cesseshinto hidden embedding vectorse∈R T ′×denc to pre-
+pare features for quantization:
+e= Enc (h,θ enc)(2)
+The FSQ module quantizeseinto discrete speech tokens:
+z= round
+
+T
+
+tanh
+
+eW⊤
+in +b in
+
+(3)
+wherez= [z 1,···,z T ′],z j ∈ QdFSQ
+i=1 Li,L i =
+{0,1,2,...,L i−1},L i represents the number of levels for the
+ith channel in FSQ.W in∈R dFSQ×denc,b in∈R dFSQ repre-
+sents the parameters of the linear down projection layer before
+FSQ quantization.Tis a fixed linear mappingT: [−1,1]→
+[0,Li]to prepare the value for round quantization according to
+Li of each channel. The continuous value is then recovered by
+e′ =T −1 (z)W⊤
+out +b out (4)
+When decoding speech, the flow-matching decoder takes
+e′ as the condition to recover the mel-spectrogram via condi-
+tional flow-matching (CFM) [17] process. To match the original
+lengthT,e ′ is first upsampled by simply repeating it 4 times on
+the time axis.
+CFM learns a vector field to transport a simple prior dis-
+tribution to a complex data distribution. Letx 0 ∈R T×d mel,
+vec (x0)∼N(0,I)be the standard Gaussian noise, using the
+Optimal Transport (OT) formulation, we construct a probability
+density pathxt = (1−t)x 0 +tx 1 fort∈[0,1], driven by the
+constant target vector fieldut(xt|x1) =x 1−x 0.
+The decoder networkDec (···,θ dec)is trained to approx-
+imate this field conditioned one′, optimized via mean squared
+error:
+vt = Dec(xt,t,e′,θ dec),(5)
+LCFM (Θ) =E t,x0,x1
+
+∥vt−ut∥2
+.(6)
+Θ ={θ enc,θ dec,θ CNNs,···}represents the set of all parame-
+ters in ZipCodec model.
+To strengthen the alignment between the generated speech
+and the conditioning tokens, we employ Classifier-Free Guid-
+ance (CFG) [24]. During training, the condition is randomly
+replaced by zeros with probabilityp drop. At inference, the pre-
+dicted vector field is extrapolated to amplify the conditioning
+effect:
+evt =v t +γ
+
+vt−v uncond
+t
+
+,(7)
+where
+vuncond
+t = Dec(xt,t,0,θ dec).(8)
+γis the guidance scale. During inference, the mel-spectrogram
+is reconstructed by solving the corresponding ordinary differen-
+tial equation (ODE) starting fromx 0 using numerical solvers.
+We use the Euler method in this work:
+xtn+1 =x tn + (tn+1−tn)evtn (9)
+where0 =t 0 ⩽···⩽t n ⩽t n+1 ⩽···⩽t N = 1,Nis the
+number of function evaluation (NFE).
+2.2. Encoder Consistency Regularization
+Enhancing the model’s ability to extract semantic information is
+a core challenge in speech tokenizers. Unlike existing methods,
+we propose the ECR to address this problem in a self-supervised
+way. The method is illustrated in Figure 1b.
+Given the clean speech signaly∈R Twav, we augment
+it with additive Gaussian noisey aug =y+βε, whereε∼
+N(0,I). The clean speechyand augmented speechy aug are
+both converted into mel-spectrogram and fed into the encoder,
+inspired by [25], we apply the consistency regularization loss
+on the outputeande aug:
+LECR (e,e aug) = 1
+2 (sim (sg [e],e aug) + sim (e,sg [eaug])).
+(10)
+sg [·]is the stop gradient operation. We use cosine similarity
+loss for functionsim:
+sim (a,b) = 1− a⊤b
+∥a∥2∥b∥2
+(11)
+Finally, the total training loss can be formulated as:
+L= 1
+2 (LCFM +L aug
+CFM) +λL ECR (12)
+whereL aug
+CFM denotes the CFM loss for the augmented branch,
+λis the weight for the ECR loss.
+1465
+Semantic information in speech is largely reflected in sta-
+ble structural patterns in the spectrogram, which remain invari-
+ant under small perturbations, whereas additive Gaussian noise
+mainly affects local spectral details without altering semantic
+content. By enforcing representation consistency between clean
+and noise-augmented speech, the encoder is encouraged to fo-
+cus on invariant semantic structures while discarding low-level
+acoustic variations.
+2.3. Flow-Distillation for fast inference
+The computational overhead of CFM models is proportional to
+NFEs and would be doubled when introducing CFG. Following
+[21, 26], we introduceZipCodec-distillto reduce NFEs and
+let the model to explicitly learn the CFG. We modified the FM
+decoder to incorporate the guidance scaleγas an additional
+embedding besides the time embedding. A trained frozen Zip-
+Codec model serves as the teacher model, and the teacher’s two-
+step ODE inference result is the target of the student model:
+xt1 = (1−t 1)x 0 +t 1x1,
+x(t)
+t2 =x t1 + (t2−t 1)ev
+
+xt1,e′,t 1,γ,Θ (t)
+
+,
+x(t)
+t3 =x (t)
+t2 + (t3−t 2)ev
+
+x(t)
+t2,e′,t 2,γ,Θ (t)
+
+.
+(13)
+ev(···)denotes one-step ODE inference with CFG.x (t)
+t2 ,x (t)
+t3
+are the inference results of the teacher model with parameter
+Θ(t).t 1∼U(0,1)is sampled from the uniform distribution.
+t2∼U(t 1,1)andt 3∼U(t 2,1)are then sequentially sampled
+and clamped to satisfytn+1−tn ⩽0.3. The distill loss function
+can be formulated as
+v(t)
+t1 = x(t)
+t3 −xt1
+t3−t 1
+(14)
+v(s)
+t1 = Dec(s)
+
+xt1,t 1,γ,e′,θ (s)
+dec
+
+(15)
+Ldistill
+
+Θ(s)
+
+=E x0,x1,γ,t1,t2,t3
+h
+∥v(s)
+t1 −v (t)
+t1∥2
+i
+.(16)
+The parametersΘ (s) for the student model is initialized by the
+teacher model, and the encoder parameterθ (s)
+enc for the student
+model are frozen during training.
+3. Experiments
+3.1. Datasets
+We trained both ZipCodec and ZipCodec-distill on the follow-
+ing datasets. a) Emilia [27]: an in-the-wild multilingual speech
+dataset containing over 101k hours of recordings. For our ex-
+periments, we use the Chinese and English subsets, which to-
+gether comprise approximately 96.7k hours of speech. b) Lib-
+riTTS [28]: a clean, read English speech corpus with about 585
+hours of audio. This dataset is used for model development.
+The model is evaluated on Librispeech PC [29] test clean
+set and the SeedTTS en/zh testsets [30], we only use the ground
+truth audios to evaluate the reconstruction ability of speech to-
+kenizers, and use both the prompt audio and ground truth audio
+to evaluate the down-stream TTS task.
+3.2. Model Configuration
+ZipCodec model operates on the mel-spectrogram of 24kHz
+speech. We follow the mel-spectrogram setting in V ocos [23]
+vocoder and the window length and the overlap are 1024 and
+256. The CNN downsampling module contains two convolution
+layers with strides= 2and kernel sizek= 2, each followed
+by a GELU activation [31]. For the encoder, the Zipformer
+backbone uses 4 layers with a feature dimensiond enc = 192
+and a feedforward dimension of 512. For the flow-matching
+decoder, the embedding and feedforward dimensions are set to
+512 and 1536. The FSQ module serves as the quantization bot-
+tleneck, which has 11 groups and each group has 3 channels
+with quantization levels of[8,5,5]. The frame rate and the
+bit rate at the bottleneck are 23.4375 Hz and∼1.97 kbps re-
+spectively. The decoder operates with downsampling rates of
+[1×,2×,4×,2×,1×]and layer numbers[2,2,4,4,4]for the
+five stacks.
+For the TTS model used for evaluating the down-stream
+task performance, we build a discrete token-based non-
+autoregressive (NAR) zero-shot TTS model[32, 33].
+3.3. Training and Inference Details
+ZipCodec is trained using the ScaledAdam [18] optimizer. On
+the Emilia dataset, the model is trained for 400k iterations (ap-
+proximately 2.5 epochs). The final model is obtained by averag-
+ing 11 checkpoints from iterations 350k to 400k with an interval
+of 5k steps. ZipCodec-distill is initialized from the pretrained
+ZipCodec model and further trained for 60k steps, where 11
+checkpoints between 50k and 60k steps are averaged to produce
+the final model. On the LibriTTS dataset, ZipCodec is trained
+for 30 epochs, and the final model is obtained by averaging the
+checkpoints from epochs 26 to 30. All models were trained us-
+ing NVIDIA H20 GPUs. We sampleβto match a target SNR
+uniformly chosen from 10,20,30 dB.λis set to 0.25 and will be
+discussed in Section 3.6.
+During inference, we use the Euler solver for flow-
+matching. For ZipCodec, the NFE is set to 10 withγ= 0.5.
+We further apply a logit-normal sampling time schedule [34]
+withη= 0.5. For ZipCodec-distill, the NFE is set to 3 with
+other parameters the same.
+3.4. Metrics
+For speech tokenizer evaluation, we adopt four objective met-
+rics to measure the quality of reconstructed speech, including
+word error rate (WER), speaker similarity (SIM-o), perceptual
+evaluation of speech quality (PESQ) [35], and ViSQOL [36].
+All the metrics are computed between the ground truth speech
+and the reconstructed speech. For WER, we use Hubert [15]-
+based ASR model, Whisper-large-v3 [16] and Paraformer-zh
+[37] respectively for Librispeech PC test-clean, SeedTTS en
+and zh. For SIM-o, we extract speaker embeddings using a
+WavLM-based [38] ECAPA-TDNN [39] model and compute
+the cosine similarity between the reconstructed speech and the
+original speech.
+For downstream TTS evaluation, we report WER, SIM-o,
+and UTMOS [40]. The evaluation models for WER and SIM-o
+are the same as speech tokenizer evaluation. SIM-o is measured
+between the prompt speech and generated speech.
+3.5. Main Results
+We compare our method with existing speech tokenizers: En-
+codec [2], SpeechTokenizer [4], XCodec [13], XCodec 2.0 [14],
+XY-Tokenizer [6] and BiCodec [10] in Table 1. The official
+checkpoint of each method is used for evaluation. The re-
+sults demonstrate that ZipCodec achieves superior performance
+across all evaluated semantic and acoustic metrics. Further-
+1466
+Table 1:Comparison of different speech tokenizers. Metrics are also reported on the ground-truth speech and speech reconstructed
+from the ground-truth mel-spectrogram using the Vocos vocoder for reference. For tokenizers that rely on an external vocoder, the
+vocoder parameters are included in the total parameter count. The best results are shown inbold, and the second-best results are
+underlined.
+Model Frame
+Rate
+Bit Rate
+(kbps)
+Encoder
+Param.
+Total
+Param.
+Librispeech PC - test clean SeedTTS - en SeedTTS - zh
+WER(%)↓SIM-o↑PESQ↑ViSQOL↑WER(%)↓SIM-o↑PESQ↑ViSQOL↑WER(%)↓SIM-o↑PESQ↑ViSQOL↑
+(Ground Truth) - - - - 2.06 1.000 4.644 5.00 2.22 1.000 4.644 5.00 1.33 1.000 4.644 5.00
+(V ocos) - - - - 2.14 0.932 3.600 4.87 2.23 0.934 3.413 4.90 1.35 0.932 3.515 4.90
+Encodec 75.00 1.50 8.0M 23.3M 5.05 0.614 1.551 3.59 6.53 0.613 1.526 3.68 5.20 0.616 1.492 3.50
+SpeechTokenizer 50.00 4.00 67.7M 103.7M 2.48 0.852 2.583 4.26 2.96 0.817 2.169 4.25 2.14 0.813 2.207 4.17
+XCodec 50.00 2.00 121.9M 160.7M 2.84 0.769 2.387 4.08 3.15 0.770 2.190 4.15 2.26 0.752 2.271 4.03
+XCodec 2.0 50.00 0.80 635.8M 822.7M 2.59 0.829 2.428 4.12 2.85 0.807 2.087 4.10 2.06 0.853 2.227 4.06
+XY-Tokenizer 12.50 1.00 263.4M 519.6M 2.36 0.847 2.363 4.19 2.69 0.821 2.109 4.23 1.77 0.865 2.216 4.19
+BiCodec 80.00 1.04 360.0M 471.8M 2.71 0.799 2.488 4.10 3.21 0.794 2.150 4.09 2.04 0.832 2.296 4.05
+ZipCodec 23.44 1.974.4M136.5M2.21 0.884 2.7784.46 2.52 0.871 2.5314.50 1.570.893 2.7944.53
+ZipCodec - distill 23.44 1.974.4M136.5M 2.260.886 2.862 4.372.52 0.8692.586 4.381.56 0.893 2.856 4.41
+Table 2:Ablation study on the weight of the ECR loss (λ). Met-
+rics are evaluated on the Librispeech PC test clean set. The
+best results are highlighted inbold.
+λ Librispeech PC - test clean
+WER(%)↓SIM-o↑PESQ↑ViSQOL↑
+0.00 2.41 0.885 2.79 4.45
+0.25 2.28 0.892 2.86 4.47
+0.50 2.30 0.8922.864.46
+0.75 2.34 0.889 2.84 4.45
+more, the ZipCodec-distill model maintains comparable perfor-
+mance to the base ZipCodec model, despite requiring only 3
+NFEs during inference.
+It is worth noting that the V ocos vocoder slightly degrades
+the metrics, particularly in the PESQ, which could be observed
+by comparing first two lines in Table 1. Since the vocoder de-
+termines the upper bound of our method, the overall generation
+quality of ZipCodec could potentially benefit further from more
+powerful vocoder models.
+Compared to baseline methods, ZipCodec features a rela-
+tively small total parameter count and an extremely lightweight
+encoder, distinguishing it from most existing approaches. This
+observation suggests that the encoding stage of speech tokeniza-
+tion does not inherently require massive parameter scaling or an
+auxiliary pretrained speech encoder.
+3.6. Ablation: Influence of the ECR loss
+We verify the impact of the ECR loss proposed in Section 2.2 by
+gradually increasing the weightλin Equation 12. Models are
+trained on LibriTTS corpus. The results presented in Table 2
+demonstrate that ECR loss significantly enhances the semantic
+modeling capabilities of the encoder. In particular, atλ= 0.25,
+the model achieves a relative reduction of 5.4% in WER com-
+pared with the baseline without ECR (λ= 0.00).
+In addition, ECR also slightly benefits acoustic recon-
+struction, which yields improvements in the metrics SIM-o,
+PESQ, and ViSQOL. Crucially, ECR operates in a purely self-
+supervised manner. It effectively enhances the semantic extrac-
+tion ability without relying on external pretrained speech mod-
+els or labeled data, thereby strictly maintaining the simplicity
+and parameter efficiency of the ZipCodec architecture.
+Table 3:Evaluation results on the downstream discrete token-
+based NAR zero-shot TTS task. Metrics are evaluated on the
+Librispeech PC test clean set. All models are trained using the
+same NAR TTS backbone. The best results are highlighted in
+bold.
+Codec Model Bit Rate
+(kbps) WER(%)↓SIM-o↑UTMOS↑
+XCodec 2.0 4.45 0.493 3.67
+XY-Tokenizer 1.0 2.47 0.436 3.97
+ZipCodec 1.972.16 0.597 4.08
+3.7. Validation on TTS system
+We report the results of the evaluation on the Librispeech PC
+test clean. For fair comparison, all models share the same NAR
+TTS backbone and are trained under identical configurations,
+solely swapping the speech codec.
+The results, presented in Table 3, demonstrate the substan-
+tial superiority of ZipCodec in downstream speech generation.
+Specifically, ZipCodec achieves a significantly lower WER of
+2.16%, highlighting its strong ability to preserve semantic in-
+formation for high intelligibility. Furthermore, ZipCodec excels
+in acoustic fidelity and speaker similarity, delivering the highest
+SIM-o and the best overall UTMOS. This indicates that despite
+its lightweight and pretrained-model-free design, ZipCodec ex-
+tracts semantic-rich tokens that directly facilitate high-quality
+zero-shot speech generation.
+4. Conclusion
+In this paper, we presented ZipCodec, a simple, pretrained-
+model-free speech tokenizer that delivers high-quality and
+semantic-rich tokenization. By introducing a Zipformer-based
+flow-matching autoencoder into the tokenization paradigm,
+ZipCodec achieves strong semantic and acoustic performance
+with an ultra-lightweight 4.4M-parameter encoder and a dras-
+tically simplified training pipeline. Furthermore, the proposed
+self-supervised ECR loss effectively captures robust semantic
+representations without relying on external teachers or labeled
+data. Extensive evaluations demonstrate that ZipCodec outper-
+forms models with encoders larger than 20 times, both in recon-
+struction and in downstream zero-shot TTS tasks.
+1467
+5. Generative AI Use Disclosure
+Generative AI is used to polish the manuscript, but isnotused
+to produce a significant part of the manuscript.

@@ -1,0 +1,440 @@
+Cloud-Boosted Low-Compute Multi-Channel Speech Enhancement
+Xulin Fan1†, Juan Azcarreta2, Ashutosh Pandey2, Jesus Alvarez2,
+Ke Tan2, Jacob Donley2, Ritwik Giri2, Buye Xu2
+1 University of Illinois Urbana-Champaign, USA
+2 Meta Reality Labs Research, USA
+xulinf2@illinois.edu, jazcarretao@meta.com, apandey620@meta.com, jsmalvarez@meta.com,
+tanke1116@meta.com, jdonley@meta.com, ritwikgiri@meta.com, xub@meta.com
+Abstract
+Low-latency, low-compute speech enhancement is essential for
+wearable devices with real-time communication requirements,
+but strict computational constraints significantly limit on-device
+performance. Knowledge Boosting has been proposed as an ef-
+fective approach to improve edge model performance by lever-
+aging a more capable server-side model, but performance gains
+for speech enhancement have been limited. We propose a
+collaborative framework incorporating three techniques: (1)
+delayed server output as additional input, (2) layerwise fea-
+ture boosting that transfers intermediate server representations
+to guide edge inference, and (3) collaborative multichannel
+Wiener filtering, which fuses weighted covariance matrices es-
+timated from both server and edge models for improved beam-
+forming. Experimental results demonstrate that the proposed
+collaborative framework significantly outperforms the edge-
+only baseline with minimal additional computational overhead.
+Index Terms: speech enhancement, model collaboration
+1. Introduction
+The ubiquitous deployment of wearable devices, such as smart
+glasses and hearables, has catalyzed a growing demand for
+high-fidelity real-time audio processing. Among the myriad of
+audio tasks, on-device speech enhancement is particularly crit-
+ical for enabling clear communication in noisy and reverberant
+environments. To meet strict latency thresholds and hardware
+constraints (e.g., battery life, thermal limits), the research com-
+munity has developed a variety of compact speech enhancement
+models [1, 2, 3, 4, 5]. While these lightweight architectures
+achieve impressive efficiency, their reduced parameter counts
+and shallow depths often fundamentally limit their capacity to
+model complex acoustic scenes, resulting in performance that
+lags significantly behind server-level solutions.
+Conversely, the state-of-the-art in speech enhancement is
+dominated by high-capacity deep neural networks [6, 7, 8, 9].
+By leveraging large-scale spatial-spectral attention mechanisms
+and massive parameter sets, these models demonstrate re-
+markable robustness even under ultra-low signal-to-noise ratio
+(SNR) conditions. However, the excessive computational cost
+and memory footprint of such models render them prohibitive
+for deployment on edge devices, creating a distinct performance
+gap between cloud-based and on-device processing.
+To bridge this gap, hybrid approaches [10, 11, 12, 4, 13, 14,
+15] have gained popularity. These methods integrate traditional
+signal processing, specifically spatial filtering, with neural net-
+works. By offloading spatial discrimination to mathematical
+beamformers (e.g., minimum-variance distortionless response
+†Work done during internship at Meta Reality Labs Research.
+(MVDR) [16] or multichannel Wiener filter (MCWF) [17])
+and using small neural networks primarily for mask estima-
+tion, these systems benefit from the stability of physical acous-
+tic models. Nevertheless, the performance of hybrid systems
+remains bounded by the accuracy of the statistics estimated by
+the lightweight neural estimator. If the edge model fails to iden-
+tify the target in a complex scene, the resulting beamformer col-
+lapses.
+Recently, Knowledge Boosting [18] was introduced as a
+paradigm to enhance edge model performance by leveraging
+a powerful server-side model via a network connection. As-
+suming a fixed communication delay, this framework trains the
+edge and server models collaboratively. While this approach
+has yielded significant gains for target speaker extraction and
+separation, improvements for general speech enhancement have
+remained modest. This suggests that simply conditioning an
+edge model on server outputs is insufficient to capture the rapid
+spectral variations of non-stationary noise when communication
+latency is present. However, two critical questions remain unex-
+plored: (1) what types of information from the server are most
+beneficial for improving edge model performance under com-
+munication delays and minimal edge-side computation, and (2)
+how knowledge boosting can be integrated into hybrid beam-
+forming approaches, where server-side information assists the
+edge device in computing a robust spatial filter.
+In this paper, we propose a comprehensive collaborative
+framework designed to maximize the utility of a frozen, pre-
+trained server-side model for improving edge-side inference.
+Unlike [18], which trains both models jointly and relies solely
+on delayed output conditioning, our framework keeps the server
+fixed and introduces intermediate representation-level guidance
+and spatial-statistics fusion. Our core insight is that while spec-
+tral details may change rapidly, spatial statistics (such as the
+target speaker’s direction of arrival) evolve much more slowly
+and are robust to communication delays. We introduce three
+complementary techniques to exploit this: (1)Delayed Input
+Concatenation, where the server’s enhanced audio is fed as an
+auxiliary reference, providing a clean but delayed prior to the
+edge model; (2)Layerwise Feature Boosting, which transfers
+hierarchical representations via Feature-wise Linear Modula-
+tion (FiLM) [19] to guide the edge model’s internal states; and
+(3)Collaborative Multichannel Wiener Filter (MCWF). We pro-
+pose a novel fusion strategy where covariance matrices from
+both the server and edge are combined. This allows the system
+to leverage the superior spatial selectivity of the server model to
+stabilize the on-device beamformer.
+We evaluate this framework under challenging low-SNR
+conditions and a more than 64ms server-edge communication
+delay. Experimental results demonstrate that our collaborative
+approach significantly outperforms strong edge-only baselines,
+6836
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2774
+Server-side
+Model
+Edge-side 
+Model
+❄ 🔥
+Layerwise Feature
+Boosting
+Collaborative
+MCWF
+ 
+Figure 1:Overview of the proposed collaborative speech en-
+hancement system. The server-side model processes multichan-
+nel input and transmits enhanced spectrograms and intermedi-
+ate representations to the edge-side model via a communication
+channel.
+closing the gap with server-grade performance while incurring
+negligible (<5%) computational overhead on the edge device.
+2. Method
+2.1. Overview
+Our proposed collaborative speech enhancement system con-
+sists of a high-capacity server-side model and a lightweight
+edge-side model. The server-side model is first pretrained
+on the speech enhancement task and subsequently frozen dur-
+ing edge model training and inference. During operation, the
+server-side model processes the multichannel input and pro-
+duces auxiliary outputs, including enhanced spectrograms and
+intermediate layer representations, that are transmitted to the
+edge device to boost the performance of the edge-side model.
+2.2. Server-side Model
+The server-side model is a causal SpatialNet [6], a deep neural
+network designed for multichannel speech enhancement. The
+architecture processes time-frequency representations of the
+microphone array input through a stack of transformer-based
+narrow-band and cross-band modules. The network maintains
+causality by masking future frames in all attention and convo-
+lution operations, ensuring that each output frame depends only
+on current and past inputs. The network is pretrained on the
+speech enhancement task and remains frozen during training
+and inference of the edge-side model.
+We identify two types of auxiliary information from Spa-
+tialNet that can improve edge-side performance. The first is
+the final enhanced spectrogram, representing SpatialNet’s esti-
+mate of the target speech. The second is a set of intermedi-
+ate layer representations extracted at selected depths within the
+network. These intermediate features capture hierarchical spa-
+tial and spectral patterns, from low-level acoustic cues in early
+layers to high-level source characteristics in deeper layers, pro-
+viding multi-scale guidance to the edge model.
+2.3. Edge-side Model
+The edge-side model is based on TinyGRU [4], a compact archi-
+tecture designed for efficient real-time inference on resource-
+constrained hardware. The network consists of a spatial con-
+volution module that reduces the multichannel input to a single-
+channel representation, followed by a temporal processing mod-
+ule comprising three stacked SplitGRU layers. The network
+outputs a complex-valued mask that is applied to the noisy input
+spectrogram to obtain an initial clean speech estimate.
+This masked estimate is then used to derive a multichan-
+nel Wiener filter (MCWF) beamformer, which produces the fi-
+nal enhanced output by optimally combining information across
+all microphone channels. The MCWF formulation enables the
+lightweight edge model to leverage spatial diversity in the mi-
+crophone array, achieving superior enhancement compared to
+single-channel masking alone.
+To incorporate server-side guidance at the earliest process-
+ing stage, we concatenate the delayed enhanced spectrogram
+from SpatialNet to the multichannel input before the spatial
+convolution module. Specifically, the server-side enhanced out-
+put ˆSserver(t−τ,f), delayed byτframes to account for com-
+munication latency, is appended as additional input channels
+alongside theM-channel microphone input. This early con-
+ditioning provides the edge model with a direct reference signal
+that captures the server’s estimate of the target speech, allow-
+ing the spatial convolution to leverage this information when
+learning to reduce the multichannel input to a single-channel
+representation. Since we stack real and imaginary parts, the M-
+channel microphone input yields 2M real-valued channels, and
+the complex-valued server output contributes 2 additional chan-
+nels, resulting in 2(M+1) input channels total.
+2.4. Layerwise Feature Boosting
+To enable knowledge transfer from the server-side SpatialNet
+to the device-side TinyGRU, we extract intermediate represen-
+tations from multiple depths of the SpatialNet rather than re-
+lying solely on its final output. Specifically, we sample fea-
+tures fromN= 4points: the input encoding layer (before
+any transformer processing), and SpatialNet layers 4, 8, and
+12. Leth (l)∈R B×F×T×H denote the feature extracted from
+layerl, whereBis the batch size,Fthe number of frequency
+bins,Tthe number of time frames, andHthe hidden dimen-
+sion. Each feature is compressed via a learned1×1convo-
+lution that projects the hidden dimension to a scalar, yielding
+c(l) ∈R B×T×F . These compressed features are temporally
+delayed byδframes to account for server-side processing la-
+tency.
+The processed features are injected into theN-layer Tiny-
+GRU through hierarchical Feature-wise Linear Modulation
+(FiLM) [19]. The input encoder features modulate the input to
+GRU layer 1, layer 4 features modulate the input to GRU layer
+2, layer 8 features modulate the input to GRU layer 3, and layer
+12 features modulate the final GRU output. Let ˜cj∈R B×T×F
+denote thej-th conditioning feature after compression and de-
+6837
+lay. At each conditioning pointj∈{1,...,N}, a linear pro-
+jectionW j∈R 2d×F generates scale and shift parameters in-
+dependently for each time framet:
+[γj(t),β j(t)] =W j ˜cj(t) +b j (1)
+wheredis the RNN hidden dimension. The modulated repre-
+sentation is:
+˜xj(t) =σ(γ j(t))⊙x j(t) +β j(t)(2)
+whereσ(·)is the sigmoid function and⊙denotes element-wise
+multiplication. This hierarchical design allows early Spatial-
+Net features to provide low-level spectral conditioning, while
+deeper features capture increasingly refined speech-noise sepa-
+ration cues at later processing stages.
+2.5. Collaborative MCWF
+In the edge-only approach, the device-side TinyGRU model es-
+timates a target speech signal, which is used to compute covari-
+ance statistics for deriving the MCWF beamformer coefficients.
+However, the lightweight edge model may produce suboptimal
+target estimates in challenging acoustic conditions. To address
+this limitation, we propose a collaborative MCWF framework
+that leverages target estimates from both the device-side Tiny-
+GRU and the server-side SpatialNet, fusing their statistical con-
+tributions to compute more robust beamformer coefficients.
+2.5.1. Frame-wise Outer Product Computation
+At each time-frequency bin, we compute the instantaneous spa-
+tial covariance matrix from the multichannel input:
+RYY(t,f) =Y(t,f)Y H (t,f)(3)
+whereY(t,f)∈C M is theM-channel input STFT at time
+frametand frequency binf. Since this depends only on the
+input signal (identical on edge and server), it is computed solely
+on the edge.
+The cross-covariance vector between the input and esti-
+mated target is computed independently by both models using
+their respective target estimates ˆS(t,f):
+rYS(t,f) =Y(t,f) ˆS
+H
+(t,f)(4)
+yieldingr edge
+YS (t,f)andr server
+YS (t,f)for the edge and server mod-
+els, respectively.
+2.5.2. Cross-Covariance Fusion
+Due to communication latency, the server-side statistics arrive
+with a delay ofτframes. This creates a fundamental trade-
+off: the server-side SpatialNet produces higher-quality target
+estimates due to its greater model capacity, but these estimates
+reflect the acoustic scene fromτframes in the past. Conversely,
+the edge-side TinyGRU produces lower-quality estimates but
+captures the current acoustic conditions without delay. We fuse
+the cross-covariance vectors using an adaptive weight to navi-
+gate this trade-off:
+rfused
+YS (t,f) = (1−α(t))·r server
+YS (t−τ,f)+α(t)·r edge
+YS (t,f)(5)
+whereα(t)∈[0,1]is a per-frame scalar predicted by Tiny-
+GRU’s final linear layer and applied uniformly across all fre-
+quency bins. This weight controls the balance between server
+and edge contributions: whenαapproaches 0, the system fa-
+vors the more accurate but delayed server-side statistics; when
+αapproaches 1, it favors the less accurate but current edge-side
+statistics.
+The network learns to adapt this weight based on acous-
+tic conditions. In stationary or slowly-varying environments,
+where the acoustic scene changes little overτframes, the de-
+layed server statistics remain highly relevant, and lowerαval-
+ues allow the system to benefit from SpatialNet’s superior esti-
+mation quality. In contrast, during rapid acoustic changes such
+as sudden noise onsets or abrupt spatial transitions, the delayed
+server statistics may no longer reflect the current scene, and
+higherαvalues allow the system to rely on the edge model’s
+real-time estimates despite their lower quality.
+2.5.3. Time-Varying Smoothing
+The frame-wise statistics are accumulated over time through
+learned recursive smoothing. Dropping the time-frequency in-
+dices(t,f)for brevity, the spatial covariance matrix and fused
+cross-covariance vector are updated as:
+ΦYY = (1−β YY)·Φ prev
+YY +β YY·R YY (6)
+ΦYS = (1−β YS)·Φ prev
+YS +β YS·r fused
+YS (7)
+whereΦ prev denotes the value at the previous frame(t−1,f).
+The smoothing coefficientβ(t,f)is computed as the prod-
+uct of a per-frame scalar weightw(t)predicted by the TinyGRU
+and a learned per-frequency weight vectorv∈R F which add
+temporal variability upon per-frequency smoothing [20] :
+β(t,f) =σ(v·softplus(w(t)))(8)
+whereσ(·)is the sigmoid function. This factorization allows
+the network to learn frequency-dependent smoothing charac-
+teristics (e.g., longer integration for low frequencies) while the
+per-frame scalar enables adaptation to temporal dynamics. Sep-
+arate weight pairs(w YY,v YY)and(w YS,v YS)are used for
+the spatial covariance and cross-covariance, respectively.
+2.5.4. Beamformer Computation
+The MCWF coefficients are computed from the smoothed
+statistics:
+W(t,f) =Φ −1
+YY(t,f)·Φ YS(t,f)(9)
+and the enhanced signal is calculated as:
+ˆSMCWF(t,f) =W H (t,f)Y(t,f)(10)
+3. Experiments
+3.1. Data
+We use clean speech and noise sources from the DNS-Challenge
+dataset [21]. An 8-channel circular microphone array is em-
+ployed to simulate multichannel audio input, with room impulse
+responses (RIRs) generated using Pyroomacoustics. For each
+sample, we randomly sample room dimensions ranging from
+3×3×2to10×10×5meters, with the microphone array placed
+at a random position within the room. The wall absorption coef-
+ficient is uniformly sampled from[0.1,0.7]. With a probability
+of 0.5, we include 8–16 interference speakers to simulate bab-
+ble noise. The number of diffuse noise sources is sampled from
+[1,10]. The signal-to-interference ratio (SIR) is sampled from
+[5,10]dB.
+We create two datasets of varying difficulty, differing only
+in signal-to-noise ratio (SNR): theStandarddataset uses SNR
+6838
+Table 1:Performance comparison of edge-side speech enhancement models on standard and challenging conditions. We incrementally
+add three improvements to the baseline: (a) delayed server output conditioning, (b) layerwise feature boosting, and (c) collaborative
+MCWF . SI-SDR is in dB; STOI is in %. Parameters (in thousands) and the number of multiply-accumulate operations in millions
+(MMACs) are reported for edge-side only. Causal SpatialNet (in gray) serves as a high-capacity server-side reference. Best results
+under 64ms server-edge delay are inbold.
+Model Server-Edge
+Delay (ms) Params (K) MMACs Standard Challenging
+SI-SDR↑PESQ↑STOI↑ SI-SDR↑PESQ↑STOI↑
+Noisy Input – – – -4.96 1.68 69.27 -10.01 1.28 55.70
+TinyGRU+MCWF [4] – 145.1 32.9 1.97 2.29 82.36 -1.16 1.90 70.49
++(a) (proposed) 64 147.2 (+1.4%) 33.2 (+0.9%) 3.05 2.34 83.93 -0.02 1.97 72.58
++(a,b) (proposed) 64 147.2 (+1.4%) 33.3 (+1.2%) 4.472.3584.24 1.351.9872.68
++(a,b,c) (proposed) 64 147.3 (+1.5%) 33.7 (+2.4%) 5.742.3385.48 2.331.9573.73
+TinyGRU-Large+MCWF [4] – 432.4 (+198.0%) 68.77 (+109.0%) 2.75 2.33 83.54 -0.37 1.95 72.19
++(a,b,c) (proposed) 96 147.3 (+1.5%) 33.7 (+2.4%) 4.39 2.34 84.16 1.14 1.96 72.31
++(a,b,c) (proposed) 128 147.3 (+1.5%) 33.7 (+2.4%) 4.26 2.34 84.13 1.07 1.96 72.22
+Causal SpatialNet [6] – – – 11.79 3.35 95.47 9.08 2.97 91.53
+sampled from[−5,10]dB, while theChallengingdataset uses
+SNR sampled from[−10,−5]dB. For each dataset, we simu-
+late 80,000 samples for training, 2,000 for validation, and 4,000
+for testing.
+3.2. Experimental Setting
+We select a vanilla TinyGRU+MCWF [4] with time-varying
+smoothing as the baseline. For experiments with server-side
+boosting, we first pretrain the server-side SpatialNet model for
+100 epochs with PCM loss [22] until convergence. The server-
+side model is then frozen and the edge-side TinyGRU model is
+trained with the respective boosting strategy.
+Both the baseline and TinyGRU with server-side boosting
+are trained for 100 epochs using the Adam optimizer with AMS-
+Grad, an initial learning rate of10−3, and gradient clipping with
+a maximum norm of 0.03. The learning rate is decayed by a
+factor of 0.1 at epochs 50 and 80 following a multi-step sched-
+ule. The training objective is the signal-to-noise ratio (SNR)
+loss computed between the enhanced output and the clean tar-
+get signal. Both training and evaluation use the anechoic target
+signal as the reference.
+The audio is processed at 16kHz with a short-time Fourier
+transform using a 256-sample (16ms) frame size and 128 sam-
+ple (8ms) hop size, resulting in 129 frequency bins. Training
+samples are 4-second segments randomly chunked from longer
+recordings, with a batch size of 32. To simulate the round-
+trip communication latency between the edge device and server,
+a delay ofτframes (8τms) is applied to all server-side out-
+puts/features before they are transmitted to the edge model.
+3.3. Results
+Table 1 presents performance comparisons on Standard and
+Challenging sets. We analyze the contribution of each proposed
+component and examine the impact of server-edge communica-
+tion latency.
+Baseline Performance.The baseline TinyGRU+MCWF
+model achieves reasonable enhancement on the Standard
+dataset, improving SI-SDR from -4.96 dB to 1.97 dB and
+STOI from 69.27% to 82.36%. However, performance degrades
+substantially under the Challenging condition (lower SNR),
+where SI-SDR reaches only -1.16 dB when the noisy input is
+-10.01 dB. This highlights the limitations of edge-only models
+in adverse acoustic conditions.
+Ablation Study.We incrementally evaluate each proposed
+component. Adding delayed server output conditioning (a) im-
+proves SI-SDR from 1.97 dB to 3.05 dB on Standard and from
+-1.16 dB to -0.02 dB on Challenging, confirming that delayed
+server-side clean estimate benefits the edge model. Incorpo-
+rating layerwise feature boosting (b) further improves SI-SDR
+to 4.47 dB and 1.35 dB on Standard and Challenging, respec-
+tively, demonstrating that multi-layer feature conditioning helps
+the edge model better leverage server information at different
+depth of the server model. The full model with collaborative
+MCWF (c) achieves the best performance: 5.74 dB SI-SDR on
+Standard and 2.33 dB on Challenging, representing total im-
+provements of 3.77 dB and 3.49 dB over baseline.
+Comparison with Scaled-Up Baseline.To verify that
+improvements stem from the server-edge architecture rather
+than increased model capacity, we compare against TinyGRU-
+Large, where we simply scale up the hidden dimension of Tiny-
+GRU from 96 to 192, which results in 198% more parameters
+and 109% more MMACs. Despite this substantial increase,
+TinyGRU-Large achieves only 2.75 dB and -0.37 dB SI-SDR on
+Standard and Challenging, which significantly underperforms
+our proposed boosting method (5.74 dB and 2.33 dB) which
+adds only 1.5% parameters. This demonstrates that server-side
+information provides benefits that cannot be replicated by scal-
+ing edge computation alone.
+Server-Edge Delay Sensitivity.At 64 ms server-edge de-
+lay, the model achieves optimal performance. Increasing la-
+tency to 96 ms and 128 ms results in moderate degradation (SI-
+SDR drops from 5.74 dB to 4.39 dB and 4.26 dB on Standard),
+but performance remains substantially above the baseline. This
+graceful degradation indicates the model can effectively lever-
+age delayed server guidance under realistic network conditions.
+4. Conclusion
+We presented a collaborative speech enhancement framework
+that bridges the gap between lightweight edge models and
+high-capacity server models by exploiting delay-tolerant spa-
+tial statistics. Our approach integrates delayed server out-
+put conditioning, layerwise feature boosting, and collabora-
+tive MCWF to transfer spatial knowledge from a pretrained
+server-side SpatialNet to a compact edge-side TinyGRU. Ex-
+periments demonstrate SI-SDR improvements of 3.77 dB and
+3.49 dB on standard and challenging conditions, respectively,
+while adding only 1.5% parameters and 2.4% computation on
+the edge. These results show that server-edge collaboration of-
+fers a promising path toward high-quality real-time speech en-
+hancement on resource-constrained devices.
+6839
+5. Generative AI Use Disclosure
+We used GPT and Claude for language editing and manuscript
+polishing, including improving clarity, correcting grammatical
+errors, and formatting LATEX tables. All technical content, ex-
+perimental design, analysis, and scientific contributions are en-
+tirely the work of the authors. The authors have carefully re-
+viewed the manuscript and take full responsibility for its con-
+tent.

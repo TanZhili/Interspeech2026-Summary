@@ -1,0 +1,450 @@
+Dual-Encoder Fusion with Explicit and Implicit Injection for the Interspeech
+2026 Audio Encoder Capability Challenge
+Yucong Zhang ID 1,2, Zhang Chen ID 5, Juan Liu ID 3,1,∗∗, Wei Ju4, Hongbin Suo4, Ming Li ID 2,3,∗∗
+1 School of Computer Science, Wuhan University, Wuhan, China
+2 School of Artificial Intelligence, The Chinese University of Hong Kong, Shenzhen, China
+3 School of Artificial Intelligence, Wuhan University, Wuhan, China
+4 AI Center, OPPO, Beijing, China
+5 Digital Innovation Research Center, Duke Kunshan University, Kunshan, China
+yucong.zhang@whu.edu.cn,mingli369@cuhk.edu.cn
+Abstract
+We conduct a systematic study of dual-encoder fusion for
+the Interspeech 2026 Audio Encoder Capability Challenge
+(AECC), aiming to translate encoder complementarity into con-
+sistent gains across various audio classification and understand-
+ing tasks. Using Whisper and Dasheng as complementary en-
+coders, we examine two injection strategies: implicit injection
+via parameter-efficient Dasheng adaptation before fusion, and
+explicit injection that decomposes representations into resid-
+ual components with auxiliary regularization to isolate non-
+redundant information. Ablations show that explicit injection
+yields stronger task-wise complementarity and more per-task
+best results, while implicit adaptation remains competitive and
+robust overall. We also identify a stable backbone based on
+token-wise softmax-gated residual fusion with a lightweight
+STFT residual branch. These results provide practical design
+insights for modular encoder fusion in the Large Audio Lan-
+guage Model (LALM) framework.
+Index Terms: dual-encoder fusion, audio encoder evaluation,
+large audio language models, mixture-of-experts, residual in-
+jection
+1. Introduction
+LALMs have recently emerged as a unified framework for solv-
+ing heterogeneous audio tasks through a standardized end-to-
+end pipeline [1, 2, 3]. In this paradigm, a pre-trained audio
+encoder transforms waveforms into frame-level representations
+that are subsequently consumed by a language-model backbone
+for both classification-style evaluation and higher-level audio
+understanding. As the encoder serves as the sole interface be-
+tween raw signals and the language model, its representational
+bias directly constrains downstream capability [4, 5, 6, 7]. Pre-
+vious challenges have shown that single encoder cannot always
+be uniformly optimal across diverse task families [8, 9], mo-
+tivating the study of encoder complementarity under a unified
+evaluation setting.
+Current pre-trained encoders are often optimized with dif-
+ferent supervision objectives and inductive biases, leading to
+distinct representational strengths. For example, Whisper [5] is
+trained with large-scale weakly supervised speech transcription
+and excels at capturing speech-aligned linguistic content. In
+contrast, Dasheng [4] is trained with masked audio modeling at
+scale and is designed to encode broader acoustic semantics be-
+yond speech. These differences suggest potential complemen-
+**indicates the corresponding author.
+tarity: speech-oriented semantic alignment from Whisper may
+benefit understanding tasks, while general acoustic representa-
+tions from Dasheng may enhance acoustics-driven classification
+tasks. However, effectively integrating such complementary in-
+formation requires mechanisms that balance synergy and redun-
+dancy.
+Prior work has explored combining multiple pre-trained
+encoders in related domains. Feature-level aggregation of
+self-supervised speech models has shown measurable gains
+in downstream tasks [10]. More recently, Mixture-of-
+Experts (MoE) [11] routing has been introduced to adap-
+tively combine multiple audio encoders for large-model
+pipelines [12], enabling input-dependent specialization [13, 14].
+While these approaches demonstrate the potential of encoder fu-
+sion, less attention has been given to systematically analyzing
+how complementary information of different audio encoders is
+injected, preserved, and controlled within a unified LALM eval-
+uation framework.
+In this work, we conduct a systematic study of dual-encoder
+fusion under the unified LALM framework. We first com-
+pare lightweight fusion operators and identify a stable softmax-
+gated backbone augmented with an STFT residual branch. We
+then analyze two injection mechanisms—implicit adaptation
+via LoRA [15] and explicit residual decomposition with aux-
+iliary regularization—to understand how complementary infor-
+mation is introduced and preserved. Through controlled abla-
+tions, we derive practical insights into translating encoder com-
+plementarity into consistent gains across various classification
+and audio understanding tasks. The model checkpoints and
+codes for both implicit1 and explicit2 fusion are open-sourced.
+2. Methods
+2.1. Problem Setup and Notation
+AECC evaluates an audio encoder as the front-end of a LALM
+under a standardized pipeline. We study dual-encoder fusion
+of Whisper-Base and Dasheng-Base, aiming to preserve Whis-
+per’s speech-aligned semantics while injecting complementary
+acoustic knowledge from Dasheng, under a fixed interface.
+Given a 16-kHz waveform x, Whisper and Dasheng pro-
+duce frame-level token sequences
+Hw∈ RT×512, H d∈ RT×768, (1)
+1https://huggingface.co/yucongzh/implicit_
+fusion
+2https://huggingface.co/yucongzh/explicit_
+fusion
+7040
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-463
+    Concatenation    
+where
+where
+        Softmax Gated with residual        
+···
+···
+Softmax ···
+gate params
+Output
+Concatenation Softmax-gated
+Residual
+DashengWhisper
+❄
+Waveform
+···
+···
+❄
+Dasheng path
+Whisper path
+Figure 1: System overview for the proposed softmax-gated residual fusion for dual encoders. Wd,W w,W g and b are learnable
+parameters. “⊙” and “⊕” denotes element-wise multiplication and summation respectively.
+where both streams operate at 25 fps and are aligned to a com-
+mon valid-frame mask. We map both streams into a fusion
+space of dimensiond=512 via lightweight projections and out-
+put a fused sequenceZ∈ RT×512, which is directly consumed
+by the downstream pipeline.
+2.2. Fusion Operators
+We evaluate three front-end fusion operators that combine
+(Hw,H d) intoZ.
+Concatenation (baseline)
+We formHcat = [Hw;Hd]∈ RT×1280 and apply a linear pro-
+jection to 512 dimensions. This baseline preserves both streams
+but does not explicitly control redundancy.
+Mixture-of-Experts (MoE) routing
+We implement a sparse Mixture-of-Experts (MoE) projector
+with E experts and top-k routing. The router operates on a
+token-wise fusion inputxt, whose form depends on the selected
+MoE input mode. We consider two variants:
+• MoE-concat: the router input is the raw concatenationxt =
+[Hw,t;Hd,t] ∈ R1280, preserving the full encoder dimen-
+sionality prior to expert routing.
+• MoE-proj: both streams are first projected into a shared
+512-dimensional fusion space, and the router input is xt =
+[dt;wt], wheredt =WdHd,t andwt =WwHw,t.
+The router produces logitsrt =g(xt)∈ RE, probabilities
+pt = softmax(rt), and selects the top-k expertsKt. The MoE
+output is computed as
+yt =
+X
+e∈Kt
+pt,efe(xt), z t =Woyt, (2)
+where each expert fe(·) is a two-layer feed-forward net-
+work and Wo maps the aggregated expert output to the 512-
+dimensional fusion space. Each expert fe is instantiated with
+input dimensionality matching the selected mode. We apply a
+standard load-balancing loss to encourage balanced expert uti-
+lization.
+Softmax-gated residual fusion (backbone)
+As a stable and lightweight alternative to sparse routing, we
+adopt a token-wise two-way softmax gate combined with resid-
+ual aggregation. Let Hw,t ∈ R512 and Hd,t ∈ R768 denote
+Whisper and Dasheng features at framet. We first project both
+streams into a shared 512-dimensional fusion space:
+dt =WdHd,t, w t =WwHw,t, (3)
+whereWd∈ R512×768 andWw∈ R512×512 are learnable lin-
+ear projections.
+We then compute gating logits via
+at = softmax(Wg[dt;wt] +bg)∈ R2, (4)
+where Wg ∈ R2×1024 and bg ∈ R2. The gated mixture is
+defined as
+mt =at,1dt +at,2wt. (5)
+Finally, the fused representation is formed through residual
+aggregation followed by Layer Normalization:
+zt = LN
+ 
+LN(mt) +dt +wt
+
+, (6)
+where LN(·) denotes token-wise Layer Normalization. This de-
+sign preserves both encoder streams through the residual path
+while enabling adaptive, frame-wise weighting via the softmax
+gate, thereby reducing the risk of suppressing complementary
+information.
+2.3. STFT residual branch
+In addition to representation-level fusion, we incorporate a
+lightweight signal-level residual branch based on short-time
+Fourier transform (STFT) features.
+Given the input waveformx, we compute its log-magnitude
+STFT representationS∈ RT×F , whereT denotes time frames
+aligned with the encoder outputs andF denotes frequency bins.
+The spectral features are projected into the 512-dimensional
+fusion space:
+st =WsSt, (7)
+whereWs∈ R512×F is a learnable linear projection.
+The projected spectral residual is then added to the fused
+representation with a learnable scaling factor:
+zt =zt +γst, (8)
+whereγ is a scalar parameter initialized to a small value. This
+branch injects fine-grained frequency cues that may be under-
+represented in pre-trained encoder embeddings, while keeping
+the overall fusion interface unchanged.
+7041
+Table 1: Performance comparison using different fusion operators (per-subtask and overall). Columns are grouped by fusion operator,
+with and without the STFT residual branch.
+Single Baseline Softmax-gated MoE-concat MoE-proj
+Tasks Whisper Dasheng Concat w/o STFT w/ STFT w/o STFT w/ STFT w/o STFT w/ STFT
+asvspoof2015 0.943 0.937 0.937 0.959 0.959 0.947 0.954 0.950 0.946
+cremad 0.516 0.621 0.621 0.574 0.598 0.531 0.576 0.594 0.582
+esc-50 0.635 0.755 0.743 0.652 0.715 0.713 0.715 0.705 0.730
+fluentspeechcommands [16] 0.817 0.984 0.961 0.905 0.947 0.822 0.795 0.842 0.858
+freemusicarchive 0.579 0.429 0.539 0.570 0.583 0.600 0.569 0.569 0.556
+fsd50k 0.092 0.063 0.092 0.093 0.103 0.102 0.109 0.110 0.111
+fsdkaggle2018 0.552 0.415 0.531 0.539 0.539 0.571 0.561 0.527 0.569
+gtzan 0.697 0.323 0.687 0.737 0.707 0.798 0.798 0.758 0.788
+libricount 0.409 0.386 0.453 0.445 0.448 0.459 0.420 0.316 0.441
+nsynth 0.638 0.675 0.648 0.631 0.685 0.703 0.698 0.693 0.678
+speechcommandsv1 0.694 0.655 0.708 0.719 0.751 0.825 0.806 0.794 0.789
+urbansound8k 0.737 0.829 0.785 0.781 0.803 0.783 0.797 0.798 0.812
+vocalsound 0.867 0.855 0.891 0.879 0.887 0.896 0.898 0.899 0.898
+voxceleb1 0.762 0.974 0.938 0.936 0.932 0.822 0.841 0.821 0.798
+voxlingua33 0.835 0.311 0.836 0.835 0.855 0.879 0.887 0.883 0.872
+Track A Overall 0.652 0.614 0.691 0.684 0.701 0.697 0.695 0.684 0.695
+aishell-1 0.361 0.018 0.357 0.346 0.359 0.345 0.337 0.336 0.345
+clotho 0.358 0.207 0.356 0.341 0.344 0.355 0.354 0.352 0.354
+librispeech 0.385 0.103 0.385 0.381 0.396 0.367 0.375 0.354 0.377
+mecat 0.624 0.600 0.631 0.614 0.626 0.633 0.632 0.625 0.626
+songdescriber 0.448 0.410 0.500 0.489 0.486 0.472 0.477 0.495 0.510
+Track B Overall 0.400 0.270 0.446 0.434 0.442 0.434 0.435 0.433 0.442
+Table 2: Training data ratios under the official “all” recipe.
+Dataset Sampling Ratio (%)
+ESC-50 [17] 0.453
+SpeechCommandsV1 [18] 6.154
+FluentSpeechCommands [16] 2.717
+FSDKaggle2018 [19] 2.378
+V oxCeleb1 [20] 4.529
+NSynth [21] 3.692
+AISHELL-1 [22] 6.154
+CremaD [23] 0.679
+SongDescriber [24] 0.226
+ASVSpoof2015 [25] 2.038
+FreeMusicArchive [26] 7.246
+FSD50k [27] 1.019
+UrbanSound8K [28] 1.019
+GTZAN [29] 1.019
+V ocalSound [30] 2.378
+Clotho [31] 2.462
+LibriSpeech [32] 6.154
+LibriCount [33] 0.453
+V oxLingua33 [34] 24.615
+MECAT [35] 24.615
+2.4. Injection Mechanisms
+With the fusion operator fixed to the softmax-gated residual
+backbone in Sec. 2.2, we study how complementary informa-
+tion is made available to the fusion module and retained during
+optimization. We consider two injection mechanisms.
+2.4.1. Implicit injection via Dasheng adaptation.
+In the implicit route, complementarity is introduced by adapt-
+ing Dasheng to the AECC training mixture before fusion. Con-
+cretely, we perform parameter-efficient LoRA adaptation on
+Dasheng while keeping Whisper frozen, and then merge the
+LoRA weights into the Dasheng backbone. During subsequent
+fusion training, both backbones are frozen and only fusion-
+related parameters are updated. This two-stage protocol isolates
+the effect of injection from changes in the downstream pipeline
+and improves training stability by preventing co-adaptation of
+the two backbones.
+2.4.2. Explicit injection via residual decomposition and regu-
+larization.
+In the explicit route, we construct a complementary residual
+from Dasheng and inject it into Whisper. Specifically, we first
+predict the Dasheng component that is predictable from Whis-
+per using a linear map
+ˆHd =HwWw→d, (9)
+and define the residual
+Rd =Hd− ˆHd. (10)
+We then projectRd into the fusion space and fuse it with Whis-
+per tokens using the same softmax-gated residual operator, pro-
+ducing the fused sequence Z. This design makes the injected
+information explicit and separates shared versus complemen-
+tary components at the representation level.
+To encourage non-redundant complementarity, we further
+apply auxiliary regularization on valid frames. First, we penal-
+ize residual energy to avoid unstable residual growth,
+Lrecon = Et∈Ω∥Rd,t∥2
+2, (11)
+where Ω denotes the set of valid (non-padded) frames. Sec-
+ond, we enforce decorrelation between Whisper features and
+a projected residual via a cross-covariance penalty. Let ut =
+Pw(Hw,t) andvt = Pr(Rd,t) be projected features; we com-
+pute the cross-covariance over valid frames and minimize its
+Frobenius norm:
+C = 1
+|Ω|
+X
+t∈Ω
+(ut− ¯u)(vt− ¯v)⊤, L decor =∥C∥2
+F. (12)
+The auxiliary term is added to the task loss as
+L =Ltask +λreconLrecon +λdecorLdecor. (13)
+These regularizers are applied only during fusion training and
+introduce no overhead at inference.
+3. Experiment
+3.1. Experimental settings
+Training details
+All experiments are conducted under the official AECC eval-
+uation pipeline based on XARES-LLM 3. For the implicit in-
+jection, we adopt a two-stage training schedule and adjust the
+3https://github.com/xiaomi-research/xares-llm
+7042
+Table 3: Performance comparison using different injection
+mechanisms under the same backbone with softmax-gated fu-
+sion operator and STFT residual. The baseline column is taken
+from softmax-gated fusion operator with STFT residual from Ta-
+ble 1. Mean±std columns are taken from performance results
+from three different servers.
+Tasks Baseline Explicit Implicit
+asvspoof2015 0.959 0.960 ± 0.010 0.959 ± 0.004
+cremad 0.598 0.619 ± 0.001 0.632 ± 0.004
+esc-50 0.715 0.721 ± 0.022 0.763 ± 0.008
+fluentspeechcommands 0.947 0.895 ± 0.002 0.933 ± 0.007
+freemusicarchive 0.583 0.566 ± 0.011 0.580 ± 0.012
+fsd50k 0.103 0.111 ± 0.001 0.103 ± 0.001
+fsdkaggle2018 0.539 0.547 ± 0.005 0.547 ± 0.004
+gtzan 0.707 0.744 ± 0.024 0.768 ± 0.029
+libricount 0.448 0.407 ± 0.011 0.430 ± 0.009
+nsynth 0.685 0.694 ± 0.006 0.686 ± 0.009
+speechcommandsv1 0.751 0.776 ± 0.005 0.786 ± 0.002
+urbansound8k 0.803 0.797 ± 0.005 0.801 ± 0.004
+vocalsound 0.887 0.892 ± 0.004 0.889 ± 0.001
+voxceleb1 0.932 0.860 ± 0.004 0.872 ± 0.003
+voxlingua33 0.855 0.868 ± 0.007 0.860 ± 0.003
+Track A Overall 0.701 0.706 ± 0.001 0.712 ± 0.001
+aishell-1 0.359 0.357 ± 0.002 0.354 ± 0.001
+clotho 0.344 0.361 ± 0.001 0.349 ± 0.003
+librispeech 0.396 0.390 ± 0.004 0.393 ± 0.002
+mecat 0.626 0.630 ± 0.002 0.627 ± 0.001
+songdescriber 0.486 0.484 ± 0.004 0.497 ± 0.006
+Track B Overall 0.442 0.446 ± 0.002 0.445 ± 0.001
+default parameter-freezing policy to enable encoder fusion. In
+Stage 1, we update only the LoRA adapters attached to Dasheng
+while keeping the Dasheng backbone and Whisper fully frozen.
+After Stage 1, LoRA weights are merged into the Dasheng
+backbone. In Stage 2, we freeze both encoders and optimize
+only fusion-related components.
+For all the fusion model fine-tuning, we use AdamW with
+weight decay 0.01, batch size 8, and maximum gradient norm
+1.0. For implicit injection, we LoRA-adapt Dasheng for 10k
+steps with learning rate1×10−4 and 200 warmup steps. LoRA
+hyperparameters are r = 16 , α = 32 , dropout 0.05, and tar-
+get modules qkv. For others, we train only fusion-related pa-
+rameters for 100k steps while freezing both encoders, using
+learning rate 5× 10−5 with 10k warmup steps. STFT resid-
+ual uses n fft = win length = 1024 ,hop length = 640 ,
+n mels = 128 (frame-rate matched to Whisper/Dasheng); γ
+is initialized to 1e−2 and learned;MoE uses 8 experts with
+top−k = 2 and load-balance weight 1e−2.
+Training data recipe
+We use the official “all” data recipe provided by XARES-LLM
+and do not change dataset composition or sampling ratios due
+to time constraints. The “all” recipe covers the training sets of
+all classification and understanding tasks. Table 2 summarizes
+the sampling ratios.
+Evaluation protocol and benchmarking
+We report results using the official AECC scoring scripts.
+Track A consists of multiple classification benchmarks, and
+Track B includes speech recognition and audio-language under-
+standing benchmarks. For each track, we present per-subtask
+scores and the official overall score computed by the pipeline
+(see Table 1 and 3).
+3.2. Fusion Operator Analysis
+Table 1 compares several fusion operators under a unified in-
+terface. Overall, the softmax-gated fusion provides a more reli-
+able accuracy–robustness trade-off than MoE routing, and fur-
+ther benefits from the STFT residual branch.
+Softmax-gated fusion vs. MoE routing
+Softmax-gated fusion achieves stronger and more consistent
+overall performance than MoE variants when considering both
+tracks. MoE can excel on specific subtasks, suggesting that con-
+ditional specialization is sometimes effective; however, these
+peaks do not consistently translate into higher overall scores.
+We attribute this to the heterogeneity of subtasks and the higher
+optimization sensitivity of sparse routing. In contrast, the soft-
+max gate performs a token-wise weighted averaging of the two
+streams while preserving both encoder representations through
+the residual path, which stabilizes optimization and reduces the
+risk of suppressing either representation.
+Effect of the STFT residual branch
+Adding the STFT residual consistently improves the softmax-
+gated operator, yielding a clear gain on Track-A overall while
+keeping Track-B essentially unchanged. This suggests that the
+spectral branch contributes complementary cues not fully cap-
+tured by encoder embeddings—particularly fine-grained fre-
+quency evidence that is useful for acoustics-driven classifica-
+tion. Since the STFT branch injects signal-level information
+through a lightweight projection and a learnable scaling, it can
+enhance such cues without forcing either pre-trained encoder to
+deviate from its representation space, which likely explains the
+stable gains observed in Table 1.
+3.3. Injection Mechanism Analysis
+Table 3 compares two injection mechanisms on top of the same
+backbone (softmax-gated residual fusion with an STFT resid-
+ual)The results suggest a trade-off between overall robustness
+and task-specific peak gains.
+Implicit injection achieves the best Track-A overall with
+consistently low variance, driven by broad improvements on
+several acoustics-centric classification tasks (CREMA-D, ESC-
+50, GTZAN, SpeechCommandsV1). However, its benefits are
+not uniform: on some subtasks the baseline remains competitive
+or better (FluentSpeechCommands, LibriCount, V oxCeleb1),
+indicating that encoder-side adaptation does not always align
+with the most task-relevant cues. Explicit injection yields a
+slightly lower Track-A overall but attains the best result on more
+Track-A subtasks, reflecting stronger task-specific complemen-
+tarity. It also achieves the best Track-B overall (0.446±0.002),
+with gains on Clotho and MECAT, while staying close to the
+baseline in other tasks. Beyond empirical scores, explicit injec-
+tion provides a controllable residual interface that can naturally
+extend to multi-encoder settings.
+4. Conclusion
+This paper analyzes dual-encoder fusion for AECC for the
+LALM framework and summarizes practical design choices for
+combining Whisper and Dasheng. We introduced two fusion
+strategies: implicit injection via parameter-efficient Dasheng
+adaptation and explicit injection via residual decomposition
+with auxiliary regularization. Empirically, explicit injection
+yields stronger task-specific complementarity and more per-task
+best results, suggesting explicit injection as a practical and ex-
+tensible option, while implicit injection provides a competitive
+and robust alternative. In addition, our ablations indicate that a
+token-wise softmax-gated fusion operator with an STFT resid-
+ual branch is a strong and stable backbone. Future work in-
+cludes improving the data mixture recipe to better match the
+target evaluation distribution and further strengthening explicit
+injection with more expressive residual predictors and regular-
+ization.
+7043
+5. Acknowledgments
+This research is funded in part by the National Natural Sci-
+ence Foundation of China (62571223) and Yangtze River Delta
+Science and Technology Innovation Community Joint Research
+Project (2024CSJGG01100) and OPPO. Many thanks for the
+computational resource provided by the Advanced Computing
+East China Sub-Center.
+6. Generative AI Use Disclosure
+Generative AI tools were used for limited language editing pur-
+poses, including improving clarity and correcting grammatical
+issues. No substantive content, analysis, or conclusions were
+generated by AI. The authors remain fully responsible for the
+content of this manuscript.

@@ -1,0 +1,512 @@
+CycleCodec: Distillation-Free Factorized Neural Speech Codec via
+Cycle-Consistent Speaker Swapping
+Rui-Chen Zheng1,2, Nicholas Sanders2, Jinzuomu Zhong2, Yang Ai1, Zhen-Hua Ling1, Korin
+Richmond2
+1 National Engineering Research Center of Speech and Language Information Processing,
+University of Science and Technology of China, China
+2 Centre for Speech Technology Research, University of Edinburgh, UK
+zhengruichen@mail.ustc.edu.cn
+Abstract
+Factorized neural speech codecs often rely on distillation from
+pretrained self-supervised learning (SSL) encoders or auto-
+matic speech recognition (ASR) systems to disentangle con-
+tent and speaker information. However, this dependency lim-
+its their applicability to low-resource languages where reliable
+teacher models are unavailable. In this paper, we propose
+CycleCodec, a distillation-free factorized codec trained from
+scratch. CycleCodec introduces cycle-consistent speaker swap-
+ping, a codec-internal self-supervision signal that reduces cross-
+stream leakage during speaker-conditioned generation. To fa-
+cilitate speaker-content disentanglement, CycleCodec also lim-
+its temporal capacity and improves speaker modeling with a
+query-based Transformer aggregator and a speaker contrastive
+loss. Experiments on in-domain (English) and unseen lan-
+guages (Mandarin and Vietnamese) show that CycleCodec out-
+performs distillation-free baselines and achieves more robust
+speaker-content disentanglement.
+Index Terms: neural speech codec, disentangled representation
+learning, cycle-consistent training
+1. Introduction
+Neural speech codecs have evolved rapidly from waveform
+compression modules [1, 2, 3, 4] into general-purpose tokeniz-
+ers that provide discrete and compact representations for down-
+stream speech generative tasks [5]. Beyond high-fidelity re-
+construction alone, a growing line of work has further inves-
+tigated factorizing codec representations into a time-varying
+stream that carries content and prosody, and a time-invariant
+stream that captures speaker identity and other global attributes
+[6, 7, 8, 9, 10]. This factorization is particularly attractive be-
+cause it enables controllable synthesis and robust cross-speaker
+manipulation while retaining a discrete interface that is well
+suited for modern speech language models [6, 8, 11].
+Most existing factorized neural speech codecs achieve dis-
+entanglement by distilling knowledge from pretrained teacher
+models. In these frameworks, the content space is typically
+regularized by automatic speech recognition (ASR) objectives
+or mapped to phone-like representations from self-supervised
+learning (SSL) models such as wav2vec 2.0 [12]. For instance,
+FACodec [6] employs an ASR objective, specifically a CTC loss
+on phoneme sequences, to learn the content subspace. Sim-
+ilarly, LSCodec [10] and FreeCodec [9] rely on representa-
+tions from WavLM [13] and speaker verification models [14]
+to guide the separation between content and global speaker at-
+tributes. Although effective on high-resource languages, this
+dependency raises two practical concerns. First, it may not
+transfer robustly to unseen languages. When the target lan-
+guage falls outside the coverage of the pretrained teachers, rep-
+resentation shift can distort the supervision signal and weaken
+the disentanglement between content and speaker factors [15].
+Second, it can be infeasible for non-codified, indigenous, or
+low-resource languages, such as Hadza [16] and Mohawk [17],
+where ASR-style transcripts are unavailable and reliable teacher
+models may not exist for the target language or domain, making
+teacher-guided disentanglement difficult to apply. TiCodec [7]
+is one of the few factorized codecs that avoids pretrained teacher
+models, introducing time-invariant codes and an encoding con-
+sistency loss to encourage within-utterance stability. However,
+TiCodec is primarily designed for efficient tokenization rather
+than speaker–content controllability, which can leave residual
+cross-stream leakage. These limitations motivate a distillation-
+free alternative that enforces disentanglement through codec-
+internal constraints rather than external teacher supervision.
+In this paper, we propose CycleCodec, a distillation-free
+factorized neural speech codec model trained from scratch. Cy-
+cleCodec factorizes speech into frame-level discrete codes that
+carry time-varying information and an utterance-level global
+representation that captures time-invariant speaker traits. The
+core idea of CycleCodec is cycle-consistent speaker swapping,
+a codec-internal self-supervision signal for controllable synthe-
+sis that reduces cross-stream leakage without distillation from
+pretrained teacher models. Built upon TiCodec [7], we con-
+strain the time-varying stream by reducing the codebook size
+to limit speaker leakage, and strengthen global speaker model-
+ing with a query-based Transformer aggregator regularized by
+a speaker contrastive loss. Unlike CycleGAN-based unpaired
+translation [18] or voice conversion (VC) [19], which learn bidi-
+rectional mappings between distinct domains using adversar-
+ial training, our cycle-consistency objective is defined entirely
+within the codec. It acts as a self-supervised constraint that
+stabilizes content under speaker injection through the process
+of speaker swapping, re-analysis, and swap-back reconstruc-
+tion. Specifically, we decode the source frame-level codes un-
+der a target speaker condition to synthesize swapped speech, re-
+encode it to recover the corresponding representations, and then
+swap back with a cycle-consistency reconstruction constraint.
+We evaluate CycleCodec under a challenging train–test
+language mismatch setting. The codec is trained on English
+speech and tested both in-domain (English) and zero-shot on
+two phonologically different languages, Mandarin Chinese and
+Vietnamese, to probe robustness on unseen languages. We use
+Mandarin and Vietnamese as evaluation languages because they
+are outside the training distribution and have phonotactic dis-
+tributions that differ substantially from English, while still al-
+3965
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-806
+Source Speech
+(𝑦src)
+Target Speech
+(𝑦tgt)
+Batch
+Permutation
+Global Features
+(𝑔tgt)
+Temporal Features
+(𝑞src)
+Decoder
+(Shared)
+Global Features
+(𝑔src)
+Swap Speech
+(𝑦𝑠𝑤𝑎𝑝)
+Encoder
+(Shared)
+Temporal Features
+(𝑞swap)
+Global Features
+(𝑔swap)
+Decoder
+(Shared)
+Cycle Speech
+(𝑦cycle)
+① Swap Forward② Cycle Forward
+ℒcycle
+mel
+ℒswap
+𝑞
+ℒswap
+𝑔
+ℒswap
+𝑔
+Encoder
+(Shared)
+Figure 1:Overview of CycleCodec during fine-tuning with two
+forward passes (swap and cycle). The encoder and decoder
+are reused with shared weights. For brevity, the quantization
+module for the time-varying (temporal) featuresqis omitted.
+The encoder and quantizer are frozen during fine-tuning.
+lowing objective evaluation with widely used evaluation tools.
+This experimental design choice is motivated by the fact that
+evaluation in non-codified or low-resource languages is often
+difficult due to the lack of standardized, reproducible evalua-
+tion protocols and benchmarks. Experimental results show that
+CycleCodec improves speaker–content disentanglement while
+maintaining competitive reconstruction quality, offering an ef-
+fective route to factorized coding without relying on distillation
+from pretrained models.
+2. Method
+This section presents CycleCodec, a distillation-free factorized
+neural speech codec trained from scratch. As shown in Figure 1,
+CycleCodec decomposes each utterance into two complemen-
+tary streams: a time-varying discrete sequence intended to cap-
+ture content and prosody, and a time-invariant continuous global
+embedding intended to capture speaker traits. Built on TiCodec
+[7], CycleCodec adopts its encoder-decoder backbone and time-
+varying quantization pipeline, as well as its design of extracting
+a global feature from the encoder and injecting it into the de-
+coder. Given an utterancey, the encoder produces frame-level
+featuresz∈R T×d z and a global embeddingg∈R dg . The
+time-varying stream is further quantized into a discrete feature
+sequenceq∈R T×d q [20]. The decoder reconstructs speech as
+ˆy=D(q,g)from the quantized featuresqconditioned ong.
+2.1. Architectural Design for Factorization
+Before introducing the cycle-consistent training signal, we first
+adopt two supporting architectural choices in CycleCodec that
+reduce cross-stream leakage at the representation interface.
+First, we reduce the codebook size of the quantizer to constrain
+the information capacity of the time-varying stream. An overly
+expressive codebook can encode not only content and prosody
+but also residual speaker information, weakening the intended
+separation between the time-varying and global streams. Limit-
+ing codebook capacity encourages the temporal stream to focus
+on time-varying information, while leaving speaker-related in-
+formation to the global embedding.
+Second, we strengthen global speaker modeling with a
+query-based Transformer aggregator. Speaker cues are often
+unevenly distributed over time [21, 22], so uniform pooling
+over all frames may produce a weak global speaker represen-
+tation, leaving residual speaker information in the time-varying
+stream. We therefore replace pooling-based aggregation with a
+query-based Transformer aggregator that can selectively sum-
+marize speaker cues over long contexts. LetH∈R T×d h de-
+note the intermediate frame-level features extracted from the en-
+coder for global speaker modeling. We introduceNlearnable
+query tokensQ∈R N×d h and concatenate them withHalong
+the temporal dimension, forming a sequence of lengthN+T.
+This sequence is processed by a Transformer encoder withL
+stacked self-attention blocks [23]. We take only the outputs at
+the query positions as speaker summary tokens, flatten them,
+and apply a lightweight projection head to obtain the utterance-
+level embeddingg. The lightweight projection head consists of
+a single linear layer followed by LeakyReLU.
+The segment-level consistency objective inherited from
+TiCodec is often insufficient to make the global embedding
+strongly speaker-discriminative. We thus add a standard con-
+trastive loss [24] as an auxiliary regularizer:
+Lspk =− 1
+B
+BX
+i=1
+1
+|P(i)|
+X
+p∈P(i)
+log exp(sim(gi,g p)/τ)P
+a̸=i exp(sim(gi,g a)/τ),
+(1)
+where sim(·,·)denotes cosine similarity betweenl 2-normalized
+embeddings,τis a temperature, andP(i)denotes the positives
+in the mini-batch with the same speaker label as anchori. Un-
+like ASR transcripts or SSL semantic teachers, speaker labels
+are not a language-specific prior and are independent of con-
+tent. In many low-resource or non-codified speech data col-
+lection pipelines, speaker labels are typically available as ba-
+sic recording metadata, for example from controlled sessions or
+speaker-wise recording logs.
+2.2. Cycle-Consistent Speaker Swapping
+The modifications above increase stream separation, but do
+not fully ensure content preservation under speaker-conditioned
+generation. In particular, a capacity-constrained temporal
+stream can still lead to content drift and residual cross-stream
+leakage during speaker swapping. To improve controllable syn-
+thesis without relying on pretrained teacher models, we propose
+cycle-consistent speaker swapping, which uses the codec itself
+to verify and enforce the intended use ofqandgduring gen-
+eration without external supervision. This requires no parallel
+cross-speaker utterances and operates on non-parallel samples
+from different speakers within each mini-batch.
+As illustrated in Figure 1, the cycle procedure consists of
+two forward passes. Within a batch, we form source–target
+pairs by permuting utterances such that each source utterance
+ysrc is matched with a targety tgt from a different speaker. In
+theswap forward pass, the shared encoder extracts the source
+time-varying featuresq src fromy src and the target speaker
+embeddingg tgt fromy tgt. We then synthesize a swapped
+utterance by conditioning the decoder on the source time-
+varying features and the target speaker embeddingy swap =
+D(qsrc,g tgt). Ideally,y swap should preserve the content and
+prosody carried byq src, while adopting the target speaker iden-
+tity specified byg tgt.
+To provide a self-supervised consistency signal, we use a
+cycle forward passthat first re-analyzesy swap using Cycle-
+Codec’s own analysis path and then reconstructs the source
+utterance through swap-back decoding. Specifically, we pass
+yswap through the shared encoder and quantizer again to obtain
+qswap andg swap. We impose two complementary constraints:
+Lg
+swap = 1−cos(g swap,g tgt),(2)
+3966
+which encourages the swapped utterance to match the target
+speaker in the global space, and
+Lq
+swap =||q swap−q src||2
+2,(3)
+which enforces that swapping the speaker condition does not
+change the recovered time-varying features. These losses dis-
+courage cross-stream leakage by encouraginggto control
+speaker identity whileqpreserves time-varying dynamics.
+The feature-level constraints on(q,g)alone do not pre-
+vent waveform-level content distortion, such as subtle acoustic
+changes that can still satisfy feature matching. We therefore
+include swap-back reconstruction in the cycle forward pass to
+re-synthesize the original source utterance, providing a direct
+signal against content drift. Specifically, we decode a cycle ut-
+terancey cycle =D(q swap,g src)by combining the recovered
+time-varying features with the source speaker embedding, and
+apply a mel-spectrogram reconstruction loss:
+Lmel
+cycle =||Mel(y cycle)−Mel(y src)||1.(4)
+Compared with feature-space constraints alone, the mel-domain
+cycle loss provides a stronger signal against content drift by
+jointly forcing speaker transfer and content preservation.
+2.3. Objective and Optimization
+We adopt a two-stage training strategy. In the first stage, we
+train CycleCodec with the original TiCodec objectiveLcodec and
+the speaker-discriminative contrastive termL spk. This stage es-
+tablishes a high-quality reconstruction model while encourag-
+ing factorization between the time-varying and global streams.
+In the second stage, we introduce cycle-consistent speaker
+swapping as the primary codec-internal self-supervision sig-
+nal to verify and stabilize content preservation during speaker-
+conditioned generation. The encoder and quantizer are frozen
+to prevent the model from trivially satisfying the constraints by
+shifting the analysis space, thereby forcing the decoder to pro-
+duce speech that remains consistent under a fixed analysis trans-
+form. The fine-tuning objective is
+L=L codec +λ spkLspk +λ qLq
+swap +λ gLg
+swap +λ mLmel
+cycle,(5)
+whereλ spk,λ q,λ g andλ m are hyperparameters.
+3. Experiments
+3.1. Implementation Details
+CycleCodec is built on TiCodec and follows its original training
+recipe. Unless otherwise specified, all hyperparameters are kept
+the same as in TiCodec. To constrain the information capacity
+of the time-varying stream, we use a single codebook of size
+256 in the quantizer, yielding a bitrate of 0.6 kbps. For the
+query-based Transformer aggregator, we useN= 8learnable
+query tokens and a Transformer encoder withL= 4layers.
+The model is trained on the 24 kHz LibriTTS corpus [25]. The
+loss weights in Eq. (5) are chosen to keep each loss term on
+comparable scales during training.
+3.2. Evaluation Protocol
+We evaluate CycleCodec under a train–test language mismatch
+setting from two perspectives: reconstruction quality and dis-
+entanglement performance. Disentanglement is assessed via
+zero-shot VC [26], which tests whether speaker identity can
+Table 1:Reconstruction performance on LibriTTS (English)
+and on Seed-TTS-ZH (Mandarin) and VieNeu-TTS (Viet-
+namese). Best results are inbold.
+Dataset Method PESQ STOI V/UV F1 WER(%)
+LibriTTS
+LSCodec 1.774 0.716 0.8797.222
+TiCodec 1.628 0.853 0.914 15.137
+CycleCodec1.868 0.878 0.92911.248
+Seed-tts-zh
+LSCodec 1.578 0.701 0.8599.147
+TiCodec 1.464 0.796 0.882 17.339
+CycleCodec1.620 0.822 0.90412.614
+VieNeu-TTS
+LSCodec 1.571 0.713 0.84123.987
+TiCodec 1.474 0.840 0.867 35.399
+CycleCodec1.643 0.869 0.89325.926
+be controlled through the global speaker stream while the time-
+varying stream preserves content. All models are evaluated both
+in-language on English and out-of-language on Mandarin and
+Vietnamese to probe robustness under strong language shift. In
+non-codified or low-resource settings, reliable objective evalu-
+ators may be unavailable. We therefore include Mandarin and
+Vietnamese as proxy evaluation languages. They are substan-
+tially different from English, providing a clear language-shift
+scenario while still allowing word error rate (WER) evaluation
+with available ASR systems and speaker similarity evaluation
+with pretrained speaker encoders. These pretrained ASR mod-
+els and speaker encoders are used only for objective evaluation
+and are not used in training. For zero-shot VC, we evaluate us-
+ing non-parallel cross-speaker source–reference pairs: 500 pairs
+from LibriTTS test-clean (English), 2018 pairs from Seed-TTS-
+ZH (Mandarin) [27], and 500 pairs constructed from VieNeu-
+TTS-140h1 (Vietnamese). For reconstruction, we reuse the
+source utterances from these pairs, ensuring that reconstruction
+and VC are measured on the same content. Reconstruction qual-
+ity is measured using Perceptual Evaluation of Speech Quality
+(PESQ) [28], Short-Time Objective Intelligibility (STOI) [29],
+voiced/unvoiced F1 (V/UV F1) and WER following standard
+practice in [30]. For zero-shot VC, we report speaker similarity
+as the cosine similarity between embeddings of the converted
+speech and the reference speech extracted by WavLM [13] and
+Resemblyzer [31, 32], and we measure content preservation us-
+ing WER between the source and converted speech with ASR
+systems (Whisper-large-v3 [33] for English and Vietnamese,
+and Paraformer-zh [34] for Mandarin).
+3.3. Baselines
+We compare CycleCodec against two baselines, TiCodec [7]
+and LSCodec [10], using the officially released checkpoints 2.
+We evaluate the single-codebook variant of TiCodec and the
+50 Hz configuration of LSCodec. For TiCodec, we condition
+the decoder on the continuous global features extracted from
+the encoder. TiCodec serves as a strong distillation-free base-
+line. In contrast, LSCodec uses a pretrained WavLM model to
+supervise both the content and speaker streams, so its results
+should be interpreted as an upper bound for teacher-guided fac-
+torization and not a strictly comparable distillation-free setting.
+3.4. Reconstruction Quality
+We first evaluate CycleCodec in the standard reconstruction
+setting, where each utterance is encoded and decoded with-
+1https://huggingface.co/datasets/pnnbao-ump/
+VieNeu-TTS-140h
+2Demo page is available athttps://zhengrachel.github.
+io/CycleCodec/.
+3967
+Table 2:Zero-shot VC results for disentanglement. “Spk” de-
+notes cosine similarity between speaker embeddings from Re-
+semblyzer (Res.) or WavLM (Wav.). LibriTTS results also in-
+clude cumulative ablations of CycleCodec in the listed order.
+Best results are in bold, and second-best results are underlined.
+Dataset Method Spk (Res.) Spk (Wav.) WER (%)
+LibriTTS
+LSCodec0.824 0.912 7.916
+TiCodec 0.693 0.764 15.156
+CycleCodec 0.756 0.847 11.668
+-Cycle 0.762 0.821 14.486
+-Small Cb 0.705 0.782 13.725
+-Lspk 0.703 0.764 12.897
+Seed-tts-zh
+LSCodec0.823 0.92915.426
+TiCodec 0.710 0.835 19.627
+CycleCodec 0.764 0.881 13.488
+VieNeu-TTS
+LSCodec0.802 0.91631.606
+TiCodec 0.733 0.863 36.384
+CycleCodec 0.756 0.877 25.706
+out speaker swapping. Results are summarized in Table 1.
+CycleCodec consistently outperforms the distillation-free base-
+line TiCodec on all three datasets. Compared with LSCodec,
+CycleCodec achieves better signal-level reconstruction qual-
+ity, obtaining the best PESQ, STOI, and V/UV F1 across all
+datasets, whereas LSCodec attains the lowest WER. This differ-
+ence likely stems from the training signal. LSCodec regularizes
+the content stream with pretrained SSL semantic tokens and in-
+jects speaker information from a reference prompt, which favors
+ASR-level content correctness. CycleCodec enforces factoriza-
+tion through codec-internal cycle-consistent swapping and thus
+better preserves fine-grained acoustic details that are rewarded
+by reference-based metrics such as PESQ and STOI.
+3.5. Disentanglement Performance
+3.5.1. Standard Zero-Shot VC
+We first evaluate disentanglement through a zero-shot VC set-
+ting, which tests whether speaker identity can be controlled by
+the global stream while the time-varying stream preserves con-
+tent. Results on three languages are reported in Table 2. On
+LibriTTS, LSCodec achieves the strongest VC performance,
+which is consistent with its use of pretrained WavLM supervi-
+sion for both content and speaker pathways under matched lan-
+guage and domain. In the distillation-free setting, CycleCodec
+improves over TiCodec by increasing speaker similarity and re-
+ducing WER, indicating a cleaner separation between the time-
+varying and global streams. Under language shift, the gap be-
+comes clear. While LSCodec remains strong in speaker similar-
+ity, its content preservation degrades substantially on Mandarin
+and Vietnamese. However, CycleCodec maintains competi-
+tive speaker similarity with lower WER. This indicates that en-
+forcing factorization via codec-internal consistency constraints
+leads to more stable controllability when pretrained teachers
+are unavailable or do not transfer reliably across languages. A
+small-scale listening test on English and Mandarin VC outputs
+supports these trends: using 15 non-parallel pairs and 10 na-
+tive listeners per language, CycleCodec improves naturalness
+Mean Opinion Score (MOS) over TiCodec from 3.171/3.465 to
+3.301/3.687 on English/Mandarin, and is preferred in A/B tests
+for content preservation and speaker similarity by 57.5%/53.8%
+and 59.3%/57.9%, respectively.
+3.5.2. Iterative VC with a Fixed Target Speaker
+While zero-shot VC evaluates single-step controllability, it may
+not expose residual entanglement between the time-varying and
+7.431
+10.228
+14.637
+17.563
+24.263
+15.046
+25.563
+33.649
+40.629
+47.547
+11.063
+18.742
+28.347
+34.052
+38.263
+0
+10
+20
+30
+40
+50
+0 1 2 3 4
+WER/%
+Iterations
+LSCodec
+TiCodec
+CycleCodec
+0.912
+0.923 0.925 0.929 0.929
+0.792 0.795 0.792 0.79 0.787
+0.841 0.841 0.84 0.84 0.838
+0.75
+0.8
+0.85
+0.9
+0.95
+0 1 2 3 4
+Speaker SIM (W avLM)
+Iterations
+Figure 2:Iterative VC evaluation with a fixed target speaker.
+global streams. We therefore use iterative VC with a fixed tar-
+get speaker to probe disentanglement under repeated conver-
+sion. Given a source utterance and a target reference, we ex-
+tract the target global embedding once and keep it fixed. We
+first perform a standard zero-shot VC conversion to obtain the
+initial output, and continue for four iterations by re-encoding
+the previous output to obtain new time-varying features and re-
+synthesizing it with the same target speaker embedding. Figure
+2 reports WER and speaker similarity across iterations. WER
+increases with iterations for all models due to accumulated re-
+construction distortion, but the drift rate differs. CycleCodec
+exhibits lower WER and a smaller drift slope than TiCodec,
+while maintaining high and nearly flat speaker similarity. This
+indicates that its stronger content preservation does not come at
+the cost of weaker speaker transfer, but reflects a cleaner sepa-
+ration between the time-varying and global streams. In contrast,
+LSCodec shows increasing speaker similarity under repeated
+conversion, suggesting a bias toward the fixed target condition.
+3.6. Ablations
+Ablation results on LibriTTS are reported in Table 2. We
+use a progressive ablation protocol: starting from CycleCodec,
+we remove cycle-consistent swapping (-Cycle), then the small-
+codebook constraint (-Small Cb), and finally the speaker con-
+trastive term (Lspk). The largest degradation in content preser-
+vation appears after removing cycle-consistent swapping, indi-
+cating that the cycle-consistency c

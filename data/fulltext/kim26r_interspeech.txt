@@ -1,0 +1,446 @@
+GradHarmony: A Gradient Alignment and Magnitude Normalization
+Strategy for Audio Deepfake Detection
+Inho Kim ID 1, Thien-Phuc Doan ID 1, Souhwan Jung ID 1,∗∗
+1 Soongsil University, Seoul, Republic of Korea
+inho107@soongsil.ac.kr, phucdt@ssu.ac.kr, souhwanj@ssu.ac.kr
+Abstract
+In audio deepfake detection, data augmentation improves model
+generalization by exposing them to diverse data variations.
+However, gradients computed from clean and augmented sam-
+ples may become directionally misaligned and differ in mag-
+nitude. These discrepancies may be amplified in multi-
+augmentation settings, leading to unstable optimization. In
+this paper, we propose GradHarmony, a gradient alignment and
+magnitude normalization strategy for stable multi-augmentation
+training. GradHarmony computes gradients separately for clean
+data and each augmentation type, and aligns conflicting aug-
+mented gradients using the clean gradient as a reference. Then
+adaptively normalizes their magnitudes using exponential mov-
+ing average (EMA)-based statistics to prevent dominance. Ex-
+perimental results show performance improvements across a va-
+riety of models, with two state-of-the-art models achieving an
+average 22% reduction in equal error rate compared to the base-
+line on out-of-domain datasets.
+Index Terms: audio deepfake detection, data augmentation,
+gradient alignment, magnitude normalization
+1. Introduction
+In audio deepfake detection (ADD), data augmentation has been
+widely adopted to better reflect realistic conditions during train-
+ing [1, 2, 3]. By allowing models to learn from more diverse
+audio variations, augmentation significantly contributes to im-
+proved generalization performance [4]. Despite its effective-
+ness, multi-augmentation training introduces non-trivial opti-
+mization challenges. Augmented data often exhibit character-
+istics different from clean data [5, 6], affecting both the magni-
+tude and direction of their corresponding gradients. As a result,
+gradients derived from clean and augmented samples may be-
+come misaligned during backpropagation, potentially slowing
+down optimization or leading the model toward suboptimal so-
+lutions. Here, the clean gradient denotes the gradient computed
+from the original input sample, while augmented gradients are
+computed from inputs transformed through augmentation op-
+erations. In multi-augmentation training, multiple augmented
+samples are included within a single iteration, producing multi-
+ple gradients that jointly influence the parameter update.
+In multi-task learning, several studies have addressed simi-
+lar issues by explicitly aligning gradients across tasks [7, 8, 9],
+demonstrating improved optimization efficiency. However, in
+ADD, gradient misalignment has received limited attention.
+Although recent work [10] has shown performance improve-
+ments by aligning augmented gradients with their correspond-
+ing clean gradients, it primarily focuses on single-augmentation
+**indicates the corresponding author.
+(a)
+ (b)
+Figure 1:Two cases of gradient misalignment: (a) when the an-
+gle between gradients exceeds 90°, and (b) when the magnitude
+of a specific gradient dominates the optimization process.
+settings. In particular, it does not consider directional misalign-
+ment that may arise jointly among multiple augmented gradi-
+ents and the clean gradient in multi-augmentation scenarios.
+Furthermore, while directional alignment has been explored,
+the impact of imbalanced or dominant gradient magnitudes [11]
+remains largely overlooked. To the best of our knowledge, in
+ADD, approaches that jointly address both directional conflicts
+and magnitude imbalance in multi-augmentation training are
+still limited.
+To address these limitations, we propose GradHarmony, a
+gradient alignment and magnitude normalization strategy for
+stable multi-augmentation training. GradHarmony consists of
+a Clean-referenced Gradient Alignment (CGA) mechanism and
+an Exponential Moving Average (EMA)-based [12] Magnitude
+Normalization (EMA-MN) scheme. CGA treats the clean gra-
+dient as a stable optimization anchor and aligns conflicting aug-
+mented gradients accordingly. In addition, it employs EMA-
+MN to normalize gradient magnitudes and mitigate dominance
+from imbalanced augmentation signals. By jointly control-
+ling directional conflicts and magnitude discrepancies, Grad-
+Harmony accelerates convergence and improves generalization
+in multi-augmentation training across both in-domain and out-
+of-domain datasets.
+2. Problem Statement
+In this work, we consider two representative cases of gradient
+misalignment, as illustrated in Figure 1. The actual update di-
+rection is given by their sum,g=g 1 +g 2. The first case
+arises when the angle between the two gradients exceeds 90°
+(Figure 1(a)), indicating conflicting optimization directions. In
+such cases, their summed updategmay be weakened due to
+partial or complete cancellation, leading to inefficient parame-
+ter updates. The second case occurs when the magnitude of one
+gradient dominates others (Figure 1(b)), causing the optimiza-
+tion trajectory to be biased toward a particular data type, even
+when gradients are directionally aligned.
+Figure 2 presents the training loss and gradient magnitudes
+7415
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2216
+Figure 2:Training loss and gradient magnitude of clean and
+each augmentation type (Rawboost [1], Room Impulse Re-
+sponse (RIR) [2] and Musan [3]) of AASIST [13] model.
+of clean and multiple augmentation types during training. Al-
+though all losses decrease over time, noticeable differences in
+their scales persist, resulting in sustained variability in gradi-
+ent magnitudes. Even in later stages, these magnitudes do not
+converge to a balanced scale but continue to fluctuate across
+augmentations. This persistent imbalance may lead to domi-
+nance effects in the aggregated gradient, corresponding to the
+magnitude-related misalignment illustrated in Figure 1(b). In
+addition, we analyze the directional conflict case illustrated in
+Figure 1(a). Figure 3 shows the frequency of gradient pairs with
+negative inner products, indicating conflicting update directions
+during training. The results reveal that such conflicts do not de-
+crease over time, suggesting that directional misalignment per-
+sists throughout training.
+In ADD, previous work [10] demonstrated that aligning
+clean and augmented gradients using methods such as PCGrad
+[7] or GradVac [8] improves generalization. However, these ap-
+proaches primarily consider a dual-path setting that aligns gra-
+dients between a clean sample and a single augmentation, and
+do not explicitly address scenarios involving clean data with
+multiple augmentations. PCGrad and GradVac were originally
+developed for multi-task learning, where each task is associ-
+ated with a distinct objective. In contrast, multi-augmentation
+training in ADD does not involve independent objectives for
+each augmentation type. When multiple augmentations are
+present simultaneously, pairwise alignment lacks a criterion
+for determining a consistent reference direction and does not
+guarantee a coherent alignment direction across gradients. To-
+gether, these considerations highlight the need for an optimiza-
+tion strategy that maintains directional consistency with respect
+to a clear reference while controlling magnitude imbalance in
+multi-augmentation training for audio deepfake detection.
+3. Methodology
+3.1. Proposed Training Strategy
+To address these challenges, we proposeGradHarmony,
+which consists of two components: (1)Clean-referenced Gra-
+dient Alignment (CGA)for resolving directional conflicts, and
+(2)EMA-based Magnitude Normalization (EMA-MN)for
+mitigating magnitude imbalance.
+We assume a clean training datasetD={x i}M
+i=1. At each
+iteration, a mini-batchBis sampled fromD. Within the mini-
+batch, different augmentation functionsA (1),...,A (K) are ap-
+plied to subsets of samples. Thus, each mini-batch contains
+both clean samples and multiple augmented samples. After for-
+ward propagation, we compute losses separately for clean sam-
+ples and each augmentation type. Gradients are then computed
+Figure 3:Number of conflicts between each augmented gradient
+and clean gradient during training of AASIST model
+independently for the clean subset and each augmented subset.
+Letg (C) denote the gradient from clean samples, andg (k)
+denote the gradient of thek-th augmentation. GradHarmony
+first applies CGA to resolve directional conflicts between aug-
+mented and clean gradients. Only augmented gradients that
+exhibit negative inner products with the clean reference are
+aligned. It then applies EMA-MN to normalize their magni-
+tudes. The final update is obtained by aggregating the clean
+gradient and the aligned-and-normalized augmented gradients.
+3.2. Clean-referenced Gradient Alignment
+As discussed in Section 2, pairwise alignment can reduce con-
+flicts between gradient pairs, yet it does not establish a consis-
+tent optimization reference when multiple augmented gradients
+are present. To address this, we adopt a Clean-referenced Gradi-
+ent Alignment (CGA) mechanism that explicitly uses the clean
+gradient as the reference direction. Because augmented sam-
+ples are generated through label-preserving transformations of
+the original clean data, clean and augmented samples share the
+same supervision signal rather than representing independent
+objectives [14, 15]. From this perspective, the clean objective
+provides the principal optimization direction, while augmented
+objectives introduce transformed variations intended to enhance
+robustness. Accordingly, the clean gradient is treated as a fixed
+reference anchor, and each augmented gradient is aligned with
+respect to it.
+CGA can be implemented using different gradient align-
+ment operators. In this work, we instantiate CGA using PCGrad
+as a baseline due to its simplicity and strong empirical perfor-
+mance in ADD [10]. Unlike standard PCGrad, which performs
+pairwise alignment among all gradients, we restrict the align-
+ment operation to occur only between each augmented gradient
+and the clean gradient. The clean gradient itself remains un-
+changed and serves as a fixed optimization anchor. Specifically,
+when a negative inner product is detected, we remove the con-
+flicting component of the augmented gradient:
+˜g(k) =g (k)−⟨g(C),g (k)⟩
+∥g(C)∥2
+2
+g(C) if⟨g (C),g (k)⟩<0.(1)
+where ˜g(k) denotes the aligned gradient. This approach guaran-
+tees that each aligned gradient satisfies⟨g (C), ˜g(k)⟩≥0. As a
+result, the aggregated gradient remains directionally consistent
+with the clean optimization trajectory while still benefiting from
+augmentation-induced robustness.
+3.3. EMA-based Magnitude Normalization
+While CGA mitigates directional conflicts, it does not solve
+magnitude imbalance across gradients. Even when gradients
+7416
+are directionally consistent, substantial disparities in their mag-
+nitudes may cause certain augmentations to dominate the ag-
+gregated gradient, leading to biased and unstable optimization.
+To mitigate this imbalance, we normalize gradient magnitudes
+using an adaptive threshold based on the median gradient mag-
+nitude and its EMA-smoothed [12] estimate.
+At each iterationn, after applying the CGA, we compute
+the median of thel 2 norms of all gradients in the current mini-
+batch:
+med(n) = median
+
+{∥g(C)∥2,∥ ˜g(1)∥2,...,∥ ˜g(K)∥2}
+
+(2)
+The median serves as a robust estimate of the typical gradi-
+ent magnitude under heterogeneous augmentation-induced vari-
+ations. However, usingmed (n) directly as a clipping threshold
+may introduce instability due to per-iteration fluctuations. To
+obtain a smoother estimate of the typical gradient magnitude,
+we use an EMA:
+ˆm(n) =βˆm(n−1) + (1−β)med (n) (3)
+whereβ∈[0,1)controls the smoothing factor. This smooth-
+ing prevents abrupt changes in the clipping scale. Furthermore,
+since gradient magnitudes decrease rapidly during the early
+stage of training, we apply a short warm-up for the firstN w
+iterations before activating clipping. This prevents premature
+suppression of gradients when the EMA estimate has not yet
+stabilized.
+We then define a conflict-aware clipping threshold:
+τ (k) =
+(
+ˆm(n), c (k) = 1
+αˆm(n), c (k) = 0 (4)
+wherec (k) = 1denotes that thek-th augmented gradient was
+in directional conflict with the clean gradient prior to align-
+ment. For gradients that were originally in directional conflict
+with the reference, we apply stricter normalization, since even
+after alignment, large-magnitude gradients may disproportion-
+ately influence the aggregated update. In contrast, uniformly
+clipping all gradients would unnecessarily limit those that are
+already directionally consistent with the clean objective. The
+scale factorαtherefore allows non-conflicting gradients to re-
+tain sufficient contribution while still mitigating magnitude im-
+balance. The normalized augmented gradient is defined as:
+¯g(k) =
+
+
+
+˜g(k)· τ (k)
+∥˜g(k)∥2
+,if∥ ˜g(k)∥2 >τ (k)
+˜g(k),otherwise.
+(5)
+Magnitude normalization is applied only to augmented gra-
+dients, while the clean gradient remains unchanged as the opti-
+mization anchor. Since normalization rescales gradients with-
+out altering their direction, the non-negative inner product prop-
+erty established by CGA is preserved. The final update gradient
+is computed as:
+g=g (C) +
+KX
+k=1
+¯g(k) (6)
+This adaptive mechanism suppresses magnitude imbalance
+while maintaining directional consistency, leading to more sta-
+ble multi-augmentation optimization.
+Table 1:EER(%) of baseline, augmentation, and GradHarmony
+(with PCGrad) training across multiple evaluation datasets.
+System DF21 ITW DSD FoR Epoch
+AASIST
+Baseline 21.07 43.00 36.55 26.59 -
+Augmentation 18.49 37.86 34.76 26.67 60
+GradHarmony (PCGrad) 17.70 33.71 26.08 21.68 45
+RawNet2
+Baseline 23.38 49.00 31.12 48.45 -
+Augmentation 21.76 50.41 32.11 42.71 54
+GradHarmony (PCGrad) 21.34 48.71 30.15 28.66 26
+RawGA TST
+Baseline 23.26 52.54 25.33 53.17 -
+Augmentation 19.60 48.26 26.41 35.43 43
+GradHarmony (PCGrad) 17.94 44.03 24.52 22.96 33
+SSL-AASIST
+Baseline 3.81 10.44 26.49 9.71 -
+Augmentation 5.36 11.60 25.28 7.77 32
+GradHarmony (PCGrad) 3.74 7.04 19.98 6.48 18
+SSL-Conformer
+Baseline 3.45 12.28 25.29 8.14 -
+Augmentation 4.28 11.08 19.977.7729
+GradHarmony (PCGrad) 2.93 10.26 18.898.0618
+4. Evaluation
+4.1. Experimental Setup
+We evaluate our method on both non-self-supervised learn-
+ing (non-SSL) and self-supervised learning (SSL)-based mod-
+els. Non-SSL models include AASIST [13], RawNet2 [16],
+and RawGATST [17], while SSL-based models include SSL-
+AASIST [18] and SSL-Conformer [19]. All models are trained
+on the ASVspoof 2019 Logical Access dataset [20]. Evaluation
+is conducted on ASVspoof 2021 DeepFake (DF21) including
+hidden track [21], In-the-Wild (ITW) [22], DSD-Corpus (DSD)
+[23], and Fake-or-Real (FoR) [24]. DF21 serves as in-domain
+benchmark, whereas ITW, DSD and FoR assess generalization
+under real-world and diverse deepfake conditions.
+For multi-augmentation training, we employ commonly
+adopted augmentation techniques in ADD, including RawBoost
+[1], MUSAN [3], and Room Impulse Response (RIR) [2]. Per-
+formance is evaluated using the Equal Error Rate (EER).
+4.2. Implementation details
+We trained the models using NVIDIA RTX Pro 6000 GPU. For
+all models, we follow the official open-source implementations
+and retain their default architectural and training configurations
+unless otherwise specified. Each mini-batch is composed of
+50% clean samples and 50% augmented samples. The aug-
+mented portion is evenly distributed across augmentation types
+to ensure balanced exposure to different perturbations within
+each training step. For RawBoost augmentation, we adopt Al-
+gorithm 4, which integrates the effects of Algorithms 3 and 5
+and generates more diverse distortion patterns. Rather than op-
+timizing augmentation settings for individual models, we use
+a unified configuration across all experiments to ensure fair
+and consistent comparison. We also use fixed hyperparameters
+across all models (β= 0.99,α= 2andN w = 100) without
+model-specific tuning to ensure fair comparison.
+4.3. Results
+We compare the proposed method with the baseline and aug-
+mentation training. As shown in Table 1, GradHarmony gener-
+ally improves performance across multiple evaluation datasets.
+Notably, augmentation training often degrades in-domain per-
+formance on DF21, particularly for SSL-based models. In
+contrast, GradHarmony not only restores but further improves
+in-domain performance while achieving substantial gains on
+out-of-domain datasets (ITW, DSD, and FoR). This trend is
+7417
+Figure 4:Comparison of validation loss during augmentation
+training and GradHarmony training for the AASIST model.
+Table 2:Ablation study analyzing the individual and combined
+effects of CGA and EMA-MN
+System DF21 ITW DSD FoR
+AASIST
+Only CGA 18.60 37.19 26.91 21.78
+Only EMA-MN 19.0133.3226.84 34.58
+All 17.7033.7126.08 21.68
+SSL-AASIST
+Only CGA 4.55 10.3018.456.60
+Only EMA-MN 5.96 14.37 21.47 7.55
+All 3.74 7.0419.986.48
+observed across both non-SSL and SSL-based architectures,
+demonstrating the model-agnostic effectiveness of the proposed
+method. Moreover, GradHarmony converges in significantly
+fewer training epochs compared to augmentation training, in-
+dicating more stable and efficient optimization. In Figure 4, al-
+though minor fluctuations exist, GradHarmony achieves lower
+validation loss and converges faster than augmentation training.
+These results suggest that jointly addressing directional con-
+flicts and magnitude imbalance improves generalization while
+accelerating convergence in multi-augmentation settings. For
+subsequent analyses, we focus on AASIST and SSL-AASIST as
+representative non-SSL and SSL architectures to provide clearer
+insights into the proposed method.
+4.4. Ablation Study
+We conduct an ablation study, evaluating CGA and EMA-MN
+individually and in combination. From Table 2, applying only
+CGA generally improves performance on several out-of-domain
+datasets. This suggests that resolving directional conflicts en-
+hances robustness under diverse acoustic conditions. How-
+ever, for SSL-AASIST, applying only CGA slightly degrades
+in-domain performance. This implies that directional align-
+ment alone may not fully prevent optimization bias when large-
+magnitude gradients dominate the update. Such dominance can
+lead the optimization trajectory toward particular augmented
+views. In contrast, using only EMA-MN yields limited and
+sometimes inconsistent improvements. Although magnitude
+normalization mitigates gradient dominance, it does not resolve
+directional conflicts. These unresolved conflicts can still hinder
+effective optimization. When combined, CGA and EMA-MN
+achieve the best performance across models and datasets. This
+demonstrates that directional alignment and magnitude normal-
+ization provide complementary benefits, jointly improving ro-
+bustness and stability in multi-augmentation training.
+Table 3:Effect of EMA smoothing on magnitude normalization
+performance.
+System DF21 ITW DSD FoR
+AASIST Median(w/o EMA) 19.66 35.1225.7531.98
+Median(w EMA) 17.70 33.7126.0821.68
+SSL-AASIST Median(w/o EMA) 4.21 10.50 20.236.12
+Median(w EMA) 3.74 7.04 19.986.48
+Table 4:EER(%) of baseline, augmentation, and GradHarmony
+(with GradVac) training across multiple evaluation datasets.
+System DF21 ITW DSD FoR Epoch
+AASIST
+Baseline 21.07 43.00 36.55 26.59 -
+Augmentation 18.4937.8634.76 26.67 60
+GradHarmony (GradVac) 17.9638.7331.36 23.20 35
+SSL-AASIST
+Baseline 3.81 10.44 26.49 9.71 -
+Augmentation 5.36 11.60 25.28 7.77 32
+GradHarmony (GradVac) 3.59 9.01 21.71 6.45 16
+4.5. Effect of EMA-based Thresholding
+Table 3 compares magnitude normalization with and without
+EMA smoothing. Overall, applying EMA leads to more consis-
+tent performance across datasets. Without EMA, per-iteration
+median normalization can achieve competitive results on certain
+datasets, but its performance varies substantially across condi-
+tions. This variability suggests that directly using the median as
+a threshold is sensitive to fluctuations in gradient magnitude,
+which may result in suboptimal scaling. In contrast, EMA-
+based thresholding stabilizes the normalization process and pro-
+vides more reliable performance under diverse evaluation con-
+ditions.
+4.6. Experiments with Different Alignment Methods
+Table 4 presents the results when GradVac [8] is used as the gra-
+dient alignment operator within GradHarmony. Even with this
+alternative alignment method, GradHarmony improves perfor-
+mance over baseline and augmentation training while reducing
+the number of training epochs required for convergence. These
+results indicate that the effectiveness of GradHarmony are not
+specific to a particular alignment operator. Consequently, the
+proposed strategy can be flexibly integrated with different align-
+ment methods, demonstrating its extensibility and practical ap-
+plicability in multi-augmentation training.
+5. Conclusion
+In this paper, we introduced GradHarmony, which combines
+Clean-referenced Gradient Alignment with EMA-based Mag-
+nitude Normalization for stable multi-augmentation training in
+audio deepfake detection. By jointly addressing directional con-
+flicts and magnitude imbalance, the proposed strategy improves
+generalization and accelerates convergence across various mod-
+els and evaluation datasets.
+While the clean gradient serves as an effective reference in
+our experiments, investigating adaptive or data-driven reference
+selection strategies remains a direction for future work. In addi-
+tion, exploring the scalability of the proposed strategy in more
+diverse augmentation settings may further enhance its applica-
+bility. Finally, although the clipping scale factorαis treated
+as a fixed hyperparameter in this work, future research may in-
+vestigate adaptive normalization strategies that adjust clipping
+strength based on training statistics or data conditions.
+7418
+6. Use of Generative AI Disclosure
+We disclose that we used generative AI tools, specifically GPT-
+5.2 and Claude, to assist with the implementation of certain
+experimental code and to refine the grammar and typos of the
+manuscript.
+7. Acknowledgement
+This work was partly supported by the Cyber Investiga-
+tion Support Technology Development Program(No.RS-2025-
+02304983, 50%) of the Korea Institute of Police Technology
+(KIPoT), funded by the Korean National Police Agency and the
+National Research Foundation of Korea(NRF) grant funded by
+the Korea government(MSIT) (RS-2024-00457415, 50%).

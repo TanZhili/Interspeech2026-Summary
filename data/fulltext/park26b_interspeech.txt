@@ -1,0 +1,551 @@
+Accurate Source-Free Speech Classification via
+Meta-Learned Target-Centric Model Merging
+Ka Hyun Park∗, Junghun Kim∗, U Kang
+Seoul National University, Republic of Korea
+{kahyun.park, bandalg97, ukang }@snu.ac.kr
+Abstract
+How can we build a speech classifier for an unseen domain
+when access to source-domain data is unavailable? Speech
+classification is widely used (e.g., voice commands, emotion
+recognition, etc.), but it is highly sensitive to domain shifts
+(e.g., languages), often causing substantial performance degra-
+dation. This issue becomes critical when source data cannot be
+accessed and only pretrained source models with limited tar-
+get data are available. Under such constraints, typical adap-
+tation approaches are inapplicable, and existing model merg-
+ing methods easily overfit the limited target data. We propose
+MOCHEE , an accurate target-centric model merging framework
+that combines multiple pretrained source models using limited
+target data. To improve generalization under scarce target la-
+bels, MOCHEE exploits meta-learning to resolve representation
+misalignment and emphasize target-relevant sources. Extensive
+experiments show that M OCHEE outperforms the baselines by
+up to 14.5 points in Macro-F1.
+Index Terms: speech classification, model merging, source-
+free, target-centric, meta-learning, meta-reweighting
+1. Introduction
+Given multiple pretrained source-domain speech classifiers but
+no access to the original source data, how can we build an ac-
+curate classifier for an unseen target domain using only lim-
+ited labeled target data? Speech classification assigns labels to
+acoustic signals and supports many real-world systems, includ-
+ing emotion recognition [1, 2, 3], speaker identification [4, 5],
+language identification [6, 7], and fake speech detection [8, 9].
+We focus on source-free setting where only multiple pretrained
+source classifiers and a small labeled target set are available.
+This setting is common in practice because source speech data
+are often private or proprietary, whereas pretrained models can
+still be shared for downstream use. For example, hospitals and
+call centers release pretrained models while keeping raw record-
+ings as confidential assets.
+Under this constraint, many transfer learning [10, 11, 12],
+data selection [13, 14, 15], and meta-learning [16, 17] ap-
+proaches become difficult to apply, as they typically require
+access to source-domain data. Recently, model merging [18,
+19, 20] has emerged as a promising alternative under such
+source-free constraints. Model merging consolidates multiple
+pretrained models into a single model via averaging or heuris-
+tic alignment strategies, without updating source parameters.
+While some approaches [18, 21] use a held-out set, this set is
+primarily used for model selection rather than learning domain-
+specific relevance. Moreover, when only a few labeled target
+*These authors contributed equally.
+Table 1: Comparison of representative approaches for adapt-
+ing speech classifiers to a new target domain. We summarize
+whether each category supports source-free deployment, fast
+adaptation, and robustness in low-shot target regimes.
+Method Source-free Fast adaptation Target generalization
+Transfer learning ✓
+Meta learning ✓ ✓
+Model merging ✓ ✓
+MOCHEE (proposed) ✓ ✓ ✓
+examples are available, such selection or combination decisions
+become highly sensitive to the limited supervision, leading to
+biased selection and unstable target performance. We summa-
+rize these properties and limitations in Table 1.
+To address the limitations of existing model merging meth-
+ods for source-free speech classification, we propose M OCHEE
+(TARGET -AWARE MODEL MERGING FOR SPEECH CLASSI -
+FICATION IN A SOURCE -F REE SETTING ), an accurate target-
+centric method that learns generalization-oriented merging
+scores for each source model. Unlike prior works that opti-
+mize merging weights to perform well on the available target
+data, we learn target-relevance scores for each source model
+with a meta-learning-based objective to promote generaliza-
+tion to unseen target samples. Moreover, since independently
+trained source models can be misaligned by hidden-unit per-
+mutations, M OCHEE aligns them before merging. This design
+ensures that the learned merging scores do not overfit to the lim-
+ited labeled target instances, but instead capture generalization-
+oriented source contributions that transfer to unseen target data.
+Our main contributions are as follows. First, we high-
+light an under-studied yet practical source-free setting for
+speech classification. Second, we propose a generalization-
+oriented model merging method that learns source importance
+via a meta-learning objective and performs feature-permutation
+alignment to reliably merge misaligned source models. Third,
+on cross-corpus speech classification benchmarks, M OCHEE
+consistently outperforms strong baselines, demonstrating im-
+proved target-domain generalization under limited target super-
+vision. Our code is publicly released at https://github.
+com/snudatalab/Mochee.
+2. Related Work
+2.1. Model Merging
+Model merging combines pretrained models without retrain-
+ing. Model soups [18] averages learned parameters but of-
+ten fails under domain heterogeneity due to negative transfer.
+Permutation-aware merging [19] mitigates neuron-level mis-
+alignment via hard, layer-wise matching, but it can be brittle
+6207
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-371
+when the alignment signal is weak. In speech, model merg-
+ing is widely used in automatic speech recognition (ASR) [22,
+23, 24, 25], where checkpoint/weight averaging is a common
+recipe that improves generalization with negligible overhead.
+Model merging has also been applied to disordered speech
+ASR [26]. Beyond ASR, averaged pretrained checkpoints are
+used in speech emotion recognition and other speech classifica-
+tion pipelines [27]. However, they use model merging primarily
+as within-domain checkpoint averaging to gain ensemble-like
+robustness. Domain and data heterogeneity have been studied
+across diverse areas, such as graph learning [28, 29, 30, 31, 32]
+and semi-supervised or domain-aware speech learning [33, 34].
+In our source-free setting with heterogeneous source models
+and scarce target instances, existing methods often select mod-
+els by directly minimizing the target training loss [35, 36] or by
+heuristic interference resolution [37], which can be unstable and
+overfit to the limited target supervision. Beyond model merg-
+ing, efficient representation and factorization methods have also
+been developed for heterogeneous or evolving data, including
+spectral transforms for time series [38, 39], compact multi-way
+factorization [40, 41, 42, 43, 44], streaming and irregular tensor
+decomposition [45, 46, 47, 48, 49, 50], and structured sequence
+understanding [51]. In contrast, M OCHEE focuses on source-
+free speech adaptation by aligning and merging pretrained clas-
+sifiers without accessing source-domain data.
+2.2. Meta-reweighting
+Meta-reweighting [52] improves robustness by reweighting
+noisy training examples using a reliable validation set. The
+main idea is to downweight noisy training examples and up-
+weight clean ones based on how well each instance’s training
+gradient aligns with the validation gradient.
+Given a model fθ with parameters θ and a per-instance
+training loss l(xi;θ), meta-reweighting assigns a learnable
+score ϵi to each training instance: Ltrn = PM
+i=1ϵil(xi;θ)
+whereM is the number of training instances. It then performs
+a one-step virtual update θ(ϵ) = θ−η∇θLtrn and computes
+eachϵi from the meta-gradient of the validation loss:
+ϵi← max
+ 
+0,−η ∂
+∂ϵi
+1
+Mt
+MtX
+j=1
+l(xj;θ(ϵ))
+!
+ϵi=0
+, (1)
+where Mt is the number of validation instances and η is the
+learning rate. Intuitively, meta-reweighting learns which train-
+ing examples are trustworthy teachers: it upweights examples
+whose training-step gradients improve validation performance,
+rather than fitting weights to validation loss directly.
+Meta-reweighting has been widely applied to various ar-
+eas including graph classification [53], noisy relation extrac-
+tion [54], named entity recognition [55], and language mod-
+eling under noisy labels [56]. In speech, DoReMe [57] uses
+meta-reweighting for domain-aware source instance selection
+in target-domain speech classification. To the best of our
+knowledge, our proposed MOCHEE is the first to meta-reweight
+source-model importance for source-free speech classification.
+2.3. Problem Definition
+Problem 1. (Source-free Model Merging for Speech Classifi-
+cation.) Let the source domains beS1,...,S N . For each source
+domainSn, we are given a pretrained speech classifier, but we
+do not have access to any source-domain data. At test time, we
+are given an unseen target domain T together with a small la-
+beled target setDT with limited labeled instances. The goal is
+Output
+Classifier 𝑓!!
+(source 𝑆")
+Classifier 𝑓!"
+(source 𝑆#)
+Classifier 𝑓!#
+(source 𝑆$)
+Π(𝐏")
+Π(𝐏#)
+Π𝐏$
+𝛼"
+𝛼#
+𝛼$
+Merged 
+classifier
+𝜃%(𝛼,𝐏)
+Meta-reweighting
+Step 2.Update𝛼▸Eq. (5)
+Step 1. Update 𝐏▸Eq. (4)
+Permutation
+matrix
+Merging
+weights
+Pretrained 
+classifiers
+Input
+Final 
+merged classifier
+Figure 1: Overview of MOCHEE . Given pretrained source clas-
+sifiers, MOCHEE learns 1) soft permutations P to align hidden
+units, and 2) merging weights α to construct a target-centric
+classifierθT (α, P) via meta-reweighting.
+to construct a target-centric speech classifier by learning how
+to merge the pretrained classifiers from S1,...,S N using the
+limited supervision in DT , thereby maximizing generalization
+performance on unseen test samples from the target domainT .
+3. Proposed Method
+We propose M OCHEE , an accurate target-centric model merg-
+ing framework for source-free speech classification. Given pre-
+trained source-domain classifiers and a small labeled target set,
+MOCHEE constructs a single target-centric classifier by align-
+ing hidden representation space and learning generalization-
+oriented merging weights, without updating any source-model
+parameters. Figure 1 illustrates the overall pipeline. We next
+highlight the core challenges and our corresponding ideas:
+1. How can we merge independently trained source mod-
+els that are misaligned in parameter space? Even with
+identical architectures, hidden units can be permuted across
+source models, making naive weight averaging unreliable. To
+address this, M OCHEE learns feature permutations to align
+source models before merging (Section 3.1).
+2. After aligning the parameter space, how can we learn the
+generalization-oriented merging scores? We optimize the
+per-source merging scores with meta-reweighting, which di-
+rectly promotes target generalization rather than merely min-
+imizing the target training loss (Section 3.2).
+3.1. Permutation-based Source Model Alignment
+A speech classifier consists of a frozen speech embedding
+model (e.g., wav2vec2.0 [58] or Whisper [59]) followed by
+lightweight MLP heads. We focus on aligning the MLP heads,
+since the embedding model provides a shared representation
+space while the MLP head captures domain-specific decision
+boundaries. A challenge is that merging independently trained
+heads is non-trivial due to permutation symmetry. Even when
+all source MLP heads have identical architectures, indepen-
+dently trained heads may represent the same function with dif-
+ferent hidden-unit indexings; permuting the hidden units of a
+layer and applying the corresponding inverse permutation to
+the next layer leaves the end-to-end mapping unchanged. As
+a result, the same neuron index can correspond to different se-
+mantics across sources, and naive parameter averaging mixes
+mismatched units. To address this, MOCHEE learns soft permu-
+tations that align hidden units of each source head in a target-
+6208
+aware manner. Specifically, it learns layer-wise soft re-indexing
+matrices which map each source head to a shared hidden-unit
+ordering, enabling meaningful parameter merging across inde-
+pendently trained heads.
+Let the K-layer MLP head of source Sn be parameter-
+ized as θn = {θ(k)
+n }K
+k=1 with θ(k)
+n = {W(k)
+n , b(k)
+n }, where
+W(k)
+n ∈ RHk×Hk−1, b(k)
+n ∈ RHk, andHk is the output width
+of layerk. For each sourcen and layerk∈{ 1,...,K −1}, we
+introduce learnable P(k)
+n ∈ RHk×Hk and obtain a soft permu-
+tation matrix Π(k)
+n = Π( P(k)
+n )∈ RHk×Hk via Sinkhorn nor-
+malization [60, 61]. Sinkhorn iteratively normalizes the rows
+and columns of P(k)
+n , producing a nonnegative matrix whose
+row and column sums are approximately one. This doubly-
+stochastic constraint provides a differentiable relaxation of hard
+permutation matrices, encouraging near one-to-one re-indexing
+and thus stabilizing alignment.
+Using{Π(k)
+n }K−1
+k=1 , we define the aligned head parameters
+¯θn ={¯θ(k)
+n }K
+k=1, where ¯θ(k)
+n ={ ¯W(k)
+n , ¯b(k)
+n } are given by
+¯W(k)
+n = Π(k)
+n W(k)
+n
+ 
+Π(k−1)
+n
+⊤
+, ¯b(k)
+n = Π(k)
+n b(k)
+n . (2)
+The right-multiplication by
+ 
+Π(k−1)
+n
+⊤
+applies the correspond-
+ing inverse re-indexing on the input axis of layer k (i.e., it
+cancels the permutation introduced at layer k− 1) and left-
+multiplication by Π(k)
+n softly re-indexes the output hidden units
+of layerk into a shared ordering across sources. We set Π(0)
+n =
+IH0 (no re-indexing on the input features) andΠ(K)
+n = IHK (no
+re-indexing on the final output logits). As a result, the aligned
+head ¯θn computes the same function as θn, while expressing
+its hidden units in a common ordering that enables meaningful
+parameter merging across sources.
+3.2. Target-centric Merging Weights for Source Domains
+Given aligned source heads{¯θn}N
+n=1 in Equation (2), our goal
+is to learn target-centric merging weights α ={αn}N
+n=1 that
+combine the source classifiers into a single target classifier.
+Specifically, we construct the target head θT ={θ(k)
+T }K
+k=1 by
+weighted averaging in the aligned parameter space:
+θ(k)
+T =
+XN
+n=1
+αn ¯θ(k)
+n . (3)
+A key challenge is that the labeled target set DT , which pro-
+vides the only supervision for learning α, is extremely limited.
+Directly optimizingα to minimize the target training loss there-
+fore risks overfitting to noisy target patterns.
+Rather than selectingα to fit the small target training split,
+we formulate merging-weight learning as a meta-learning prob-
+lem, where α is optimized to improve the validation perfor-
+mance on held-out target data. To this end, we first split DT
+intoDtrn
+T andDval
+T . Inspired by the meta-reweighting princi-
+ple [52], we then adopt a two-stage meta-learning procedure: a
+virtual inner adaptation onDtrn
+T followed by a validation-based
+outer update onDval
+T .
+In standard meta-learning, the inner step updates the
+merged model parameters θT . However, directly adapting θT
+on a few labeled target samples undermines the robustness and
+efficiency advantages of model merging. Instead, we perform
+the inner adaptation on the alignment parameters p ={P(k)
+n }.
+The adapted permutations p′ define a target-aligned merged
+head θT (α,p′), which is then evaluated on Dval
+T to compute
+the meta-gradient forα.
+Formally, the inner adaptation updates only the alignment
+Table 2: Dataset statistics from the CAMEO collection. Each
+dataset is treated as an independent domain.
+Dataset Language # of instances Role
+CREMA-D1 [62] English 7,442 Source
+SubESCO1 [63] Bengali 6,000 Source
+RA VDESS1 [64] English 1,056 Source
+MESD1 [65] Spanish 862 Source
+CAF ´E1 [66] Canadian French 792 Target
+Or´eau1 [67] French 430 Target
+1https://huggingface.co/datasets/amu-cai/CAMEO
+parameters:
+p′ =p−η∇p
+ 1
+|Dtrn
+T |
+X
+di∈Dtrn
+T
+l (di;θT (α,p ))
+
+. (4)
+Then, following Equation (1), we compute unnormalized merg-
+ing scores using the held-out splitDval
+T :
+αn← max
+
+0,−γ ∂
+∂αn
+1
+|Dval
+T |
+P
+dj∈Dval
+T
+l (dj;θT (α,p′))
+
+αn=0
+, (5)
+where γ is the step size. Since Equation (5) yields unnor-
+malized scores, we apply a softmax normalization ( αn ←
+exp(αn)
+PN
+j=1 exp(αj)) and use them as the actual merging
+weights in Equation (3).
+Although inspired by [52], our formulation differs fun-
+damentally in both goal and scope. While [52] performs
+instance-wise reweighting to suppress noisy training samples,
+we learn component-wise merging scores that control cross-
+domain model composition. Our meta-objective therefore tar-
+gets robust source aggregation under scarce target supervision
+rather than noisy-instance filtering.
+4. Experiments
+Through experiments, we answer the following questions:
+Q1. Performance (Section 4.2). How accurately does
+MOCHEE classify target-domain instances using only pre-
+trained source models and limited target supervision?
+Q2. Ablation study (Section 4.3). Does each component of
+MOCHEE contribute to target-domain performance?
+Q3. Source contribution analysis (Section 4.4). How do the
+learned source weights α change during training, and do
+they upweight the most target-relevant source domains?
+4.1. Experimental Settings
+Datasets. We use six speech-emotion datasets from the
+CAMEO collection [68], each recorded in a different lan-
+guage. CREMA-D [62], SubESCO [63], RA VDESS [64], and
+MESD [65] serve as source domains, while CAF ´E [66] and
+Or´eau [67] serve as target domains. We map all datasets to six
+common emotion classes (anger, disgust, fear, happiness, neu-
+tral, and sadness), discard other labels, and report the resulting
+statistics in Table 2. Source datasets are split by 8 : 1 : 1 into
+train/validation/test sets for source-model pretraining. Target
+datasets are split by 1 : 9 and 2 : 8 into training/test sets for
+CAF ´E and Or´eau, respectively; for MOCHEE , each target train-
+ing set is split equally into target-training and target-validation
+sets.
+Baselines. We compare MOCHEE against existing model merg-
+ing techniques. Uniform naively averages source classifier
+heads and Greedy Soup [18] incrementally selects models based
+on validation performance. Re-basin [19] aligns hidden units
+6209
+Table 3: Classification performance on target domains (CAF ´E
+and Or´eau). Best results are in bold and second-best results are
+underlined. MOCHEE consistently shows the best performance.
+Target CAF ´E Or ´eau
+Method Accuracy Macro-F1 Accuracy Macro-F1
+Uniform 36.78 ± 0.73 26.43 ± 0.61 22.55 ± 1.35 14.84 ± 1.10
+Re-basin + Uni. 43.44 ± 0.90 39.68± 1.16 22.61 ± 1.75 16.65 ± 1.52
+Greedy Soup 41.45 ± 1.09 42.01 ± 1.25 25.04± 1.49 20.38± 1.80
+TIES 38.35 ± 0.52 30.02 ± 0.67 23.07 ± 1.15 17.55 ± 1.79
+Re-basin + TIES 42.66 ± 0.62 36.53 ± 0.55 23.48 ± 1.63 17.57 ± 1.37
+MOCHEE 50.85± 1.74 49.40 ± 1.94 35.30 ± 1.74 34.85 ± 2.17
+Table 4: Tuned performance of source-pretrained models and
+merging baselines on CAF ´E. FT denotes fine-tuning on the la-
+beled target training set. All methods except MOCHEE are fine-
+tuned. Best results are in bold. MOCHEE achieves the high-
+est accuracy without any additional fine-tuning, outperforming
+even baselines that are fine-tuned on the target data.
+Category Method Accuracy Macro-F1
+Single-source+FT
+CREMA-D 44.59 ± 0.74 44.77 ± 1.21
+SubESCO 45.82 ± 0.58 46.41 ± 0.44
+RA VDESS 45.90 ± 2.15 46.01 ± 2.21
+MESD 40.17 ± 1.46 39.98 ± 1.51
+Model merge+FT
+Uniform 41.45 ± 1.53 41.17 ± 1.40
+Re-basin + Uni. 47.89 ± 1.32 48.13 ± 1.34
+Greedy Soup 45.90 ± 2.15 46.01 ± 2.21
+TIES 48.34 ± 1.07 48.80 ± 0.79
+Re-basin + TIES 48.56 ± 1.71 48.88 ± 1.36
+MOCHEE 50.85± 1.74 49.40 ± 1.94
+via permutation before averaging and TIES [37] reduces de-
+structive interference during merging. We also presentRe-basin
++ TIES, which first aligns hidden units with Re-basin and then
+applies TIES for merging.
+Evaluation and settings. All speech classifiers share the same
+architecture: a frozen wav2vec2-XLS-R-300m [69] encoder to
+support the cross-lingual setting, followed by a two-layer MLP
+head classifier. Given pretrained source-domain classifiers, we
+use the target-training instances to obtain a target classifier via
+model merging, and evaluate it on the target-test set. We report
+accuracy and macro-F1, averaged over five random seeds.
+4.2. Target-domain Performance
+Table 3 compares MOCHEE with existing model-merging base-
+lines. Uniform averaging performs poorly, and permutation
+alignment alone (Re-basin + Uni.) provides only marginal
+gains, indicating that alignment without target-aware source
+weighting is insufficient. Greedy Soup and TIES incorporate
+more target-driven merging than uniform averaging, but their
+gains remain limited. Overall, M OCHEE achieves the best ac-
+curacy and macro-F1 across both target domains, showing the
+importance of jointly learning permutation-based alignment and
+target-aware merging weights from limited target labels.
+Recall that model merging combines pretrained source
+models without directly fine-tuning them, offering computa-
+tional efficiency. A natural question then arises: how does per-
+formance change if we directly fine-tune the merged models on
+the target training set? To answer this, Table 4 reports results
+on CAF ´E after fine-tuning each merged baseline on the target
+training set. We also include the performance of individually
+fine-tuned source-pretrained models for reference. We do not
+perform any additional fine-tuning for M OCHEE , as our soft-
+permutation alignment already supports effective target adapta-
+tion without updating model parameters. Notably, fine-tuning
+Table 5: Ablation study on MOCHEE . Best results are in bold.
+Each component consistently improves the performance.
+Target CAF ´E Or ´eau
+Method Accuracy Macro-F1 Accuracy Macro-F1
+w/o-perm 38.80 ± 3.50 34.09 ± 7.05 21.91 ± 2.74 15.33 ± 3.28
+w/o-α 47.30± 2.19 43.45 ± 2.40 35.04 ± 1.73 34.51 ± 1.71
+MOCHEE 50.85± 1.74 49.40 ± 1.94 35.30 ± 1.74 34.85 ± 2.17
+Weight of the English
+source (CREMA-D) 
+steadily increasesFinal merging weight
+CREMA-D (English): 0.56
+MESD (Spanish): 0.23
+SubESCO(Bengali): 0.21
+Target : RAVDESS (English)
+Figure 2: Evolution of source merging weights. When the tar-
+get domain is English (RAVDESS), the weight assigned to the
+English source domain (CREMA-D) steadily increases during
+training, whereas the weights of linguistically distant sources
+(MESD and SubESCO) decrease.
+improves several baselines, but MOCHEE still achieves the best
+performance, outperforming fine-tuned merged models.
+4.3. Ablation Study
+To evaluate the individual contributions of each module, we
+compare M OCHEE with two variants: M OCHEE -w/o-perm and
+MOCHEE -w/o-α in Table 5. M OCHEE -w/o-perm is M OCHEE
+without the representation alignment and M OCHEE -w/o-α is
+MOCHEE without updating the merging scores. Note that re-
+moving permutation alignment causes a large drop, while re-
+movingα yields a smaller but consistent degradation. Overall,
+MOCHEE achieves the highest accuracy and macro-F1, indicat-
+ing that both modules consistently contribute to performance.
+4.4. Merging Weights of Source Domains
+To analyze the evolution of MOCHEE ’s merging weightsα, we
+construct a setting where English appears in both the source and
+target domains by selecting RA VDESS (English) as the target
+and including CREMA-D (English) among the sources. This
+allows us to directly observe whether M OCHEE assigns larger
+weights to sources that are linguistically similar to the target.
+As shown in Figure 2, M OCHEE progressively increases
+the weight of the English source (CREMA-D). In contrast,
+linguistically distant sources, which are MESD (Spanish) and
+SubESCO (Bengali), receive lower weights. The merging
+weights stabilize toward the end of training, demonstrating that
+they are learned in a stable and target-aware manner.
+5. Conclusion
+We propose M OCHEE , a target-centric model merging method
+for source-free speech classification under scarce target super-
+vision. M OCHEE jointly learns target-guided alignment and
+source importance via a meta-learning objective that selects
+merging parameters to improve validation generalization rather
+than fit the limited target training set. Experiments on real-
+world cross-corpus speech benchmarks show that M OCHEE
+consistent

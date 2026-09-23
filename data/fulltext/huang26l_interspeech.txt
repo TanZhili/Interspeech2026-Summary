@@ -1,0 +1,479 @@
+Unified Neural Speech Coding for Multiple Sampling Rates
+Jiankai Huang1,∗, Junteng Zhang1,∗, Lizhong Wang2, Liang Wen2, Ming Lu1,∗∗, Zhan Ma1
+1 Nanjing University, China
+2 Samsung Research China-Beijing, China
+jiankaihuang@smail.nju.edu.cn, zhangjunteng@smail.nju.edu.cn, lz.wang@samsung.com,
+liang001.wen@samsung.com, minglu@nju.edu.cn, mazhan@nju.edu.cn
+Abstract
+Most existing neural speech codecs are optimized for fixed sam-
+pling rates and lack multi-rate adaptability, leading to signifi-
+cant performance degradation at mismatched rates. To address
+this, we propose a multi-sampling-rate neural speech codec sup-
+porting16/24/48 kHzaudio in a unified model. The archi-
+tecture consists of a shared encoder-decoder backbone and a
+universal Residual Vector Quantization (RVQ) module, inte-
+grated with two lightweight sampling-rate-aware components:
+an adapter for learnable waveform conversion to a unified in-
+ternal temporal grid, and a transformation modulator for inter-
+mediate feature calibration to ensure cross-sampling-rate repre-
+sentation consistency for shared quantization. We further adopt
+a three-stage progressive training strategy to stabilize optimiza-
+tion. Experiments show that our unified codec matches the per-
+formance of sampling-rate-specific models while simplifying
+deployment by eliminating the need for multiple sampling-rate-
+specific instances.
+Index Terms: neural speech codec, multiple sampling rates,
+unified architecture, affine transformation
+1. Introduction
+Speech coding is a cornerstone of modern communication,
+striving to minimize transmission and storage costs while
+maintaining high perceptual fidelity [1]. In practical de-
+ployments, speech signals are processed at diverse sampling
+rates—typically16 kHz(wideband),24 kHz(super-wideband),
+and48 kHz(full-band)—to accommodate varying device ca-
+pabilities, network bandwidths, and application requirements.
+While recent neural speech codecs have revolutionized the
+rate-distortion trade-off through deep generative modeling and
+learned quantization [2, 3], their efficacy is often bound to a
+fixed sampling rate.
+The deployment of neural codecs in multi-sampling-rate
+environments remains inherently challenging. A primary ob-
+stacle is the temporal and spectral inconsistency across sam-
+pling rates: convolutional receptive fields, defined by sam-
+ple points, correspond to varying physical durations at differ-
+ent rates, while distinct frequency ranges shift the underlying
+spectral statistics. These discrepancies lead to a sampling-rate-
+dependent distribution shift, which complicates shared quanti-
+zation and degrades reconstruction quality. Consequently, cur-
+rent systems must either rely on computationally expensive ex-
+ternal resampling or maintain multiple rate-specific models, sig-
+nificantly increasing deployment and maintenance complexity.
+Recent literature has begun to explore multi-sampling-rate
+neural coding, yet existing solutions often fall short of a truly
+*These authors contributed equally.
+**indicates the corresponding author.
+(a) Conventional Codecs
+(b) Our Unified Codec
+16 kHz
+Encoder
+16 kHz
+Decoder
+16 kHz
+RVQ24 kHz
+ resample
+Sampling-
+Rate-Aware
+Encoder
+Sampling-
+Rate-Aware
+Decoder
+48 kHz
+16 kHz
+48 kHz
+RVQ
+resample
+ resample
+24 kHz
+resample
+16 kHz
+16 kHz
+24 kHz
+48 kHz
+24 kHz
+48 kHz
+Figure 1:Comparison of neural speech codec paradigms. (a)
+Conventional codecs lack intrinsic multi-sampling-rate support,
+necessitating external resampling that often leads to perfor-
+mance degradation. (b) Our Unified Codec enables native
+multi-sampling-rate processing within a single model without
+external resampling, ensuring robust reconstruction quality and
+streamlined deployment.
+unified approach. For instance, Gull [4] utilizes time-frequency
+band splitting but still necessitates fixed-sampling-rate conver-
+sion; Soft Disentanglement [5] employs multiple sampling-
+rate-specific reconstruction branches; and SPCODEC [6] relies
+on sampling-rate-dependent architectural configurations (e.g.,
+varying strides), which hinders full backbone sharing. Thus,
+a gap persists for a sampling-rate-agnostic codec that utilizes
+a fully shared backbone and a single Residual Vector Quanti-
+zation (RVQ) module without requiring an external resampling
+pipeline.
+In this work, we propose a sampling-rate-versatile neural
+speech codec that natively supports16,24, and48 kHzau-
+dio within a single, unified architecture. Our model features
+a shared encoder-decoder backbone and a universal RVQ mod-
+ule, enhanced by two lightweight, rate-aware components:
+•Sampling-Rate Adapter (SRAT):Performs learnable
+waveform-level conversion to a unified internal temporal
+grid, eliminating the need for pre-processing resampling.
+•Sampling-Rate Modulator (SRMT):Calibrates intermedi-
+ate feature statistics to mitigate distribution shifts, ensuring
+latent representation consistency across rates.
+To ensure stable optimization, we introduce a three-stage
+progressive training strategy. Experimental results demonstrate
+that our unified codec matches the performance of rate-specific
+baselines across all evaluated scales while substantially stream-
+lining the deployment workflow.
+1090
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1641
+RVQ
+×5
+LSTM
+LSTM
+×5
+Encoder Decoder
+16 kHz
+24 kHz
+48 kHz
+16 kHz
+24 kHz
+48 kHz
+Speech Speech
+SRMT
+Downsample
+SEANET Block
+SRAT
+48khz 24khz 16khz
+SRMT
+Upsample
+SEANET Block
+SRAT
+48khz 24khz 16khz
+Figure 2:Unified multi-sampling-rate neural speech codec. The encoder uses a Sampling-Rate Adapter (SRAT) to align16/24/48 kHz
+waveforms to a shared internal temporal grid, followed by five stacked encoder blocks (each with a SEANet block, Sampling-Rate
+Modulator (SRMT) , and downsampling) and an LSTM. Then residual vector quantization (RVQ) generates discrete codes from the
+latent features. The decoder mirrors the encoder structure and uses an output SRAT to synthesize speech at the target sampling rate.
+2. Proposed Method
+2.1. Overall Network Architecture
+We aim to build a single neural speech codec for multiple sam-
+pling rates using one set of model weights. Two challenges
+arise: (i) The same physical duration corresponds to different
+numbers of samples across sampling-rates, therefore, the shared
+encoder/decoder extracts features that fail to align on a unified
+temporal scale. (ii) Sampling rate determines signal bandwidth
+(e.g., higher sampling-rate preserves more high-frequency con-
+tent), which shifts spectral statistics and intermediate feature
+distributions, making it difficult to learn unified representations
+and to share a single quantization module across sampling rates.
+As shown in Fig. 2, we use a fully shared time-domain
+backbone with two lightweight sampling-rate-aware compo-
+nents. Sampling-Rate Adapter (SRAT) performs learnable
+sampling-rate conversion at the waveform input/output inter-
+face of the encoder/decoder to map signals to a consistent inter-
+nal temporal grid. Sampling-Rate Modulator (SRMT) applies
+sampling-rate-conditioned affine transformation within network
+blocks to reduce cross-sampling-rate feature mismatch and en-
+hance the consistency of latent representations for the shared
+RVQ module [7].
+Encoder.Given an input waveformxwith sampling rate
+s∈{16,24,48}kHz, the encoder first applies an input SRAT
+to align it to an internal temporal grid (we use16 kHz). This
+alignment facilitates parameter sharing while still allowing re-
+construction at the target rate via the output SRAT. The aligned
+signal is then processed by stacked encoder blocks, each con-
+sisting of a SEANet-style module [8], an SRMT layer, and tem-
+poral downsampling. An LSTM [9] models longer-range de-
+pendencies, and the resulting latent sequence is discretized by
+the shared RVQ into code indices.
+Decoder.The decoder mirrors the encoder. It maps RVQ
+indices back to a latent sequence, applies an LSTM, and recon-
+structs the internal waveform through symmetric upsampling
+blocks with SRMT. Finally, an output SRAT converts the recon-
+structed internal waveform to the target sampling rates, produc-
+ingˆx.
+All backbone parameters, including RVQ codebooks, are
+shared across sampling rates; sampling-rate awareness is intro-
+duced only via SRAT and SRMT, enabling straightforward de-
+ployment with a single model. The entire architecture is fully
+causal, allowing low-latency streaming inference.
+2.2. Sampling-Rate Adapter (SRAT)
+A unified codec should ensure that internal representations cor-
+respond to consistent physical durations across sampling rates.
+If raw waveforms at different sampling rates are directly pro-
+cessed by a shared encoder, the same receptive field in samples
+corresponds to different durations in seconds. This mismatch
+leads to temporal misalignment and reduces the transferability
+of learned analysis and synthesis filters. To address this issue,
+we introduce SRAT modules at the input and output interfaces.
+Input SRAT.The input SRAT maps an input waveform
+sampled at ratesto a unified internal temporal grid using learn-
+able one-dimensional convolutional rate-conversion layers. For
+integer ratios, SRAT can be implemented with strided convolu-
+tions that jointly learn filtering and decimation under the codec
+objective. For non-integer ratios, we implement rational-factor
+conversion by cascading simple upsampling and downsampling
+stages. This design avoids fractional strides and improves nu-
+merical stability. In our implementation,24 kHzto16 kHzcon-
+version is implemented via a learnable×2upsampling followed
+by×3downsampling.
+Output SRAT.The output SRAT performs the inverse con-
+version using transposed convolutions to restore the target sam-
+pling rate and temporal resolution. SRAT is applied only at the
+waveform interfaces. Therefore, the encoder-decoder backbone
+operates on a consistent internal temporal grid and can be fully
+shared across sampling rates, while waveform reconstruction is
+handled only by the lightweight interface layers.
+2.3. Sampling-Rate Modulator (SRMT)
+SRAT aligns the temporal grid at the input and output inter-
+faces. However, intermediate feature distributions can still vary
+with sampling rate because the effective bandwidth and spec-
+tral statistics change across rates. Such distribution shifts make
+it harder to learn unified representations and to share a single
+quantization module without sacrificing quality. To mitigate
+this issue, we propose SRMT, a lightweight conditioning layer
+inserted into each encoder/decoder block, as shown in Fig. 3.
+Embedding
+Feature 𝑋
+Sample Rate 𝑠
+×+
+𝛾(")
+𝛽(")
+Figure 3:Architecture of the SRMT.
+Our design is inspired by Feature-wise Linear Modulation
+(FiLM) [10], which uses conditional affine transformations to
+adapt features to different contexts. We extend this idea to
+sampling-rate conditioning, explicitly calibrating feature statis-
+tics across sampling-rates. Given a feature mapX∈R C×T ,
+1091
+SRMT applies a channel-wise affine transformation with pa-
+rameters conditioned on the sampling rates. For each supported
+sampling rates∈{16,24,48}kHz, SRMT learns a scale vec-
+torγ (s) ∈R C and a bias vectorβ (s) ∈R C. Then, SRMT
+uses the parameters corresponding to the input sampling rate
+and computes:
+ˆX=γ (s)⊙X+β (s),(1)
+where⊙denotes channel-wise multiplication and the affine
+parameters are broadcast along the temporal dimension (T).
+SRMT introduces a small number of sampling-rate-specific pa-
+rameters, but it provides an explicit mechanism to calibrate fea-
+ture statistics across different sampling rates.
+2.4. Progressive Training Strategy
+Training a single codec across multiple sampling rates is chal-
+lenging because the model must reconstruct high-sampling-rate
+signals while learning a stable shared RVQ quantizer under het-
+erogeneous feature distributions. We adopt a three-stage pro-
+gressive training strategy to improve optimization stability. Fol-
+lowing previous work [11, 12], we use the weighted objective
+L=λ recLrec +λ advLadv +λ f eatLf eat +λ cmLcm,(2)
+whereL rec,L adv,L f eat, andL cm denote reconstruction,
+adversarial, feature-matching, and RVQ commitment loss, re-
+spectively.
+Stage 1.We pre-train the model on48 kHzdata usingL rec
+andL cm. This stage initializes the shared backbone and RVQ
+codebooks with high-resolution signals.
+Stage 2.We perform multi-sampling-rate joint training by
+mixing16 kHz,24 kHz, and48 kHzdata. During this stage,
+SRAT and SRMT are enabled to align temporal structures and
+to calibrate intermediate feature distributions across sampling
+rates. This improves the stability of backbone and quantization
+sharing across sampling rates.
+Stage 3.After reconstruction and quantization stabilize,
+we enableL adv andL f eat for perceptual refinement. We use a
+shared multi-scale STFT discriminator [11] across all sampling
+rates so that the perceptual criterion remains consistent across
+conditions and bias across sampling rates is reduced.
+3. Experiments
+3.1. Experimental Setup
+Training Setting.Experiments are conducted at16,24, and
+48 kHz. For16and24 kHz, we use LibriTTS [13], with
+train-clean-100andtrain-clean-360for training andtest-clean
+for evaluation. The16 kHzset is obtained by downsampling
+the24 kHzaudio to preserve matched linguistic content across
+sampling rates. For48 kHz, we use VCTK [14], randomly se-
+lecting 1000 utterances for testing and using the rest for train-
+ing. All models are implemented in PyTorch and optimized
+with AdamW [15]. Training is performed on a machine with
+an Intel(R) Xeon(R) Platinum 8470Q CPU and an NVIDIA
+GeForce RTX 3090 GPU for 2M steps with batch size 8; the
+learning rate is linearly decayed from1e−4to1e−5.
+Evaluation Setting.We report ViSQOL [16], STOI [17],
+PESQ [18], and MACs. When a metric requires a specific sam-
+pling rate, reference and reconstructed signals are resampled
+only for metric computation, not for codec inference. Baselines
+include EnCodec [11], DAC [19], SpeechTokenizer [20], Fun-
+Codec [12], StreamCodec [21], and FlowDec [22]. Official im-
+Table 1:Performance comparison across sampling rates. —
+denotes unreported or unsupported configurations.
+Model MSR Rate Objective Metrics MACs Params
+(kbps)ViSQOL↑STOI↑PESQ↑(G)↓(M)↓
+16 kHz
+DAC [19]✗1.5 3.45 0.788 1.312 55.50 74.06
+SpeechTokenizer [20]✗1.5 3.67 0.853 1.764 17.10 103.68
+FunCodec [12]✗1.5 4.20 0.875 2.554 2.18 4.50
+StreamCodec [21]✗1.5 4.30 0.926 — 2.51 7.21
+Ours✓1.5 4.21 0.920 2.369 2.14 19.65
+24 kHz
+EnCodec [11]✗1.5 3.67 0.840 1.529 5.57 14.85
+DAC [19]✗1.5 3.66 0.844 1.677 83.30 74.43
+Mimi [23]✗1.0 3.79 0.620 1.715 8.10 79.3
+BSCodec [24]✗2.6 4.18 0.915 2.479 45.29 59.46
+Ours✓1.5 4.22 0.919 2.353 2.58 19.65
+48 kHz
+EnCodec [11]✗3.0 2.90 0.817 1.890 11.30 14.85
+DAC [19]✗2.6 3.48 0.888 2.820 146.05 76.56
+StreamCodec [21]✗4.5 4.08 0.887 — — —
+FlowDec [22]✗3.0 3.48 0.875 2.551 4572.60 87.97
+Ours✓1.5 4.14 0.889 2.750 2.34 19.65
+plementations are used when available, and results are reported
+only for supported configurations.
+3.2. Comparative Studies
+Table 1 compares the proposed unified codec with previous neu-
+ral speech codecs across multiple sampling rates. MSR (Mul-
+tiple Sampling Rate) indicates whether a single model with
+one set of weights can support multiple rates. Unlike previ-
+ous sampling-rate-specific codecs that rely on separate models,
+ours supports 16, 24, and48 kHzspeech using a single shared
+architecture and weight set.
+Across LibriTTS at16 kHzand24 kHzand VCTK at
+48 kHz, the proposed method achieves competitive quality rela-
+tive to sampling-rate-specific baselines. For example, at24 kHz
+and1.5kbps, our model reaches a ViSQOL of4.22, and at
+48 kHzand1.5kbps it achieves a PESQ of2.750. This uni-
+fied design avoids maintaining separate models for different
+sampling rates, and it does not require an external resampling
+pipeline during inference.
+In terms of model size and computational efficiency, the
+proposed model leverages a single shared architecture with a
+fixed parameter count of 19.65M to support all target sampling
+rates, incurring only 2.14/2.58/2.34 G MACs at16/24/48 kHz,
+respectively. Notably, the24 kHzsetting incurs slightly higher
+computation due to SRAT’s extra convolutional operations for
+stable rate conversion. Overall, the proposed model achieves
+both a low parameter count and consistently low computational
+complexity.
+3.3. Ablation Studies
+3.3.1. Comparison with Single-Sampling-Rate Specialists
+We compare the proposed unified model with three single-
+sampling-rate specialists (Ours@16kHz, Ours@24kHz,
+Ours@48kHz). Each specialist adopts the same backbone
+and RVQ as the unified model but removes the SRAT and
+SRMT modules and is trained on only one sampling rate.
+This comparison quantifies the performance cost of unifying
+multiple rates within a single model.
+As shown in Table 2, the unified model remains highly
+competitive with the corresponding specialists at each sampling
+rate. The gaps on ViSQOL and PESQ are small, indicating that
+SRAT and SRMT effectively reduce the mismatch introduced
+by sharing the backbone and RVQ across heterogeneous sam-
+1092
+Table 2:Comparison between the proposed unified model and
+single-sampling-rate specialists. Ours@16kHz, Ours@24kHz,
+and Ours@48kHz are trained only on the corresponding sam-
+pling rate, while Ours is jointly trained on16/24/48 kHz.
+Sampling Rate Model ViSQOL (↑) STOI↑PESQ↑
+16 kHz
+Ours@16kHz 4.216 0.921 2.372
+Ours@24kHz 4.031 0.879 1.810
+Ours@48kHz 3.233 0.758 1.131
+Ours4.212 0.920 2.369
+24 kHz
+Ours@16kHz 3.725 0.875 1.755
+Ours@24kHz 4.168 0.918 2.276
+Ours@48kHz 3.257 0.765 1.149
+Ours4.224 0.919 2.353
+48 kHz
+Ours@16kHz 3.229 0.678 1.161
+Ours@24kHz 3.349 0.727 1.203
+Ours@48kHz 4.107 0.891 2.797
+Ours4.140 0.889 2.750
+Table 3:Ablation studies of technical components. PT denotes
+the proposed progressive training strategy.
+Model Sampling Rate ViSQOL (↑) STOI (↑) PESQ (↑)
+w/o SRAT 16 kHz 4.178 0.908 2.151
+24 kHz 4.172 0.916 2.299
+48 kHz 4.083 0.884 2.613
+w/o SRMT 16 kHz 4.176 0.916 2.259
+24 kHz 4.078 0.899 1.979
+48 kHz 4.073 0.886 2.668
+w/o SRAT & SRMT 16 kHz 4.143 0.905 2.092
+24 kHz 4.137 0.913 2.216
+48 kHz 4.056 0.880 2.537
+w/o PT 16 kHz 4.111 0.910 2.157
+24 kHz 4.108 0.910 2.144
+48 kHz 3.977 0.881 2.563
+Ours16 kHz 4.212 0.920 2.369
+24 kHz 4.224 0.919 2.353
+48 kHz 4.140 0.889 2.750
+pling rates. These results support the claim that a single unified
+codec can replace multiple sampling-rate-specific models with
+minimal quality loss while simplifying deployment.
+3.3.2. Effect of SRAT and SRMT
+We conduct component-wise ablations to evaluate SRAT and
+SRMT. All variants share the same backbone and RVQ config-
+uration. Table 3 reports results at16,24, and48 kHz.
+Impact of SRAT.Disabling SRAT causes consistent degra-
+dation across sampling rates. Without a unified waveform in-
+terface, discrete-time steps correspond to different physical du-
+rations, changing the effective receptive field in seconds and
+reducing the transferability of analysis and synthesis opera-
+tors. This shows that interface alignment is important for multi-
+sampling-rate modeling.
+Impact of SRMT.Omitting SRMT causes larger drops on
+perceptually sensitive metrics, highlighting the role of feature
+calibration. At24 kHz, PESQ decreases from2.353to1.979.
+This suggests that sampling-rate-dependent feature shifts make
+shared quantization less effective, while affine modulation helps
+maintain more consistent latent representations.
+Removing both modules.Dropping both SRAT and
+SRMT yields the lowest scores, indicating that waveform-level
+alignment and feature calibration are complementary for reli-
+able sharing across sampling rates.
+3.3.3. Effect of Progressive Training Strategy
+We evaluate the three-stage progressive training strategy by
+training the unified model without it (Table 3). Quality de-
+creases consistently across16/24/48 kHz, suggesting that op-
+timizing all sampling rates and all objectives from the beginning
+makes convergence harder for a fully shared codec. In contrast,
+progressive training acts as an optimization curriculum: it first
+anchors the model on reconstruction, then introduces sampling-
+rate diversity, and finally adds perceptual objectives. This or-
+dering reduces early cross-sampling-rate condition interference
+and improves overall perceptual fidelity.
+3.3.4. Latent Consistency Analysis
+To quantify cross-sampling-rate consistency in the learned la-
+tent space, we compute the Maximum Mean Discrepancy
+(MMD) [25] between latent representations extracted from in-
+puts at different sampling rates.
+Fig. 4 compares three models: the proposed full model, a
+single-sampling-rate model trained only at16 kHz, and an ab-
+lated model without SRAT and SRMT. The full model consis-
+tently achieves the lowest MMD for all sampling-rate pairs (16
+vs.24,16vs.48, and24vs.48 kHz), indicating substan-
+tially improved latent consistency across sampling rates. In
+contrast, the16 kHz-only model shows the largest MMD val-
+ues, especially for the16vs.48 kHzpair. Removing both
+SRAT and SRMT also increases MMD markedly, confirming
+that temporal-grid alignment and feature-statistics calibration
+are both important for learning a shared latent space.
+/uni00000014/uni00000019/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000003/uni00000059/uni00000056/uni00000003/uni00000015/uni00000017/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000014/uni00000019/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000003/uni00000059/uni00000056/uni00000003/uni00000017/uni0000001b/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000015/uni00000017/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000003/uni00000059/uni00000056/uni00000003/uni00000017/uni0000001b/uni00000003/uni0000004e/uni0000002b/uni0000005d
+/uni00000013/uni00000011/uni00000013/uni00000013
+/uni00000013/uni00000011/uni00000013/uni00000018
+/uni00000013/uni00000011/uni00000014/uni00000013
+/uni00000013/uni00000011/uni00000014/uni00000018
+/uni00000013/uni00000011/uni00000015/uni00000013
+/uni00000013/uni00000011/uni00000015/uni00000018/uni00000030/uni00000044/uni0000005b/uni0000004c/uni00000050/uni00000058/uni00000050/uni00000003/uni00000030/uni00000048/uni00000044/uni00000051/uni00000003/uni00000027/uni0000004c/uni00000056/uni00000046/uni00000055/uni00000048/uni00000053/uni00000044/uni00000051/uni00000046/uni0000005c
+/uni00000014/uni00000019/uni00000003/uni0000004e/uni0000002b/uni0000005d/uni00000003/uni00000030/uni00000052/uni00000047/uni00000048/uni0000004f
+/uni00000032/uni00000058/uni00000055/uni00000056/uni00000003/uni0000005a/uni00000012/uni00000052/uni00000003/uni00000036/uni00000035/uni00000030/uni00000037/uni00000003/uni00000009/uni00000003/uni0000005a/uni00000012/uni00000052/uni00000003/uni00000036/uni00000035/uni00000024 /uni00000037
+/uni00000032/uni00000058/uni00000055/uni00000056/uni00000003/uni0000000b/uni00000029/uni00000058/uni0000004f/uni0000004f/uni0000000c
+Figure 4:Latent consistency analysis using Maximum Mean
+Discrepancy (MMD) across sampling-rate pairs. Lower MMD
+indicates closer latent distributions.
+4. Conclusion
+This paper proposes a unified neural speech codec that sup-
+ports16,24, and48 kHzspeech within a single set of model
+weights. The framework shares the encoder-decoder backbone
+and the RVQ quantizer across sampling rates, and introduces
+two lightweight sampling-rate-aware components. SRAT per-
+forms learnable sampling-rate conversion at the input/output
+interfaces to align inputs and outputs to a consistent internal
+temporal grid without an external resampling pipeline. SRMT
+applies sampling-rate-aware affine transformation inside net-
+work blocks to reduce feature distribution mismatch and facili-
+tate effective sharing of a single RVQ module across sampling
+rates. A three-stage progressive training strategy further sta-
+bilizes multi-sampling-rate optimization. Experiments demon-
+strate that the unified model approaches sampling-rate-specific
+specialists across all target sampling rates while simplifying de-
+ployment. Future work will extend the fr

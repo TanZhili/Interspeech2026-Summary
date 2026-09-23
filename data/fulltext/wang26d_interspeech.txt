@@ -1,0 +1,459 @@
+Back to Ear: Perceptually Driven High Fidelity Music Reconstruction
+Kangdi Wang ID 1,2,3, Zhiyue Wu ID 1,3, Rui Lin ID 1,3, Junyu Dai ID 1,3,∗∗, Tao Jiang1,3
+1 Institute of Acoustics Chinese Academy of Sciences, China
+2 ϵar-LAB, China
+3 Initi-AI Ltd, China
+wangkangdi25@mails.ucas.ac.cn, earlab2025@gmail.com, mars@agibang.ai
+Abstract
+Variational Autoencoders (V AEs) are essential for large-scale
+audio tasks like diffusion-based generation. However, exist-
+ing open-source models often neglect auditory perception, re-
+sulting in poor phase accuracy and stereo representation. We
+propose ear-V AE, an open-source music reconstruction model
+that optimizes the V AE training paradigm. Our contributions
+are threefold: (i) A K-weighting perceptual filter applied prior
+to loss calculation to align the objective with auditory percep-
+tion. (ii) A phase-aware correlation loss improving stereo co-
+herence and spatial consistency. (iii) A spectral supervision
+scheme where magnitude loss is applied to all MSLR com-
+ponents, while phase is supervised only on LR components.
+Experiments show ear-V AE substantially outperforms leading
+open-source models across diverse metrics, showing particular
+strength in reconstructing high-frequency harmonics and spatial
+characteristics.
+Index Terms: V AE, music reconstruction, phase, perceptual
+weighting
+1. Introduction
+Achieving perfect, perceptually lossless reconstruction of com-
+plex audio signals like music remains a central challenge in au-
+dio engineering and machine learning. High-fidelity audio Vari-
+ational Autoencoders (V AEs) [1] are foundational reconstruc-
+tive components for many downstream tasks. These compo-
+nents fundamentally differ from those of traditional generative
+V AEs like MusicV AE [2]. While the latter prioritizes the gener-
+ation of semantically authentic novel content, the former aims
+to compress and decompress the original signal losslessly. To
+achieve this, the model prioritizes perceptually significant de-
+tails and discards imperceptible information. This process re-
+lies heavily on psychoacoustic principles, such as utilizing per-
+ceptual weighting curves like A-weighting or K-weighting, to
+model the frequency-dependent sensitivity of human hearing.
+However, modern audio V AE models often fail to effectively
+integrate fine-grained perceptual weighting strategies into their
+training paradigms.
+Furthermore, the reconstruction of high-quality music re-
+quires the accurate modelling of both phase and spatial in-
+formation. Spatial information, often parameterized by the
+Mid/Side (M/S) decomposition, is critical for accurately ren-
+dering the stereo image. Moreover, audio transients and clar-
+ity are determined by phase-related representations. However,
+existing open-source models lack effective mechanisms to su-
+pervise these critical factors and fail to fully leverage the M/S
+representation for spatial reconstruction, which leads to audible
+**indicates the corresponding author.
+artifacts, such as transient smearing and an inaccurate stereo
+image, limiting their use in professional applications.
+σ 
+μ
+Z
+Reparameterization
+Recon Loss
+a Conv
+Decoder
+MS-STFT
+Discriminator
+MS-STFT
+Criterion
+K-weight
+Adv. Loss
+a Conv
+Encoder
+Self-Attention
+x N
+Figure 1:Architecture ofϵar-VAE, where the re-parameterized
+latentzis directly processed by the transformer blocks with
+pure self-attention branch.
+To address these shortcomings, we introduceϵar-V AE, an
+open-source V AE model optimized for high-fidelity music re-
+construction. Our model incorporates a K-weighting percep-
+tual filter, which we demonstrate is psychoacoustically better
+suited for music signals than A-weighting. To ensure phase co-
+herence, we propose a DSP-driven loss function that implic-
+itly optimizes the phase performance by supervising its correla-
+tion. Additionally, we apply the reconstruction loss with a new
+Mid/Side/Left/Right (MSLR) weighting scheme to maximize
+the preservation of both spatial and spectral details. Through
+these targeted designs,ϵar-V AE achieves state-of-the-art re-
+construction performance across multiple objective evaluations,
+setting a new benchmark for open-source high-fidelity audio
+V AEs.
+We summarize our contributions as follows: Firstly, we
+analyse and integrate the K-weighting filter into the V AE train-
+ing pipeline, aligning the reconstruction objective with psy-
+choacoustics of music perception, in contrast to the commonly
+used A-weighting. Secondly, we propose a novel phase-aware
+loss function that supervises the correlation between reconstruc-
+tion and real audio to model critical phase differences, thereby
+enhancing transient clarity and phase coherence. Thirdly, we in-
+troduce a novel supervision strategy that separately constrains
+magnitude and phase, employing all MSLR components for
+magnitude reconstruction while using only LR to ensure phase
+coherence.
+We release the pre-trained weights, inference recipe, K-
+weighting filter & loss functions implementation, evaluation
+framework and audio demos athttps://github.com/
+Eps-Acoustic-Revolution-Lab/EAR_VAE.
+2. Related Work
+While traditional generative V AEs [3] utilize a Kullback-
+Leibler (KL) divergence loss to enforce a continuous Gaus-
+sian prior for generation, the reconstruction task prioritizes the
+1601
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-219
+model’s ability to faithfully compress and restore signals, which
+have shifted towards discrete quantized representations. This
+approach, pioneered by VQ-V AE [4] and now standard in neural
+audio codecs like EnCodec [5] and DAC [6], excels at achiev-
+ing high compression ratios. To enhance the perceptual qual-
+ity of the decoded audio, these frameworks often incorporate
+a powerful adversarial component, leveraging discriminators
+from vocoders like MelGAN [7] and HiFi-GAN [8]. Despite
+their success, the inherent information loss from quantization
+remains a fundamental limitation, as subtle details crucial for
+reconstruction can be discarded at the bottleneck.
+In contrast, the continuous representation approach offers a
+potentially higher-fidelity pathway for reconstruction. The V AE
+model from Stable-Audio-Open (SAO) [1] stands as a promi-
+nent example of this approach, employing a V AE-GAN frame-
+work with adversarial loss and a down-weighted KL divergence
+to learn a continuous representation at a high compression rate.
+3.ϵar-V AE
+Our model, inspired by the V AE architecture of SAO, is a par-
+tially convolutional V AE complemented by transformer-based
+bottleneck layers, trained with a composite adversarial objec-
+tive. As shown in Figure 1, the overall architecture consists
+of a traditional V AE generator and a powerful time-frequency
+domain discriminator. The generator encodes the input wave-
+form into a latent representation and then decodes it back into
+a waveform, while the discriminator distinguishes audio signals
+between real and reconstructed versions, thereby guiding the
+generator to produce higher-fidelity output.
+3.1. Generator
+Our generator employs an encoder-decoder architecture fea-
+turing several key designs optimized for music reconstruction.
+The encoder utilizes a series of strided convolutional blocks
+with the SnakeBeta activation function [9], which outperforms
+alternatives such as ELU in our experiments. The decoder
+is designed asymmetrically: it mirrors the encoder’s convolu-
+tional structure using transposed convolutions for upsampling
+but also incorporates a powerful transformer module with RoPE
+position embeddings [10] on the decoding path. This asym-
+metric design delegates local feature extraction to the efficient
+encoder, while the decoder’s transformers model global de-
+pendencies, yielding superior performance over symmetric ar-
+chitectures like Mimi [11]. We selected transposed convolu-
+tions rather than upsampling-plus-convolution because the for-
+mer preserves greater signal energy and perceptual loudness.
+We prioritize these attributes over the slightly improved high-
+frequency clarity offered by the latter. Finally, all convolutional
+layers are weight-normalized [1] for training stability.
+3.2. Discriminator
+For adversarial training, we employ a Multi-Scale STFT Dis-
+criminator as the MSD, inspired by Encodec [5]. This approach
+assesses the stereo music signal across various STFT resolu-
+tions, enabling the detection of a wide range of artifacts from
+coarse spectral errors to fine-grained phase inconsistencies.
+While some works like BigVGAN [9] apply the comple-
+mentary MSD on the Constant-Q Transform (CQT) representa-
+tion, we find this approach degrades the V AE’s ability to repre-
+sent music. As shown in Figure 2, CQT overemphasizes low-
+to-mid frequency melodic features, leading to a loss of high-
+frequency harmonics, whereas the STFT provides a more bal-
+Figure 2:Energy&Resolution-normalized frequency response
+comparison between CQT and STFT of a chorus excerpt.
+anced and suitable frequency response for our model. This
+drawback is reflected in our ablation Table 2.
+3.3. Loss functions
+Multi-Scale Log-Magnitude LossTo guide the generator’s
+spectral amplitude reconstruction, we adopt the multiscale
+STFT loss formulation from EnCodec [5].L stft−mag computes
+the L1 distance between the normalized logarithmic magnitudes
+of the predicted and target spectrograms over a set of different
+STFT resolutions, effectively capturing both coarse harmonic
+structures and fine temporal details.
+Feature-Map LossWe also employ the feature-matching
+loss from EnCodec [5] to enhance perceptual quality. This loss,
+Lfmap, minimizes the L1 distance between the intermediate
+feature maps extracted from the discriminator’s layers for the
+ground-truth and generated audio.
+Adversarial LossWe employ the least-squares GAN ob-
+jective from BigVGAN [9] for adversarial training, defining the
+generator lossL Adv(G)and the discriminator lossL Adv(D).
+KL LossWe regularize the latent space using a Kullback-
+Leibler (KL) divergence loss, which aligns the posterior distri-
+butionq(z|x)with a standard normal priorN(0,I)to promote
+a continuous and well-structured representation.
+Correlation LossInspired by DSP algorithms in music
+mixing meters, ourCorrelation Lossdirectly penalizes phase
+deviations between the ground truth spectrogramSand its re-
+construction ˆS:
+Lcorr = 1−
+X
+Re
+
+ ˆSS ˆS
+|S|+ε
+
+,(1)
+whereSdenotes the complex conjugate andεis a small con-
+stant for numerical stability. Unlike the standard cosine simi-
+larity using the Hermitian inner product, this loss calculates the
+mean cosine similarity of the phase difference across all time-
+frequency bins. We apply this loss with the same STFT settings
+as magnitude loss only in Left-Right stereo representation.
+K-Weighting CurveK-weighting, originating from ITU-
+R BS.1770 [12] loudness measurement standards, which is
+widely applied in music production, is designed to approximate
+the frequency-dependent sensitivity of the human ear in Fig-
+ure 3. Compared to A-weighting and average weighting, this
+K-weighting filter accentuates mid and high frequency bands
+where human hearing is most sensitive, while only attenuat-
+ing perceptually insensitive frequencies. We pre-filter the signal
+solely when applying the reconstruction losses.
+M-S-L-R SplitInspired by the music mixing process and
+SAO [1], we also apply the stereophonic split in two different
+representations, Left-Right (S L,S R) and Mid-Side (S M ,S S),
+where mid is defined as(S L +S R)/2and side as(S L−S R)/2.
+1602
+Figure 3:K-weighting vs. A-weighting Curve. The frequency
+axis is log-scaled.
+For different supervision attributes, we design certain combi-
+nations of the loss functions when supervising the generator:
+we apply all reconstruction losses for L/R representation but re-
+move the correlation loss when supervising M/S channels.
+Total LossThe complete training objective consists of
+two parts: one for the generatorL G and one for the discrim-
+inatorL D. These are optimized in alternating steps:
+
+
+
+LG =λ stft−magLstft−mag +λ corrLcorr +λ fmapLfmap
++λ advLadv(G;D) +λ KLLKL,
+LD =L adv(D;G),
+(2)
+whereλ{·} are hyperparameters that control the relative im-
+portance of each loss component.
+4. Experiments and Results
+4.1. Datasets
+Our model is trained on a combination of large-scale public
+datasets and a high-quality, proprietary in-house dataset. The
+training process is conducted in two stages: pre-training and
+continue-training. First, we use a diverse mix of public data in-
+cluding FSD50K [13], FMA [14], and DISCO-10M [15]. Sub-
+sequently, for the continue-training stage, the model is trained
+on our in-house dataset of approximately 10,000 hours of pro-
+fessionally produced music for further high-fidelity align.
+4.2. Data Pipeline
+To ensure data quality, we designed a two-stage filtering
+pipeline, applied progressively. All datasets undergo Stage 1
+for format standardization, while only our in-house data is sub-
+jected to the full pipeline.
+Stage 1: Format and Loudness StandardizationTo
+avoid artifacts associated with upsampling, files natively sam-
+pled below 44.1 kHz are discarded. Only files with native sam-
+pling rates of 44.1 kHz or higher are retained and downsampled
+to 44.1 kHz stereo. Next, we filter based on perceived loudness.
+Using the LUFS-I metric [16], we retain only tracks with an in-
+tegrated loudness between -22 and -5 LUFS, removing acousti-
+cally extreme examples.
+Stage 2: True Peak FilteringFor our in-house data, we
+discard tracks with true peak levels exceeding +1dB to handle
+signal clipping. Unlike the any-clip-rejection strategy from En-
+codec [6], this lenient criterion is deliberately chosen to accom-
+modate the moderate, intentional clipping common in modern
+music mastering.
+4.3. Training Details
+Theϵar-V AE employs a convolutional encoder/decoder struc-
+ture with strides[2,4,4,4,8]and a 128-dimensional la-
+tent space, including mean and scale for 64 dimensions
+respectively. The decoder is augmented with 2 trans-
+former layers using RoPE. The multiscale discriminator and
+reconstruction loss functions use STFT window sizes of
+[2048,1024,512,256,128]. The full model contains 141M pa-
+rameters.
+We train all models on 8 A100 GPUs using the AdamW
+optimizer with a learning rate of3×10 −4,β 1 = 0.5, and
+β2 = 0.9. The loss weights are set as follows:λ stft−mag = 50,
+λcorr = 10,λ fmap = 20,λ adv = 1, andλ KL = 10−6 for
+reconstruction. We determineλ i empirically to balance the
+magnitude ranges of different loss components and observe the
+model is generally robust to small variations in coefficients.
+However, the reconstruction quality decreases notably when
+λKL >10−5.
+We train the model for 2M steps over three distinct stages:
+Stage 1: Warm-up (10k steps)We train only the gener-
+ator using the STFT and KL losses, accompanied by a linear
+learning rate warm-up.
+Stage 2: Pre-train (1M steps)On the public datasets, we
+activate all loss components and train the generator and discrim-
+inator alternately. The learning rate is halved at 200k, 400k, and
+600k steps.
+Stage 3: Continue-train (1M steps)We continue train-
+ing on our in-house dataset using the same loss configuration
+and alternate training scheme as in Stage 2, with a constant
+learning rate.
+4.4. Results
+4.4.1. Novel Evaluation Metrics
+To measure the phase accuracy, we introduce two custom met-
+rics, Individual Channel Phase Coherence and Cross Channel
+Phase Coherence only for the evaluation stage.
+Individual Channel Phase Coherence (ICPC)ICPC
+quantifies the stability of phase errors within each channel. For
+each time frame, a coherence scoreC t is calculated as the mean
+resultant length of these weighted phase error phasors. The final
+ICPC score is the energy-weighted average of these per-frame
+scores, where the energyE t for each frame is the sum of its
+corresponding weights.
+ICPC=
+P
+tCt·E tP
+tEt +ϵ .(3)
+Cross Channel Phase Coherence (CCPC)CCPC ex-
+tends this concept to stereo signals by measuring the preserva-
+tion of the Inter-channel Phase Difference (IPD). Its calculation
+follows the same principle as ICPC, but is based on the error
+in the IPD instead of the single-channel phase error. The fi-
+nal score is similarly the energy-weighted average across time,
+where the frame energyE inter,t is the sum of the corresponding
+inter-channel weights.
+CCPC=
+P
+tCinter,t·E inter,tP
+tEinter,t +ϵ .(4)
+4.4.2. Evaluation Setting
+We evaluate performance using several objective metrics, pri-
+marily sourced from the auraloss library [17]: Multi-Scale
+1603
+Model Channels/
+Rate (Hz)
+Latent
+Rate
+MuChin In-house validation
+Mel
+dist↓ STFT
+dist↓ICPC↑CCPC↑SI-SDR↑ dbTP
+dist↓ Mel
+dist↓ STFT
+dist↓ICPC↑CCPC↑SI-SDR↑ dbTP
+dist↓ MOS
+score↑
+DAC 1/44.1k 86 Hz 0.71 1.33 94.25% 90.69% 6.14 0.29 0.67 1.21 94.49% 90.47% 6.68 0.35 3.63
+Encodec 2/48k 50 Hz 0.84 1.57 89.89% 89.34% 3.64 0.10 0.80 1.49 90.07% 89.42% 3.99 0.14 1.68
+AGC 2/48k 100 Hz 0.71 1.46 94.70% 94.96% 7.58 0.27 0.65 1.39 94.16% 94.66% 8.21 0.09 1.80
+SAO 2/44.1k 21.5 Hz 0.75 1.64 90.70% 91.41% 4.62 0.29 0.64 1.34 90.37% 91.12% 5.23 0.36 3.46
+ϵar-V AE 2/44.1k 43 Hz 0.55 1.17 96.78% 96.81% 9.99 0.05 0.55 1.12 96.66% 96.52% 11.00 0.05 4.70
+Table 1:Results on MuChin and In-house validation split.Bold valuesrepresent the best performance and underlined values mark
+the second best. For baseline models, we employ the official state-of-the-art weights and conduct evaluations at 44.1 kHz sample rate.
+Note that our model partly benefits from the in-house post-training data, which should be considered in evaluation.
+Model Variant SISDR↑Mel Dist↓STFT Dist↓
+raw 8.730.451.20
+Different MSLR Combination
+only M/S-- 8.66 0.88 1.47
+only L/R-- 9.17 0.71 1.27
+With Spatial Supervision
+Add Correlation loss++ 9.85 0.61 1.07
+Remove Auxiliary CQT Discriminator
+lessCQT(0.2x)++ 10.21 0.53 1.05
+noCQT++ 10.56 0.54 1.03
+With Perceptual Weighting
+A-Weighting-- 10.08 0.54 1.13
+K-Weighting++ 10.86 0.511.01
+With Transformer block
+Transformer Block x2++ 11.000.491.01
+Table 2:Stepwise Ablation Study on in-house evaluation sub-
+set. The superscripts“+”and“-”denote positive strategies
+and negative ablations respectively, andboldrepresents the best
+performance within each category.
+STFT (MS-STFT) distance, Multi-Scale Mel (MS-Mel) dis-
+tance, and SI-SDR. The multiscale metrics were configured
+with FFT sizes of[4096,2048,1024,512,256,128]with the
+same window sizes and hop sizes set to 25% of the window
+length. Additionally, we measure the True Peak loudness dif-
+ference (dbTP) and the designed metrics in section 4.4.1.
+We compareϵar-V AE against several leading audio re-
+construction models: EnCodec, DAC, AudioGen (AGC), and
+Stable-Audio-Open (SAO) in Table 1. The evaluation is per-
+formed on the reconstruction of test sets from the MuChin [18]
+and our in-house validation datasets. To additionally align the
+subjective and objective acoustic performance, we employ a 5-
+point MOS-based Likert scale on samples across various gen-
+res for quality assessment, especially focus on complex spatial
+supervision. Ratings are collected and averaged from 5 pre-
+trained professional mixers guided by the following rules:
+•5 (Excellent):Spatial fidelity and timbre are indistinguish-
+able from the reference. Free of artifacts.
+•4 (Good):Spatial width and timbre are almost preserved.
+Noise or artifacts are slight.
+•3 (Fair):Noticeable change of space and reduced instrument
+separation. Audible background noise and distortion.
+•2 (Poor):Severe loss of spatial cues and obvious timbral
+distortion. Frequent and intrusive noise or impulsive artifacts.
+•1 (Bad):Complete loss of space. Severe spectral deficiencies
+and noise in the original signal.
+4.5. Ablation Study
+Our design choices are validated through a stepwise ablation
+study using a smaller in-house dataset. As detailed in Table 2,
+we quantify the contribution of each component using SISDR,
+Mel Distance, and STFT Distance metrics.
+Impact of Stereo and Spatial SupervisionOur investi-
+gation into stereo supervision strategies, shown in theDifferent
+MSLR Combinationblock, reinforces the importance of pure
+L/R phase guidance. Supervision usingonly M/Sdegrades per-
+formance compared to theonly L/Rbaseline, confirming that
+forcing phase convergence on mid-side components may distort
+phase cues. Furthermore, the addition of theCorrelation Loss
+significantly boosts SISDR to 9.85. This metric improvement
+demonstrates that explicitly modeling the correlation between
+channels enhances spectral coherence more effectively than in-
+dependent channel supervision alone.
+Analysis of Auxiliary CQT DiscriminatorWe explic-
+itly analyze the trade-off introduced by the auxiliary discrimi-
+nator. As illustrated in theRemove Auxiliary CQT Discrimina-
+torsection, attenuating the discriminator weight (lessCQT) and
+subsequently removing it (noCQT) yields consistent improve-
+ments in objective metrics, improving SISDR to 10.56 and low-
+ering Mel Distance to 0.54. This trend suggests that for the
+music reconstruction task, removing the CQT-based supervi-
+sion allowsϵar-V AE to optimize full-band frequency response,
+thereby achieving higher signal fidelity and cleaner spectro-
+grams as discussed in section 3.2.
+Impact of Perceptual Weighting and ArchitectureThe
+final comparison highlights the efficacy of our frequency
+weighting and architectural choices. The proposedK-Weighting
+outperforms standardA-Weighting, proving its capability to pre-
+serve critical mid-to-high frequency details that A-weighting
+might attenuate. Finally, incorporating theTransformer Block
+culminates in the best overall performance, quantitatively val-
+idating that self-attention mechanisms are essential for mod-
+eling long-range dependencies and refining fine-grained har-
+monic structures.
+5. Conclusion
+In this paper, we presentϵar-V AE, a variational autoencoder that
+sets a new state-of-the-art for high-fidelity music reconstruc-
+tion. Our ablation studies confirm that the carefully designed
+components, including novel perceptual and phase-based su-
+pervisions, contribute significantly to the superior performance.
+Furthermore, we believe that addressing the model’s tendency
+to attenuate subtle spatial effects by exploring targeted loss
+functions remains a promising research direction. Tackling
+these challenges will unlock the next generation of controllable
+and realistic generative music models.
+1604
+6. Generative AI Use Disclosure
+Generative AI tools were used in the preparation of this work for
+the sole purpose of language editing, specifically for grammar
+correction and improving paragraph coherence. No AI tools
+were used to generate the scientific content, ideas, or results
+presented in this work. The authors assume full responsibility
+for the content of the paper.

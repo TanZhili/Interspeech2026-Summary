@@ -1,0 +1,474 @@
+Surgical-Robot Command Spotting: Safety-Aware Learning for Compositional 
+Commands 
+Jaewon Lee1, Sang-Beom Lee1, Bum-Hwi Kim1, Kwang-Yong Kim1 
+1 Electronics and Telecommunications Research Institute (ETRI) 
+jwl0127@etri.re.kr, sblee230@etri.re.kr, bumhwi.kim@etri.re.kr, kimky@etri.re.kr 
+ 
+Abstract 
+Voice control of a surgical -assistant robot must map short 
+utterances to structured actions in the presence of surgical 
+masks and operating -room (OR) noise, where misrecognition 
+can result in unsafe motions. Each utterance in this task 
+specifies either a m ovement direction with a discrete step 
+magnitude (1–5) or a functional command. Treating each 
+composed command as an independent class disregards this 
+compositional structure. We propose a lightweight command -
+spotting model that factorizes commands into direction, mode, 
+and magnitude. This model uses head -wise temporal attention 
+pooling on a shared encoder and learns step magnitude via 
+ordinal regression with per-sample loss masking and a training-
+only auxiliary head. On a Korean OR -command dataset 
+evaluated using leave -one-speaker-out under clean/noise and 
+mask/no mask conditions, our model achieves 95.36% joint 
+command success, with a MAE of 0.0338 steps and a 
+catastrophic step error rate of 0.60% (|Δ|≥3) on step commands. 
+Index Terms : command spotting, keyword spotting, ordinal 
+regression, surgical robotics, safety-critical speech 
+1. Introduction 
+Voice interaction in operating rooms (OR) is challenged by 
+personal protective equipment and high background noise. 
+Mask use and OR -like noise can reduce  speech intelligibility, 
+motivating more reliable communication and assistance 
+interfaces in the OR [1, 2]. Recent work has explored smart-OR 
+speech assistants and in -OR multimodal dataset for command 
+recognition [3, 4], and surgical robot assistants have been 
+controlled via ASR-based speech-to-action pipelines integrated 
+with robot control software stacks [5, 6]. 
+However, for safety -critical robot control, a closed -set 
+command interface is often preferable to free-form transcription, 
+as it enables bounded on-device latency, reduces error pathways 
+introduced by downstream parsing, and simplify verification in 
+a safety case. [7]. Keyword spotting (KWS) has therefore been 
+extensively studied for on -device triggers and small command 
+sets using compact CNN backb ones [8, 9, 10]. For surgical 
+robots, edge deployment is a strict practical constraint rather 
+than a mere preference, as reliance on external servers 
+introduces unacceptable network latency and patient privacy 
+risks. Deployment-oriented work further targets efficient 
+inference on edge devices, including microcontroller settings 
+and lightweight optimization strategies [11, 12].  
+More recent efforts improve robustness to noisy and 
+mismatched conditions t hrough stronger pooling/attention 
+designs and explicit robustness techniques, including 
+multichannel processing and test -time adaptation [13, 14, 15, 
+16]. Streaming formulations based on transducer -style models 
+have also been explored for low-latency spotting [17]. 
+In this task, most commands are compositional: a 
+movement direction combined with either a discrete step count 
+(1–5) or a continuous -motion indicator, plus a few functional 
+commands such as “stop.” Treating each composed command 
+as an independent class ignores this structure and, critically, the 
+ordinal nature of step magnitude: confusing five steps with four 
+steps is less hazardous than confusing it with one step. Yet 
+standard softmax training does not explicitly encode ordinality 
+and penalizes these confusions similarly, making it difficult to 
+suppress large-step (catastrophic) errors. 
+We propose a lightweight shared -encoder model that 
+factorizes each command into direction, mode, and magnitude. 
+We use head -wise temporal attention pooling to aggregate 
+factor-specific evidence without timestamp labels, and we 
+model discrete magnitude with consistent rank logits (CORAL) 
+ordinal regression [18], trained with per -sample loss masking 
+and a training-only auxiliary 51-way head for stabilization. We 
+evaluate unseen -speaker generalization using leave -one-
+speaker-out (LOSO) across Clean/Noise and Mask/No-mask 
+conditions and report joint command success together with 
+safety-oriented magnitude metrics (MAE and catastrophic step 
+error rate). We also study English pretraining on Google Speech 
+Commands v2 [19] followed by Korean fine-tuning. 
+Our contributions are summarized as: 
+ We formulate safety-critical surgical-robot command 
+spotting as factorized prediction of direction, mode, 
+and magnitude with head -wise temporal attention 
+pooling. 
+ We introduce ordinal magnitude learning and safety -
+aware evaluation that distinguishes near -miss from 
+catastrophic step errors. 
+ We validate robustness under OR room conditions 
+with unseen speakers and assess the effectiveness of 
+auxiliary guidance and cross -lingual initialization 
+from English to Korean. 
+2. Command Set and Task Definition 
+We consider a fixed vocabulary of 51 Korean commands. 
+Forty-eight commands are compositional movement 
+commands formed by eight movement directions (left, right, up, 
+down, forward, backward, clockwise, counterclockwise ) and 
+six magnitude (one step, two steps, three steps, four steps, five 
+steps, continue). The remaining three commands are functional 
+single commands (cleaning, return, stop). 
+Each utterance is annotated with a single command label 
+from the 51 -command vocabulary , such as  left three-steps, 
+forward_continue, or stop, rather than separate  labels. As 
+summarized in Table 1 , we deterministically parse the 
+command label into three factors  for factorized learning : 
+2013
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3372
+direction 𝑦𝑑𝑖𝑟, mode 𝑦𝑚𝑜𝑑𝑒 ∈ {𝑓𝑢𝑛𝑐𝑡𝑖𝑜𝑛 , 𝑠𝑡𝑒𝑝, 𝑐𝑜𝑛𝑡𝑖𝑛𝑢𝑜𝑢𝑠}, 
+magnitude 𝑦𝑚𝑎𝑔 ∈ {1 … 5}. 
+During inference, the model predicts direction, mode, and 
+step magnitude. We deterministically recombine these factors 
+into a canonical command label for evaluation: for step mode , 
+we compose “direction + step count”; for continuous mode, we 
+compose “direction + continue”; and for function mode, we 
+output the corresponding functional command. Joint command 
+success is then computed by comparing the recomposed 
+command with the ground-truth command label. 
+Table 1: Label schema used for factorized learning. 
+Command 
+type 
+Example 
+(English) 
+Example 
+(Korean) 
+Mode Magnitude 
+Step motion Left,  
+ three-steps 
+왼쪽 세칸 Step 1–5 
+Continuous 
+motion 
+Forward, 
+continue 
+앞으로 계속 Continuous N/A 
+Functional 
+command 
+Stop 정지 Function N/A 
+3. Method 
+Given an input waveform sampled at 16 kHz, we extract a 
+40-bin log -mel spectrogram X and feed it to a shared 
+lightweight encoder that produces frame -level representations 
+H. We then apply head -wise temporal attention pooling to 
+obtain three task-specific summary vectors for direction, mode, 
+and magnitude. Direction and mode are predicted by softmax 
+classifiers, while discrete magnitude is learned via CORAL 
+ordinal regression. 
+Figure 1 provides an overview of t he proposed model. A 
+shared lightweight encoder transforms the log-mel spectrogram 
+into frame-level features, which are summarized by head -wise 
+temporal attention for direction, mode, and magnitude 
+prediction. An auxiliary 51 -way head is used only during 
+training to stabilize learning. 
+ 
+Figure 1: Overview of the proposed architecture. A 
+shared lightweight encoder produces frame-level 
+features H, which are pooled by head-wise attention 
+for direction, mode, and magnitude. A 51-class aux 
+head is used only during training. 
+3.1. Shared lightweight encoder 
+The shared encoder is designed for on -device inference. It 
+consists of a small 2D convolutional stem over the time –
+frequency plane followed by 1D depthwise -separable CNN 
+blocks along time, a design in small-footprint KWS models [11].  
+As summarized in Tabl e 2, the encoder downsamples the 
+input to a short temporal sequence  and ouputs 𝑯 ∈ ℝ24×128 
+which serves as the input to the head -wise attention pooling 
+modules. We apply temporal downsampling only in the early 
+depthwise-separable convolution blocks (DS -Conv) to reduce 
+compute while preserving sufficient temporal resolution for 
+attention pooling.  
+Table 2: Shared encoder architecture summary. 
+DWConv, depthwise convolution layer; PWConv, 
+pointwise convolution layer; BN, batch normalization. 
+Stage Operator Output shape 
+(channels) 
+Input Log-mel 198 × 40 
+Reshape Add channels 198 × 40 × 1 
+2D Convolution Conv2D+BN+ReLU 198 × 40 × 16 
+2D Pooling AveragePool2D 99 × 20 × 16 
+Projection 1×1 Conv2D + BN +ReLU 99 × 20 × 16 
+Flatten (Reshape) Frequency × Channels 99 × 320 
+DS-Conv1 DWConv1D + PWConv1D  99 × 64 
+1D Pooling AveragePool1D 49 × 64 
+DS-Conv2 DWConv1D + PWConv1D  49 × 96 
+1D Pooling AveragePool1D 24 × 96 
+DS-Conv3 DWConv1D + PWConv1D 24 × 96 
+DS-Conv4 DWConv1D + PWConv1D 24 × 128 
+DS-Conv5 DWConv1D + PWConv1D 24 × 128 
+Output H 24 × 128 
+3.2. Head-wise temporal attention pooling 
+As shown in Figure 1, we use separate attention pooling for 
+each head so that direction, mode, and magnitude can attend to 
+different temporal information within a short speech command. 
+Different factors may rely on different temporal evidence (e.g., 
+direction vs. magnitude) . Instead of a single shared pooling 
+operator, we use separate attention pooling modules per head. 
+For head k, attention scores are computed as: 
+𝑠𝑡
+(𝑘) =  𝑣𝑘
+⊤ tanh(𝑊𝑘ℎ𝑡),   𝑤𝑡
+(𝑘) = softmax (𝑠𝑡
+(𝑘))      (1) 
+and pool a head-specific context vector: 
+𝑧(𝑘) = ∑ 𝑤𝑡
+(𝑘)ℎ𝑡𝑇′
+𝑡=1                             (2) 
+where ℎ𝑡 is the frame -level representation, 𝑊𝑘 and 𝑣𝑘 are 
+learnable projection parameters for head 𝑘 , and 𝑇′  is the 
+downsampled sequence length. 
+This enables head -specific evidence aggregation and 
+provides diagnostic visualization signals without timestamp 
+supervision. We treat attention visualization as a diagnostic tool 
+that can help interpret failure cases. 
+2014
+3.3. Ordinal magnitude modeling via CORAL 
+Discrete magnitude (1 to 5 steps) is an ordinal variable. We 
+adopt CORAL ordinal regression, which learns K−1 
+thresholded binary decisions (here K  = 5) such as “magnitude 
+≥ 2”, “≥ 3”, and so on. We decode the magnitude by counting 
+how many CORAL thresholds exceed 0.5 and adding 1.  We 
+decode magnitude as: 
+ 𝑦̂𝑚𝑎𝑔 = 1 + ∑ 𝕀[𝑞̂𝑟 > 0.5]5
+𝑟=2 .                    (3) 
+Magnitude loss and magnitude metrics are computed only 
+for discrete-motion commands via per-sample weights. Ordinal 
+learning encourages near -miss errors over catastrophic errors, 
+aligning with safety goals. 
+3.4. Conditional masking and auxiliary guidance 
+Because magnitude is defined only for step commands, we 
+compute the magnitude loss only when t he ground-truth mode 
+is step.  The total loss is: 
+𝐿 =  𝐿𝑑𝑖𝑟 + 𝐿𝑚𝑜𝑑𝑒 + 𝑤𝑚𝑎𝑔𝐿𝑚𝑎𝑔 + 0.5𝐿𝑎𝑢𝑥.       (4) 
+Magnitude is supervised only for discrete step commands. 
+We implement this via per -sample loss weighting, setting the 
+magnitude weight 𝑤𝑚𝑎𝑔 = 1  for ‘step’ commands and 
+𝑤𝑚𝑎𝑔 = 0 otherwise. The auxiliary head predicts the 51 -way 
+command label during training to stabilize representation 
+learning, but is removed at inference to avoid extra compute and 
+to keep the factorized heads dominant. 
+3.5. Encoder pretraining (English → Korean) 
+To stabilize training in a low -speaker regime, we initialize 
+the shared encoder via supervised KWS pretraining on Google 
+Speech Commands v2 (English) [19] using the same log -mel 
+spectrogram. The pretraining classifier is discarded and the 
+encoder is fine-tuned on the Korean OR-command dataset. For 
+fair comparison, we apply the same initialization setting to all 
+baselines and include an ablation without pretraining. 
+4. Dataset and Experimental Setup 
+We collect ed a Korean OR -command dataset under four 
+controlled conditions defined by Clean/Noise × Mask/No-mask. 
+OR background noise was sourced from real operating -room 
+recordings and added via a replay -and-re-recording procedure 
+to emulate acoustic playback and microphone capture. The 
+dataset contains 7,140 utterances from five speakers (3 male, 2 
+female) at 16 kHz, covering all 51 commands. 
+For data augmentation, we adopt the training augmentations 
+recommended in [20] for all models . During training, we 
+randomly shift the waveform in time within ±100 ms  [21], and 
+we apply Gaussian-noise mixing to 80% of examples. We also 
+apply SpecAugment by masking two time regions and two 
+frequency bands, without time warping [22]. 
+We evaluate unseen -speaker generalization using a leave -
+one-speaker-out (LOSO) protocol. We report joint command 
+success as the primary metric, and quantify safety using 
+magnitude MAE (steps) and catastrophic step error rate (CSE), 
+computed on discrete s tep commands. Results are reported as 
+mean ± standard deviation over the five LOSO folds. 
+We define CSE as |Δ| ≥ 3  because the magnitude range is 
+limited to five discrete steps. This corresponds to the 3 –4 step 
+errors in the upper tail of the error distribution, which can cause 
+substantial overshoot or undershoot in commanded motion. In 
+contrast, smaller errors are treated as near misses, motivating a 
+safety-aware distinction between large and small magnitude 
+mistakes. 
+For preprocessing of the input signals , we compute 40 bin 
+log-mel spectrograms using an STFT with a 25 ms analysis 
+window and 10 ms hop, and an FFT length of 512. The mel 
+filterbank spans 60 -7600 Hz. We apply per -utterance mean –
+variance normalization to the log-mel features. The models are 
+trained with the Adam optimizer at a learning rate of 0.0001 for 
+150 epochs, with a batch size of 16. The same preprocessing 
+and training schedule is used for all models. 
+5. Results and Discussion 
+We compare against three baselines to isolate the effect of 
+factorization, pooling, and ordinal magnitude learning: (A) a  
+flat 51-way command classifier only with shared encoder , (B) 
+a factorized model with a single shared attention pooling 
+module (no head-specific attention), and (C) a factorized model 
+with head -wise attention but a softmax magnitude head (no 
+ordinal learning). Our full model combines head-wise attention 
+with CORAL-based ordinal magnitude learning and a training-
+only auxiliary 51 -way head for stabilization. We additionally 
+include BC -ResNet-6 as a ex ternal KWS baseline  [20]. Its 
+width parameter is chosen to yield comparable parameter 
+numbers to our model  (τ = 6) . Unless otherwise stated, all 
+models use the same log-mel front end, data splits, and training 
+schedule (optimizer, learning rate, epochs, an d batch size), as 
+well as the same English initialization setting, when applicable. 
+As shown in Table 3, exploiting the compositional structure 
+consistently improves command-level performance. Compared 
+with the monolithic command classifier, factorized prediction 
+increases joint success from 93.14% to 93.68%, and introducing 
+head-wise attention pooling further improves joint success to 
+94.57%. BC -ResNet-6, included as a parameter -matched 
+external baseline, achieves a comparable joint success o f 
+93.65%. Importantly, the best joint success does not necessarily 
+coincide with the best safety profile. When magnitude is 
+modeled with a standard softmax head, CSE increases to 0.83% 
+and MAE remains at 0.0445 steps. By incorporating CORAL 
+ordinal learnin g, our full model achieves the best overall 
+safety–success trade -off, reaching 95.36% joint command 
+success while reducing MAE to 0.0338 steps and CSE to 0.60% 
+on step commands. 
+Table 3: Model comparison (mean ± std over 5 folds). 
+Magnitude metrics are computed on discrete 
+commands only. SA, single shared attention pooling; 
+HA, head-wise attention pooling. CSE, catastrophic 
+step error rate; MAE, mean absolute error.  
+Model Joint success (%) CSE (%) MAE (steps) 
+Flat-51 93.14 ± 3.61 0.75 ± 0.86 0.0421 ± 0.0381 
+BC-ResNet-6 [20] 93.65 ± 4.02 0.76 ± 0.52 0.0506 ± 0.0298 
+Factorized-SA 93.68 ± 4.55 0.75 ± 0.47 0.0465 ± 0.0311 
+Factorized-HA 94.57 ± 2.94 0.83 ± 0.49 0.0445 ± 0.0227 
+Ours (Factorized-
+HA + CORAL) 
+95.36 ± 4.08 0.60 ± 0.73 0.0338 ± 0.0359 
+In terms of efficiency, our model uses 181K parameters and 
+requires 5.99M MACs per 2 s window, placing it in the same 
+compute range as the lightweight baselines, which require 
+2015
+5.14–5.26M MACs. BC -ResNet-6 has a similar parameter 
+count of 210K, but it operates at a much higher compute budget 
+and requires 99.1M MACs , highlighting the accuracy –
+efficiency trade-off. 
+As illustrated in Figure 2, the fold -wise variance under 
+LOSO is influenced by the most challenging speaker. Speaker 
+3 achieves 88.53% joint success , accompanied by a 1.88% of 
+CSE. Our inspection reveals this drop is associated with a lower 
+recording volume and unusual speech characteristics . A 
+comparison of the proposed model with the Flat -51 baseline  
+model reveals that the former generally yields lower magnitude 
+errors (CSE/MAE). 
+ 
+Figure 2: Per-speaker LOSO performance comparing 
+the proposed model with the Flat-51 baseline model. 
+Bars show joint success (top), catastrophic step error 
+rate (CSE) (middle), and magnitude MAE in steps 
+computed on discrete commands only (bottom).  
+Table 4 presents the results of an ablation study that 
+examines the contribution of each component. Removing 
+pretraining results in the largest degradation, reducing joint 
+command success from 95.36% to 88.97%. This highlights the 
+difficulty of training from scratch in the low -speaker regime. 
+Using a softmax magnit ude head instead of CORAL increases 
+discrete-magnitude errors. MAE rises from 0.0338 to 0.0445 
+steps, and CSE rises from 0.60% to 0.83%. This supports the 
+value of ordinal modeling for predicting safety -critical 
+magnitudes. In contrast, removing head -wise attention 
+primarily harms joint success, decreasing it from 95.36% to 
+92.54%. This is consistent with the role of head -specific 
+evidence pooling for compositional commands. 
+Table 5 summarizes the breakdown of performance under 
+the four conditions. Overall performance remains high across 
+conditions, with joint command success ranging from 94.90% 
+(clean/mask) to 96.23% (noise/no -mask). Notably, safety 
+metrics remain low, even under the most challenging condition 
+(noise/mask) with a 0.0447 -step MAE and 0.85% C SE. This 
+indicates that significant step-magnitude errors are uncommon 
+in these OR-like settings. Since CSE is a rare -event metric, its 
+foldwise variance can be relatively large even when absolute 
+rates are small. 
+Table 4: Ablation study (mean ± std over 5 folds). 
+Ablation Joint success (%) CSE (%) MAE (steps) 
+Our model 95.36 ± 4.08 0.60 ± 0.73 0.0338 ± 0.0359 
+w/o CORAL 
+(softmax-mag) 
+94.56 ± 3.29 0.83 ± 0.55 0.0445 ± 0.0253 
+w/o head-wise 
+attention  
+92.54 ± 4.42 0.64 ± 0.27 0.0564 ± 0.0267 
+w/o auxiliary 
+head 
+92.15 ± 4.65 0.69 ± 0.44 0.0631 ± 0.0342 
+w/o pretraining  88.97 ± 6.84 1.01 ± 0.81 0.0662 ± 0.0357 
+We observed that joint success under noise/no -mask 
+conditions was slightly higher than under clean/no -mask 
+conditions. We consider this an empirical observation and 
+propose that it may be due to condition -dependent speaking 
+strategies (e.g., Lombard effect ) rather than a systematic 
+advantage of noise. 
+Table 5: Results of the proposed model under 
+Clean/Noise× Mask/No-mask (mean ± std over 5 
+LOSO folds). 
+Condition Joint success (%) CSE (%) MAE (steps) 
+Clean/No-mask 95.33 ± 5.47 0.70 ± 0.98 0.0320 ± 0.0411 
+Clean/Mask 94.90 ± 4.52 0.53 ± 0.52 0.0401 ± 0.0334 
+Noise/No-Mask 96.23 ± 2.86 0.35 ± 0.20 0.0212 ± 0.0146 
+Noise/Mask 94.98 ± 2.44 0.85 ± 1.09 0.0447 ± 0.0483 
+6. Conclusion and Limitations 
+We presented a safety-critical command spotting approach 
+for OR robot voice control that factorizes each utterance into 
+direction, mode, and magnitude, applies head -wise temporal 
+attention pooling, and models discrete magnitude using 
+CORAL ordinal learning. Under LOSO evaluation on a Korean 
+OR-command dataset with Clean/Noise and Mask/No-mask 
+conditions, our final model achieves 95.36% joint co mmand 
+success while maintaining low magnitude error rates on discrete 
+commands (0.0338-step MAE and 0.60% CSE). These results 
+support the practicality of safety -aware evaluation that 
+distinguishes near-miss from large step-magnitude mistakes in 
+compositional command interfaces. 
+This study is limited by the number of speakers and by 
+evaluation on pre -segmented 2 s utterances, which does not 
+capture the full complexity of always -on, streaming operation 
+in the operating room. Our noise condition is created via replay-
+and-re-recording to emulate acoustic capture, but it may not 
+fully reflect distribution shifts in real OR workflows .  
+Consequently, while our model handles standard variance well, 
+generalizing to some outliers remains a challenge for low -
+speaker clinical datasets. 
+Future work will expand speaker and environmental 
+diversity, and evaluate streaming detection and rejection 
+policies in a closed-loop robot control setting with deployment-
+oriented profiling. 
+2016
+7. Acknowledgements 
+This work was supported in part by Electronics and 
+Telecommunications Research Institute (ETRI) grant funded by 
+the Korean government [26ZD1140, Advancement and 
+Commercialization of Daegu -Gyeongbuk Regional Strategic 
+Industries (Robots, Mobility, AI, Medical, etc.)], and in part by 
+the Commercialization Promotion Agency for R&D Outcomes 
+(COMPA) grant funded by the Korean Government (Ministry 
+of Science and ICT). (RS-2023-00304776, RS-2023-00304695) 
+8. Generative AI Use Disclosure 
+Generative AI tools have only been used for editing/polishing 
+to improve English grammar. They were not used to write the 
+main content. (not for writing any major part). 
+9. References 
+[1] H. Ishido, R. Oishi, Y. Yamazaki, and S. Inoue, “The effects of a 
+surgical mask and an N95 mask on intelligibility of explicit and 
+ambiguous speech produced in the operating room environment,” 
+APS, vol. 2, no. 1, p. 2, Jan. 2024, doi: 10.1007/s44254 -023-
+00041-3. 
+[2] S. V. Bandaru et al., “The effects of N95 mask and face shield on 
+speech perception among healthcare workers in the coronavirus 
+disease 2019 pandemic scenario,” The Journal of Laryngology & 
+Otology, vol. 134, no. 10, pp. 895 –898, Oct. 2020, doi: 
+10.1017/S0022215120002108. 
+[3] K. C. Demir et al. , “PoCaP Corpus: A Multimodal Dataset 
+for Smart Operating Room Speech Assistant Using Interventional 
+Radiology Workflow Analysis,” in Text, Speech, and Dialogue, P. 
+Sojka, A. Horák, I. Kopeček, and K. Pala, Eds., Cham: Springer 
+International Publishing, 2022, pp. 464–475. doi: 10.1007/978-3-
+031-16270-1_38. 
+[4] W. Shi, R. Fan, J. Hu, J. Wang, M. Bian, an d W. Jiang, “A 
+knowledge-driven framework for surgical safety check 
+integration using speech recognition and speaker verification,” 
+Front Neurosci , vol. 19, p. 1726720, 2025, doi: 
+10.3389/fnins.2025.1726720. 
+[5] A. Davila, J. Colan, and Y. Hasegawa, “Voice con trol interface 
+for surgical robot assistants,” in 2024 International Symposium on 
+Micro-NanoMehatronics and Human Science (MHS), Jan. 2024, 
+pp. 1–5. doi: 10.1109/MHS63891.2024.10856297. 
+[6] K. Zinchenko, C. -Y. Wu, and K. -T. Song, “A Study on Speech 
+Recognition Control for a Surgical Robot,” IEEE Transactions on 
+Industrial Informatics, vol. 13, no. 2, pp. 607–615, Apr. 2017, doi: 
+10.1109/TII.2016.2625818. 
+[7] J. Zhang and J. Li, “Testing and verification of neural -network-
+based safety -critical control software: A sy stematic literature 
+review,” Information and Software Technology , vol. 123, p. 
+106296, Jul. 2020, doi: 10.1016/j.infsof.2020.106296. 
+[8] T. N. Sainath and C. Parada, “Convolutional neural networks for 
+small-footprint keyword spotting,” in Interspeech 2015, ISC A, 
+Sep. 2015, pp. 1478–1482. doi: 10.21437/Intersp

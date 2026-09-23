@@ -1,0 +1,471 @@
+MeCo: One-Step MeanFlow-based Corrector for Multi-Channel Speech
+Separation
+Dohwan Kim1, Jung-Woo Choi1,∗∗
+1 School of Electrical Engineering, KAIST, Daejeon, Republic of Korea
+dohwan@kaist.ac.kr, jwoo@kaist.ac.kr
+Abstract
+While discriminative models for multi-channel speech separa-
+tion excel in reference-based metrics, they often exhibit subop-
+timal human listening quality. To address this, we propose a
+novel MeanFlow-based one-step generative corrector (MeCo).
+MeCo learns a conditional average velocity field to map dis-
+criminative estimates directly onto the clean speech manifold in
+a single step. To maximize one-step generation performance,
+we introduce Data-Space Optimization (DSO). DSO integrates
+anx r-loss, which penalizes prediction errors on longer dis-
+placement intervals to serve as a generative objective for hu-
+man listening quality, with an Endpoint SI-SDR loss that di-
+rectly optimizes terminal signal fidelity. Experiments demon-
+strate that MeCo achieves state-of-the-art (SOTA) performance
+with minimal computational overhead, simultaneously achiev-
+ing superior signal fidelity and human listening quality in both
+in-domain and out-of-domain scenarios.1
+Index Terms: joint speech separation, denoising and derever-
+beration, generative models, Mean Flows, one-step inference
+1. Introduction
+Deep discriminative models have significantly advanced multi-
+channel speech enhancement and separation. Modern architec-
+tures [1–4], readily adaptable across joint denoising, derever-
+beration, and speech separation, have achieved saturated per-
+formance on reference-based metrics. However, these models
+are primarily trained to optimize objective metrics such as the
+Scale-Invariant Signal-to-Distortion Ratio (SI-SDR) [5], which
+strictly measure signal fidelity and do not perfectly align with
+human auditory perception. As a result, discriminative models
+often introduce unnatural speech artifacts [6, 7], a degradation
+that is clearly captured by reference-free human listening qual-
+ity estimators such as DNSMOS [8] and UTMOS [9].
+To overcome the limitations of discriminative models, gen-
+erative approaches like diffusion [10] and flow models [11],
+have been explored. By learning the underlying distribution of
+clean speech, they offer better generalization to out-of-domain
+scenarios and synthesize highly natural audio. Recently, they
+have been successfully applied to single-channel speech en-
+hancement and separation [6, 7, 12–17] and multi-channel sep-
+aration [18, 19]. While recent work on standalone generative
+models has shown the potential to outperform discriminative
+baselines in single-channel tasks [17], these models are often
+restricted to constrained environments (e.g., anechoic mixtures
+without background noise). Furthermore, they suffer from se-
+vere inference latency, as multi-channel separators [18, 19] re-
+**indicates the corresponding author.
+1https://github.com/rlaehghks5/MECO
+quire a large number of reverse steps, making them computa-
+tionally prohibitive for practical deployment.
+Consequently, to efficiently harness the strengths of both
+approaches in complex, real-world environments, a cascade
+paradigm has emerged, primarily in single-channel tasks: uti-
+lizing a discriminative model for initial separation followed by
+a generative model for refinement [20–23]. This hybrid ap-
+proach successfully preserves the high signal fidelity of the sep-
+arator while leveraging the generative prior to repair artifacts
+and boost generalization. However, most existing refinement
+models [20, 21, 23] still rely on iterative generation, remain-
+ing fundamentally bottlenecked by their inference speed, which
+limits their feasibility for real-world applications. To address
+this, Fast-GeCo [22] proposed a one-step corrector that outper-
+formed the previous iterative corrector [20] and standalone gen-
+erative models [14, 15]. However, Fast-GeCo requires a com-
+putationally expensive two-stage training pipeline: pretraining
+a multi-step diffusion corrector via score matching, then fine-
+tuning it into a single-step model. Furthermore, to accelerate
+inference, it heuristically truncates the trajectory at an inter-
+mediate time step (e.g.,t= 0.5), thereby introducing a prior
+mismatch between the terminating forward distribution and the
+initial reverse distribution. Finally, its one-step fine-tuning re-
+lies exclusively on a Scale-Invariant Signal-to-Noise Ratio (SI-
+SNR) objective. As previously noted, this metric does not align
+perfectly with human perception, leading to suboptimal results
+on reference-free human listening quality assessments.
+We proposeMeanFlow-based One-Step Corrector
+(MeCo), a novel generative corrector for one-step multi-
+channel speech separation without fine-tuning. MeCo is built
+upon the Mean Flows [24], which learns the average velocity,
+capturing the total displacement over a finite interval. By adopt-
+ing the Mean Flows, which directly map the initial discrimina-
+tive output (t= 1) to the clean speech (t= 0) without heuristic
+trajectory truncation, MeCo inherently resolves the distribution-
+mismatch problem. Furthermore, to maximize one-step gen-
+eration performance, we introduce Data-Space Optimization
+(DSO), inspired by the analysis of data-space (x-space) objec-
+tives [25]. DSO incorporates two complementary objectives:
+first, anx r-loss that explicitly penalizes prediction errors on
+longer displacement intervals; second, an Endpoint SI-SDR loss
+that incentivizes direct inference from the discriminative output
+to the terminal state. Specifically, the Endpoint SI-SDR loss en-
+sures high signal fidelity, while thex r-loss functions as a gen-
+erative objective, enabling superior human listening quality. To
+the best of our knowledge, this work is the first to extend one-
+step generative correctors to multi-channel speech separation.
+Experimental results demonstrate that MeCo achieves SOTA
+performance, with high signal fidelity and superior human lis-
+tening quality on both in-domain and out-of-domain datasets.
+7138
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1150
+2. Background
+2.1. Flow Matching
+Flow Matching (FM) [11] is a generative framework that learns
+to construct a flow path between a simple prior distributionp 0
+and a complex data distributionp1. Formally, given a prior sam-
+plex 0∼p 0 and a data samplex 1∼p 1, a statex t along the
+flow path at timet∈[0,1]can be explicitly constructed using
+predefined schedules. In Conditional Flow Matching (CFM)
+[11], this state is parameterized by a conditional Gaussian prob-
+ability pathpt(xt|x 0,x 1) =N(x t|µ t,σ 2
+t I)as
+xt =µ t +σtz, z∼N(0,I).(1)
+Here,µ t andσ t are predefined mean and standard deviation
+schedules. For example, a widely adopted Optimal Transport
+(OT) path defines schedules as linear interpolations over time:
+µt = (1−t)x 0 +tx 1, σ t = (1−t)σ(2)
+which explicitly constructs a straight-line trajectory between the
+source and target distributions.
+The generative process tracking this path is governed by
+an Ordinary Differential Equation (ODE) defined by a time-
+dependent, instantaneous velocity fieldvt:
+dxt =v t(xt)dt.(3)
+Because the velocity represents the tangent to the trajectory,
+the conditional instantaneous target velocity can be analytically
+derived by taking the time derivative ofxt:
+vt(xt|x 0,x 1) = σ′
+t
+σt
+(xt−µt) +µ′
+t (4)
+where(·)′ denotes the time derivative. The neural vector field
+vθ(xt,t)is trained to approximate this target by minimizing the
+CFM objective:
+LCFM =E t,x0,x1,z
+
+∥vθ(xt,t)−v t(xt|x 0,x 1)∥2
+.(5)
+While CFM provides a computationally efficient training
+paradigm, sampling from the trained model remains a signif-
+icant bottleneck. Because the network strictly learns the in-
+stantaneous velocity, generating data requires solving the ODE
+(Eq. (3)) using iterative numerical solvers, such as the Euler
+method. This reliance on sequential integration steps inher-
+ently leads to a high Number of Function Evaluations (NFE)
+[11, 24], resulting in heavy computational complexity that lim-
+its the practical application of standard FM in speech processing
+tasks [26, 27].
+2.2. Mean Flows
+To overcome the inference bottleneck of standard FM,Mean
+Flows[24] introduces the concept of theaverage velocity field.
+Instead of modeling the instantaneous velocityv t, Mean Flows
+learns to directly predict the average velocity fieldu(x t,r,t)
+over a finite time interval[r,t], where0≤r < t≤1. The
+average velocity within the interval[r,t]is defined as the time
+integral of the marginal instantaneous velocity field:
+u(xt,r,t)≜ 1
+t−r
+Z t
+r
+v(xτ,τ)dτ.(6)
+While computing this integral during training is intractable,
+differentiating it with respect totyields the foundationalMean-
+Flow identity. This identity establishes a tractable relationship
+between the instantaneous fieldvand the average fieldu:
+u(xt,r,t) =v(x t,t)−(t−r) d
+dtu(xt,r,t)(7)
+where the total derivative is expanded by the chain rule involv-
+ing a Jacobian-Vector Product (JVP) as
+d
+dtu(xt,r,t) =v(x t,t)∂xu+∂ tu.(8)
+To approximate the average field, a neural network
+uθ(xt,r,t)is trained to estimate the targetu tgt given by
+utgt =v(x t,t)−(t−r) (v(x t,t)∂xuθ +∂tuθ).(9)
+The model is trained by minimizing the MeanFlow loss
+LMF with a stop-gradient (sg) operator applied to the target:
+LMF =E
+
+∥uθ(xt,r,t)−sg(u tgt)∥2
+.(10)
+During inference, the average velocity provides a general
+displacement rule between anyr<t:
+xr =x t−(t−r)u θ(xt,r,t).(11)
+By evaluating this rule from the initial state (t= 1) to the
+terminal state (r= 0), the model directly transports the data in
+a single pass, achieving one-step generation at minimal compu-
+tational cost:
+x0 =x 1−uθ(x1,r= 0,t= 1).(12)
+3. Method
+We introduce MeCo, a one-step generative corrector for multi-
+channel speech separation. MeCo incorporates a conditional
+MeanFlow-based architecture (Section 3.1) and DSO to maxi-
+mize one-step generation performance (Section 3.2).
+3.1. Conditional MeanFlow-based correction
+The proposed corrector operates in the complex Short-Time
+Fourier Transform (STFT) domain. Lety∈C C×F×K de-
+note the STFT of a multi-channel noisy mixture withCmicro-
+phones,Ffrequency bins, andKtime frames, containingM
+speakers. Letsm∈C F×K be the corresponding single-channel
+clean speech for them-th speaker, wherem∈{1,...,M}. A
+discriminative separator processes the mixture to generate an
+initial, albeit imperfect, estimateˆsm∈C F×K for each speaker.
+The corrector refines each speaker’s estimate independently by
+conditioning the generative process on both the multi-channel
+spatial contextyand them-th speaker’s estimate ˆsm. For no-
+tational simplicity in the subsequent formulations, we omit the
+speaker indexmand describe the correction process for an arbi-
+trary target speaker, denoting the clean speech and the estimate
+simply assand ˆs, respectively.
+To transport the distorted discriminative estimateˆsatt= 1
+to the clean speech manifoldsatt= 0, we define a conditional
+Gaussian probability path overt∈[0,1]. During training,tis
+sampled from[t ϵ,1]to ensure training stability, following the
+practices in [26, 28]. The time-varying meanµ t and standard
+deviationσt of the path are explicitly scheduled as:
+µt = (1−t)s+t ˆs, σ t = (1−t)σ min +tσ max (13)
+whereσ min andσ max bound the noise variance. An intermediate
+statext along this trajectory is sampled via:
+xt =µ t +σtz,z∼N(0,I)(14)
+Differentiating the path with respect to time yields the analytical
+instantaneous velocity targetvt:
+vt(xt|s, ˆs) = σ′
+t
+σt
+(xt−µt) +µ′
+t (15)
+7139
+whereµ′
+t = ˆs−sandσ ′
+t =σ max−σ min.
+By definition, the conditional average velocity field
+u(xt,r,t| ˆs)represents the integration of the marginal instan-
+taneous velocityv(x τ,τ| ˆs)over the interval[r,t], analogous
+to Eq. (6). To bypass computing this intractable integral, we
+adapt the MeanFlow identity to directly learn its parameterized
+estimatoruθ(xt,r,t,y, ˆs), explicitly conditioning the network
+on the multi-channel mixtureyfor additional spatial context.
+By replacing the marginal field with our analytical on-path in-
+stantaneous targetvt, and expanding the total derivative via the
+chain rule, we formulate the first-order local training target. Fol-
+lowing [26], we introduce a first-order correction factorcinto
+the formulation to ensure training stability:
+utgt =v t−c(t−r) (v t·∇ xuθ +∂tuθ)(16)
+To prevent higher-order backpropagation through the JVP, a
+stop-gradient (sg) operation is applied to the target. Finally, the
+model is optimized via the conditional MeanFlow loss:
+LMF =E
+
+∥uθ(xt,r,t,y, ˆs)−sg(u tgt)∥2
+(17)
+3.2. Data-Space Optimization
+To further maximize the performance of one-step generation,
+we shift the training paradigm from velocity matching toData-
+Space Optimization (DSO). This strategy introduces two com-
+plementary training objectives: anx r-loss that intrinsically
+scales the matching loss by the displacement distance, and an
+Endpoint SI-SDR loss that directly optimizes the signal quality.
+xr-loss.In the standard MeanFlow objective, the model
+minimizes the average velocity error. However, minimizing this
+error alone does not directly reflect the actual deviation in the
+data space, as it ignores the integration interval. According to
+the MeanFlow displacement rule, the data at an arbitrary time
+ris determined byx r =x t−∆u, where∆ =t−ris the
+integration interval. To directly optimize the generative tra-
+jectory in the data space, we define the predicted data atras
+ˆxr =x t−∆uθ and the target data atrasx tgt
+r =x t−∆sg(utgt).
+Specifically, we minimize this objective:
+Lxr =E
+hxtgt
+r − ˆxr
+2i
+.(18)
+By expanding this objective, we reveal a mathematical re-
+lationship with the original velocity loss:
+Lxr = E
+
+∥(xt−∆sg(u tgt))−(x t−∆uθ)∥2
+= ∆2LMF. (19)
+This equation demonstrates that optimizingx r-loss inher-
+ently imposes a time-dependent∆ 2 weighting on the Mean-
+Flow loss. Intuitively, even a small velocity error can lead to
+a significant displacement if the integration interval∆is large.
+The inherent∆ 2 scaling addresses this by imposing a larger
+penalty on longer displacement intervals. This transformation
+is exceptionally advantageous for one-step generation, where
+∆≈1, as the loss strictly reduces to the direct reconstruction
+error with respect to the clean speech.
+Endpoint SI-SDR Loss.While thex r-loss minimizes the
+L2 error for any arbitraryr, it does not explicitly guarantee the
+fidelity of the final generated audio. To bridge this gap, we
+simulate the actual inference process during training by directly
+estimating the data at the endpoint. Lett= 1be the start time
+corresponding to the initial estimate ˆs, andr=t ϵ be a terminal
+time. We directly sample the one-step reconstructed speech ˆstϵ
+at the endpoint using the current model prediction:
+ˆstϵ =x 1−(1−t ϵ)uθ(x1,r=t ϵ,t= 1,y, ˆs).(20)
+We minimize the negative SI-SDR between this sampled one-
+step endpoint ˆstϵ and the ground-truth clean speechs:
+LSI-SDR =−10 log 10
+∥αs∥2
+∥ˆstϵ−αs∥ 2,(21)
+whereαis the optimal scaling factor. This forces the model to
+prioritize velocity fields that yield higher auditory quality when
+predicting the target speech in a single step. The final training
+objective combines thexr-loss and the Endpoint SI-SDR loss:
+LMeCo =L xr +L SI-SDR.(22)
+4. Experiments
+4.1. Datasets
+To evaluate the proposed MeCo, we constructed multi-channel
+noisy and reverberant datasets. For the in-domain training and
+test sets, we used clean speech from the WSJ0 corpus mixed
+with noise from WHAM! [30]. To assess the model’s general-
+ization capabilities, we constructed two separate out-of-domain
+evaluation sets. The first dataset, representing an unseen cor-
+pus and noise distribution, was constructed by mixing Lib-
+rispeech [31] with DEMAND [32] noise. The second dataset,
+covering unseen languages, comprised six low-resource lan-
+guages [29] recorded in quiet studio environments and mixed
+with DEMAND noise [32]. All audio data were sampled at 16
+kHz and segmented into 4-second segments during training.
+The simulations were conducted using gpuRIR [33]. We
+simulated a 4-channel circular microphone array (0.05 m ra-
+dius) in cuboid rooms with width and depth uniformly sam-
+pled from[5.0,8.0]m, height from[3.0,4.0]m, and RT60 from
+[0.2,0.4]s. The microphone array and speakers were randomly
+positioned at heights of[1.0,1.5]m and[1.5,2.0]m, with min-
+imum wall margins of 1.0 m and 0.5 m, respectively. The
+source-to-array distance ranged between[0.75,2.0]m. Clean
+speech and noise were mixed at uniformly distributed SNRs in
+[−10,10]dB for single-speaker and in[10,20]dB for multi-
+speaker (2- and 3-speaker) mixtures. All models were trained
+and evaluated blindly, without knowledge of the number of ac-
+tive speakers.
+4.2. Implementation details
+Discriminative and generative models use STFTn fft/hop length
+of 512/256 and 510/64, respectively. Generative correctors
+shared the NCSN++ backbone as in [7], predicting either the
+instantaneous velocity field (Fast-GeCo) or the average velocity
+fieldu θ (MeanFlow and MeCo). Since no multi-channel one-
+step correctors currently exist, we adapted the SOTA single-
+channel one-step corrector, Fast-GeCo [22], as our primary gen-
+erative baseline. To enable multi-channel processing, all gener-
+ative networks were conditioned by channel-wise concatenating
+the complex STFTs of the mixtureyand the discriminative es-
+timate ˆs. MeanFlow models integrated a Gaussian Fourier pro-
+jection and MLP to embed the integration intervald=t−r
+alongside the standardt. Following [26], we setσ min = 0.0,
+σmax = 0.487,c= 0.5, andt ϵ = 0.03. As discriminative
+separators to provide initial estimates, we employed lightweight
+versions of three SOTA models: a modified DeFTAN2-base [4],
+SpatialNet-small [2], and a scaled-down CrossNet [3]. Detailed
+configurations for each model are available in our public repos-
+itory.1
+All models were trained using the Adam [34] optimizer,
+with the learning rate and batch size set to 1e-3 and 8 for dis-
+criminative models, and 1e-4 and 4 for generative correctors,
+7140
+Table 1:Performance comparison on WSJ0 + WHAM! and Librispeech + DEMAND.
+Model NFE RTF Type WSJ0 + WHAM! Librispeech + DEMAND
+PESQ↑ ESTOI↑ SI-SDR↑ DNSMOS↑ UTMOS↑ NISQA↑ PESQ↑ ESTOI↑ SI-SDR↑ DNSMOS↑ UTMOS↑ NISQA↑
+DeFTAN2 1 0.0155 D 1.88 0.75 9.31 2.94 3.12 3.921.780.71 4.96 2.88 2.90 3.62
++ Fast-GeCo (A)
++1 +0.0068 D+G
+1.960.79 9.81 3.11 3.51 4.11 1.75 0.72 5.10 3.08 3.22 4.00
++ MeanFlow (B) 1.78 0.77 10.01 3.04 3.63 4.43 1.66 0.71 5.18 3.04 3.34 4.26
++ MeCo (C) 1.930.80 10.08 3.19 3.70 4.501.750.73 5.19 3.17 3.41 4.38
+SpatialNet 1 0.0078 D 1.87 0.73 8.77 2.82 2.91 3.582.150.80 10.00 2.87 3.15 3.76
++ A
++1 +0.0068 D+G
+1.980.79 9.50 3.07 3.52 3.97 2.13 0.83 10.18 3.09 3.54 4.09
++ B 1.77 0.77 9.78 3.05 3.66 4.37 1.98 0.8210.433.07 3.65 4.41
++ C 1.950.80 9.88 3.18 3.65 4.412.130.8410.413.22 3.75 4.52
+CrossNet 1 0.0065 D 1.81 0.72 8.29 2.79 2.81 3.522.050.77 8.96 2.82 3.00 3.68
++ A
++1 +0.0068 D+G
+1.890.77 8.92 3.05 3.34 3.95 2.02 0.80 9.18 3.05 3.41 4.00
++ B 1.71 0.75 9.14 2.98 3.51 4.35 1.89 0.809.393.03 3.56 4.35
++ C 1.860.78 9.22 3.15 3.56 4.412.020.829.383.16 3.62 4.45
+Table 2:Ablation study on DSO.
+Model WSJ0 + WHAM! Librispeech + DEMAND
+PESQ↑ SI-SDR↑ DNSMOS↑ UTMOS↑ PESQ↑ SI-SDR↑ DNSMOS↑ UTMOS↑
+DeFTAN2 1.88 9.31 2.94 3.121.784.96 2.88 2.90
++ MeanFlow 1.78 10.01 3.04 3.63 1.66 5.18 3.04 3.34
+w/xr-loss 1.79 10.07 3.07 3.65 1.67 5.22 3.07 3.37
+w/ EP SI-SDR loss 1.9210.143.17 3.67 1.745.263.15 3.37
++ MeCo (Both) 1.9310.083.19 3.701.75 5.193.17 3.41
+Table 3:Performance comparison on out-of-domain languages.
+Model Type Low-resource languages[29]+ DEMAND
+PESQ↑ ESTOI↑ SI-SDR↑ DNSMOS↑ UTMOS↑ NISQA↑
+DeFTAN2 D 1.740.73 4.87 2.84 2.36 3.68
++ Fast-GeCo D+G 1.70 0.75 5.06 3.00 2.64 3.96
++ MeanFlow D+G 1.64 0.74 5.06 2.99 2.75 4.33
++ MeCo D+G 1.74 0.76 5.08 3.11 2.82 4.38
+respectively. For generative correctors, we utilized an expo-
+nential moving average of 0.999 and gradient clipping at 1.0.
+Discriminative models were trained for 150 epochs using the
+negative SA-SDR [35] loss. MeanFlow and MeCo were trained
+for 100 epochs. In contrast, Fast-GeCo required 100 epochs
+of score matching for the teacher model, followed by an ad-
+ditional 50 epochs of distillation using only the SI-SDR loss.
+The best checkpoints were selected based on the highest valida-
+tion SA-SDR for discriminative models and SI-SDR for gener-
+ative correctors. To evaluate cross-model generalizability, cor-
+rectors were trained solely on the output of frozen DeFTAN2
+and then evaluated directly on SpatialNet and CrossNet without
+further training. We report reference-based metrics (PESQ [36],
+ESTOI [37], SI-SDR) alongside reference-free human listening
+quality assessments (DNSMOS, UTMOS, NISQA [38]). Real-
+time factor (RTF) was measured on a single RTX 4090 GPU.
+4.3. Experiment results
+4.3.1. Performance on in-domain and out-of-domain
+To ensure suitability for practical deployment, our experiments
+focus exclusively on one-step generative correctors, which in-
+troduce a minimal computational overhead of only 1 NFE
+and an increase of 0.0068 in RTF. As shown in Table 1,
+MeCo significantly outperforms the evaluated discriminative
+baselines, the generative corrector Fast-GeCo and MeanFlow
+across in-domain (WSJ0+WHAM!) and out-of-domain (Lib-
+rispeech+DEMAND) datasets in almost all objective and sub-
+jective metrics. Fast-GeCo relies exclusively on an SI-SNR
+objective during fine-tuning without a generative loss. Con-
+sequently, while it can occasionally surpass MeCo on specific
+reference-based metrics, like in-domain PESQ, it exhibits lower
+performance on other reference-based metrics. In particular, it
+demonstrates significantly inferior performance on reference-
+free human listening assessments. In contrast, MeCo’s DSO
+integrates a generativex r-loss to preserve the natural data dis-
+tribution with an Endpoint SI-SDR Loss for signal fidelity. This
+unified approach enables MeCo to achieve optimal perceptual
+quality while preserving deterministic signal enhancement.
+4.3.2. Ablation study on DSO
+Table 2 details the ablation study on the components of DSO.
+Adding thex r-loss and Endpoint SI-SDR loss individually
+yields incremental improvements over the standard MeanFlow,
+but combining both in MeCo achieves the highest performance.
+This is because thex r-loss imposes a strict penalty on longer
+displacement intervals during one-step generation, while the
+Endpoint SI-SDR loss directly optimizes the signal fidelity at
+the terminal state by the one-step inference.
+4.3.3. Generalization to out-of-domain languages
+Table 3 evaluates generalization on an out-of-domain dataset
+comprising six low-resource languages. While DeFTAN2 de-
+grades on unseen languages, MeCo achieves the best perfor-
+mance on both reference-based metrics and reference-free hu-
+man listening quality assessments. It is notable that Fast-
+GeCo’s generalization performance is constrained because its
+SI-SNR-only fine-tuning strips away the generalizable gener-
+ative prior. By learning the underlying distribution of clean
+speech through the DSO, rather than purely deterministic map-
+pings, MeCo successfully synthesizes highly natural audio and
+generalizes effectively even to completely unfamiliar linguistic
+environments.
+5. Conclusion
+We proposed MeCo, the first one-step generative corrector for
+multi-channel speech separation. By leveraging Mean Flows,
+MeCo effectively maps discriminative estimates directly onto
+the clean speech manifold in a single step. To maximize one-
+step generation performance, we introduced DSO, which incor-
+porates anx r-loss and an Endpoint SI-SDR loss. Experimen-
+tal results demonstrate that MeCo achieves SOTA performance,
+excelling in both reference-based metrics and reference-free hu-
+man listening assessments, with robust generalization across in-
+domain and out-of-domain datasets. A current limitation is that
+MeCo’s independent speaker refinement relies on channel-wise
+concat

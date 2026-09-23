@@ -1,0 +1,467 @@
+Acoustic token admixture for joint speaker and content anonymization
+Ali Golmakani1, Seyed Ahmad Hosseini 1, Omar Manil Bendali 1, Emmanuel Vincent1,2, Brij Mohan Lal
+Srivastava1
+1 Nijta SAS, France
+2 Universit´e de Lorraine, CNRS, Inria, LORIA, F-54000 Nancy, France
+{ali, arash, brij}@nijta.com
+Abstract
+Speech recordings in regulated domains cannot be shared or
+reused for AI development without suppressing two indepen-
+dent re-identification channels: biometric speaker identity and
+linguistically identifying content. Existing approaches address
+each channel in isolation and require full re-synthesis, sacrific-
+ing the in-domain acoustic characteristics that make recordings
+valuable. We propose a unified acoustic token-space frame-
+work that jointly anonymizes both channels via per-frame ad-
+mixture of encoder-derived and phoneme-conditioned tokens,
+with NER-triggered span replacement preserving surrounding
+prosody. On the V oicePrivacy 2024 benchmark the system
+achieves EER 42.54%, within one point of the challenge top
+submission, with WER 3.73%.
+Index Terms: speaker anonymization, speech privacy, voice
+conversion, content privacy, speech synthesis, speech editing
+1. Introduction
+Speech recordings accumulate at scale in healthcare, legal pro-
+ceedings, and enterprise telephony, carrying in-domain vocabu-
+lary, acoustics, and speaking style that is uniquely valuable for
+training domain-adapted automatic speech recognition (ASR)
+systems and conversational analytics. Yet reuse creates compli-
+ance risk: recordings expose personally identifiable information
+through two independent re-identification channels, raising bar-
+riers under the GDPR, HIPAA, PIPEDA, and sector-specific
+regulations.
+The first channel isbiometric. V ocal tract geometry, residual
+prosodic habits, and energy distribution encode speaker identity
+in features exploited by automatic speaker verification (ASV) [1].
+Speaker anonymization addresses this by disentangling linguis-
+tic content from identity before resynthesis. Signal-processing
+methods such as McAdams coefficient shifting [2] are training-
+free but weak against informed attackers [3]. Deep voice con-
+version (VC) [4, 5] achieves stronger anonymization at greater
+computational cost. Unlike training-free signal-processing meth-
+ods (limited control) or entangled voice-conversion features,
+RVQ offers a discrete, hierarchically factorized representation
+whose staged residuals expose separable acoustic factors for
+controllable anonymization [ 6, 7]. The V oicePrivacy Chal-
+lenge (VPC) standardises evaluation through jointly measuring
+privacy through ASV equal error rate (EER), utility through
+ASR word error rate (WER), and emotion preservation through
+unweighted average recall (UAR) [8].
+The second channel islinguistic. V ocabulary, syntax,
+function-word distributions, and named entities form a stylo-
+metric fingerprint that persists in transcribed content, enabling
+authorship attribution even after the acoustic signal has been fully
+re-synthesised [9]. Attribution accuracy scales with transcript
+volume, making long-form enterprise corpora particularly vulner-
+able [10]. Within the speech community, stylometric obfuscation
+of transcript content has been shown to reduce author identifica-
+tion accuracy from 70% to 24% via paraphrasing [11], yet this
+approach operates at text level and requires full TTS re-synthesis
+to produce anonymised speech output. To our knowledge, no
+existing speaker anonymization system jointly addresses both
+channels in a unified framework; the acoustic and linguistic
+re-identification risks have largely been treated as separate prob-
+lems [12].
+Content privacy has been studied independently through
+three paradigms [13, 14]. Phone-code masking [15] makes sensi-
+tive spans unintelligible, disqualifying the output for downstream
+ASR or analytics. Named entity recognition (NER)-based substi-
+tution [16] preserves intelligibility within replaced spans but is
+bounded by NER recall and introduces acoustic discontinuities
+at edited boundaries. Large language model (LLM) transcript
+paraphrasing [17] provides the broadest content coverage, yet all
+three paradigms ultimately require full text-to-speech (TTS) re-
+synthesis, discarding the original acoustic character. At utterance
+level, the JHU HLTCOE system [18] improved the EER-UAR
+trade-off by stochastically routing between a VC system and
+cascaded ASR-TTS; however, routing is a binary, utterance-wide
+decision that still re-synthesises every frame and offers no mech-
+anism for span-level content editing. The critical gap shared
+by all prior work is that the output is not usable as in-domain
+training data: re-synthesis erases the prosodic rhythm and voice
+quality of the original recording.
+We address this gap with a pipeline that operates within a
+single acoustic token space, editing only the frames that require
+modification and leaving the surrounding signal intact. The
+system makes three contributions. First,NER-triggered frame-
+level token replacement: sensitive spans are re-generated from
+phoneme features and spliced back into the token stream without
+touching surrounding frames, avoiding both full re-synthesis
+and acoustic discontinuities at boundaries. Second,dual-stream
+RVQ admixture for joint anonymization: encoder-derived and
+phoneme-conditioned token streams are blended per-frame by
+a scalarβ, jointly suppressing biometric identity and residual
+stylometric fingerprints within a single synthesis stack. Third,
+cosine similarity gatingrejects hallucinated phoneme-derived to-
+kens, preserving intelligibility on noisy in-domain speech where
+forced alignment is imperfect.1
+2. Methods
+Following the disentanglement paradigm of encoding speech
+into linguistic, prosodic, and speaker representations [19], our
+1Samples are present here: https://github.com/Nijta/
+acoustic-token-admixture
+6782
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1949
+Stream A
+Stream B
+Input
+speech
+Whisper
+encoder
+RVQ
+(M=8) k(1:M)
+t
+Whisper
+decoder
+Transphone
+G2P→IPA
+CTC
+aligner
+Articulatory
+feat.a t
+T5 AR
+transformer
+˜k(1:M)
+t
+NER
+tagger
+⊕
+β, τ
+BigVGAN
+vocoder
+Anon.
+speech
+F0
+transform
+ECAPA
+pseudo-spkspan override
+Figure 1:Joint speaker and content anonymization pipeline.Stream A (blue): Whisper encoder representations are quantised through
+M=8 RVQ stages to produce frame-level encoder tokens k(1:M)
+t . Stream B (orange): the Whisper transcript is converted to IPA via
+Transphone G2P , time-aligned by a CTC forced aligner , mapped to articulatory feature vectors at, and decoded autoregressively by a T5
+transformer into phoneme-derived tokens ˜k(1:M)
+t . The two streams merge at the admixture node ⊕, governed by mixing ratio β and
+cosine-similarity gateτ . NER-detected sensitive spans send an override signal (dashed orange) that bypasses β and forces Stream B
+tokens at those frames. A BigVGAN vocoder synthesises the anonymised output conditioned on the fused tokens, a transformed F0
+contour , and an ECAPA-TDNN pseudospeaker embedding.
+pipeline operates on three conditioning streams fed to a single
+neural vocoder [20]: alinguistic token sequenceproduced by
+the admixture mechanism described below, aframe-level F0
+contour, and apseudospeaker embedding. Figure 1 gives an
+overview.
+2.1. Linguistic representation
+2.1.1. RVQ-Whisper tokens (Stream A)
+The Whisper large-v2 encoder [21] maps a log-mel spectrogram
+to frame-level representations xt∈R 1280 at 50 frames per sec-
+ond. These are passed through an M=8 stage residual vector
+quantiser with codebooks{C(m)}M
+m=1, each containing 1024
+vectors. At each stage, the residual of the previous stage is quan-
+tised to its nearest codebook entry; the quantised approximation
+is
+ˆxt =
+MX
+m=1
+C(m)[k(m)
+t ],(1)
+where k(m)
+t is the index selected at stage m. The Whisper
+encoder is frozen; only the RVQ codebooks and a parameter-
+efficient low-rank adaptation (LoRA) adapter (rank 32,α=64,
+applied to query and value projections) are trained, using the
+standard commitment loss [22] with decay 0.9 and commitment
+weight 0.6.
+2.1.2. Phoneme-conditioned autoregressive tokens (Stream B)
+The Whisper decoder produces a word-level transcript that is
+converted to an International Phonetic Alphabet (IPA) phoneme
+sequencep1:K by Transphone [23]. Each phoneme is mapped
+to a fixed 64-dimensional binary articulatory feature vector ak
+encoding place and manner of articulation following the IMSTou-
+can feature inventory [24]. A connectionist temporal classifica-
+tion (CTC)-based forced aligner, trained on the same Whisper
+encoder features with 111 output classes (phonemes plus blank)
+and Viterbi decoding, produces a monotonic frame-to-phoneme
+mapping t7→p ℓ(t), from which the frame-level articulatory
+sequence at is constructed by repeating each phoneme’s vector
+over its aligned span.
+A T5-style sequence-to-sequence transformer (220 M pa-
+rameters, initialised from t5-base) is trained to decode{at}
+autoregressively into the RVQ index sequences˜k(1:M)
+t , treating
+each of theM stages as parallel output streams and minimising
+Ltok =− 1
+T
+TX
+t=1
+MX
+m=1
+logP(k (m)
+t |context),(2)
+with sinusoidal positional embeddings added to the flattened
+index sequence and a maximum sequence length of 256.
+2.2. Frame-level admixture and cosine gating
+The two token streams are combined at each frame by a stochas-
+tic selection governed by a scalarβ∈[0,1]:
+kt =
+(˜k(1:M)
+t ,with probabilityβ,
+k(1:M)
+t ,with probability1−β. (3)
+Largerβ increases the fraction of phoneme-derived tokens and
+therefore strengthens both speaker anonymization and stylomet-
+ric suppression. Because selection occurs per frame inside a
+singlesynthesiser, rather than between two complete systems
+at utterance level, outputs are not cleanly attributable to a spe-
+cific generating subsystem, reducing fingerprinting risk for an
+informed attacker [18].
+Before accepting a phoneme-derived token at framet, the
+cosine similarity between the continuous reconstructions of each
+stream is checked:
+cos(ˆxt, ˆ˜xt)≥τ, τ= 0.6,(4)
+where ˆ˜xt is the vectorized representation of ˜k(1:M)
+t from the
+RVQ codebook. The thresholdτ was selected by subjective eval-
+uation on a held-out subset;τ= 0.6 provided the best perceptual
+balance between intelligibility and anonymization strength. If
+the condition fails, indicating a misalignment between the forced
+aligner and the acoustic content – common on accented or noisy
+speech – the system falls back to the encoder-derived token
+k(1:M)
+t , preserving intelligibility.
+2.3. NER-triggered content replacement
+To suppress linguistic re-identification through named entities
+and explicit identifiers, the Whisper transcript is tagged by a
+6783
+named entity recogniser. Frames aligned to a detected sensi-
+tive span are unconditionally assigned phoneme-derived tokens
+irrespective ofβ:
+kt = ˜k(1:M)
+t ,∀t∈S,(5)
+whereS is the set of encoder frame indices aligned to the span.
+The replacement content is obtained by editing the transcript
+(e.g. substituting a detected name with a plausible alternative),
+converting the edited segment to phonemes, predicting durations
+with the same T5 model, and generating the corresponding index
+sequence autoregressively:
+P( ˜k1:T ′|q 1:L,c) =
+T ′
+Y
+t=1
+P( ˜kt| ˜k<t, q1:L,c),(6)
+where q1:L is the edited phoneme sequence, T′ is the T5-
+predicted replacement duration (which may differ from the orig-
+inal span), and c denotes the 8 encoder frames of local con-
+text taken from the surrounding unedited region (approximately
+160 ms at the encoder frame rate); the token stream is re-indexed
+to absorb any length difference. Frames outsideS follow Eq. (3).
+2.4. V ocoder conditioning and pseudospeaker inference
+The conditioning vector at each frame is
+zt = [ ˆht ;f t ;s∗ ],(7)
+where ˆht∈R 1280 is the continuous reconstruction of the se-
+lected token sequence (Eq. 1),ft is the transformedF0 value for
+voiced frames, and s∗∈R 192 is a pseudospeaker embedding.
+The resulting 1 473-dimensional input conditions a BigVGAN
+vocoder [20], generating 16 kHz audio with overlap-add Hann
+windowing to eliminate audible chunk transitions.
+Pseudospeaker selection.ECAPA-TDNN x-vectors are ex-
+tracted from a diverse held-out pool. Candidate embeddings
+are either sampled uniformly (randomstrategy) or selected
+from cluster peripheries identified by Affinity Propagation [25]
+(sparsestrategy), trading anonymization strength against inter-
+utterance speaker consistency. The sampling is independent of
+source speaker’s gender. The final pseudospeaker embedding is
+the mean of the selected candidates.
+F0 transformation.The source log-F0 contour is transformed
+as
+ˆF0 = (1−α)F 0 +α ¯F0, α= 0.75,(8)
+where ¯F0 is a 32-frame voiced moving average. Additive white
+Gaussian noise ( +2 dB) is superimposed on the transformed
+contour to decorrelate residual speaker-specificF0 patterns. Un-
+voiced frames are excluded from the moving average computa-
+tion.
+3. Experiments
+3.1. Data
+We use the standard V oicePrivacy 2024 corpus as our primary
+evaluation benchmark [26]. Training data for the speaker veri-
+fication adversary consists of thelibri-train-clean-360split of
+LibriSpeech [27], comprising 360 hours of read speech from
+921 speakers. ASR utility is evaluated onlibri-dev-asrandlibri-
+test-asr; speaker privacy is evaluated across four trial sets —
+libri-dev-trials-f,libri-dev-trials-m,libri-test-trials-f, andlibri-
+test-trials-m— with corresponding enrolment sets. Emotion
+utility is evaluated on the IEMOCAP [28] development and test
+partitions supplied with the challenge.
+The raw training data for our T5 and BigVGAN mod-
+els spans English and French. English sources include Com-
+mon V oice 17 [29], LibriTTS (train-clean-100) [30], V oxPop-
+uli [31], and VCTK [ 32]. French sources comprise Common
+V oice 17, Multilingual LibriSpeech, V oxPopuli, and V oxForge.
+Two filtering policies are applied: aMOS policy(wv-mos >3.3,
+speaker duration <10 min) for diversity-critical components,
+and aspeaker policy(10 min–5 hr per speaker) for the T5 and
+BigVGAN models requiring robust per-speaker coverage.
+Pseudospeaker embeddings are drawn from a pool of speak-
+ers held out from all evaluation sets.
+For the speech editing evaluation, we construct a test set of
+213 utterances sampled fromlibri-test-asr, selecting sentences
+containing at least one named entity of typePERSONorLO-
+CATIONas identified by GLiNER [ 33]. Entity boundaries are
+verified against force-aligned phoneme transcriptions.
+3.2. Training
+We introduce the RVQ-Whisper tokens described in Sec. 2.1.1 to
+extract the linguistic information. The phoneme-conditioned T5
+transformer is trained for 100 K iterations onlibri-train-clean-
+360using the AdamW optimiser with a peak learning rate of
+3×10−4 and batch size 16. BigVGAN is trained from scratch
+for 800 K iterations (batch size 12, Adam β1=0.8, β2=0.99,
+lr 10−4 with exponential decay γ=0.999996) to condition on
+RVQ tokens, pseudospeaker x-vectors, and a log-F0 contour; all
+other architectural choices follow the original implementation.
+3.3. Evaluation Protocol
+Privacy is measured by EER under the semi-informed attacker
+protocol of VPC 2024 [ 26], using an ECAPA-TDNN ASV
+model [34] re-trained on anonymised speech; higher EER (ceil-
+ing 50 %) indicates stronger anonymisation. Linguistic utility
+is measured by word error rate (WER) on thelibri-dev/test-asr
+sets using Whisper medium.en [21]. Emotion utility is mea-
+sured by unweighted average recall (UAR) on IEMOCAP using
+the challenge’s pre-trained speech emotion recognition (SER)
+model. Naturalness is assessed via an automatic mean opinion
+score (MOS) predictor (wv-mos [35]). Speaker consistency (Edit
+Sim) in the speech editing task is measured by the cosine simi-
+larity between x-vector embeddings of the anonymised source
+utterance and the NER-edited output.
+3.4. Baseline Systems
+We compare against two published systems.T12-5is the top-
+ranked VPC 2024 submission (EER 43.23%), included as a
+strong upper bound on speaker anonymisation under full re-
+synthesis.HLTCOE[ 18] is the JHU HLTCOE utterance-level
+admixture system, the closest architectural antecedent to our
+work; it routes each utterance at probability p between a cas-
+caded Whisper-VITS system and a kNN-VC system, and we re-
+port its best published operating point atp= 0.4 (EER 40.81%,
+UAR 47.09%, WER 3.33%).
+All baselines are run with publicly available code and model
+weights.
+6784
+Table 1:V oicePrivacy 2024 benchmark results at the reported
+operating point. EER↑ higher is better (stronger anonymisation).
+WER↓ measures intelligibility; UAR↑ measures emotion utility.
+†HLTCOE results at p= 0.4 ; no p= 0.5 entry in published
+table.§F0 transformation not applied atβ∈{0.0,0.3}.
+System EER (%) WER (%) UAR (%)
+Original speech 10.2 1.8 70.1
+T12-5 (VPC top) 43.23 4.56 37.83
+HLTCOE admixture† 40.81 3.33 47.09
+Ours (β= 0.0)§ 23.0 2.5 41.51
+Ours (β= 0.3)§ 30.0 2.7 40.94
+Ours (β= 0.7) 42.54 3.73 40.11
+4. Results
+4.1. V oicePrivacy 2024 Benchmark
+Table 1 reports EER, WER, and UAR for our system across three
+β values, alongside the baseline systems. Numbers are averages
+over the female and male trial sets unless otherwise noted.
+Our system achieves EER 42.54 % atβ= 0.7 , within one
+point of the VPC top submission (43.23 %) while operating
+entirely in a unified token space without secondary inference
+passes. The WER of 3.73 % is within 0.4 points absolute of the
+HLTCOE admixture system (3.33 %), confirming that operating
+in a unified token space does not materially degrade intelligibil-
+ity relative to the strongest comparable baseline. Table 1 also
+reports two lower-β operating points without F0 transformation:
+atβ= 0.0 the system reduces to pseudospeaker substitution
+alone (EER 23.0 %), and at β= 0.3 partial admixture raises
+EER to 30.0 % with WER remaining below 3 %.
+UAR of 40.11 % is lower than the HLTCOE admixture sys-
+tem (47.09 %), which preserves more emotional content by rout-
+ing a fraction of utterances through voice conversion rather than
+synthesis. This reflects a known tradeoff in token-prediction-
+based systems: the phoneme-conditioned T5 generates tokens
+consistent with the target text but does not model emotional
+prosody, which is instead carried through the pseudospeaker em-
+bedding and transformedF0. The full system scores MOS 3.84
+(wv-mos) on the editing test set, with the admixture-only config-
+uration scoring 3.91, indicating that span-level NER replacement
+introduces only a modest naturalness cost.
+β tradeoff.The three operating points in Table 1 illustrate the
+EER–WER–UAR tradeoff governed byβ. EER rises monotoni-
+cally withβ: increasing the fraction of phoneme-derived tokens
+progressively erases speaker-correlated paralinguistic cues from
+the encoder stream, moving from EER 23.0 % at β= 0.0 to
+42.54 % atβ= 0.7.
+UAR remains stable across this range (40.11–41.51 %), sug-
+gesting that emotion-carrying information resides primarily in
+the pseudospeaker embedding rather than in the encoder token
+stream, since UAR is preserved even at β= 0.0 andβ= 0.3
+where F0 transformation was not applied. The WER cost of
+admixture is modest: WER increases by only 1.2 points absolute
+betweenβ= 0.0 andβ= 0.7 , attributable to occasional forced-
+aligner errors that the cosine similarity gate (Eq. 4) partially
+suppresses. We selectβ= 0.7 as our primary operating point on
+the basis of the EER–UAR tradeoff, where strong anonymisation
+is achieved without material degradation of emotion utility.
+Table 2:Speech editing evaluation. Anon. Sim↓: cosine similar-
+ity between x-vector embeddings of the original and anonymised
+output (anonymization strength; lower is better). Edit Sim↑: co-
+sine similarity between x-vector embeddings of the anonymised
+source and the NER-edited output (pseudospeaker consistency;
+higher is better). WER↓: intelligibility. MOS↑: naturalness.
+System Anon. Sim Edit Sim WER (%) MOS
+Admixture only (β= 0.7, no NER) 0.123 — 10.8 3.91
+Full system (NER +β= 0.7) — 0.959 11.9 3.84
+4.2. Speech Editing Evaluation
+Table 2 reports results on the speech editing evaluation set de-
+scribed in Sec. 3.1, comparing the full system (NER replacement
++β-admixture) against an ablation that applies admixture only,
+without NER-triggered span replacement.
+The admixture-only system achieves anonymization sim-
+ilarity 0.123 against the original speaker, confirming that β-
+admixture alone effectively suppresses biometric identity. The
+full system edit similarity of 0.959 confirms that NER-triggered
+replacement preserves pseudospeaker consistency across edited
+spans: the vocoder, conditioned on the same pseudospeaker em-
+bedding throughout, produces a perceptually continuous output
+even when the token stream switches source at entity bound-
+aries. The MOS of 3.84 represents a modest 0.07-point decline
+relative to the non-edited output (3.91), attributable to residual
+boundary artefacts at frame-level transitions despite overlap-add
+smoothing. The WER increase from 10.8% (admixture only) to
+11.9% (full system) reflects the expected cost of span-level token
+substitution on named entities.
+4.3. Ablation: NER Coverage and Gating
+The three components contribute distinct and complementary
+roles. NER-triggered replacement targets explicit identifying en-
+tities thatβ-admixture alone cannot suppress, since entity spans
+may be reproduced verbatim even at high admixture rates when
+the forced aligner assigns them high cosine similarity scores.
+The admixture mechanism addresses the residual stylometric
+fingerprint that persists between named entity spans. The cosine
+similarity gate decouples anonymization strength from intelligi-
+bility: without it, forced-aligner errors at highβ would propagate
+hallucinated tokens directly into the vocoder, degrading WER
+without benefit to privacy.
+5. Conclusion
+We presented a joint speaker and content anonymization frame-
+work operating within a unified acoustic token space. NER-
+triggered token replacement, per-frameβ-admixture, and cosine
+similarity gating work in concert to suppress both biometric
+identity and stylometric fingerprints without full re-synthesis.
+On V oicePrivacy 2024 the system achieves EER 42.54 % and
+WER 3.73 % at β= 0.7 , within one EER point of the chal-
+lenge top submission, with MOS 3.84 and edit consistency 0.959
+across NER-replaced spans. The primary limitation is UAR
+(40.11 %): future work should explore prosodic conditioning on
+source-utterance targets to recover emotion utility, and extend
+NER coverage to discourse-level stylometric cues via LLM-
+based paraphrase reranking.
+6785
+6. Generative AI Disclosure
+Large language model assistance was used during manuscript
+preparation for grammar correction, fluency editing, and com-
+pression of draft text. All technical content, experimental de-
+sign, results, and conclusions were produced and verified by
+the authors. No AI tools were used in any component of the
+experimental pipeline; all models referenced in this paper are
+third-party systems cited accordingly.

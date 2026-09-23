@@ -1,0 +1,415 @@
+Exploiting Neural Audio Codec Latents for Adversarial Audio Attacks
+Sameek Bhattacharya∗, Bharath Krishnamurthy∗, Ajita Rattani∗∗
+Dept. of Computer Science and Engineering,
+University of North Texas, Denton, Texas, USA
+sameekbhattacharya@my.unt.edu, bharathkrishnamurthy@my.unt.edu, ajita.rattani@unt.edu
+Abstract
+Deep learning–based audio classification systems, includ-
+ing automatic speaker verification, are vulnerable to adversarial
+attacks. Realistic real-time threat assessment remains difficult
+because optimization-based methods, such as projected gradi-
+ent descent (PGD) and Carlini–Wagner, require costly iterative
+updates in the high-dimensional waveform domain. Generative
+attacks allow single-shot synthesis but often introduce percep-
+tible artifacts or depend on computationally intensive architec-
+tures, while diffusion and autoregressive approaches incur high
+inference latency. To address this gap, we propose a genera-
+tive attack framework operating in the continuous latent space
+of a neural audio codec. A conditional generator synthesizes
+class-specific perturbations in a single forward pass and decodes
+them into adversarial waveforms. Our method achieves targeted
+attack success rates up to99%with sub-7ms inference, outper-
+forming generative baselines while reducing latency by24×.
+Index Terms: Adversarial attacks, audio classification, voice
+biometrics, neural audio codecs, generative models
+1. Introduction
+Advances in speech and audio processing have enabled the
+large-scale deployment of intelligent audio systems, rang-
+ing from automatic speaker verification (ASV) and biomet-
+ric authentication [1, 2, 3] to environmental sound classifica-
+tion [4], acoustic scene analysis [5, 6], and sound event detec-
+tion [7]. These technologies are now deeply embedded in con-
+sumer devices and services powered by deep neural networks
+(DNNs), including smart speakers (e.g., Apple HomePod, Ama-
+zon Echo) and voice assistants (e.g., Siri, Google Assistant) [8].
+While DNNs have driven substantial performance gains, their
+widespread adoption in real-world and safety-critical scenarios
+necessitates rigorous evaluation of potential security risks prior
+to deployment [9, 10].
+A primary concern is the vulnerability of DNN-based au-
+dio models to adversarial attacks [11, 12]. Traditional audio
+adversarial attacks operate directly in the high-dimensional in-
+put representation space, manipulating either raw waveforms or
+time–frequency representations such as spectrograms. Meth-
+ods including FGSM [11], PGD [13], and CW [14] optimize
+Lp-bounded perturbations via iterative gradient-based updates.
+While highly effective, their reliance on multiple forward and
+backward passes per sample introduces prohibitive computa-
+tional overhead, rendering them largelyimpractical for real-
+time or streaming scenarios, which are the most critical attack
+vectors for live user services [15, 16, 17].
+*These authors contributed equally.
+**indicates the corresponding author.
+Recent generative approaches, including the Fast Audio
+Perturbation Generator (FAPG) [18] and conditional GAN-
+based methods (CGAN) [19], improved efficiency via single-
+shot generation but remain confined to the high-dimensional
+waveform space, complicating optimization and often introduc-
+ing perceptible artifacts. Inspired by Unrestricted Adversar-
+ial Examples (UAEs) [20] in vision, recent work has explored
+latent-space manipulation. However, most generative audio
+attacks—including V AE, diffusion, and autoregressive meth-
+ods [21, 22, 23]—depend on heavy task-specific architectures
+designed for automatic speech recognition, resulting in substan-
+tial inference overhead and limiting real-time applicability to
+audio classification and biometric verification.
+Our workaddresses a critical gap: evaluating real-time,
+highly efficient generative attacks against audio classifica-
+tion and speaker verification systems. Rather than relying
+on task-specific feature extractors or computationally inten-
+sive sampling, we introduce a universal, end-to-end differen-
+tiable adversarial framework operating in the continuous latent
+space of a general-purpose neural audio codec (Descript Au-
+dio Codec (DAC) [24]). Leveraging a pre-trained compressed
+acoustic latent manifold, our method generates high-quality ad-
+versarial perturbations in a single forward pass. This provides
+a key advantage: combining the stealth and structural fidelity
+of latent-space manipulation withultra-low latency, making it
+well suited for compromising real-time streaming audio sys-
+tems where existing methods fall short.
+Our keycontributionsare summarized as follows:
+1.Latent-Space Generative Attack:We propose a trainable
+conditional generator that operates directly in the continu-
+ous latent space of DAC1, enabling adversarial manipulation
+of high-level compressed acoustic representations rather than
+raw waveform perturbations.
+2.Fully Differentiable Codec Pipeline:We design an end-to-
+end differentiable framework in the codec’s pre-quantization
+space, overcoming the non-differentiability of discrete code-
+books and enabling direct gradient-based optimization of la-
+tent perturbations.
+3.Real-Time Generation:A single forward pass generates ad-
+versarial examples in under7ms per sample, yielding up to
+24×speedup over generative baselines and18,900×over it-
+erative methods such as C&W.
+4.High and Consistent Attack Success:Our method achieves
+targeted Attack Success Rate (ASR) above 77% (up to
+99%) across CNN- and transformer-based audio classifica-
+tion models, outperforming generative baselines and demon-
+strating strong architectural generality and real-time threat vi-
+ability.
+1Code is available at VCBSL/DAC-GAN.
+185
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3055
+Figure 1:Architectural overview of the proposed end-to-end latent-space adversarial attack framework. The clean input waveform
+xis first projected into a continuous, lower-dimensional manifoldzvia the frozen DAC Encoder (E DAC). The trainable conditional
+generator (Gθ, highlighted in orange) synthesizes a targeted perturbationδ z by fusing the pristine latentzwith the target class
+embeddingy t. The perturbed latentz adv is then reconstructed into the adversarial waveformx adv through the frozen DAC Decoder
+(DDAC). To bridge the time-domain audio and the frozen victim classifier, a fully differentiable acoustic feature extractor (P) is utilized.
+The dashed line illustrates the continuous gradient flow (backpropagation) from the victim classifier’s composite loss all the way back
+to the latent generator, enabling single-shot, waveform-optimized attacks without relying on iterative inference-time optimization.
+2. Proposed Method
+We propose a white-box generative adversarial framework op-
+erating entirely in the continuous latent space of a neural audio
+codec. As illustrated in Figure 1, the end-to-end differentiable
+generative pipeline comprises four components: (1) a frozen
+codec encoder mapping audio to latents; (2) a trainable condi-
+tional generatorG θ; (3) a frozen codec decoder reconstructing
+waveforms; and (4) a fully differentiable acoustic preprocessor
+bridging the waveform to the frozen victim modelfv.
+2.1. Latent Projection and Conditional Generation
+Letx∈R T denote the raw audio waveform. The frozen De-
+script Audio Codec (DAC) encoder extracts a compressed, con-
+tinuous latent representation. We adopt DAC over alternative
+representations [25, 26] due to its state-of-the-art compression
+and continuous latent manifold, which preserves acoustic fi-
+delity and facilitates stable optimization:
+z=E DAC (x), z∈R C×L (1)
+whereCis the channel dimension andL≪T. This structured
+manifold allows minimal displacements to induce maximal se-
+mantic shifts without introducing jagged, audible artifacts.
+To achieve single-shot generation, we introduce a trainable
+feed-forward generatorG θ (Figure 2). It is conditioned on a
+targett, which can be a discrete class labely t (for classifica-
+tion) or a continuous speaker embeddingv tgt ∈R Demb (for
+speaker verification). For ASV attack, the embedding is lin-
+early projected to match the latent sequence dimensions of the
+DAC, yielding an embeddingEtgt∈R C×L.
+As detailed in Figure 2, the fused input (z+yt) is processed
+Figure 2:Detailed architecture of the Conditional Latent Gen-
+erator (Gθ). The network utilizes a multi-scale temporal recep-
+tive field (Conv1D) to process the fused continuous representa-
+tion. A residual skip connection scaled by a learnable param-
+eterαensures training stability, while zero-initialization of the
+final layer guarantees negligible initial perturbation.
+through a Linear layer, a ReLU activation, and four stacked
+Conv1D-BatchNorm-ReLU blocks with decreasing kernel sizes
+to capture temporal dependencies. Rather than predicting the
+absolute latent,G θ outputs a residual perturbation. A learned
+scaling parameterαstabilizes the skip connection, and the ter-
+minal Conv1D layer is zero-initialized to ensure gradual addi-
+tion of noise. The bounded adversarial latent is clamped to pre-
+186
+vent gradient explosion and is formulated as follows:
+δz =Clip
+ 
+Gθ(z+E tgt) +α·z,−ϵ bnd,ϵbnd
+
+(2)
+zadv =Clip(z+δ z,−zmax,zmax)(3)
+2.2. Differentiable Decoding and Feature Extraction
+The bounded latent sequence is passed through the frozen DAC
+decoder to reconstruct the adversarial waveform:x adv =
+DDAC (zadv). Because modern audio classifiers primarily op-
+erate on frequency-domain features, we formulate a differen-
+tiable preprocessorPthat performs a Short-Time Fourier Trans-
+form (STFT), Mel-filterbank mapping, and logarithmic com-
+pression while preserving the computational graph. The result-
+ing spectral feature map bridging the codec to the classifier is:
+Sadv =P(x adv), S adv∈R Fmel×Tf rames (4)
+2.3. Adversarial Objective Formulation
+To train the adversarial generator end-to-end without requiring
+iterative inference-time optimization, we define a unified com-
+posite loss function that accommodates both closed-set classifi-
+cation (e.g., speech command or environmental sound classifi-
+cation) and open-set metric learning (e.g., speaker verification).
+The overall objective is formulated as:
+Ltotal =L adv +λmLk
+margin +λL2
+∥δz∥2
+B (5)
+whereBis the batch size, and theL 2 regularization term ex-
+plicitly bounds the continuous perturbationδ z within the DAC
+latent space to preserve acoustic fidelity. The task-specific com-
+ponents,L adv andL k
+margin (wherek∈{cls,emb}), are de-
+fined according to the victim model’s operational domain:
+Discrete Categorical Objective:For standard classifiers where
+the target predictionˆy=f v(Sadv)represents pre-softmax log-
+its, the primary adversarial loss is the Cross-Entropy formula-
+tion,L adv =L CE (ˆy,yt). Because relying solely on cross-
+entropy can lead to vanishing gradients once the target class be-
+comes marginally dominant, we explicitly widen the decision
+boundary to ensure high-confidence misclassification using a
+Carlini-Wagner margin loss [14]:
+Lcls
+margin = max
+
+0,max
+i̸=yt
+(ˆyi)−ˆyyt +mcls
+
+(6)
+wherem cls is a constant scalar margin enforcing strict separa-
+tion between the target logit and the next most likely class.
+Continuous Embedding Objective:For biometric verification
+systems (e.g., ECAPA-TDNN) operating in an open-set mani-
+fold, the victim model outputs a continuous representation vec-
+torv adv =f v(Sadv)∈R Demb. Optimization in this space
+relies on geometric distances rather than discrete logits. Denot-
+ing the cosine similarity ascos(·,·), the adversarial loss max-
+imizes alignment with the target speaker embeddingv tgt via
+Ladv = 1−cos(v adv,vtgt). To ensure the adversarial em-
+bedding is simultaneously separated from the original source
+speakervsrc, the margin loss is formulated geometrically:
+Lemb
+margin = max
+
+0,cos(vadv,vsrc)−cos(vadv,vtgt)+memb
+
+(7)
+wherem emb dictates the requisite separation threshold in the
+cosine space, ensuring that the adversarial embedding robustly
+shifts past the verification system’s decision threshold.
+To stabilize the non-convex adversarial optimization land-
+scape and reduce batch-level gradient volatility,G θ’s weights
+are maintained using an Exponential Moving Average (EMA).
+During training, active weightsθare updated via the optimizer,
+while a shadow copy is decayed by a factorβ:θ EMA ←
+βθEMA +(1−β)θ. Inference exclusively utilizesθ EMA , yield-
+ing smooth, highly transferable adversarial perturbations.
+3. Experimental Protocol
+Datasets: We evaluate our adversarial attack generator on four
+benchmark datasets spanning speech commands [27], acous-
+tic scene classification [28], environmental sound classifica-
+tion [29], and speaker verification [30]. Google Speech Com-
+mands [27] contains35one-second spoken words at16kHz
+(80,000 train / 4,273 test). TAU Urban Acoustic Scenes
+2019 [28] comprises 10 urban scene classes with 10-second
+clips (7,348 train / 1,837 val / 4,185 test). UrbanSound8k [29]
+includes 10 environmental sound classes across 10 predefined
+folds; we use Folds 1–3 and 6–10 for training (6,806 files), Fold
+4 for validation (990), and Fold 5 for testing (936). For speaker
+verification, LibriSpeech (train-clean-100) [30] provides 251
+speakers; selecting 3 reference and 5 test utterances per speaker
+yields 1,255 genuine and 313,750 imposter trials.
+Baselines and evaluation metrics:All gradient-based base-
+lines were implemented with consistent hyperparameters for
+fair comparison. FGSM and PGD used a perturbation bound
+ofϵ= 0.01, while PGD used a step sizeα= 0.01for 10 itera-
+tions. The C&W attack usedcconst = 1, a learning rate of0.01,
+and 50 optimization iterations. For generative baselines, we im-
+plemented FAPG [18] with a Wave-U-Net architecture [31], and
+CGAN [19] with a conditional generator–discriminator trained
+using WGAN-GP [32] to generate targeted waveform-level per-
+turbations. Both FAPG and CGAN are representative single-
+shot generative attacks for fast inference.
+For the victim models, we use: (1)Audio Spectrogram
+Transformer[33] for Speech Commands obtaining a 98.37%
+accuracy; (2)PANNs CNN14[34] fine-tuned for acoustic scene
+classification; (3)PANNs CNN14fine-tuned on TAU Urban
+Acoustic Scenes2019and UrbanSound8k by unfreezing its 5th
+and 6th convolution and fully connected layers and classifier
+head. Achieves an accuracy of 76.65% and 86.22%, on test set
+of TAU Urban Acoustic Scenes 2019 and UrbanSound8k, re-
+spectively. (4)ECAPA-TDNN[3] with cosine similarity used
+for Speaker Verification obtaining 99.66% accuracy and 0.33%
+EER on clean Genuine and Imposter Trials of LibriSpeech. We
+evaluate attack efficacy using twometrics:Attack Success Rate
+(ASR)and modelAccuracy (Acc). In untargeted setting, ASR
+measures the percentage of adversarial samples misclassified
+into any incorrect class. In the targeted setting, ASR quanti-
+fies the proportion of samples classified as the specified target
+class. Acc denotes the percentage of samples that retain their
+original label. Importantly, in targeted attacks, ASR and Accu-
+racy are not direct inverses: a low Accuracy with a high (but
+imperfect) targeted ASR indicates that some samples failed to
+reach the exact target yet were still pushed away from the true
+label, effectively succeeding as untargeted attacks.
+Implementation Details:We use the 16kHz DAC frozen
+encoder–decoder (compression∼320×) model for mapping
+waveforms to continuous latents of dimensionC×L(L≪
+T) because of its state-of-the-art neural audio tokenizer per-
+formance enablinghigh-quality, low-bitrate audio. The con-
+ditional generator operates directly in this latent space using
+stacked Conv1D–BN–ReLU blocks (1024→1024→512→256)
+187
+followed by a1×1convolution to predict a residual perturba-
+tion. The latent offset is clamped to[−2,2], and final latents
+to[−5,5]before decoding, to prevent gradient explosion. Ex-
+periments were conducted on NVIDIA RTX 5000 Ada and A10
+GPUs with CUDA.
+4. Results and Discussion
+Untargeted (%) Targeted (%) Time (sec)
+MethodAcc ASR Acc ASR (1 sample)
+FGSM 91.12 8.88 93.46 3.63 0.9511
+PGD 54.35 45.65 85.81 12.63 2.4880
+CW 22.40 77.60 32.69 66.22 13.2731
+FAPG 18.92 82.08 3.53 80.77 0.0153
+CGAN 5.15 93.72 6.4293.560.0158
+Ours 3.42 96.58 3.3277.650.0067
+Table 1:Performance Comparison under Untargeted and Tar-
+geted Settings on Speech Commands dataset.
+Table 1 reports results on theGoogle Speech Commands
+dataset evaluated with AST (98.37% clean accuracy). Our
+latent-space attack achieves the strongest overall performance.
+In the untargeted setting, we obtain96.58% ASR, outperform-
+ing gradient-based FGSM (+87.70%), PGD (+50.93%), and
+C&W (+18.98%), while also exceeding FAPG (+14.50%) and
+CGAN (+2.86%). In the targeted setting, although CGAN at-
+tains the highest ASR (93.56%), our method remains competi-
+tive (77.65%) while significantly surpassing FGSM (+74.02%),
+PGD (+65.02%), C&W (+11.43%), and FAPG (-3.12% lower).
+This variance suggests that manipulating localized phonemes in
+1-second clips via global latents is harder than shifting contin-
+uous scenes or speaker identities. Importantly, ourapproach
+achieves the lowest latencyat0.0067 sper sample, making it
+faster than both gradient-based methods (up to 1,980×over
+C&W) and prior generative attacks, demonstrating superior ef-
+ficiency with strong attack effectiveness.
+Untargeted (%) Targeted (%) Time (sec)
+MethodAcc ASR Acc ASR (1 sample)
+FGSM 48.50 44.86 60.94 12.16 0.7140
+PGD 43.06 50.06 46.55 30.21 1.2400
+CW 4.70 94.67 14.37 92.21 6.1400
+FAPG 2.10 97.90 1.76 96.52 0.0048
+CGAN 20.17 79.83 21.22 77.13 0.0237
+Ours 0.89 99.11 1.23 97.17 0.0039
+Table 2:Performance Comparison under Untargeted and Tar-
+geted Settings for Environmental Sound Classification Task on
+UrbanSound8K dataset.
+Untargeted (%) Targeted (%) Time (sec)
+MethodAcc ASR Acc ASR (1 sample)
+FGSM 13.31 84.04 15.27 14.67 1.8900
+PGD 6.59 92.21 11.91 77.27 6.5500
+CW 0.31 99.840.24 96.6538.5500
+FAPG 2.95 97.02 4.34 95.80 0.0097
+CGAN 1.20 98.25 4.12 95.97 0.0232
+Ours 0 1000.32 94.070.0056
+Table 3:Performance Comparison under Untargeted and Tar-
+geted Settings for Environmental Sound Classification Task on
+DCASE2019 dataset.
+For environmental sound classification onUrbanSound8K
+andDCASE2019(Tables 2 and 3), evaluated using PANNs
+CNN14, our method consistently achieves the strongest over-
+all attack performance with the lowest latency. On Urban-
+Sound8K (86.22% clean accuracy), we obtain99.11%untar-
+geted ASR, surpassing FGSM (+54.25%), PGD (+49.05%),
+C&W (+4.44%), and further improving over generative base-
+lines FAPG (+1.21%) and CGAN (+19.28%). In the tar-
+geted setting, our97.17%ASR exceeds FGSM (+85.01%),
+PGD (+66.96%), C&W (+4.96%), FAPG (+0.65%), and CGAN
+(+20.04%).
+On DCASE2019 (76.65% clean accuracy), we achieve
+100%untargeted ASR, outperforming FGSM (+15.96%), PGD
+(+7.79%), C&W (+0.16%), FAPG (+2.98%), and CGAN
+(+1.75%). In the targeted case, C&W attains the highest ASR
+(96.65%), while our method achieves a competitive94.07%,
+exceeding FGSM (+79.40%), PGD (+16.80%), and remaining
+close to FAPG (-2.45%) and CGAN (-1.90%). Importantly, our
+inference time (0.0039–0.0056 s) is the lowest across all meth-
+ods, making it substantially faster than both iterative optimiza-
+tion and prior generative attacks, thereby demonstrating supe-
+rior efficiencywith near-complete model collapseacross envi-
+ronmental sound domains.
+Untargeted (%) Targeted (%) Time (sec)
+MethodAcc ASR Acc ASR (1 sample)
+FGSM 90.68 9.32 97.92 2.06 0.08
+PGD 0.38 99.60 87.57 12.43 1.98
+CW 0.03 99.95 17.45 82.64 66.20
+FAPG 19.00 81.00 21.60 78.40 0.08
+Ours 0.00 100 0.02 99.80 0.0035
+Table 4:Performance Comparison under Untargeted and Tar-
+geted Settings for Speaker Verification on LibriSpeech dataset.
+For speaker verification onLibriSpeech(Table 4) evaluated
+against ECAPA-TDNN (99.66% clean accuracy), our method
+achieves100%untargeted ASR, improving over FGSM by
++90.68%, PGD by+0.40%, C&W by+0.05%, and FAPG by
++19%. For targeted attacks, we obtain99.80% ASR, exceeding
+FGSM by+97.74%, PGD by+87.37%, C&W by+17.16%,
+and FAPG by+21.40%. Note that CGAN could not be evalu-
+ated due to mode collapse during training. Unlike waveform-
+domain optimization, which must iteratively push embeddings
+across cosine decision thresholds, our latent generator directly
+learns to induce decisive embedding displacement within the
+compact DAC manifold. Critically, this is achieved with only
+0.0035 slatency per sample, making our approach23.8×faster
+than the generative FAPG baseline, and between18.6×and
+18,914×faster than iterative methods.
+5. Conclusion
+The widespread deployment of streaming and on-device audio
+systems demands rigorous evaluation against real-time adver-
+sarial threats. Prior generative approaches reduce optimiza-
+tion cost but remain waveform-bound, task-specific, or lack tar-
+geted control. We introduce an end-to-end differentiable frame-
+work that generates adversarial examples directly in the latent
+space of a neural audio codec, eliminating iterative optimiza-
+tion through a single forward pass. The method achieves tar-
+geted success rates of97.17%on UrbanSound8K and77.65%
+on Speech Commands in under7 msper sample, substan-
+tially faster than strong gradient-based baselines. These find-
+ings identify compressed semantic latent manifolds as a power-
+ful yet unexplored adversarial surface, enabling both high attack
+success and real-time generation. Future work will investigate
+black-box transferability and latent-space defenses.
+188
+6. Generative AI Use Disclosure
+Generative AI tools were used solely for language refinement,
+clarity improvement, and minor formatting adjustments. The
+research conception, methodology, experimental design, imple-
+mentation, results, and analysis were entirely conducted by the
+authors. All AI-assisted edits were carefully reviewed, vali-
+dated, and approved by the authors, who take full responsibility
+for the final content of this manuscript.

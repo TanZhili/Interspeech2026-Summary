@@ -1,0 +1,467 @@
+LMPAN: A Lightweight Multi-Path Alignment Network for Joint Full-Duplex
+Acoustic Echo Cancellation and Noise Suppression
+Chengwei Liu1, Shaofei Xue1,2,∗∗, Haoyin Yan1, Xiaotao Liang2, Zheng Xue2
+1 Qwen Business Unit of Alibaba, China
+2 TongYi AI Lab of Alibaba Group, China
+liuchengwei.lcw@alibaba-inc.com, mullerxue@126.com, yanhaoyin.yhy@alibaba-inc.com
+Abstract
+We propose a lightweight multi-path alignment network
+(LMPAN) for on-device joint acoustic echo cancellation (AEC)
+and noise suppression (NS) in full-duplex spoken dialogue sys-
+tems. To address hardware-induced distortions and dynamic
+acoustic conditions, we introduce three core innovations: (1)
+a multi-path alignment stage correcting temporal and energy
+mismatches across reference, linear AEC (LAEC) output, and
+microphone signals; (2) an attention-based mechanism that
+dynamically integrates enhanced LAEC and microphone fea-
+tures under varying acoustic scenarios; (3) a post-filtering mod-
+ule with a dynamic target generation strategy for downstream
+tasks (ASR, V AD). Furthermore, we adopt a two-stage train-
+ing framework leveraging self-supervised learning representa-
+tions to enhance perceptual quality. Experiments show that LM-
+PAN, with only480Kparameters and126 MACs, achieves per-
+formance comparable to the state-of-the-art lightweight model
+DeepVQE-S, while ensuring real-time inference capability.
+Index Terms: Acoustic echo cancellation, noise suppression,
+multi-path alignment, dynamic target generation, full-duplex
+spoken dialogue
+1. Introduction
+Full-duplex spoken dialogue systems (FDSDS) have made re-
+markable progress with the development of large language mod-
+els (LLMs), enabling more natural interactions [1,2]. However,
+their performance degrades substantially under adverse echo
+and noise conditions [3], highlighting the critical importance of
+acoustic echo cancellation (AEC) and noise suppression (NS)
+for system efficacy [4, 5].
+A variety of AEC approaches have been proposed, which
+can be broadly categorized into conventional digital signal pro-
+cessing (DSP)-based methods [5, 6] and neural network (NN)-
+based techniques [3, 7, 8]. The performance of DSP-based
+methods is limited in complex full-duplex scenarios involving
+heterogeneous hardware, device-specific nonlinear distortions,
+time-varying latency (ranging from milliseconds to hundreds of
+milliseconds), and diverse acoustic environments [4, 9, 10]. In
+contrast, NN-based methods perform in-model alignment be-
+tween the microphone (mic) and far-end signals, achieving su-
+perior accuracy and adaptability.
+Within the NN-based approaches, end-to-end architectures
+have gained traction. Evgenii et al. [8] proposed DeepVQE for
+joint echo cancellation, noise reduction, and dereverberation
+(DRB). Yang et al. [11] introduced a diffusion-based stochas-
+tic regeneration approach, formulating AEC as a conditional
+generation problem. Other methods combine NNs with tra-
+**indicates the corresponding author.
+Figure 1:Full-Duplex Spoken Dialogue Architecture.
+ditional signal processing components [12], typically incorpo-
+rating a linear AEC (LAEC) module based on adaptive filter
+algorithms to suppress linear echo components. Additionally,
+multi-task learning frameworks [8,13,14] have shown effective-
+ness in acoustic scenarios by jointly addressing NS, DRB, and
+AEC, leading to overall improvements in speech quality. To
+address time-varying latency, prior works [8, 15, 16] proposed
+attention-based frameworks that integrate dynamic time align-
+ment with parallel encoder structures to enhance AEC robust-
+ness. Some studies incorporate data augmentation and post-
+processing strategy to reduce the mismatch for downstream
+tasks such as automatic speech recognition (ASR) and voice ac-
+tivity detection (V AD) [4, 9, 17].
+Despite these advances, existing frameworks remain vul-
+nerable to hardware-induced challenges in real-world FDSDS
+deployment. While capable of implicit alignment learning,
+these neural approaches lack explicit mechanisms to compen-
+sate for persistent temporal shifts and energy disparities across
+streams under varying hardware conditions. Consequently, such
+misalignments distort feature fusion, amplify residual artifacts,
+and ultimately degrade the fidelity required by sensitive down-
+stream components [4].
+To address this gap, we propose LMPAN, a lightweight
+multi-path alignment network that holistically optimizes AEC
+performance through four synergistic innovations: (i) Ded-
+icated multi-path alignment modules compensating temporal
+and energy mismatches; (ii) An attention-based adaptive fu-
+sion mechanism adapting to dynamic conditions without aux-
+iliary V AD or double-talk detectors; (iii) A post-filtering mod-
+ule with dynamic target generation, which preserves speech in-
+tegrity and prevents over-suppression to ensure robustness for
+ASR and V AD; and (iv) SSL-guided two-stage training lever-
+aging WavLM representations for perceptual fidelity.
+2. METHODOLOGY
+2.1. Problem formulation
+We assume an FDSDS in Fig. 1, where near-end speech is con-
+taminated by echo and noise. The observed signal model can be
+4945
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-191
+Figure 2:Overall structure of the proposed LMPAN system. Details for key components are given in: (a) Overall diagram of the
+proposed framework of LMPAN, (b) Alignment block, (c) Attention fusion module.
+expressed as
+y=s+n+e(1)
+wherey,s,n, andedenote the microphone signal, near-end
+speech, additive noise, and echo component, respectively. The
+echo componenteis generated by convolving the far-end refer-
+ence signalrwith the acoustic echo path responseh. Givenr
+as the reference signal, the target is to extractsfromy, involv-
+ing both AEC and NS.
+2.2. Network Architecture
+Our proposed LMPAN is illustrated in Fig. 2. We compute the
+LAEC output by traditional algorithms, which is combined with
+mic and ref signals to serve as the input of neural network. To
+address temporal and energy misalignments among the LAEC
+output, mic signal, and ref signal, three pairwise alignment
+blocks are employed. These aligned features are then utilized
+to enhance the mic and LAEC signals, which are subsequently
+fused via an attention-based module. Finally, a post-processing
+strategy is applied to suppress nonlinear artifacts introduced by
+the neural network [4], with an optimal residual scaling param-
+eterα= 0.4selected to minimize mismatch for downstream
+tasks (e.g., ASR, V AD). Module details follow.
+LAEC:A sub-band time delay estimation (TDE) algorithm
+based on cross-correlation [18] estimates the time delay be-
+tween the ref and mic signals. A normalized least mean square
+(NLMS) based linear filter then estimates the linear echo com-
+ponent and outputs the residual signal.
+Multi-path Alignment:Conventional TDE methods degrade
+significantly under time-varying latency and low signal-to-
+noise ratio (SNR) conditions. Conversely, end-to-end neural
+approaches often lack explicit alignment mechanisms, lead-
+ing to compromised robustness under data scarcity or domain
+shift. To address these limitations, the proposed alignment
+block (Fig. 2(b)) employs a soft temporal alignment strategy.
+LetX r ∈R 2×t×f andX m ∈R 2×t×f denote the power-
+compressed [19] complex short-time Fourier transform (STFT)
+spectrum (real and imaginary parts are concatenated as 2-
+channel real-valued maps) of far-end (ref) and mic signal, where
+tandfindicate time and frequency bins, respectively.
+First, feature maps are downsampled with a max-pooling
+layer (having a kernel size of1×4) along the frequency di-
+mension. Further, the features are reshaped such thatX ′
+m ∈
+Rt×( f
+4·c) andX ′
+r ∈R t×( f
+4·c). QueriesQ∈R t×p and keys
+K∈R t×p are then projected from these representations, where
+p∈Nis the projection size. To estimate the time alignment be-
+tween signals, a synthetic delay is applied toKfor each candi-
+date delayd∈[0,d max]by zero-padding at the start and crop-
+ping at the end. A dot product betweenQand the delayedK
+yields a similarity score for eachd, forming a delay likelihood
+vector of lengthd max. This vector is passed through a soft-
+max to obtain a probabilistic delay distributionD∈R dmax,
+whered max = 100corresponds to a maximum delay of 1 sec-
+ond, by zero-padding at the start and cropping at the end. The
+aligned far-end featuresX F ∈R 2×t×f are computed via soft
+time alignment.
+Three alignment blocks parallelly process ref and mic pair
+[Xr,X m], mic and LAEC pair[X m,X l], and ref and LAEC
+pair[X r,X l], yieldingX rm,X ml, andX rl∈R 2×t×f , respec-
+tively. This soft alignment module accounts for uncertainty in
+temporal delays and enhances robustness to dynamic misalign-
+ments, eliminating the need for hard delay estimates. Energy
+compensation employs learnable per-path scaling factors to nor-
+malize amplitude levels before fusion.
+Attention-based Fusion Module:Conventional NN-based
+AEC pipelines critically depend on LAEC outputs, yet LAEC
+inevitably introduces spectral distortions. To eliminate this vul-
+nerability, we adopt an end-to-end dual-stream paradigm that
+jointly optimizes feature extraction from both the LAEC spec-
+trumY l and mic spectrumY m.
+After alignment,X rm,X ml,X rl, andX r are concatenated
+toX f along channel dimension, which is subsequently com-
+bined withX l andX m to refine LAEC spectrum and mic spec-
+trum by GTCRN [20], respectively. The attention fusion mod-
+ule Fig. 2(c) integrates information from refined LAEC spec-
+trumY l and mic spectrumY m, which captures bothlocaland
+globalcontextual features based on multi-scale channel atten-
+tion mechanism. The attention maskM∈R 2×t×f and its
+complement1−Mare applied toY l andY m as follows:
+Yf =M·Y l + (1−M)·Y m.(2)
+2.3. Dynamic Target Adaptation
+We propose a dynamic target generation strategy that adap-
+tively retains controlled residual noise or echo to alleviate over-
+suppression in conventional AEC and NS systems. To con-
+struct the training targett, we introduce two residual scaling
+factors: (a) A noise residual factorγcontrolled by a desired
+target signal-to-noise ratio (SNR):
+γ= min
+
+1,10 (SNRin−SNRt)/20
+
+,(3)
+4946
+Figure 3:Two-stage training pipeline for LMPAN: Stage 1:
+SSL representation alignment using a frozen pretrained WavLM
+model; Stage 2 jointly optimizes spectral fidelity, echo suppres-
+sion, and perceptual quality, with SSL loss as a consistency reg-
+ularizer.
+whereSNR in andSNR t denote the input SNR and target SNR,
+respectively. (b) An echo residual factorβcontrolled by a de-
+sired target signal-to-echo ratio (SER):
+β= min
+
+1,10 (SERin−SERt)/20
+
+,(4)
+whereSER in andSER t indicate the input SER and target SER,
+respectively. The final target signal is constructed as
+t=s+γn ′ +βe ′,(5)
+wheren ′ ande ′ represent noise and echo components ac-
+cording toSNR in andSER in, respectively. The factorsγ
+andβretain a controlled level of interference, avoiding over-
+suppression and preserving realistic double-talk dynamics.
+2.4. Loss Function
+Inspired by the effectiveness of self-supervised learning (SSL)
+embeddings in capturing rich acoustic and semantic representa-
+tions [21–23], we adopt a two-stage training strategy for LM-
+PAN (Fig. 3) to jointly optimize representation alignment and
+task-specific objectives. The stage-wise objectives are formu-
+lated as:
+Lstage-1 =L SSL,(6)
+Lstage-2 = 10L total + 0.5L SSL,(7)
+Stage 1: SSL Representation Alignment.We freeze a pre-
+trained WavLM-Large model [24] 1 and minimize the mean
+squared error (MSE) between SSL embeddings of the enhanced
+output and ground-truth clean speech:
+LSSL = 1
+L
+LX
+l=1
+∥el− ˆel∥2,(8)
+whereLdenotes the total number of layers in the WavLM
+model.
+Stage 2: Task-Optimized Fine-Tuning.We optimize
+a composite lossL total combining spectral reconstruction
+Lspec, echo-aware lossL echo [13], scale-invariant SNR loss
+Lsi-snr [25], and PMSQE perceptual lossL pmsqe [26]:
+Ltotal =L spec +α 1Lecho +α 2Lsi-snr +α 3Lpmsqe,(9)
+whereα 1 = 0.1,α 2 = 0.2, andα 3 = 0.8are weighting
+coefficients selected based on ablation studies. The SSL loss
+LSSL serves as a consistency regularizer during fine-tuning to
+1https://huggingface.co/microsoft/wavlm-large
+Figure 4:Spectrum visualizations of different stage on real
+double-talk sample of blind test.
+preserve semantic fidelity. For ablation, we also evaluate an
+SSL-only variant (denoted as SSL) that uses only Stage 1 (6)
+without the second-stage fine-tuning, to isolate the contribution
+of two-stage training.
+3. EXPERIMENTS
+3.1. Experimental Setup
+Datasets:In our experiments, we utilize matched clean
+and noisy speech pairs from ICASSP 2022/2023 AEC Chal-
+lenge [10,27] and noise data from DNS Challenge [28,29]. For
+realistic full-duplex evaluation, we additionally collect a large-
+scale echo dataset from 40 smartphones at varying playback
+volume levels (30%–100%), capturing diverse acoustic scenar-
+ios due to different hardware characteristics and software con-
+figurations. Each device yields approximately 180 minutes of
+real-world interactions, including far-end reference and micro-
+phone signals.
+Simulation Details:Training data are augmented with room
+impulse responses (RIRs) simulated via the hybrid method [30],
+reference signal perturbations including time-frequency mask-
+ing and temporal shifts of 0–80 ms, dynamic utterance concate-
+nation, and standard augmentations [7,31]. We generate 10,000
+rooms (dimensions:3×3×3m to8×5×4m) and reverberation
+times (RT60: 0.2–1.2 s). This yielded 2,000 hours of training
+data partitioned 8:1:1 across double-talk (DT), far-end single-
+talk (ST-FE), and near-end single-talk (ST-NE) scenarios. SER
+in DT segments ranges from−20dB to15dB, and SNR in
+DT and ST-NE segments ranges from−5dB to25dB. For
+evaluation, we adopt the AEC Challenge 2023 blind test [10]
+and a self-collected real-world test set ( 4,000 noisy DT utter-
+ances; loudspeaker volume: 60–100%). All audio is resampled
+to 16k Hz.
+Implementation Details:Input features were extracted via
+STFT with a 32-ms frame length, 16-ms frame shift, and magni-
+tude compression factor of 0.3. This model is trained using the
+AdamW optimizer for 100 epochs. The learning rate reaches
+a peak of 0.001 after 4,000 warm-up steps and is decayed by
+a factor of 0.98 per epoch. The AFM employs1×1convo-
+lutions for Q/K/V projection with a single attention head. The
+GTCRN-based refinement branches use PConv with a1×3ker-
+nel along the frequency axis. During training, the ref and noisy
+signals are truncated to 5 seconds.
+Evaluation Metrics:For NS and AEC evaluation, the echo re-
+turn loss enhancement (ERLE) and AECMOS [32] are adopted
+in ST-NE and DT scenarios. AECMOS comprises two compo-
+nents: EMOS for echo annoyance and DMOS for other degra-
+dations, averaged asMOS avg. Downstream task evaluation is
+4947
+Table 1. AECMOS and ERLE (dB) results on AEC Challenge 2023 blind test sets. MA: multi-path alignment; AFM: attention-based
+fusion module; DTA: dynamic target adaptation; SSL-only: training with SSL loss only; STL: two-stage training with SSL.
+Exp Method # Param. MACs
+AEC Challenge 2023
+DT ST-FE MOSavg
+EMOS DMOS ERLE EMOS DMOS
+–
+DeepVQE (E2E) [8] 0.82M 315M 4.62 4.02 65.7 4.61 4.36 4.40
+Align-ULCNet (Hybrid) [15] 0.69M 100M 4.60 3.80 – 4.77 4.28 4.36
+TBNN (Hybrid) [12] 9.56M – 4.72 4.16 – 4.70 3.91 4.37
+1 Base Model (One-stage) 0.24M 65M 4.28 3.69 42.33 4.60 4.09 4.17
+2 +MA 0.32M 82M 4.43 3.89 45.21 4.62 4.29 4.31
+3 +MA+AFM 0.48M 126M 4.51 4.0248.224.65 4.38 4.39
+4 +MA+AFM+SSL-only 0.48M 126M 4.58 4.09 46.43 4.66 4.42 4.44
+5 +MA+AFM+STL 0.48M 126M4.63 4.1747.154.71 4.44 4.49
+6 +MA+AFM+STL+DTA 0.48M 126M 4.59 4.12 45.04 4.66 4.40 4.44
+Table 2:Performance comparison of VAD (DCF %), ASR
+(WER %), and FDSDS (TIR %) on a real-world double-talk test
+set, stratified by SER into[−15,−10]dB and[−20,−15]dB,
+with SNR randomly sampled from[5,20]dB.
+Method SER:[−15,−10]dB SER:[−20,−15]dB
+DCF↓WER↓TIR↑DCF↓WER↓TIR↑
+One-stage 4.68 11.08 90.96 9.38 24.25 85.17
++ MA 3.42 9.57 91.53 7.22 21.57 87.96
++ MA+AFM 2.55 8.36 92.82 5.85 19.38 89.17
++ MA+AFM+SSL-only 2.35 8.16 93.12 5.45 18.58 90.17
++ MA+AFM+STL 1.98 6.56 94.34 4.68 17.18 91.47
++ MA+AFM+STL+DTA1.55 4.34 92.54 3.75 14.38 93.85
+assessed via: (1) detection cost function (DCF) with semantic-
+V AD [33] model for V AD performance; (2) word error rate
+(WER) using Paraformer [34]; (3) true interruption rate (TIR)
+via LLM-enhanced dialogue management [1] for FDSDS as-
+sessment.
+3.2. Experimental Results
+AEC and NS Performance.Table 1 shows that LMPAN
+achieves competitive performance on the AEC Challenge 2023
+blind test. Starting from the lightweight base model (Exp 1),
+integrating the multi-path alignment module (MA, Exp 2) im-
+proves average MOS (MOS avg) from 4.17 to 4.31. Incorpo-
+rating the attention-based fusion module (AFM, Exp 3) in-
+creases MOS avg to 4.39 and ERLE to48.22 dB. Two-stage
+training with SSL (STL, Exp 5) further boosts perceptual qual-
+ity to MOS avg =4.49, achieving the highest DT EMOS
+(4.63), DMOS (4.17), and ST-NE scores. Finally, DTA (Exp 6)
+maintains robustness in double-talk but slightly reduces overall
+MOS. The final model (Exp 5, 0.48M parameters, 126M MACs)
+outperforms prior methods including DeepVQE in MOSavg with
+lower complexity, demonstrating that architectural design, not
+scale, drives gains in efficient AEC systems.
+Downstream Task Performance.Table 2 summarizes
+performance across V AD, ASR, and FDSDS tasks.
+Compared to the one-stage baseline, the full pipeline
+(+MA+AFM+STL+DTA) achieves substantial gains in the
+more challenging[−20,−15]dB SER range (stronger echo in-
+terference), with DCF, WER, and TIR improving by 5.63, 9.87,
+and 8.68 percentage points, respectively. Despite retaining
+controlled residual components, DTA and STL jointly boost
+performance by minimizing speech distortion, demonstrating
+the importance of target signal preservation in full-duplex
+Table 3:Ablation study of training target SER (SER t) in dy-
+namic target adaptation, evaluated on a simulated double-talk
+test set using WER (%), PESQ, and ERLE (dB).
+SERt (dB) WER↓PESQ↑ERLE (dB)↑
+20 13.12 2.22 35.49
+2510.242.35 42.23
+30 11.342.3944.56
+35 11.55 2.3445.11
+systems.
+Ablation Studies.Figure 4 visualizes spectrogram evolution
+across processing stages, demonstrating that integrating local
+microphone cues with multi-path alignment is essential for pre-
+serving near-end speech fidelity under strong echo interference.
+This is quantitatively validated in Table 2, where adding AFM
+(+MA→+MA+AFM) consistently improves ASR perfor-
+mance across all SER ranges, confirming that the LAEC+MIC
+fusion mechanism effectively preserves speech fidelity.
+Dynamic Target Adaptation Analysis.SER t is a hyperpa-
+rameter defining residual echo retention intraining targets(not
+an output metric). Table 3 demonstrates thatSER t = 25dB
+optimizes WER for ASR by preserving moderate echo to min-
+imize speech distortion. In contrast,SER t = 30dB and35dB
+maximize PESQ and ERLE, respectively. This confirms that
+task-specific interference retention levels should be selected
+based on downstream objectives.
+4. CONCLUSION
+In this paper, we propose LMPAN, a lightweight multi-path
+alignment network for on-device joint AEC and NS in full-
+duplex spoken dialogue systems. By incorporating multi-path
+alignment and attention-based fusion module, the model effec-
+tively adapts to diverse acoustic conditions and hardware vari-
+ations. Combined with a two-stage training strategy leveraging
+SSL representations and a dynamic target adaptation mecha-
+nism that mitigates speech over-suppression, LMPAN preserves
+speech integrity critical for downstream tasks. Experimental
+results demonstrate that LMPAN achieves competitive perfor-
+mance while maintaining low complexity and real-time infer-
+ence, surpassing state-of-the-art lightweight baselines. Future
+work will focus on further optimizing the trade-off between re-
+source efficiency and enhancement quality for end-to-end full-
+duplex spoken dialogue systems.
+4948
+5. References
+[1] H. Zhang, W. Li, R. Chen,et al., “LLM-Enhanced Dialogue
+Management for Full-Duplex Spoken Dialogue Systems,”arXiv
+preprint arXiv:2502.14145, 2025.
+[2] P. Wang, S. Lu, Y . Tang,et al., “A Full-Duplex Speech Dia-
+logue Scheme Based on Large Language Models,”arXiv preprint
+arXiv:2405.19487, 2024.
+[3] K. Sridhar, R. Cutler, A. Saabas,et al., “ICASSP 2021 Acoustic
+Echo Cancellation Challenge: Datasets, Testing Framework, and
+Results,” inProc. ICASSP, 2021, pp. 151–155.
+[4] Y . Jiang and T. Tian, “A Small-Footprint Acoustic Echo Cancel-
+lation Solution for Mobile Full-Duplex Speech Interactions,” in
+Proc. ICASSP, 2025, pp. 1–5.
+[5] J. Benesty, T. G ¨ansler, D. R. Morgan,et al.,Advances in Network
+and Acoustic Echo Cancellation. Springer, 2001.
+[6] N. Cohen, G. Hazan, and B. Schwartz, “An Online Algorithm for
+Echo Cancellation, Dereverberation and Noise Reduction Based
+on a Kalman-EM Method,”J. Audio, Speech, Music Process., vol.
+2021, no. 1, p. 33, 2021.
+[7] Z. Jiang, H. Li, and N. Zheng, “Two-Stage Acoustic Echo Cancel-
+lation Network with Dual-Path Alignment Interactions,” inProc.
+ICASSP, 2024, pp. 606–610.
+[8] E. Indenbom, N.-C. Ristea, A. Saabas,et al., “DeepVQE: Real
+Time Deep V oice Quality Enhancement for Joint Acoustic Echo
+Cancellation, Noise Suppression and Dereverberation,” inProc.
+ICASSP, 2023, pp. 20–24.
+[9] J. Heitkaemper, A. Narayanan, T. Z. Shabestary,et al., “Improv-
+ing Acoustic Echo Cancellation for V oice Assistants Using Neu-
+ral Echo Suppression and Multi-Microphone Noise Reduction,” in
+Proc. ICASSP, 2024, pp. 736–740.
+[10] R. Cutler, A. Saabas, T. Parnamaa,et al., “ICASSP 2023 Acoustic
+Echo Cancellation Challenge,”arXiv preprint arXiv:2309.12553,
+2023.
+[11] Y . Liu, L. Wan, Y . Li,et al., “FADI-AEC: Fast Score Based Dif-
+fusion Model Guided by Far-end Signal for Acoustic Echo Can-
+cellation,”arXiv preprint arXiv:2401.04283, 2024.
+[12] Z. Zhang, S. Zhang, M. Liu,et al., “Two-Step Band-Split Neural
+Network Approach for Full-Band Residual Echo Suppression,” in
+Proc. ICASSP, 2023, pp. 1–5.
+[13] S. Zhang, Z. Wang, J. Sun,et al., “Multi-Task Deep Residual Echo
+Suppression with Echo-Aware Loss,” inProc. ICASSP, 2022, pp.
+9127–9131.
+[14] S. Eskimez, T. Yoshioka, A. Ju,et al., “Real-Time Joint Person-
+alized Speech Enhancement and Acoustic Echo Cancellation,” in
+Proc. Interspeech, 2023, pp. 1–5.
+[15] S. S. Shetu, N. K. Desiraju, W. Mack,et al., “Align-ULCNet:
+Towards Low-Complexity and Robust Acoustic Echo and Noise
+Reduction,”arXiv preprint arXiv:2410.13620, 2025.
+[16] Y . Liu, Y . Shi, Y . Li,et al., “SCA: Streaming Cross-
+Attention Alignment for Echo Cancellation,”arXiv preprint
+arXiv:2211.00589, 2022.
+[17] S. Braun and I. Tashev, “Data Augmentation and Loss Normaliza-
+tion for Deep Noise Suppression,” inProc. Interspeech, 2020, pp.
+3815–3819.
+[18] M. Azaria and D. Hertz, “Time Delay Estimation by Generalized
+Cross Correlation Methods,”IEEE Trans. Acoust., Speech, Signal
+Process., vol. 32, no. 2, pp. 280–285, 1984.
+[19] A. Li, C. Zheng, R. Peng,et al., “On the Importance of Power
+Compression and Phase Estimation in Monaural Speech Dere-
+verberation,”J. Acoust. Soc. Am. Express Lett., vol. 2, no. 8, p.
+085001, 2021.
+[20] X. Rong, T. Sun, X. Zhang,et al., “GTCRN: A Speech Enhance-
+ment Model Requiring Ultralow Computational Resources,” in
+Proc. ICASSP, 2024, pp. 971–975.
+[21] R. Shankar, K. Tan, B. Xu,et al., “A Closer Look at Wav2vec2
+Embeddings for On-Device Single-Channel Speech Enhance-
+ment,” inProc. ICASSP, 2024, pp. 1–5.
+[22] X. Zhu, Y . Lv, Y . Lei,et al., “Vec-Tok Speech: Speech Vector-
+ization and Tokenization for Neural Speech Generation,”arXiv
+preprint arXiv:2310.07246, 2023.
+[23] X. Li, B. Kang, Z. Wang,et al., “EchoFree: Towards Ultra
+Lightweight and Efficient Neural Acoustic Echo Cancellation,”
+arXiv preprint arXiv:2508.06271, 2025.
+[24] S. Chen, C. Wang, Z. Chen,et al., “WavLM: Large-scale self-
+supervised pre-training for full stack speech processing,”IEEE J.
+Sel. Top. Signal Process., vol

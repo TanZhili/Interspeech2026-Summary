@@ -1,0 +1,407 @@
+Plan and Double-Check:
+Streaming Multimodal Q-Former for Online Robot Action Generation
+Chiori Hori ID 1,∗∗, Ryosuke Korekata ID 1,2, Motonari Kambara ID 1,2, Yoshiki Masuyama ID 1,
+Siddarth Jain ID 1, Radu Corcodel ID 1, Diego Romeres ID 1, Jonathan Le Roux ID 1
+1 Mitsubishi Electric Research Laboratories (MERL), Cambridge, MA, USA
+2 Keio University, Yokohama, Kanagawa, Japan
+{chori, masuyama, leroux}@merl.com
+Abstract
+Integrating humanoid robots into daily life demands effective
+collaboration, where robots must accurately perceive human ac-
+tions and context to work toward common objectives. Previous
+studies generate robot action sequences for human instructional
+videos, but most rely on offline processing with pre-segmented
+clips. In real-world interaction, however, robots must handle
+unsegmented multimodal inputs in a streaming manner. In this
+paper, we extend a Q-Former-based robot action generation
+framework to streaming processing. Our method extracts audio-
+visual features from short temporal chunks, incorporates left-
+context information into query embeddings, and incrementally
+generates action sequences and confirmation messages using a
+large language model. By carefully designing attention masks,
+the model can be trained efficiently in parallel, similar to of-
+fline methods. Experiments show that our streaming approach
+achieves low latency with less than 10% accuracy degradation
+compared to offline processing.
+Index Terms: human-robot interaction, online robot action
+planning, robot confirmation generation, streaming multimodal
+Q-former, multimodal LLM
+1. Introduction
+Humanoid robots capable of dexterous manipulation are widely
+regarded as promising platforms for supporting everyday hu-
+man activities. To achieve this, effective human–robot collab-
+oration requires robots to perceive and interpret human actions
+and environmental context to achieve shared goals. Research on
+robot action planning has recently been spurred by leveraging
+multimodal scene understanding trained from human demon-
+stration videos leveraging multimodal transformer architectures
+that unify perception, language, and action.
+Demonstration-driven vision–language modelslearn to
+generate robot actions directly from visual and linguistic inputs
+[1–4], with some approaches incorporating additional sensor
+embeddings [5]. These methods map multimodal observations
+and task instructions to executable action sequences, effectively
+embedding planning within an end-to-end policy. In contrast,
+LLM-based symbolic and open-world planning approaches
+[6–9] treat language models as high-level planners that generate
+compositional, text-based task plans through language reason-
+ing. These methods target open-world and partially observable
+settings and often employ iterative re-prompting to refine plan
+executability [7]. While they demonstrate strong compositional
+and semantic generalization, the resulting plans are typically ab-
+stract and require additional grounding modules to execute on
+**indicates the corresponding author.
+Figure 1:Multimodal large language models generate robot
+action confirmations together with the micro-step action se-
+quences, enabling transparent communication and verification
+of the robot’splanned future actionsbefore they are executed.
+physical robots. More recentVision–Language–Action (VLA)
+modelsincorporate stronger reasoning and temporal modeling
+[10–12]. Audio features are also added [13–15]. In contrast to
+symbolic LLM planners that require separate grounding mech-
+anisms, VLA models embed perception and action within a sin-
+gle embodied framework. Within this family, hierarchical VLA
+approaches further emphasize open-ended instruction following
+by autonomously decomposing language into executable action
+sequences that are directly carried out by the robot [16].
+Separately,Multimodal Scene Understandingmethods
+that integrate diverse modalities such as audio, visual signals,
+and text using multimodal language models have advanced
+scene understanding for acquiring task knowledge from hu-
+man demonstration videos. Early work on multimodal scene-
+understanding-based robot action planning leveraged audio-
+visual transformers trained on cooking videos [17, 18]. In
+these approaches, multimodal representations of human action
+steps were derived from demonstration videos and mapped to
+executable robot micro-actions, enabling task-level planning
+grounded in multimodal perception. Furthermore, these works
+adopt aQ-former-style fusionmechanism, originally devel-
+oped for efficient vision language alignment [19] and demon-
+strated to be more efficient than conventional fusion methods
+[20, 21], and embed it within a multimodal action planning ar-
+chitecture to extract task-relevant representations for explicit
+step-level generation and confirmation.
+Despite extensive research on robot action planning, re-
+liable real-world execution remains challenging due to distri-
+bution shifts and unforeseen conditions. To reduce errors,
+Human-in-the-loop replanningmethods have been proposed
+[22, 23], allowing robots to correct plans through dialogue.
+However, these approaches are reactive and intervene only af-
+599
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2999
+Figure 2:Q-former-based confirmation sentence generation
+and action planning model [24]. AVBLIP-based action gen-
+eration with a Q-former. The generated embeddings are fed to
+the LLM decoder.
+ter failures occur. One approach integrates confirmation gen-
+eration directly into multimodal planning, enabling proactive
+human validation before execution and reducing failure risk at
+the planning stage as shown in Fig. 1 [24, 25]. Importantly,
+it maintains multimodal grounding as in demonstration-driven
+methods while introducing explicit step-level planning and con-
+firmation generation.
+Building upon this line of research, this paper proposes
+Streaming Multimodal Q-Former, a real-time framework that
+integrates streaming multimodal grounding with confirmation-
+aware action planning in a low-latency manner.
+2. Action Planning Data
+The YouCook2 dataset [26] contains textual annotations that ex-
+plain human cooking activities in a step-by-step manner [26].
+The original human cooking instruction is adopted as the robot
+action description. The human instructions were mapped into
+micro-step action sequences, allowing a single-arm robot to
+achieve task objectives equivalent to those demonstrated by hu-
+mans [24].
+a) Robot Action Description:For example, in a video demon-
+strating the preparation of porcini mushroom risotto, an instruc-
+tion is annotated as “Add the chopped porcini mushrooms to the
+pan and stir them with the rice until evenly mixed,” with times-
+tamps from 01:10 to 01:35.
+b) Robot Micro-step Action:The micro-step action sequence
+for a single-arm robot is structured using four elements:
+“single-arm action,” “target object,” “preposition,” and “place.”
+A predefined set of 12 primitive single-arm actions is employed:
+Open, Close, Pick, Place, Pour, Stir, TurnOn, TurnOff, Wipe,
+Cut, Scoop, Squeeze. The target objects are selected, whenever
+possible, from the nouns appearing in the corresponding human
+action instructions. As an illustration, the instruction described
+above can be decomposed into the following sequence of micro-
+steps:Pick (spoon), Scoop (porcini mushrooms) from (cutting
+board), Place (porcini mushrooms) into (pan), Stir (rice and
+mushrooms) in (pan).
+3. Robot action generation using A VBLIP
+This work employs A VBLIP [18], where BLIP-2 [19], a vision-
+language pre-training method, is extended to handle multimodal
+features. BLIP-2 bootstraps from a frozen image encoder and a
+frozen LLM, where a Querying Transformer (Q-former) [27] is
+Figure 3:Online streaming Q-former-based confirmation sen-
+tence generation and action planning model. AVBLIP-based
+action generation is performed in a streaming manner, where
+chunk-wise multi-modal features are interleaved and converted
+to query embeddings using the Q-former. The embeddings are
+used to detect begin token “⟨S⟩” and the following token se-
+quence, or end token “⟨/S⟩” that indicates no more tokens from
+the current chunk.
+trained to bridge the gap between the vision and text modalities.
+The image encoder in BLIP-2 is replaced with audio-visual en-
+coders for video, audio, and text feature sequences in A VBLIP.
+Figure 2 illustrates the A VBLIP architecture consisting of a Q-
+former and an LLM decoder. The Q-former is trained to extract
+a fixed number of embeddings from a multimodal encoder that
+outputs sequences of different lengths. The self-attention layers
+are shared between two transformer submodules: (1) a multi-
+modal transformer that interacts with the frozen audio-visual
+encoders and (2) a text transformer that works as a text encoder
+and a text decoder. A set of learnable query embeddings is input
+to the multimodal transformer. The queries interact with each
+other through self-attention layers and with audio-visual fea-
+tures through cross-attention layers. The queries can addition-
+ally interact with text through the same cross-attention layers.
+Finally, the queries are converted to an output feature.
+The LLM Decoder generates a sequence of micro-step ac-
+tions for a single-arm robot from multimodal features aligned to
+language features obtained by the Q-former. The LLM Decoder
+is constructed with a frozen LLM and a feed-forward layer. Us-
+ing the LLM as a decoder leverages the LLM’s inference capa-
+bilities when generating action sequences. In this study, we use
+OPT-2.7B [28] as the LLM.
+The training of A VBLIP consists of two stages: (1)
+multimodal-language representation learning with frozen mul-
+timodal encoders and (2) multimodal-to-language generative
+learning with a frozen LLM. In the second stage, we connect
+the Q-former to the frozen LLM Decoder and perform multi-
+modal action sequence generation. As shown in Fig. 2, the ex-
+tracted multimodal features from the video clip are converted
+to token embeddings using the Q-former. The embedding vec-
+tors are then projected to the LLM embedding space using a
+fully-connected layer. Then, the LLM Decoder generates ac-
+tion sequences and descriptions (confirmation sentences) for the
+given video clip. We use the cross-entropy loss function for the
+ground-truth sequences in this stage.
+600
+4. Online streaming A VBLIP
+4.1. Architecture
+In this paper, we extend the A VBLIP-based system architecture
+to process the video input in a streaming manner and output a
+response sentence and action sequence at any appropriate time.
+The original A VBLIP model in Fig. 2 generates a response se-
+quence for a short video clip of around 10-20 seconds by ex-
+tracting image, video, and audio features, concatenating them,
+and feeding the result to the Q-former and the LLM decoder.
+In this case, we need to provide the exact beginning and end
+time of the video clip. On the other hand, the proposed stream-
+ing A VBLIP system in Fig. 3 generates the output sequence
+by extracting the multimodal features from each short chunk
+(e.g., 1 second) and interleaving them to feed the result to the
+Q-former and the LLM. This can be repeated over sequential
+chunks in a streaming manner, and the LLM predicts the begin-
+of-sequence and the following tokens, or the end-of-sequence
+token that indicates no more tokens are generated from the cur-
+rent chunk. In this way, the LLM decides the right timing to
+output the response based on the chunk-wise query embeddings
+generated by the Q-former, where the model does not require
+explicit video clip segmentation.
+Interleaving and chunking approaches have already been
+applied to LLM-based streaming automatic speech recognition
+(ASR) [29,30]. These approaches alternately perform audio en-
+coding and token generation frame by frame or chunk by chunk
+to achieve low-latency ASR. We essentially follow those ideas,
+but extend them for the A VBLIP framework so they can work
+with the Q-former without retraining the LLM decoder.
+4.2. Alignment
+To train the streaming model, we need to provide alignment
+information between the input chunks and the target tokens.
+One reasonable alignment is that all target tokens are aligned
+to the last chunk of the video clip, according to the manual
+annotation of the training data. Furthermore, we can promote
+the model to output the response earlier than the end of clip to
+achieve low-latency responses. However, unlike speech recog-
+nition or speech translation, it is difficult to estimate precise
+frame-to-token alignments using CTC and Transducer models.
+For conversation tasks, real human-to-human conversation data
+with utterance-level annotation are used to train the model to re-
+spond to the user in natural response timing. However, there is
+no sufficient data with plausible annotations for human-to-robot
+dialog and action generation.
+In this work, we investigate two approaches:
+Sampling: During training, we sample a response time for
+each video clip by randomly selecting a chunk earlier than the
+last chunk in the clip, where we avoid selecting aggressively
+early chunks by enforcing an allowable maximum shift.
+Loss-based selection: We sample a response time using the
+sampling method and compute the loss function. We fur-
+ther compute the loss for the last chunk of the clip. If the
+sampled loss is smaller or sufficiently close to the last loss,
+we backprop from the sampled loss; otherwise, we do so
+from the last loss. This method requires more computation
+than the simple sampling, but we could avoid irrelevant re-
+sponse timing by considering the loss difference. We apply
+a fixed thresholdτ(>0)to adopt the sampled loss based on
+(Lsmpl−Lorig)<τ, whereL smpl andL orig denote the sampled
+and last losses after length normalization.
+Figure 4:Attention masks for training the online Q-former. The
+green area allows attention between input (keys) and output
+(queries) while the gray area blocks the attention.
+Table 1:YouCook2 data [26].
+#Videos #Clips Duration/clip [sec]
+Training 1173 8743 19.7
+Validation 416 3117 19.8
+4.3. Attention mask
+In training, we can efficiently parallelize forward and backward
+propagation for chunk-wise sequence generation by designing
+attention masks appropriately. Figure 4 shows examples of at-
+tention masks used for training the online streaming A VBLIP
+model. In each mask, the X-axis shows input sequence cor-
+responding to the key/value and Y-axis shows output sequence
+corresponding to the query.
+In Fig. 4, (a) Causal mask is used for self-attention in the
+Q-former and the original LLM decoder, (b) Chunk-based mask
+is used for cross-attention in the Q-former, where each query
+token in a chunk can attend to the past chunks to make the query
+embeddings to be left-context dependent, not attending to the
+future chunks, and (c) Chunk-based mask for self-attention in
+the streaming LLM decoder, where the LLM attends to only
+the query embeddings and the generated tokens in the current
+chunk. This example assumes the response is generated from
+the third chunk.
+4.4. Decoding
+Sequence generation is performed by chunk-based decoding
+using the streaming Q-former and the LLM decoder. The
+Q-former receives multi-modal features chunk by chunk and
+outputs query embeddings by attending to the current and all
+cached previous hidden states. The LLM decoder generates a
+token sequence auto-regressively from the query embeddings of
+the current chunk, and proceeds to the next chunk if it predicts
+the end-of-sequence token. In this streaming process, we use
+greedy decoding to output the predicted tokens immediately.
+5. Experiments
+5.1. Setup
+We evaluated the proposed method using the YouCook2
+dataset [26], which consists of cooking action video clips
+aligned with human action instruction in natural language. The
+statistics of the dataset are summarized in Table 1. We used the
+validation set for evaluation since the test set annotation was not
+publicly available, splitting the validation set in half and apply-
+ing cross-validation to obtain the final results.
+We utilized micro-step action sequences [24], which con-
+tain 2,790 unique action phrases of 195 verbs, 2,229 objects,
+33 prepositions, and 1002 places. Multimodal features such
+601
+Table 2:Comparison of action sequence and response quality on different model configurations.
+Alignment
+in training
+Average
+latency [sec]
+Miss detection
+rate [%]
+Action sequence Action description
+Model Generation BLEU-2 METEOR BLUE-2 METEOR
+(1) Baseline N/A offline - - 0.357 0.251 0.221 0.154
+(2) w/ interleave N/A offline - - 0.354 0.248 0.219 0.152
+(3) Streaming clip end offline - - 0.356 0.246 0.216 0.154
+(4) Streaming clip end online −0.78(±2.41)5.20 0.321 0.223 0.197 0.138
+(5) Streaming sampling online −2.12(±2.72)4.80 0.319 0.215 0.194 0.138
+(6) Streaming loss-based online−2.92(±2.20)4.40 0.328 0.228 0.212 0.145
+[25] N/A offline - - 0.370 0.260 0.229 0.159
+as video, image, and audio were extracted using Omnivore
+[31], Contrastive Language-Image Pre-Training (CLIP) [32],
+and Audio Spectrogram Transformer (AST) [33], respectively.
+The features were then projected and concatenated to a sin-
+gle multimodal feature sequence before feeding them to the Q-
+former. In the streaming scenario, we apply this process for
+each one-second chunk. The dimensions of the audio, image,
+and video features were527,768, and3806, respectively.
+In prior studies [24,25], subtitles in the video were also used
+to improve the performance. However, we did not use them
+since the subtitles are typically not available in online stream-
+ing scenarios. Although it is possible to employ a streaming
+ASR system to feed the partial transcript, this makes the sys-
+tem complex and the evaluation process complicated. We will
+consider this extension in future work.
+The Q-former was initialized with the pre-trained weights
+of BERTbase [34], while the cross-attention layers were ran-
+domly initialized. The number of dimensions of the hidden lay-
+ers was set to 768 and the number of queries was set to 16,
+which resulted in 188M parameters in total. We finetuned the
+Q-former with the frozen LLM decoder for both offline and on-
+line scenarios, respectively. For alignment sampling, the allow-
+able maximum shift was set to 5 seconds prior to the clip’s end
+position. For loss-based selection, the thresholdτwas set to
+0.002because our preliminary experiments showed relatively
+high performance around this value.
+The performance was evaluated using the BLEU-2 and ME-
+TEOR scores computed between the generated and ground-
+truth sequences as used in the robotics field [35,36]. We applied
+cross-validation, where one half of the validation set was used
+to select the best-epoch model, and the other half was used to
+measure model performance. Thus, the shown scores are the
+average over the two subsets.
+Furthermore, we simulated streaming use case by append-
+ing5−10seconds of preceding and succeeding video frames to
+each video clip and evaluated whether the model can correctly
+generate action sequences and description in a reasonable tim-
+ing. The appended margin length was randomly selected and
+sometimes shortened if there is an overlap with the previous
+or next video clip. To evaluate the streaming performance, we
+measured average latency (±standard deviation) and miss de-
+tection rate. The average latency is the time at which the model
+starts to generate an action sequence, relative to the end time of
+the original clip. The miss detection rate is the proportion of
+clips for which the model did not generate any action sequence.
+5.2. Results
+Table 2 shows the quality of action sequences and descriptions
+generated by the baseline and streaming Q-former-LLM sys-
+tems. “(1) Baseline” denotes the Q-former model trained with
+pairs of concatenated multimodal features and their target se-
+quences without streaming extension. Compared to the prior
+work in [25], BLEU and METEOR scores were slightly worse.
+This is mainly because we used greedy decoding while they
+used beam search decoding with beam size 5. “(2) w/ inter-
+leave” shows the result when we interleaved the multimodal fea-
+tures into one-second chunks but trained the model in the offline
+setting similar to the baseline. Compared to “(1) Baseline,” the
+differences are negligible, confirming that interleaving the fea-
+tures does not have negative impact on the performance. “(3)
+Streaming” shows the result of the streaming Q-former used
+as an offline model, where the model was forced to generate
+the sequence from the chunk at the original clip ending time.
+We do not see significant differences in the performance met-
+rics, meaning that the streaming model was trained successfully
+without losing the performance for offline use.
+The results of streaming Q-formers from “(4)” to “(6)” cor-
+respond to the models trained to start generating the target se-
+quence at clip end, sampled chunk, and selected chunk by CE
+loss, respectively. Compared to the baseline, we observed a
+certain degradation in BLUE and METEOR scores. This is
+mainly because the model incorrectly started to generate re-
+sponses attending to irrelevant portion of the video clip, and
+in some cases, the model did not output any tokens other than
+the end-of-sequence token. However, the degradations are less
+than 10% relative in all sequence quality metrics. Generally, ac-
+curacy degradation due to streaming processing is unavoidable,
+but a 10% drop is still within an acceptable range. Further-
+more, these models show lower average latency compared with
+the baseline, ranging from 1 to 3 seconds, which is important
+for low-latency streaming systems. Among the three streaming
+models, the model with loss-based alignment demonstrated the
+best performance across all metrics. Also, the standard devi-
+ation of latency shows that the loss-based method selects out-
+put time with less fluctuation. This indicates that the alignment
+should be selected to avoid increasing the loss during training.
+6. Conclusions
+This paper proposed a Q-Former-based robot action generation
+framework that enables streaming processing. Our method ex-
+tracts audio-visual features from short temporal chunks, incor-
+porates left-context information into query embeddings, and in-
+crementally generates action sequences and confirmation mes-
+sages using a large language model. By carefully designing at-
+tention masks, the model can be trained efficiently in parallel,
+similar to offline methods. Experiments show that our stream-
+ing approach achieves low latency with less than 10% accuracy
+degradation compared to offline processing. We also investi-
+gated three different methods to provide alignment information
+to the model during training, and demonstrated that the loss-
+based alignment selection works better than other approaches.
+602

@@ -1,0 +1,465 @@
+MoVE: Translating Laughter and Tears via Mixture of Vocalization Experts in
+Speech-to-Speech Translation
+Szu-Chi Chen ID 1,∗, I-Ning Tsai ID 1,∗, Yi-Cheng Lin ID 1,∗, Sung-Feng Huang ID 2,∗, Hung-yi Lee ID 1,3
+1 National Taiwan University, Taipei, Taiwan 2 NVIDIA, Taiwan
+3 Artificial Intelligence Center of Research Excellence (NTU AI-CoRE), NTU, Taiwan
+Abstract
+Recent Speech-to-Speech Translation (S2ST) systems achieve
+strong semantic accuracy yet consistently strip away non-verbal
+vocalizations (NVs), such as laughter and crying that con-
+vey pragmatic intent, which severely limits real-world utility.
+We address this via three contributions. First, we propose
+a synthesis pipeline for building scalable expressive datasets
+to overcome the data scarcity limitation. Second, we pro-
+pose MoVE, a Mixture-of-LoRA-Experts architecture with
+expressive-specialized adapters and a soft-weighting router that
+blends experts for capturing hybrid expressive states. Third, we
+show pretrained AudioLLMs enable striking data efficiency: 30
+minutes of curated data is enough for strong performance. On
+English-Chinese S2ST, while comparing with strong baselines,
+MoVE reproduces target NVs in 76% of cases and achieves the
+highest human-rated naturalness and emotional fidelity among
+all compared systems, where existing S2ST systems preserve at
+most 14% of NVs.
+Index Terms: speech-to-speech translation, non-verbal vocal-
+izations, mixture of experts, AudioLLMs, expressive speech
+1. Introduction
+Speech-to-Speech Translation (S2ST) represents a sophisti-
+cated technology that integrates Automatic Speech Recognition
+(ASR), Machine Translation (MT), and Text-to-Speech (TTS)
+synthesis. By enabling direct vocal interaction across linguis-
+tic boundaries, S2ST transcends the constraints of text-based
+mediation. However, if the translated speech fails to retain the
+prosody and emotional nuances of the original utterances, it can
+lead to serious pragmatic biases in cross-language communica-
+tion [1, 2]. For example, a laugh-filled speech translated into a
+serious tone will lose its humor. Similarly, a compliment with-
+out the original tone may be misinterpreted as sarcasm. There-
+fore, preserving the expressiveness of the original speech is cru-
+cial for significantly improving the naturalness and efficiency of
+automated S2ST cross-language communication.
+While achieving high semantic accuracy, recent S2ST sys-
+tems [3, 4, 5, 6, 7] fundamentally struggle to convey general
+acoustic expressiveness, much less preserve the specific non-
+verbal vocalizations (e.g., laughter and crying) that are essen-
+tial for conveying pragmatic intent. This gap stems from two
+fundamental bottlenecks. The most critical bottleneck is the
+lack of training data. On the data front, high-quality speech
+corpora containing authentic NVs are extremely scarce and of-
+ten contaminated by environmental noise, making it difficult for
+models to disentangle emotional cues from artifacts [8]. Fur-
+thermore, even though there are more and more speech transla-
+*These authors contributed equally.
+tion [9, 10, 11] and non-verbal speech datasets [12, 13, 14], few
+of them are suitable for training expressive S2ST, according to
+their data structure, quality, and quantity.
+Another bottleneck affecting the training of the expressive-
+ness of S2ST lies in the model architecture. In terms of archi-
+tecture, it is quite difficult to train a custom S2ST model di-
+rectly on expressive data. This is not only because S2ST itself
+combines three complex tasks: ASR, MT, and TTS, but also be-
+cause learning cross-linguistic semantic alignment and diverse
+expressive acoustic preservation further increases the difficulty
+of training [3, 4, 5, 6, 7]. AudioLLM [15, 16] offers a potential
+solution because of its large-scale pre-training itself covering
+tasks such as ASR and TTS, thus providing powerful seman-
+tic and acoustic capabilities. However, applying them to the
+expressive S2ST introduces two additional challenges. First of
+all, we still cannot be certain how much training data is required
+to elicit AudioLLM’s potential and unlock its S2ST capabili-
+ties. Second, how to design an architecture capable of mod-
+eling a wide variety of similar or conflicting emotional states
+accurately, without interference, becomes a crucial issue [17].
+In this paper, we tackle this challenge on two fronts: on
+the data side, we first propose a scalable expressive dataset syn-
+thesis pipeline to overcome training-data limitations, which is
+further compared with other S2ST datasets. On the model side,
+we utilize a pre-trained AudioLLM for expressive S2ST fine-
+tuning, and further discuss the data scale it requires and how
+we modify the architecture to deal with the multi-emotion mod-
+eling problem. To conclude, the primary contributions of this
+work are as follows:
+•Pioneering AudioLLM Adaptation for S2ST:To the best
+of our knowledge, we are the first to fine-tune general-
+purpose AudioLLMs for end-to-end S2ST, by effectively
+eliciting AudioLLMs’ powerful potential rather than design-
+ing a task-specific architecture.
+•Scalable Expressive Data Synthesis Pipeline:We intro-
+duce an automated generation-selection pipeline tailored for
+expressive S2ST, encompassing a rich spectrum of affective
+states alongside specific non-verbal vocalizations like laugh-
+ter and crying. A generated 1000-hour corpus is released for
+communities’ research purpose1.
+•MoVE: Mixture of Vocalization Experts with Dynamic
+Blending:We propose a framework featuring a learned
+router that dynamically blends five specialized vocalization
+adapters, effectively mitigating expressive over-smoothing
+and significantly improving non-verbal expressive fidelity.
+•Insights on Data Efficiency in AudioLLMs:Leveraging the
+robust baseline representations of these foundation models,
+we demonstrate that fine-tuning via LoRA with as little as30
+1Dataset and Demo:https://47zzz.github.io/MoVE/
+5355
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-42
+minutesof curated data achieves 95% of full-data emotional
+fidelity without compromising semantic translation accuracy.
+2. Methodology
+2.1. Scalable Expressive Data Synthesis Pipeline
+To build a robust foundation for our MoVE training, we pro-
+pose a scalable pipeline to synthesize an expressive S2ST cor-
+pus. Utilizing parallel en-zh text from GigaSpeech and Gi-
+gaST [18, 19], we generate expressive speech translation pairs
+through a highly curated emotion-adaptive process:
+1. Expressive Prompt Curation.To prevent the synthe-
+sized dataset from degenerating into narrow emotional stereo-
+types, we establish a high-fidelity acoustic prompt pool. For
+standard affective states (Happy, Sad, Angry) 2, we aggregate
+diverse samples across the CREMA-D, MSP-IMPROV , and
+IEMOCAP datasets [21, 22, 23] to maintain a broad and contin-
+uous affective manifold. In contrast, since extreme non-verbal
+vocalizations (NVs) are often scarce and easily confounded
+with audio artifacts, we apply more rigorous filtering. Laughter
+prompts are extracted by applying a laughter detector (confi-
+dence>0.99) [24] to the combined corpora, followed by man-
+ual verification. Crying prompts are meticulously sourced from
+the JVNV dataset [14], focusing on human-verified instances of
+speech-interspersed crying to ensure acoustic viability.
+2. Emotion-Adaptive Synthesis via Attribute Decou-
+pling.We employ IndexTTS2 [25] as our synthesis engine. For
+standard affective states, the extensive prompt pool allows a sin-
+gle acoustic reference to provide speaker identity and emotional
+prosody simultaneously. However, the limited availability of
+curated prompts for extreme NVs poses a challenge to diver-
+sity. To mitigate this without sacrificing fidelity, we disentangle
+identity from expression: the TTS engine is conditioned on a
+curated NV prompt to reliably induce the target paralinguistics
+(e.g., crying/laughter), while an independently sampled neu-
+tral prompt from the broader corpora defines the speaker iden-
+tity. This strategy successfully projects rare NV characteristics
+onto diverse speaker profiles, ensuring comprehensive coverage
+across five distinct emotional and non-verbal manifolds (Angry,
+Happy, Sad, Laugh, and Cry).
+3. Automated Quality Assurance and S2ST Pairing.We
+apply three sequential filters: (1) silence trimming via librosa,
+discarding outputs under 0.5s; (2) ASR Word Error Rate (WER)
+verification with Whisper-small [26] after text normalization,
+using a lenient threshold (≤0.5) since NV vocalizations yield
+no consistent lexical transcription and naturally elevate WER;
+and (3) a pair-level filter retaining a pair only if both its EN and
+ZH utterances pass the threshold, producing aligned En⇔Zh
+S2ST pairs.
+2.2. MoVE Architecture
+We build the MoVE architecture upon a pretrained AudioLLM
+(Kimi-Audio [27]). To preserve its ASR, TTS and cross-lingual
+semantic capabilities, we freeze the base parameters and con-
+fine expressive adaptation to lightweight LoRA modules [28].
+Rather than relying on a single module, we implement an X-
+2We focus on Happy, Sad, and Angry as they represent the primary extrema
+of Russell’s affective dimensions [20]. Other states, particularly those in the
+high-valence/low-arousal quadrant, are excluded due to their acoustic proximity
+to neutral speech, which often leads to classification ambiguity in pure audio.
+Additionally, a separate ’neutral’ class was deemed redundant, as our continuous
+arousal-based sampling strategy inherently captures neutral-state variations within
+the broader dataset.
+LLM Layer
+Whisper Encoder
+Audio 
+Detokenizer
+Laugh 
+Expert
+Audio Tokenizer
+”Hello” 
+”你好”
+Stage 1.Expert Specialization
+20hr
+LLM Layer
+Whisper Encoder
+Router
+Angry 
+Expert
+Happy 
+Expert
+Sad 
+Expert
+Crying 
+Expert
+Laugh 
+Expert
+Audio Tokenizer
+”Hello”
+”你好”
+Stage 2.Router Optimization
+100hr
+20h Specialized Data Subset
+20hr
+ 100hrFull dataset
+LoRA Adapter
+ Frozen
+ Trainable
+🤣
+🤣
+ 🤣
+🤣Audio 
+Detokenizer
+Figure 1:Illustration of MoVE Two-Stage training
+LoRA-inspired gating strategy [29] to model diverse or con-
+flicting emotional states without interference.
+Parallel Expressive Vocalization Experts.To pre-
+vent conflicting paralinguistic cues from interfering within a
+shared parameter space, we inject 5 parallel LoRA adapters
+across all transformer layers, each specializing in one acous-
+tic manifold: Happy, Sad, Angry, Laughing, and Crying.
+Applied to the attention and feed-forward gating matrices
+(Wq,W k,W v,W o,W gate) [29], each adapter operates in an in-
+dependent low-rank subspace, retaining the base model’s capac-
+ity for coherent speech generation.
+Dynamic Soft-Weighting Router.To model the inherently
+hybrid nature of human emotion (e.g., nervous laughter), we es-
+chew hard top-krouting for a dynamic soft-weighting strategy.
+Letx∈R d denote the input hidden state for a speech token,
+wheredis the hidden dimension of the LLM. The MoVE layer
+outputh(x)is computed as the weighted sum of the frozen base
+weightW 0 and the LoRA experts:
+h(x) =W 0x+
+NX
+i=1
+gi(x)·(B iAix)
+whereN= 5represents the distinct acoustic manifolds,
+Ai∈R r×d andB i∈R d×r are the down-projection and up-
+projection matrices of thei-th LoRA expert with rankr, and
+gi(x)is a lightweight linear router with a Softmax activation.
+Operating at the token level, the router assigns a continuous
+mixture weight to each expert, enabling fine-grained blending
+for hybrid expressive states.
+Expressive Detokenizer.The pretrained detokenizer,
+which maps speech tokens to waveforms, fails to faithfully
+render extreme NVs like laughter and crying. We fine-tune
+it on expressive NV speech synthesized with IndexTTS2 us-
+ing NV-inducing prompts (Section 2.1), enabling reliable NV-
+rich reconstruction. This detokenizer is shared by Kimi-Audio-
+Instruct and all Kimi+LoRA/MoVE rows, so their performance
+gaps reflect the LLM and router, not the detokenizer.
+2.3. Two-Stage Training Strategy for MoVE
+Following the encoder pretraining approach in Kimi-Audio
+[27], we first fine-tune the Whisper encoder on our expressive
+corpus to establish a shared acoustic foundation for the sub-
+5356
+Table 1:Main expressive S2ST performance.Boldindicates best performance. Values in parentheses represent: (i) bootstrap-estimated
+standard deviation forASR-BLEU; (ii) standard error (SE) forAro-Val SIM(N= 306); and (iii) SE across participants (N= 5) for
+Subjective Human Evaluation. The symbol * denotes the use of source audio as a one-shot acoustic prompt.
+ASR-BLEU↑
+Model en→zh zh→en Aro-Val SIM↑Nat. MOS↑Emo. SMOS↑NV Match (%)↑
+SOTA F oundation & Commercial Models
+SeamlessM4T-Large-v2 25.8 (1.02)23.6(1.07) 0.14 (0.04) 1.65 (0.20) 1.47 (0.16) 2.00 (2.00)
+SeamlessExpressive 23.8 (0.96) 18.2 (1.02) 0.45 (0.03) 1.41 (0.15) 2.57 (0.24) 14.00 (9.80)
+gpt-4o-audio-preview 26.3 (1.37) 19.2 (1.02) 0.18 (0.04) 2.87 (0.26) 1.95 (0.20) 2.00 (2.00)
+Kimi-Audio-7B-Instruct 25.0 (1.02) 11.2 (0.91) 0.11 (0.04) 3.26 (0.40) 2.03 (0.17) 4.00 (2.45)
+Data & Architectural Ablations
+Kimi + LoRA (SeamlessAlign 67h) 15.7 (0.76) 12.5 (0.81) 0.18 (0.04) - - -
+Kimi + LoRA (SynStard 100h) 29.9 (1.12) 18.4 (0.91) 0.39 (0.04) - - -
+Kimi + LoRA (Ours 50h) 32.0 (1.12) 20.1 (1.27) 0.49 (0.03) - - -
+Kimi + LoRA (Ours 100h) 31.2 (1.12) 21.2 (0.91) 0.51 (0.03) - - 26.00 (6.00)
+Proposed Method
+MoVE 32.5(1.12) 21.4 (1.22)0.53(0.03)3.85(0.26)3.79(0.15)76.00(7.48)
+Cascaded Oracle
+Cascaded* 9.7 (0.81) 10.6 (0.86) 0.55 (0.03) 2.61 (0.43) 3.43 (0.25) 26.00 (14.00)
+sequent expert modules. MoVE training then proceeds in two
+stages, as illustrated in Figure 1:
+Stage 1: Independent Expert Specialization.With the
+base LLM and aligned Whisper encoder frozen, each of the five
+LoRA experts is trained independently on its expressive subset,
+ensuring fine-grained specialization within each manifold while
+avoiding cross-emotional interference.
+Stage 2: Dynamic Router Optimization.In the final
+stage, the specialized experts are integrated into the unified
+MoVE architecture. We optimize the dynamic router on the full
+dataset while keeping all other parameters fixed. Notably, the
+router is trained end-to-end via the final language modeling loss
+rather than explicit labels. This lets the router autonomously
+learn the optimal blending of experts from contextual cues, en-
+abling translation of nuanced, hybrid expressive states.
+3. Experiments and Analysis
+3.1. Experimental Setup
+Model and Training Dataset Baselines.We compare
+MoVE against leading end-to-end expressive S2ST systems:
+Kimi-Audio-7B-Instruct [27], gpt-4o-audio-preview [30],
+SeamlessM4T-Large-v2 [9], and SeamlessExpressive [9]. For
+architectural ablation, we include a single-LoRA baseline
+fine-tuned on the identical training set; to validate the quality of
+our data pipeline, we additionally train the same single-LoRA
+model on SynStard-1000 (randomly sample 100h) [31] and
+SeamlessAlignExpressive (67h) [9] as data-quality compar-
+isons. For reference, we include a cascaded oracle (source
+audio as a one-shot acoustic prompt) as an upper bound
+with pipeline (Whisper-large-v3 [26]→NLLB-200 [32]
+→CosyV oice3-0.5B [33]), though not directly comparable
+given its fundamentally different paradigm. Full baseline
+configurations and prompts are on our project page.
+Test Sets and Evaluation Metrics.We evaluate three dimen-
+sions: semantic preservation, objective emotional fidelity, and
+subjective human perception.1) Semantic Translation:We
+evaluate linguistic accuracy using ASR-BLEU [34] on 1000
+English-Chinese pairs sampled from CVSS-T [10, 11], includ-
+ing English-to-Chinese and Chinese-to-English translation.2)
+Objective Emotional Fidelity:We curate a test set from the
+NonverbalTTS corpus [12] (strictly filtering out segments lack-
+ing linguistic content), sampling up to 1000 utterances per
+category (Happy, Sad, Neutral, Angry). Its sources (e.g.,
+V oxCeleb, Expresso) are real-world, non-synthesized record-
+ings fully outside our training distribution, giving genuine out-
+of-domain non-expressive coverage. Objective fidelity uses
+Arousal-Valence Similarity (Aro-V al SIM) [35, 36], a continu-
+ous expressiveness measure rather than an NV detector; lack-
+ing a reliable objective NV metric, we complement it with
+NV Match Accuracy and human MOS/SMOS.3) Subjective
+Human Evaluation:We sample 30 utterances across six cate-
+gories (Happy, Sad, Angry, Laughing, Crying, Neutral). To bal-
+ance rigor and annotator load, we adopt a dual-paradigm strat-
+egy. For comparisons against external and cascaded baselines,
+proficient bilingual evaluators conduct a multi-stimulus test to
+evaluateNaturalness MOS(Mean Opinion Score) andEmotion
+SMOS(Similarity Mean Opinion Score) [37], rating the gen-
+erated speech on a standard 1-to-5 scale. For the architectural
+ablation, evaluators run a pairwise A/B preference test judg-
+ing emotional expressiveness (MoVE vs. single-LoRA, with a
+“Tie” option). Finally,NV Match Accuracyrecords a “hit” only
+when the perceived NV exactly matches the source.
+Implementation Details.LoRA experts are configured with
+rankr= 256and scaling factorα= 256. The model is
+optimized using AdamW (β 2 = 0.95) with a learning rate of
+1×10 −5. To ensure deep feature disentanglement, Stage 1
+(expert specialization) is trained for 2 epochs, while Stage 2
+converges effectively within 1 epoch.
+3.2. Main Expressive S2ST Performance
+Table 1 reports our main results, covering training-free model
+baselines, single-LoRA models trained on different datasets (all
+sampled to 50–100h), our MoVE, and a cascaded pipeline in-
+cluded only as a reference given its fundamentally different
+paradigm. MoVE delivers the strongest expressive S2ST results
+among the compared systems. It achieves the best ASR-BLEU
+on en→zh (32.5), and is highly competitive on zh→en (21.4),
+on par with the SeamlessM4T baseline (23.6). This success
+is attributed to two key contributions: our proposed expressive
+dataset synthesis pipeline and our MoVE architectural design.
+Training Dataset Comparison.To strictly isolate and val-
+idate the quality of our proposed expressive corpus (Section
+3.1), we restrict all evaluations in this part to the objective met-
+rics. We compare models fine-tuned with a single LoRA on
+our dataset (sampled at 50h and 100h) against those trained on
+5357
+the randomly sampled 100h SynStard subset and the 67h Seam-
+lessAlignExpressive corpus. Results indicate that even the 50h
+subset of our data overwhelmingly surpasses both external base-
+lines in ASR-BLEU and Aro-Val SIM. Furthermore, the 100h
+version of our dataset consistently outperforms the 100h Syn-
+Stard subset under the identical single-LoRA architecture, con-
+firming that the quality advantage stems from our data pipeline
+rather than data volume or model capacity.
+MoVE Architectural Comparison.Against the single-
+LoRA baseline (same 100h data), MoVE improves across all
+metrics, showing that reallocating capacity to expressive man-
+ifolds does not compromise semantic accuracy. Subjectively,
+MoVE secures the highest Emotion SMOS and Naturalness
+MOS, and in A/B preference tests (see Table 2) it overwhelm-
+ingly outperforms the single-LoRA baseline. MoVE also dom-
+inates in NV Match Accuracy, successfully synthesizing ex-
+treme paralinguistics (e.g., laughter, crying) that the single-
+LoRA baseline fails to preserve. Objectively, MoVE’s Aro-Val
+SIM trails the cascaded pipeline by a negligible margin while
+far exceeding it in ASR-BLEU. Although this comparison is
+architecturally asymmetrical 3, MoVE matches its objective fi-
+delity while surpassing it on all human-perceived metrics.
+Table 2:A/B Test: Overall Preference (Win Rate %) between
+MoVE and the best Single-LoRA baseline.
+Preference Win Rate (%)
+MoVE 60.00
+Tie 22.67
+Single-LoRA (Ours 100h) 17.33
+3.3. Analysis on Data Scale Efficacy
+To investigate data efficiency, we scale the training subset across
+0, 0.1, 0.5, 1, 5, 10, 50, 100, 500, and 1000 hours (0h: un-
+trained base Kimi). Since the single-LoRA baseline performs
+on par with MoVE on objective metrics, we use it here for sim-
+plicity. As illustrated in Figure 2, both semantic and emotional
+fidelity show a striking pattern: performance drops sharply at
+0.1h but saturates rapidly, holding a robust plateau from 0.5h
+to 1000h. Re-initializing the base AudioLLM from scratch
+and training on the same subsets (0.1h, 0.5h, 50h, 1000h) in-
+stead fails to converge, collapsing into unintelligible babble at
+all scales (blue dashed lines in Figure 2). This stark contrast
+reveals a key insight: the data efficiency we observe comes
+not from LoRA’s adaptive capacity itself, but from the acous-
+tic and semantic knowledge already stored in the AudioLLM’s
+pre-trained weights, which LoRA activates rather than creates.
+3.4. Router Behavior and Disentanglement
+To interpret the internal routing mechanism of our MoVE ar-
+chitecture, we visualize the expert activation patterns on an un-
+seen development set. Figure 3 presents a confusion matrix that
+evaluates the alignment between the predefined expressive cat-
+egories (Angry, Happy, Sad, Laugh, Cry) and the dominant ex-
+pert selection of the router.
+As described in Section 2.3, the router is optimized end-to-
+end only through the loss of final language modeling, without
+ever being exposed to discrete emotion labels. However, ben-
+efiting from the supervised specialization of the underlying ex-
+perts, the router eventually achieves an overall alignment accu-
+racy of 63.68%. Achieving such a high alignment accuracy un-
+3As the cascaded system utilizes one-shot source audio prompting instead of
+pure zero-shot inference.
+0 0.1 0.5 1 5 10 50 100 500 1000
+0
+10
+20
+30
+0
+0.2
+0.4
+0.6
+Training Set Scale (Hours)
+ASR-BLEU Score
+Aro-Val SIM Score
+BLEU Score: Kimi+LoRA Aro-Val SIM: Kimi+LoRA
+BLEU Score: (Random Init) Aro-Val SIM: (Random Init)
+Figure 2:Data efficacy and scaling behaviors across varying
+training sizes. The left axis corresponds to ASR-BLEU and the
+right axis to Aro-Val SIM. ASR-BLEU is the average of en-zh
+and zh-en. Error bars represent standard errors.
+Figure 3:Confusion matrix of router behavior.
+der these unconstrained conditions strongly demonstrates that
+the router autonomously learns to disentangle affective states
+by capturing underlying latent linguistic and acoustic cues.
+Furthermore, the off-diagonal distributions in the confu-
+sion matrix (e.g., routing overlaps between “Sad” and “Cry”,
+or “Happy” and “Laugh”) are not arbitrary errors. Rather, they
+physically reflect the nuanced and hybrid nature of natural hu-
+man expressiveness. This unsupervised soft-weighting capabil-
+ity validates the core motivation of our MoE design, proving it
+can dynamically modulate expressive blends far beyond rigid,
+rule-based classification.
+4. Conclusions
+This paper addresses the expressive gap in S2ST. We proposed
+a scalable expressive data curation pipeline and demonstrated
+its superiority over other datasets. By leveraging the priors
+of pre-trained AudioLLMs, MoVE achieves leading fidelity in
+transferring emotions and NVs with remarkable data efficiency:
+as little as 30 minutes of curated data can ”unlock” deep ex-
+pressive capabilities. Although not covering all emotions and
+NV categories, our method can extend to more real-world sce-
+narios. The En–Zh scope follows the En–Zh-centric training
+of IndexTTS2 and Kimi-Audio; since MoVE has no language-
+specific component, it can extend to other pairs given suitable
+models (future work). Our curated dataset is also available on
+our project page.
+5358
+5. Generative AI Use Disclosure
+We employed Gemini for grammatical paraphrasing and lan-
+guage polishing to improve the manuscript’s clarity.
+6. Acknowledgments
+This work was supported by the Ministry of Education (MOE)
+of Taiwan under the project Taiwan Centers of Excellence in
+Artificial Intelligence, through the NTU Artificial Intelligence
+Center of Research Excellence (NTU AI-CoRE). Computing
+resources were provided by the National Center for High-
+Performance Comput

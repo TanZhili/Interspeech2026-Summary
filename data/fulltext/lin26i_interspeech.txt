@@ -1,0 +1,554 @@
+RAISE: Resolving Ambiguity in Audio Understanding
+with Imagination and Selective Extraction
+Yueqian Lin1, Qinsi Wang1, Yudong Liu1, Hancheng Ye1, Hai Li1, Yiran Chen1
+1 Duke University, Durham, NC, USA
+yueqian.lin@duke.edu, yiran.chen@duke.edu
+Abstract
+Audio Large Language Models (Audio LLMs) are prone to per-
+ceptual hallucination under acoustic interference or fine-grained
+ambiguity. Robust auditory understanding demands active ver-
+ification: even state-of-the-art reasoning models hallucinate
+when forced to decode ambiguous internal representations. We
+introduce RAISE (Resolving Ambiguity with Imagination and
+Selective Extraction), a training-free framework that equips Au-
+dio LLMs with two cognitively motivated listening strategies.
+Selective Extraction isolates target signals from noise; Auditory
+Imagination synthesizes candidate references for comparative
+reasoning. Instead of relying on ambiguous internal represen-
+tations, the model grounds every prediction in explicit acous-
+tic evidence. On two challenging benchmarks, MMAR and
+MMAU, RAISE delivers consistent gains of up to 12.4% with-
+out any parameter updates.
+Index Terms: audio understanding, large language models,
+tool-augmented reasoning, source separation, audio generation
+1. Introduction
+Audio Large Language Models (Audio LLMs) excel at open-
+ended tasks [1], yet break down when inputs are perceptually
+ambiguous [2, 3, 4]. In the classic “cocktail party” scenario [5],
+overlapping speakers force the model to guess which voice to
+attend; when two instruments share a similar timbre, the model
+has no reference tone for comparison. These failures are pre-
+dictable from thetask structure: counting events in a mixture
+demands source isolation, while identifying a subtle timbre de-
+mands comparative references. Yet current architectures apply
+the same single-pass strategy to every query, and recent bench-
+marks [6, 7, 8] confirm that this one-size-fits-all approach fails
+on fine-grained auditory details.
+This brittleness is inherent to single-pass inference: the
+model must commit to an answer with no way to verify its
+perception against the raw signal. Human listeners routinely
+employanalysis-by-synthesis[9], mentally simulating expected
+sounds to confirm or reject hypotheses. Current Audio LLMs
+have no such mechanism. When acoustic events overlap or
+share spectral features, the model cannot isolate a target source
+or synthesize a candidate for comparison; it guesses from a sin-
+gle, unverified forward pass.
+We show that off-the-shelf generative tools, audio gen-
+erators and source separators, can close this gap by act-
+ing as inference-time verification engines. Promptable sep-
+aration (SAM-Audio [10]) and text-to-audio synthesis (Sta-
+ble Audio [11]) now make on-the-fly signal manipulation
+practical. Prior work has applied tool-use to modular rea-
+soning [12, 13] or offline data augmentation [14, 15], but
+never toverify perception at inference time. We introduce
+Input
+Audio (x)
+Question (q)
+& Choices (C)
+Direct
+Imagination
+Extraction
+Auditory 
+Imagination (𝜙𝑔𝑒𝑛)
+Selective 
+Extraction (𝝓𝒆𝒙𝒕)
+Choices
+(Ci)
+Q: Is the scream from music?
+Action: Isolate “clear scream”
+Cleaned Signal (x’)
+Synthetic References (Z)
+Q: Source of flowing water?
+Action: Synthesize water flowing 
+sounds for  bathtub, river, fountain
+Output:
+Prediction (𝒚
+^
+)
+Semantic
+Router
+(R)
+Contextual
+Inference
+Contextual
+Inference
+Figure 1:The RAISE Framework for Audio Understanding.
+The Semantic Router dynamically selects the optimal strategy
+based on input query. For ambiguous inputs, Auditory Imagi-
+nation (ϕgen) synthesizes comparative references (Z). For high
+noise, Selective Extraction (ϕext) isolates the target signal (x′).
+The Audio LLM then performs Contextual Inference using this
+instantiated evidence.
+RAISE(ResolvingAmbiguity withImagination andSelective
+Extraction), a training-free framework that routes each query to
+the appropriate tool:Selective Extractionisolates a target sig-
+nal from noise, whileAuditory Imaginationsynthesizes refer-
+ence audio for comparative reasoning. As shown in Figure 1,
+the model grounds its prediction in concrete acoustic evidence,
+not ambiguous internal representations.
+2. The RAISE Framework
+Given audiox, queryq, and answer candidatesC, standard
+Audio LLMs select an answeryvia a single parametric pass
+overP(y|x,q), which is brittle under high interference or fine-
+grained ambiguity. RAISE transforms this passive predictor
+into anactive perceiverby decomposing inference into three
+stages:Semantic Routing,Evidence Instantiation, andContex-
+tual Inference(Figure 1), forcing the model to ground predic-
+tions in concrete acoustic evidence.
+2.1. Stage 1: Semantic Routing
+The first stage of RAISE functions as an efficiency-aware cog-
+nitive controller [16, 17]. We employ a zero-shot lightweight
+routerRto map the input tuple(q,C)to an optimal inference
+strategys∈{DIRECT,IMAGINE,EXTRACT}. This decision is
+7018
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1739
+governed by the nature of the ambiguity:
+s=R(q,C) =
+
+
+
+IMAGINEifqrequires comparison
+EXTRACTifqrequires isolation
+DIRECTotherwise
+(1)
+By reserving computationally expensive tools for complex
+queries (e.g., distinguishing subtle instruments or counting in
+noise) and routing standard queries directly, RAISE balances
+high-fidelity reasoning with inference efficiency.
+We decouple the router from the backbone Audio LLM for
+two reasons. First,independence: a model that misperceives
+a mixture should not diagnose its own failure modes; an exter-
+nal text-based router decides from task semantics, not corrupted
+representations. Second,efficiency: a lightweight text-only call
+avoids a redundant audio-encoding pass.
+2.2. Stage 2: Tool-Augmented Instantiation
+Conditioned on the routing decisions, the workflow adapts.
+Ifs=DIRECT, the input bypasses instantiation. Otherwise,
+RAISE activates a specialized grounding strategy:Auditory
+Imaginationacts as anadditiveprocess that synthesizes exter-
+nal references to resolve semantic ambiguity, whereasSelective
+Extractionis asubtractiveprocess that distills the input signal
+to mitigate environmental interference.
+2.2.1. Path A: Auditory Imagination (ϕ gen)
+Whens=IMAGINE, the framework adopts ananalysis-by-
+synthesisapproach. This path is routed for tasks where candi-
+dates describe distinct, synthesizable entities (e.g., instruments
+or environmental events).
+1.Candidate validation.The Audio LLM verifies that each
+choicec i describes a physically realizable sound before map-
+ping it to a descriptive promptp i. Choices that refer to ab-
+stract or non-acoustic concepts are excluded, preventing the
+generator from producing meaningless artifacts.
+2.Reference generation.The generatorGsynthesizes a refer-
+ence setZfrom the validated candidates. This creates a se-
+lective acoustic lineup that lets the model compare the input
+against tangible signals rather than latent text embeddings.
+2.2.2. Path B: Selective Extraction (ϕ ext)
+Whens=EXTRACT, the pipeline focuses on isolating a tar-
+get signal from background interference. We employ anaudio-
+conditionedproposal mechanism to bridge the gap between se-
+mantic queries and physical separation:
+1.Sound description.The Audio LLM performs a preliminary
+analysis ofxusing an analytic prompt (e.g., “What specific
+sound characteristics distinguish the target?”). This yields a
+physical descriptiondderived from the actual acoustic con-
+tent rather than the text query alone.
+2.Source isolation.The descriptiondis fed into an open-
+vocabulary segmentation model to filter the mixture:
+x′ =ϕ ext(x,d)(2)
+This process results in a clean waveformx ′ where interfering
+noise is suppressed, exposing fine-grained details for precise
+verification. Both paths degrade gracefully: if generation or
+separation fails (e.g., invalid output, low energy), RAISE falls
+back to the DIRECTpath so that tool errors never override a
+valid baseline prediction.
+2.3. Stage 3: Contextual Inference
+In the final stage, the Audio LLMMestimates the answer. The
+inference mechanism adapts to the type of evidence produced
+in Stage 2.
+2.3.1. Imagination path inference
+For the imagination path, we ground the decision in the syn-
+thesized references. We construct a composite context from the
+original audiox, the generated lineupZ, and the queryq. The
+model processes this joint sequence to align the observed signal
+with the candidate references:
+ˆy= argmax
+c∈C
+PM(c|[x;z 1;...;z N;q])(3)
+Equation 3 applies when allNcandidates pass validation; if
+any choice maps toNONE, the path falls back to DIRECT. By
+explicitly conditioning onZ, the model performscomparative
+reasoning, using the generated artifacts as stable anchors. This
+transforms absolute classification (which requires memorizing
+the entire acoustic space) intorelative discrimination, reducing
+the cognitive load on the perception encoder.
+2.3.2. Extraction path inference
+For the extraction path, we verify the answer against the iso-
+lated target. The extracted signalx ′ serves as a cleaner evidence
+source; the model re-evaluates the query conditioned on this re-
+fined input:
+ˆy= argmax
+c∈C
+PM(c|x ′,q)(4)
+This acts as afocused verificationstep, allowing the model to
+resolve specific timestamps, counts, or events that were previ-
+ously obscured by the acoustic background.
+3. Experiments
+3.1. Experimental Setup
+We evaluate RAISE onMMAR[6] andMMAU[7], two bench-
+marks targeting complex auditory reasoning and fine-grained
+understanding. Our backbone models includeQwen2-Audio-
+7B[1],Qwen2.5-Omni-7B[18], andQwen3-Omni-30B-A3B-
+Thinking[19]. We compare RAISE against a single-pass base-
+line (DIRECT). Implementation-wise, theSemantic Router
+utilizesgpt-4o-mini[20]; since it operates on text-only in-
+put (question and choices), it can be replaced by any lightweight
+language model.Auditory Imaginationemploys Stable Au-
+dio Open 1.0 (50 steps, guidance 7.0, 5s clips) for reference
+synthesis.Selective Extractionuses SAM-Audio with an en-
+ergy threshold of 0.01. All experiments run on NVIDIA H200
+GPUs. Our experiments use models from the Qwen family
+due to their native support for multi-audio input (separate au-
+dio clips, not multi-channel), which is required by the Imagina-
+tion path; RAISE is architecture-agnostic and applicable to any
+Audio LLM that accepts multiple audio inputs in one conversa-
+tion [21].
+3.2. Main Results
+RAISE outperforms standard inference across all mod-
+els, demonstrating that active instantiation improves over
+single-pass inference.As shown in Table 1, our framework
+yields substantial gains on both benchmarks. On MMAR,
+which demands complex reasoning, we observe double-digit
+improvements. RAISE achieves a +10.2% gain even over
+7019
+MMAR MMAU
+0
+20
+40
+60
+80
+100Percentage of Samples
+75.8%
+15.7%
+8.5%
+82.2%
+11.2%
+6.6%
+(a) Routing Distribution
+Direct Extraction Imagination
+Signal Cultural Perception Semantic
+0
+20
+40
+60
+80
+100Accuracy (%)
++9.3%
++12.1% +12.6%
++7.3%
+(b) MMAR by Category
+Baseline
+RAISE
+T emporal
+Reasoning
+Emotion
+Sum.
+Harmony &
+Chord
+Phonemic
+0
+20
+40
+60
+80
+100Accuracy (%)
++26.8%
++18.2%
++15.1%
++15.1%
+(c) MMAU by Subcategory
+Baseline
+RAISE
+Figure 2:Analysis of experimental results using Qwen3-Omni. (a) Distribution of inference strategies. (b) Performance gain by
+category on MMAR. (c) Performance gain for the top-4 subcategories on MMAU.
+Table 1:Comparison of accuracy (%) on MMAR and MMAU
+benchmarks. “Baseline” denotes standard single-pass infer-
+ence. “RAISE” denotes our proposed framework.∆indicates
+the absolute improvement.
+Dataset Model Baseline RAISE∆
+MMAR
+Qwen2-Audio 45.1 57.5+12.4
+Qwen2.5-Omni 61.8 73.0+11.2
+Qwen3-Omni 69.3 79.5+10.2
+MMAU
+Qwen2-Audio 57.4 65.0+7.6
+Qwen2.5-Omni 75.9 81.1+5.2
+Qwen3-Omni 78.3 84.9+6.6
+0 5 10 15 20 25 30 35 40
+Time per sample (seconds)
+Direct
+(75.8%)
+Extract
+(15.7%)
+Imagine
+(8.5%)
+3.3s
+23.6s
+34.1s
+Amortized 9.1s
+Router T ool Inference
+Figure 3:Per-path runtime breakdown (Qwen3-Omni, H200).
+The dashed line marks the amortized cost.
+Qwen3-Omni, whose built-in thinking mode already performs
+chain-of-thought (CoT) reasoning, suggesting that internal rea-
+soning alone is insufficient to correct perceptual errors. On
+MMAU, RAISE pushes Qwen3-Omni to 84.9%, a +6.6% ab-
+solute gain.
+Perceptual uncertainty follows a long-tailed distribu-
+tion, allowing RAISE to amortize tool cost.Figure 2(a)
+shows that the router bypasses expensive instantiation tools
+for 75.8% (MMAR) and 82.2% (MMAU) of queries, reserv-
+ing them strictly for the “hard tail” of ambiguous or noisy in-
+puts. Figure 3 breaks down the per-sample cost on MMAR us-
+ing Qwen3-Omni. The amortized cost of RAISE is only9.1s
+(MMAR) and7.6s(MMAU) per sample; the Direct path itself
+takes 3.3s (backbone inference plus 0.4s router overhead), so
+the net cost added by tool-augmented paths is modest given that
+they apply to fewer than 25% of queries.
+RAISE is most impactful where the base model’s para-
+metric knowledge is insufficient for physical grounding.
+A categorical decomposition (Figure 2b-c) reveals that gains
+are concentrated in tasks necessitating fine-grained discrimina-
+tion rather than abstract reasoning. We observe outsized im-
+provements inTemporal Reasoning(+26.8%) andPerception
+Table 2:Ablation study using Qwen3-Omni. Top: inference-
+time baselines without external tools. Middle: static policies
+applying one tool to all samples. Bottom: RAISE variants with
+routed single-tool and full framework.
+Category Configuration MMAR MMAU
+Baselines
+Direct (single-pass) 69.3 78.3
++ CoT prompting 68.3 76.6
++ Self-Refine (two-pass) 69.3 76.2
+Static policies All→Extraction 54.9 70.3
+All→Imagination 66.7 76.3
+RAISE variants
+Router + Extraction only 75.2 82.4
+Router + Imagination only 74.3 81.1
+RAISE (full)79.5 84.9
+(+12.6%), confirming that signal isolation is a prerequisite for
+accurate counting and decoding in complex mixtures. Similarly,
+the significant boosts inHarmony(+15.1%) andEmotion Sum-
+marization(+18.2%) demonstrate that materialized evidence
+effectively resolves spectral and affective ambiguity that high-
+level semantic inference alone cannot address.
+3.3. Ablation Study
+Table 2 isolates the contribution of each RAISE component us-
+ing Qwen3-Omni. We ask three questions: (1) Can the model
+reason its way past perceptual errors without tools? (2) Do tools
+help when applied blindly to every sample? (3) Are both tools
+necessary, or does one suffice?
+More reasoning cannot compensate for flawed percep-
+tion.A natural objection is that the model should “think harder”
+and self-correct. We test two strategies: COT prompting
+prepends step-by-step reasoning instructions; SELF-REFINE
+gives the model a second pass to reconsider its prediction. Nei-
+ther helps: CoT degrades performance (−1.0% MMAR,−1.7%
+MMAU), likely because Qwen3-Omni already has a built-in
+thinking mode. Self-Refine matches the baseline on MMAR
+but regresses on MMAU (−2.1%), as the model second-guesses
+correct answers as often as it fixes wrong ones. When the bottle-
+neck is perceptual, no amount of reasoning over a misperceived
+signal recovers the correct answer.
+Applying tools to every sample is worse than using no
+tools at all.One might wonder whether RAISE could skip the
+router and simply run both tools on all inputs. We test two
+static policies: applying Extraction to every sample, and ap-
+7020
+Table 3:Qualitative analysis of how RAISE changes model reasoning on MMAR (Qwen3-Omni). Each row shows how the baseline errs
+and how RAISE-produced evidence redirects the model to the correct answer.Blue rows = Auditory Imagination path; Orange rows
+= Selective Extraction path.
+Question Evidence from RAISE Baseline→Wrong RAISE→Correct
+What rescue tool is
+being used?
+A. Electric
+drill B. Chainsaw
+C. Shovel D. Rope
+Generated audio for each tool.
+Drill:“smooth, continuous whir. ”
+Chainsaw:“guttural revving. ”
+High-pitched whirring→
+matched to chainsaw by pitch
+alone.
+B. Chainsaw✗
+Compared against all 4
+references; original’s smooth
+whir aligned with drill, not
+chainsaw’s rough revving.
+A. Electric drill✓
+What is the source of
+barking?
+A. Human-made B. Music
+C. Dog
+barked D. Recording
+Generated references for human
+imitation, music bark, real dog
+bark, and played recording.
+Speaker mentions sound to deter
+kids→assumed playback of
+recording.
+D. Recording✗
+References revealed bark’s
+timing (right after “Sure”)
+matches deliberate human
+production, not a recording.
+A. Human-made✓
+How many times does
+the most repeated
+sound repeat?
+A. 2 B. 4 C. 5 D. 6
+Isolated the high-pitched “ping,”
+suppressing whooshes and static
+noise.
+Counted 5 pings from noisy
+mixture; one event masked by
+overlapping interference.
+C. 5 times✗
+Clean signal exposed 6 distinct
+timestamps (0.5, 3.5, 4.5, 7.5,
+10.5, 13.5 s).
+D. 6 times✓
+Where is the
+conversation taking
+place?
+A. Helicopter B. Airport
+C. Beach D. Boat
+Isolated dominant engine sound,
+suppressing speech and water
+splash.
+Water + engine + dialogue
+mentioning “boat”→concluded
+boat setting.
+D. On a boat✗
+Extracted signal revealed
+rhythmic “whop-whop-whop”
+rotor pattern, characteristic of a
+helicopter.
+A. Helicopter✓
+plying Imagination to every sample. Forced Extraction drops
+to 54.9% on MMAR because aggressive isolation strips away
+useful acoustic context (e.g., removing background music that
+provides genre cues). Forced Imagination falls to 66.7% be-
+cause synthesized references interfere with speech-heavy tasks
+where comparison is unhelpful. Both static policies score be-
+low the tool-free baseline (69.3%), confirming that the tools are
+powerful but dangerous without selective routing.
+Both tools are necessary and address distinct failure
+modes.To test whether one tool alone suffices, we replace
+the three-way router with binary variants that choose between
+DIRECTand a single tool. Router + Extraction reaches 75.2%
+and Router + Imagination reaches 74.3% on MMAR, each well
+above the baseline but below full RAISE (79.5%). The 4–5%
+gap reflects samples where only the missing tool could help
+(e.g., a counting task that needs Extraction but is forced through
+Imagination). The two tools are complementary, not redundant,
+and accurate routing is essential to deploy them effectively.
+3.4. Detailed Analysis
+RAISE demonstrates robust predictive stability.Error dy-
+namics (Figure 4) show correction-to-regression ratios between
+3:1 and 5:1; for Qwen3-Omni, 133 corrections vs. 31 regres-
+sions. Most tool-induced regressions trace toSelective Extrac-
+tionstripping useful context (e.g., removing reverberation cues
+needed for singer counting), with a few fromAuditory Imagi-
+nationproducing overly narrow references (e.g., a “volleyball”
+thud mismatching the recording’s sharp strikes).
+Case studies confirm the distinct utility of each tool
+path.Table 3 illustrates representative corrections on MMAR
+(Qwen3-Omni). Auditory Imagination resolves ambiguity
+through comparative matching: the baseline confused a high-
+pitched electric drill with a chainsaw, but synthesized references
+Qwen2-Audio
+(MMAR)
+Qwen2-Audio
+(MMAU)
+Qwen2.5-Omni
+(MMAR)
+Qwen2.5-Omni
+(MMAU)
+Qwen3-Omni
+(MMAR)
+Qwen3-Omni
+(MMAU)
+50
+0
+50
+100
+150
+Number of Samples
++168
+-44
+Net
++124
++94
+-18
+Net
++76
++154
+-42
+Net
++112
++75
+-23
+Net
++52
++133
+-31
+Net
++102
++89
+-23
+Net
++66
+Corrected (Gain)
+Regressed (Loss)
+Figure 4:Error correction dynamics. Green bars indicate sam-
+ples where RAISE fixed the baseline’s error; orange bars indi-
+cate regressions.
+for each tool enabled correct identification. Selective Extrac-
+tion reveals fine-grained details obscured by noise: the baseline
+undercounted repeated pings (5 vs. 6) in a noisy mixture, but
+isolating the target exposed 6 distinct timestamps.
+4. Conclusion
+We have presentedRAISE, a training-free framework that turns
+generation into a tool for perception. By routing queries toAu-
+ditory ImaginationorSelective Extraction, RAISE resolves
+perceptual ambiguity through concrete evidence. Experiments
+on MMAR and MMAU yield gains of up to 12.4% without
+parameter updates. Current limitations are tool reliance and
+added latency for routed samples, which distilled generators and
+batched separation can reduce. Making modelslisten by imag-
+ining and extractingopens a promising direction for robust au-
+dio understanding.
+7021
+5. Acknowledgments
+This work was supported in part by NSF 2112562 and ARO
+W911NF-23-2-0224.
+6. Generative AI Use Disclosure
+Generative AI tools were used to assist with editing, paraphras-
+ing, and polishing the manuscript text. All generative AI sys-
+tems evaluated as part of the research methodology (Stable Au-
+dio, SAM-Audio, GPT-4o-mini, and the Qwen model family)
+are fully described in Sections 2 and 3. All authors have re-
+viewed and take full responsibility for the content of this paper.

@@ -1,0 +1,471 @@
+Incremental End-to-End Spoken Dialogue State Tracking with a Multimodal
+LLM and Reinforcement Learning
+Tomoya Higuchi ID , Michimasa Inaba ID
+The University of Electro-Communications, Japan
+hgctomo@gmail.com, m-inaba@uec.ac.jp
+Abstract
+End-to-end spoken dialogue state tracking (DST) infers be-
+lief states directly from speech, avoiding cascading errors in
+ASR–DST pipelines. This paper proposes an incremental DST
+method using a multimodal large language model (Qwen2.5-
+Omni-7B) that generates transcripts and symbolic state updates
+from raw audio. Unlike conventional approaches that regen-
+erate the full state each turn, our method predicts only sym-
+bolic edit operations relative to the previous state, reducing
+output length and the risk of corrupting unchanged slots. We
+apply a two-stage training recipe: supervised fine-tuning fol-
+lowed by Group Relative Policy Optimization (GRPO), which
+directly optimizes generation-level rewards for transcript ac-
+curacy, DST correctness, and format validity. Experiments
+on SpokenWOZ demonstrate that incremental updates substan-
+tially outperform full-state prediction, and GRPO further im-
+proves accuracy, achieving the best reported results on this
+benchmark.
+Index Terms: spoken dialogue systems, dialogue state track-
+ing, multimodal LLM, reinforcement learning, GRPO
+1. Introduction
+Task-oriented dialogue systems must maintain a structured rep-
+resentation of the user’s goals, constraints, and requests as a
+dialogue progresses. Dialogue state tracking (DST) estimates
+this belief state from the interaction history. When users speak,
+a common approach is a cascade of automatic speech recog-
+nition (ASR) followed by text-based DST [1]. The DSTC-11
+challenge [2] highlighted the gap between written and spoken
+dialogue by constructing spoken variants of MultiWOZ 2.1 [3],
+and subsequent approaches attempted to mitigate ASR errors
+through explicit correction modules [4]. Nevertheless, such cas-
+cades inherently suffer from error propagation: ASR mistakes
+can severely corrupt downstream state updates.
+An emerging alternative is to bypass ASR entirely by using
+multimodal large language models (MLLMs) that process au-
+dio directly [5, 6, 7, 8, 9]. Qwen2.5-Omni [10] represents the
+current state of the art among publicly available models in this
+line, achieving end-to-end multimodal perception with a unified
+encoder–decoder architecture. However, simply replacing the
+ASR–DST cascade with an MLLM does not resolve a second,
+independent challenge: how to efficiently and robustly maintain
+the belief state across multiple turns.
+In text-based DST, generative approaches such as
+TRADE [11] and SimpleTOD [12] typically regenerate the full
+belief state at each turn. Incremental approaches, which con-
+dition on the previous belief state and predict only the changed
+slots, have also been explored—for example, SOM-DST [13]
+selectively overwrites a belief state memory, and MinTL [14]
+introduces Levenshtein belief spans. Although these incremen-
+tal methods were once in the minority, they have attracted re-
+newed interest in the LLM era: regenerating the full state at
+every turn inflates output length and risks hallucinating values
+for unchanged slots, whereas incremental updates let the model
+focus on what actually changed [15, 16]. To the best of our
+knowledge, existing end-to-end spoken DST approaches have
+yet to benefit from this shift, still employing full-state predic-
+tion [17], which becomes increasingly inefficient and prone to
+spurious slot errors as dialogues grow longer.
+To address the limitations of full-state prediction in end-
+to-end spoken DST, this paper proposes a framework using
+Qwen2.5-Omni-7B [10] with an incremental state update strat-
+egy. Instead of predicting the full state (e.g., {"restauran
+t":{"food":"indian", "area":"north", "tim
+e":"18:00",...}} ), our model outputs symbolic edit op-
+erations (e.g., update(restaurant.food=indian) ),
+conditioning on the previous belief state. Compared to full-
+state prediction, this incremental approach reduces the output
+length and allows the model to focus on the specific changes in
+the current turn, thereby mitigating the risk of corrupting un-
+changed slots. On the other hand, because incremental updates
+condition on previous predictions at inference time, a single er-
+roneous edit can propagate to all subsequent turns, making per-
+turn accuracy even more critical. We therefore apply Group
+Relative Policy Optimization (GRPO) [18], which has recently
+been shown to improve ASR robustness [19], to directly opti-
+mize generation-level rewards—transcript quality, update cor-
+rectness, and format validity—that the token-level SFT objec-
+tive alone cannot capture. The main contributions of this paper
+are as follows:
+• The first application of incremental belief state updates to
+end-to-end spoken DST, extending the paradigm to direct au-
+dio input. The model predicts a constrained set of symbolic
+slot-level edit operations conditioned on the previous belief
+state, yielding more compact outputs than prior full-state ap-
+proaches.
+• A multi-component GRPO reward jointly optimizing tran-
+scription quality and edit-operation correctness, motivated
+by the error propagation sensitivity inherent to incremental
+inference—where a single erroneous edit cascades across all
+subsequent turns.
+• Empirical evaluation on SpokenWOZ showing that our in-
+cremental formulation outperforms the full-state baseline by
+3.16 JGA points, with GRPO further improving both JGA
+and WER.
+• Public release of code and trained model to support repro-
+ducibility and future research.1
+1https://github.com/UEC-InabaLab/IncrementalR
+5792
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-592
+2. Methods
+We propose an end-to-end spoken dialogue state tracking
+framework that directly maps audio input and dialogue history
+to belief state updates. Figure 1 illustrates the data flow of the
+proposed incremental method: the system takes the text dia-
+logue history, the previous belief state, and the current user
+audio as input, and a multimodal large language model gener-
+ates a transcript along with symbolic edit operations to update
+the belief state. Our approach adopts an incremental strategy:
+rather than regenerating the full belief state at every turn—as in
+conventional generative DST methods [12, 11]—the model pre-
+dicts symbolic edit operations (e.g., updates or deletions) rela-
+tive to the previous state, inspired by the efficiency of differ-
+ential state tracking proposed for text-based systems [14]. To
+ensure high-quality transcription and robust state tracking, we
+employ a two-stage training pipeline consisting of Supervised
+Fine-Tuning (SFT) for initial alignment and format learning,
+followed by Group Relative Policy Optimization (GRPO) [18]
+to directly optimize generation-level metrics that SFT’s token-
+level loss does not capture.
+2.1. Task Formulation
+LetHt denote the dialogue history up to turnt−1,at the current
+audio input, andBt the belief state at turnt. The model outputs
+(i) a transcript for the current turn and (ii) the updated belief
+stateBt.
+2.2. Incremental DST
+We propose an incremental DST formulation where the model
+conditions on the previous belief stateBt−1 and predicts a set of
+edit operations ∆t (see Figure 1). Specifically, the input is con-
+structed by concatenating the text-based dialogue history Ht,
+the previous belief state Bt−1, and the current audio input at
+using explicit section headers. The prompt follows a template:
+[DialogueHistory] followed by the turn-by-turn con-
+text, [PreviousState] followed by the JSON string of
+Bt−1, and finally [NewAudio] followed by the current au-
+dio input at. The operation vocabulary is constrained to three
+types: set(domain.slot=value) (initialize a new slot),
+update(domain.slot=value) (modify an existing slot),
+and delete(domain.slot) (remove a slot). The new
+belief state is obtained by applying ∆t toBt−1.
+This formulation yields compact outputs and focuses the
+model on changes. However, at inference time a single incorrect
+edit can corrupt all later states in predicted-mode evaluation,
+so output quality is critical. To improve the overall quality of
+generated transcripts and edit operations, we complement SFT
+with reinforcement learning via GRPO.
+2.3. Model and Training
+2.3.1. Multimodal LLM and adaptation
+We employ a multimodal LLM capable of processing both au-
+dio and text within a single decoder. This architecture elimi-
+nates the need for external connectors or separate ASR modules,
+allowing direct utilization of paralinguistic cues for DST. To re-
+duce memory and computational costs, we adapt the model with
+parameter-efficient fine-tuning (PEFT) via QLoRA [20], apply-
+ing LoRA adapters only to the LLM component while keeping
+the audio encoder and modality aligner frozen.
+LForSpokenDST
+2.3.2. Stage 1: Supervised fine-tuning (SFT)
+We first fine-tune the model with teacher forcing on paired au-
+dio and labeled DST outputs. For incremental DST, the target
+output follows a strict format: <transcript>...</tra
+nscript> and <answer>...</answer> . The SFT stage
+aims to establish the basic alignment between audio and text,
+ensuring the model learns valid output syntax and acquires the
+ability to transcribe and generate correct state updates. Impor-
+tantly, the model never outputs the full belief state directly; it
+produces only the transcript and the set of symbolic edit opera-
+tions, leaving state reconstruction to a deterministic application
+of ∆t toBt−1.
+2.3.3. Stage 2: Reinforcement learning with GRPO
+SFT alone optimizes a token-level cross-entropy loss, which
+does not directly correspond to the generation-level metrics
+used in evaluation (e.g., word error rate, edit-operation F1). We
+therefore apply Group Relative Policy Optimization (GRPO)
+starting from an SFT checkpoint to explicitly optimize these
+sequence-level objectives. For each prompt (audio + context),
+we sample K candidate generations and compute a scalar re-
+ward for each. Policy updates are based on relative performance
+within the group, with a KL penalty to limit drift from the ref-
+erence policy.
+2.4. Reward Design
+The reward is a weighted sum of interpretable components, nor-
+malized to lie in [0, 1]. We use the following formulation:
+r =αr wer +βr diff-f1 +γr exact +δr format, (1)
+whererwer = max(0, 1−WER) is based on the transcript word
+error rate,rdiff-f1 is the F1 score between predicted and reference
+edit-operation sets,rexact∈{ 0, 1} is a binary bonus that equals
+1 if the predicted edit set exactly matches the reference and 0
+otherwise, and rformat checks whether required tags and opera-
+tion syntax are valid. The weights α,β,γ,δ are hyperparame-
+ters satisfyingα+β +γ +δ = 1; their specific values are given
+in Section 3.2.
+The format score decomposes into: presence of <transc
+ript> (+0.3), presence of <answer> (+0.3), and validity of
+the operation string (+0.4; an empty set is treated as valid).
+3. Experimental Setup
+3.1. Datasets and Metrics
+We evaluate our method on the SpokenWOZ dataset [1], which
+comprises 5,700 human-to-human spoken task-oriented dia-
+logues spanning 8 domains with over 203k turns. From the orig-
+inal training split of 4,700 dialogues, we reserve 100 dialogues
+as a validation set and use the remaining 4,600 for training. The
+test set consists of 1,000 dialogues.
+For evaluation, we employ three key metrics: (1) Word Er-
+ror Rate (WER) measures the transcription accuracy. (2) Joint
+Goal Accuracy (JGA) is the primary DST metric, defined as
+the percentage of turns where the predicted belief state exactly
+matches the ground truth state for all slots. (3) Slot Error Rate
+(SER) is calculated as the sum of slot substitutions, insertions,
+and deletions divided by the total number of slots in the refer-
+ence labels [21].
+We evaluate both an oracle mode and a predicted mode.
+In oracle mode, the model conditions on the ground-truth dia-
+5793
+Audio 
+To k e n s
+Prompt
+Construction
+[Dialogue History]
+User: I want a type 
+of guesthouse 
+including free  
+parking.
+System: yes. uh, 
+then how many
+stars would you 
+like?
+[Previous State]
+{"hotel":{"parking": "yes"}}
+[New Audio]
+<audio_tokens>
+Multimodal 
+LLM
+set(hotel.stars=4)
+<answer>
+</answer>
+User: I think a star of
+four is adequate.
+<transcript>
+</transcript>
+Tra n s c r i p t
+Symbolic Edit 
+Operations (∆!)
+Apply
+∆!
+to
+B𝒕#$
+State 
+Update
+New Belief
+State (𝑩!)
+Model Output
+Ithink a star 
+of four is 
+adequate.
+User: I want a type 
+of guesthouse 
+including free  
+parking.
+System: yes. uh, 
+then how many
+stars would you 
+like?
+Dialogue History(𝑯𝒕)
+Previous Belief State 
+(B𝒕"#)
+{"hotel": {"parking": "yes"}}
+Current Audio Input 
+(a𝒕)
+{"hotel": 
+{"parking": "yes",
+"stars": "4"}}
+Figure 1: Data flow of the proposed incremental DST method. The model takes as input the dialogue history Ht, the previous belief
+stateBt−1, and the current audio at, and outputs a transcript and a set of symbolic edit operations ∆t that are applied to Bt−1 to
+produce the updated belief stateBt.
+logue history transcript and, for incremental DST, the ground-
+truth previous belief state. In predicted mode, the model’s own
+transcript is appended to the history; for incremental DST, the
+predicted edits are applied to update the belief state for the next
+turn. This cascade setting reflects practical deployment and is
+substantially more sensitive to formatting and small mistakes.
+We use vLLM (v0.15.1) for efficient inference with LoRA
+adapters. We decode greedily (temperature 0.0) with a maxi-
+mum generation length of 1024 tokens.
+3.2. Model Configuration
+We use Qwen2.5-Omni-7B [10] as the base multimodal LLM
+for all experiments. We adapt the model with QLoRA [20],
+using rank 64 and alpha 128, training in 4-bit NF4 quantiza-
+tion with double quantization. We compute in bfloat16 and
+use DeepSpeed ZeRO-2, Flash Attention 2, and gradient check-
+pointing.
+3.3. Baselines
+We compare our proposed method against the following base-
+lines:
+SPACE+WavLMalign [1] is a cascade baseline proposed in the
+SpokenWOZ paper. It employs an ASR-based pipeline aug-
+mented with speech embeddings from WavLM for alignment,
+representing the conventional approach to spoken DST.
+Gemma-2-9B-Instruct [17] is an end-to-end approach align-
+ing a speech encoder with an LLM and generating the full be-
+lief state at each turn. Sedl ´aˇcek et al. also report results with
+ontology-based fuzzy matching (+FUZZY) as post-processing.
+Qwen2.5-Omni-7B (Full-State) follows the same full-state
+generation approach as Sedl´aˇcek et al. [17], but uses Qwen2.5-
+Omni-7B as the base model. The model predicts the entire be-
+lief stateBt at each turn as a JSON object (e.g., {"domain":
+{"slot":"value",...},...} ). This baseline uses the
+same Qwen2.5-Omni-7B base model and is trained with SFT
+only, allowing a direct comparison of the DST formulation (full-
+state vs. incremental) under the same model architecture.
+3.4. Training Configuration
+We implement our training pipeline using ms-swift 2 with Py-
+Torch and DeepSpeed. All models are trained with the
+2https://github.com/modelscope/ms-swift
+Table 1: DST performance on SpokenWOZ (predicted mode).
+Models are grouped by approach type.
+Model JGA ↑ SER↓
+Cascade (ASR-based)
+SPACE+WavLMalign [1] 25.65 –
+End-to-End Full-State
+Gemma-2-9B [17] 38.76 22.66
+Gemma-2-9B + FUZZY [17] 42.17 20.41
+Qwen2.5-Omni-7B 45.36 19.92
+End-to-End Incremental (Ours)
+Qwen2.5-Omni-7B 48.52 18.48
+Qwen2.5-Omni-7B + GRPO 49.20 18.03
+AdamW [22] optimizer. For SFT (Stage 1), we use a cosine
+learning rate scheduler with a warmup ratio of 0.05. The model
+is trained to minimize the cross-entropy loss on the target tokens
+(transcript and belief state updates), while masking the loss for
+the input prompt. We train with an effective batch size of 32,
+using a learning rate of 1× 10−4 for 3 epochs. We select the
+best checkpoint by validation loss.
+For GRPO (Stage 2), we initialize from the best SFT check-
+point and train with an effective batch size of 128. We sam-
+ple 16 generations per prompt (group size 16), use a learning
+rate of 1× 10−6 for 1 epoch, and set the KL penalty coeffi-
+cient βKL = 0.02. The reward weights are set to α = 0.3,
+β = 0.5, γ = 0.1, and δ = 0.1, placing the highest em-
+phasis on edit-operation F1. Experiments were conducted on
+8 NVIDIA A6000 (48 GB) GPUs. SFT training took approx-
+imately 20 hours, and GRPO training took approximately 40
+hours.
+4. Results and Analysis
+4.1. Main Results
+First, Table 1 shows that comparing the two full-state ap-
+proaches, our Qwen2.5-Omni-7B baseline outperforms the
+Gemma-2-9B + FUZZY model by 3.19 JGA points (45.36 vs.
+42.17), indicating that a stronger multimodal base model pro-
+vides a better foundation for spoken DST. Second, and more
+importantly, switching from full-state to incremental prediction
+5794
+Table 2: Performance in Oracle vs. Predicted modes (JGA).
+†GT transcripts only;‡GT transcripts + GTBt−1.
+Model Oracle JGA Predicted JGA
+Full-State† 45.33 45.36
+Incremental‡ 88.58 48.52
+Incremental + GRPO‡ 89.72 49.20
+1-5 6-10 11-15 16-20 21-30 31+
+T urn Range
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0JGA
+Full-State
+Incremental
+Incremental + GRPO
+Figure 2: JGA performance by turn number. Each bar rep-
+resents the joint goal accuracy within the corresponding turn
+range.
+on the same base model yields an additional 3.16 JGA points
+(48.52 vs. 45.36), demonstrating that the incremental formu-
+lation itself is a significant contributor independent of the base
+model. GRPO further improves performance (+0.68 JGA), con-
+firming the benefit of optimizing generation-level rewards be-
+yond the token-level SFT objective. Table 3 further shows that
+GRPO training reduces WER from 22.39% to 21.61%, indicat-
+ing that the generation-level reward optimization improves not
+only state tracking but also transcription quality.
+4.2. Oracle vs. Predicted Evaluation
+We evaluate models in oracle mode (Table 2) to isolate DST
+reasoning from error propagation. Oracle inputs differ by
+approach: Full-State receives ground-truth transcripts in the
+dialogue history, while Incremental additionally receives the
+ground-truth previous belief state B∗
+t−1. Full-State shows vir-
+tually no oracle gain (45.33 vs. 45.36), as expected since it does
+not condition on the previous state. In contrast, the incremental
+models achieve oracle JGA of 88.58–89.72, yet the ∼40-point
+drop in predicted mode confirms that state error propagation is
+the primary bottleneck for practical deployment.
+4.3. Performance by Turn
+To further investigate how this error propagation manifests over
+the course of a dialogue, we analyzed the performance across
+different turn ranges. Figure 2 illustrates the JGA trend. In
+most turn ranges, our models show the ordering GRPO≥ SFT
+> Full-State. The gap is particularly pronounced in mid-range
+turns (11–15 and 16–20), where GRPO achieves 53.7% and
+46.8%, compared to Full-State’s 48.8% and 40.4%, respec-
+tively. The Full-State baseline shows notable degradation for
+later turns (11+), likely due to the increasing difficulty of re-
+generating a growing belief state. Our Incremental method also
+degrades in later turns due to error propagation from previous
+predictions, but maintains a consistent advantage over the Full-
+State approach throughout.
+Table 3: WER of proposed model variants.
+Model WER ↓
+Full-State 23.01
+Incremental 22.39
+Incremental + GRPO 21.61
+Table 4: Ablation study on WER reward component.
+Config JGA ↑ WER↓
+Full Method (Ours) 49.20 21.61
+w/o WER Reward 48.34 23.37
+4.4. Ablation Study
+To investigate the contribution of the WER reward component
+in GRPO, we train a variant with the WER reward term re-
+moved. As shown in Table 4, removing this component de-
+grades both transcription quality (WER increases from 21.61%
+to 23.37%) and DST accuracy (JGA decreases from 49.20% to
+48.34%). These results indicate that GRPO’s gains in JGA are
+driven primarily by improved transcription: cleaner transcripts
+reduce the noisiness of the dialogue history fed into subsequent
+turns, thereby mitigating the error propagation identified in Sec-
+tion 4.2.
+5. Conclusion
+We presented an incremental end-to-end spoken DST frame-
+work that generates compact edit operations instead of full be-
+lief states, using a multimodal LLM. The incremental formula-
+tion provides interpretable updates that significantly outperform
+full-state prediction, and GRPO further improves per-turn ac-
+curacy by directly optimizing generation-level rewards. Turn-
+level analysis showed that the incremental approach consis-
+tently outperforms the full-state baseline across all turn ranges.
+These results demonstrate that combining incremental state
+tracking with reward-driven training is a promising direction for
+end-to-end spoken DST.
+However, several limitations remain. First, our oracle vs.
+predicted evaluation revealed a substantial performance gap
+(approximately 40 JGA points), indicating that error propaga-
+tion across turns remains a major challenge for the incremental
+approach. Since both SFT and GRPO are trained with ground-
+truth previous states, the model has limited exposure to the
+noisy, error-containing states it encounters during predicted-
+mode inference. Second, GRPO requires sampling multiple
+candidate generations per prompt during training, which sub-
+stantially increases computational cost compared to SFT alone.
+Finally, our evaluation was conducted with a single model
+(Qwen2.5-Omni-7B) on a single dataset (SpokenWOZ); gener-
+alization to other multimodal LLMs, domains, and DST bench-
+marks needs further investigation.
+A promising direction to address error propagation is train-
+ing on dialogues that include erroneous histories—e.g., by in-
+jecting predicted states from earlier checkpoints into the train-
+ing data—so that the model learns to recover from imperfect
+prior states. Other future directions include exploring stream-
+ing inference for real-time dialogue applications and a more
+thorough exploration of reward design and hyperparameter con-
+figurations.
+5795
+6. Generative AI Use Disclosure
+Generative AI tools were used to assist with refining and trans-
+lating the manuscript.

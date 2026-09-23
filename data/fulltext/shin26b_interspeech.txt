@@ -1,0 +1,397 @@
+EchoLoc: Audio-Aware Object Grounding via Joint Heatmap and Box-Level
+Localization
+Junghwa Shin ID 1,∗, Yeonwoo Kim ID 1,∗, HyungJune Lee ID 1,2,∗∗
+1 Department of Computer Science and Engineering, Ewha Womans University, South Korea
+2 Division of Artificial Intelligence and Software, Ewha Womans University, South Korea
+jungh1214@gmail.com, ynwoo34@ewha.ac.kr, hyungjune.lee@ewha.ac.kr
+Abstract
+Although recent multimodal models aim to jointly understand
+images, text, and audio, they mostly focus on global-level rep-
+resentations and remain limited in precise object-level ground-
+ing. In particular, conventional text-image grounding models
+struggle to leverage non-visual cues such as sound. We propose
+an audio-aware grounding framework calledEchoLoc, based on
+a query-based transformer detector of MDETR, incorporating
+audio information to complement textual supervision and local-
+ize sound-related visual regions. Our approach learns spatial
+heatmap-based local cues through audio-visual alignment and
+uses them to guide ROI-level object box prediction, enabling
+the localization of sound-related visual regions even without
+explicit bounding-box annotations. On Flickr-SoundNet-Test,
+EchoLocyields +2.58% and +17.08% relative improvements in
+cIoU (adap) and AUC (adap) over the state-of-the-art.
+Index Terms: Audio-visual grounding, Sound source localiza-
+tion, Multimodal representation learning
+1. Introduction
+Recent technology in artificial intelligence has expedited mul-
+timodal learning. By integrating semantically aligned features
+from multimodal datasets, models can understand images, text,
+and audio within a unified framework. However, most mod-
+els [1, 2] mainly focus on global correspondence and semantics,
+but lack fine-grained object-level detection and localization.
+To tackle the object-level localization, vision-language
+grounding has made some considerable advances. By align-
+ing natural language with visual regions, some representative
+works [3, 4] localize objects by predicting bounding boxes un-
+der an open-vocabulary setting. However, these methods rely
+heavily on complete and semantically explicit captions, mak-
+ing them sensitive to noisy or incomplete textual signals such
+as those produced by automatic speech recognition (ASR).
+Sound Source Localization (SSL) aims to localize the im-
+age region corresponding to the sound in paired image-audio
+samples. Since datasets with ground-truth sound source re-
+gions are scarce, most previous studies [5, 6, 7, 8] rely on self-
+supervised learning. Typically, contrastive learning approaches
+learn localization cues in the form of audio-visual similarity
+heatmap, which provides soft spatial evidence of sound source.
+However, such heatmaps tend to be blurry, making it difficult to
+obtain precise object-level bounding boxes. Moreover, because
+converting a heatmap into a bounding box typically depends on
+This work was supported by the National Research Founda-
+tion(NRF), Korea, under project BK21 FOUR.
+*These authors contributed equally.
+**indicates the corresponding author.
+post-processing, which is not included in the training objective,
+it is difficult to optimize end-to-end.
+These limitations highlight a missing training signal that
+connects sound cues to object-level predictions. Although
+audio-visual alignment provides weak spatial cues, directly
+learning object boxes with clear boundaries remains difficult
+without box annotations. This raises a fundamental question:
+How can we incorporate a pipeline for generating object can-
+didates and selecting the sound-producing objects among them
+into end-to-end training, using only limited audio-visual sig-
+nals?In other words, we need a framework that predicts object
+boxes without additional box annotations, while preserving lo-
+cal, object-level grounding beyond global semantic alignment.
+To address the problem of audio-aware object grounding,
+we presentEchoLoc, which jointly trains heatmap prediction
+and box prediction modules. The heatmap module is trained via
+spatial and global contrastive learning. To effectively train the
+box prediction module, datasets with bounding box annotations
+corresponding to sounds are required, but they are very scarce.
+To tackle scarcity, we generate a pseudo bounding box from the
+audio-visual similarity map obtained from the heatmap module
+and use it as supervision for training the box prediction module.
+Despite this effort, training with pseudo boxes can lead to
+a bootstrap paradox, because it becomes unstable for a model
+to learn from its own predictions. We adopt a query-based de-
+tection model to generate diverse audio-conditioned candidate
+boxes and select the one with the highest audio-visual similar-
+ity as the final box prediction. In this way, we do not treat the
+pseudo box as a hard target; instead, it encourages exploration
+during candidate generation and yields more stable predictions
+by leveraging heatmap-based signals. As such, the heatmap and
+box prediction modules can be co-trained in a complementary
+manner, allowing the box predictor to refine heatmap-derived
+localization cues into object-level predictions.
+In summary, our contributions are threefold:
+• We propose an audio-aware grounding framework,EchoLoc,
+based on a query-based transformer detector of MDETR [3],
+incorporating audio information to complement textual su-
+pervision and localize sound-related visual regions.
+• Our approach learns spatial heatmap-based local cues
+through audio-visual alignment and then uses them to guide
+ROI-level object box prediction, enabling fine-grained local-
+ization of sound-related visual regions even without explicit
+bounding-box annotations.
+•EchoLocachieves 36.36 cIoU and 38.28 AUC on VGG-
+SS, and shows strong adaptive localization performance on
+Flickr-SoundNet-Test, yielding +2.58% and +17.08% rela-
+tive improvements in cIoU(adap) and AUC(adap) over the
+state-of-the-art.
+1116
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2320
+2. Methods
+2.1. Architecture
+We proposeEchoLoc, an audio-aware object grounding frame-
+work that jointly performs heatmap-based and box-level local-
+ization, as illustrated in Figure 1. Each input sample consists
+of a single image frame and an audio signal generated within
+the same scene. Two modalities are independently encoded into
+feature representations using modality-specific encoders. For
+the visual stream, the input image is transformed into an object-
+centric visual feature map using a ResNet-101 backbone initial-
+ized with weights pre-trained in MDETR [3].
+For the audio stream, we adopt Pretrained Audio Neural
+Networks (PANNs) [9] and use a frozen CNN14 as the audio
+backbone to encode the input audio into a global feature repre-
+sentation. We avoid heavier transformer-based audio encoders
+such as AST [10] due to their parameter overhead and compu-
+tational complexity. The resulting visual feature map and au-
+dio feature are then fed into subsequent modules. The overall
+framework consists of two parallel modules that share the same
+input features.
+The box prediction module is an audio-conditioned, object-
+centric branch based on the transformer architecture employed
+in MDETR [3]. The visual feature map and the global audio
+feature are jointly fed into the transformer encoder, enabling
+an early fusion mechanism where cross-modal self-attention
+inherently produces audio-aware visual features. This allows
+the model to integrally capture visual context related to the
+sound. The transformer decoder then processes object queries
+by attending to the fused audio-visual features and directly out-
+puts the bounding box coordinates corresponding to the sound-
+producing object within the image. This module is responsi-
+ble for accurately estimating object boundaries with clear visual
+structures.
+The heatmap prediction module is a localization compo-
+nent that estimates sound-generating regions. We compute an
+audio-visual similarity heatmap by measuring pixel-wise simi-
+larity between the audio features and individual spatial locations
+in the visual feature map. The heatmap provides soft spatial ev-
+idence of sound source locations and is later used to generate
+pseudo boxes for training the box prediction module.
+2.2. Training
+To train the model to localize the sound-producing regions ef-
+fectively and encourage more object-centric bounding boxes,
+we leverage both heatmap prediction and box prediction mod-
+ules. The heatmap module is trained through contrastive learn-
+ing on image-audio pairs. In particular, we utilize both spatial
+contrastive learning and global contrastive learning. Bounding-
+box annotations aligned with the audio are required to train the
+box prediction module, but such datasets are scarce. Therefore,
+we adopt a self-supervised strategy to generate pseudo boxes
+from the audio–visual similarity map predicted by the heatmap
+module and to use them to supervise the box prediction module.
+2.2.1. Spatial contrastive loss
+We usesspa as a spatial similarity for localization, which encour-
+ages the model to highlight sound-producing regions.s spa(i,j)
+is defined as below:
+sspa(i,j) = log
+ HX
+x=1
+WX
+y=1
+exp
+ 
+⟨Vi(x,y),a j⟩
+
+!
+(1)
+whereV i denotes the visual feature map of thei-th image sam-
+ple,V i(x,y)denotes the visual feature vector at spatial loca-
+tion(x,y), anda j is the audio feature vector of thej-th audio
+sample.⟨·,·⟩denotes the inner product of two feature vectors.
+Sinces spa(i,j)aggregates spatial similarities via log-sum-exp
+pooling, increasing the similarity at a few highly relevant lo-
+cations contributes more than uniformly increasing similarities
+across the entire image. It encourages the model to focus on
+regions that correspond to the sound source.
+The contrastive loss based ons spa is defined as below:
+Lspa =− 1
+B
+BX
+i=1
+log exp (sspa(i,i)/τ)PB
+j=1 exp (sspa(i,j)/τ)
+(2)
+whereBis a batch size. This loss increases the similarity of
+positive pairs while decreasing that of negative pairs.
+The above formulation is a one-way contrastive loss using
+the image as an anchor. In practice, we additionally compute
+the loss in the reverse direction and use the average of the two
+losses as the final loss.
+2.2.2. Global contrastive loss
+We uses glob as a global similarity for semantic feature align-
+ment, which aligns the overall scene semantics between audio
+and vision, as in previous study [8].s glob(i,j)is defined as be-
+low:
+¯vi = 1
+HW
+HX
+x=1
+WX
+y=1
+Vi(x,y);s glob(i,j) =⟨ ¯vi,a j⟩(3)
+where ¯vi denotes the globally pooled visual feature vector of
+thei-th image sample, which is computed by spatial averaging
+of the visual feature mapV i.s glob(i,j)is obtained by simple
+inner product of the two feature vectors. Unlikes spa, which
+emphasizes spatial localization,s glob aligns audio and vision at
+the scene level by matching globally pooled representations.
+We then apply the same contrastive learning objective as
+inL spa, replacings spa withs glob to obtainL glob (and similarly
+average the two directions).
+2.2.3. Box prediction loss
+Now we train the detection head for bounding box predic-
+tion, using pseudo boxes generated from the heatmap prediction
+module. Specifically, for each image, we first identify a region
+that covers the top-αprobability mass of the audio-visual sim-
+ilarity map, and then convert the tight bounding box of this re-
+gion into a pseudo ground-truth box ˆbi = (cx,c y,w,h)in nor-
+malized coordinates. To obtain the optimal matching between
+the model-predicted query boxes{b q}N
+q=1 and the pseudo
+boxes, we apply the Hungarian matching, as in DETR [11]. The
+matching cost follows MDETR [3] and is based on a weighted
+sum of an audio-conditioned classification cost and box costs.
+Once the matching is completed, we compute the classification
+and box regression losses for the matched pairs. For the clas-
+sification loss, we follow MDETR and apply a cross-entropy
+loss on the per-query classification logits; however, we replace
+MDETR’s original formulation for text-token alignment with an
+audio-conditioned one. The box regression loss is also defined
+as in MDETR, using a linear combination of the L1 loss and the
+Generalized IoU (GIoU) loss.
+Finally, we use the total lossL=L spa +L glob +L box,
+combining spatial localization, global semantic alignment, and
+box localization.
+1117
+Figure 1:Overall architecture of EchoLoc: (1) An image–audio pair is encoded by modality-specific encoders; (2) The Box Prediction
+Module fuses both modalities via a Fusion encoder and uses object queries in a Box decoder to predict audio-guided bounding boxes;
+(3) The Heatmap Prediction Module generates sound-source heatmaps via audio–visual similarity; and (4) Two modules jointly enable
+complementary hard and soft grounding
+3. Experiments
+3.1. Experimental setup
+For training, we use two audio-visual datasets, VGGSound [12]
+and Flickr-SoundNet-144K [13], which are widely adopted in
+prior A VSL studies. Specifically, we leverage VGGSound, con-
+taining approximately 200k video clips, and construct 144k im-
+age–audio pairs from Flickr-SoundNet-144K. For evaluation,
+we adopt VGG-SS [6] and Flickr-SoundNet-Test [5], both of
+which provide manually annotated sound source labels. Each
+evaluation set contains approximately 5,000 image–audio pairs
+with bounding-box annotations indicating sound-generating re-
+gions in the visual frame.
+We train our model using a batch size of 32 on a single
+NVIDIA GeForce RTX 3090 GPU (24 GB VRAM). All exper-
+iments are optimized using the AdamW optimizer [14]. The
+classification, bounding box regression, and GIoU losses are
+weighted by 0.5, 2.5, and 1.0, respectively. We set the pseudo
+mass threshold to 0.4 and the heatmap temperature parameter to
+0.15. The model is trained for 40 epochs, which takes approxi-
+mately 15 hours.
+3.2. Audio-based visual grounding
+In this section, we quantitatively compareEchoLocwith
+prior sound source localization methods on VGG-SS, Flickr-
+SoundNet-Test benchmarks as presented in Table 1. We train
+on VGGSound and evaluate on VGG-SS, and train on Flickr-
+SoundNet-144K and evaluate on Flickr-SoundNet-Test. We re-
+port results of prior methods trained with the same amount of
+data for fair comparison.
+Following prior related work, we report cIoU and AUC.
+Since fixed-threshold cIoU can be sensitive to selection of
+threshold, we additionally report adaptive metrics proposed in
+[15], including cIoU (adap) and AUC (adap).
+As shown in Table 1,EchoLocachieves 36.36 cIoU and
+38.28 AUC on VGG-SS. AlthoughEchoLocis not state-of-
+the-art on all fixed-threshold metrics, these results indicate that
+the proposed framework remains effective for audio-aware ob-
+ject grounding without explicit bounding-box annotations. On
+Flickr-SoundNet-Test,EchoLocachieves 84.34 cIoU and shows
+strong adaptive performance, with 88.22 cIoU (adap) and 79.99
+AUC (adap). The lower fixed-threshold AUC may be partly ex-
+plained by calibration sensitivity and differences in the heatmap
+scale or distribution, while the adaptive results still show strong
+gains in ambiguous multi-instance scenes.
+The results show thatEchoLocachieves its strongest rel-
+ative gains on the Flickr-SoundNet dataset, particularly under
+adaptive evaluation. Since VGGSound provides a single sound-
+event class label per clip and is typically dominated by a salient
+sound source with relatively clean audio-visual correspondence,
+an audio-visual alignment-based approach would be advanta-
+geous. Flickr-SoundNet, on the other hand, is more uncon-
+strained and often involves ambiguous audio-visual correspon-
+dence. Thus, EchoLoc performs audio-conditioned object-level
+soft grounding, which is particularly beneficial under adaptive
+evaluation. This suggests thatEchoLocis better suited to am-
+biguous and multi-instance scenes, where localization requires
+disambiguating potential visual sound sources.
+3.3. Ablation study
+We conduct an ablation study comparing two settings: using
+only the heatmap prediction module and using both the heatmap
+and the box prediction modules (Table 2). In this experiment,
+we isolate the effect of the box prediction module, while keep-
+ing other settings unchanged. Using only the heatmap predic-
+tion module,EchoLocachieves the cIoU of 31.73 and the AUC
+of 32.06. Adding an additional box module significantly im-
+proves both metrics, increasing cIoU to 36.36(+4.63) and AUC
+to 38.28(+6.22).
+This improvement comes from using heatmap-derived po-
+sitional cues: the heatmap-only model localizes rough sound
+areas, and the box prediction module learns clearer object-level
+boundaries. This result shows that the heatmap-only model can
+localize rough sound-producing regions, while the box predic-
+tion module further helps the model learn object-wise bound-
+ary information, enhancing precision and consistency. In other
+words, the proposed box prediction module acts as a key factor
+in elevating heatmap-based localization to object-aware local-
+1118
+Table 1:Audio-Visual Grounding Results on VGG-SS and Flickr-SoundNet Testsets
+Method VGG-SS Flickr-SoundNet
+cIoU↑cIoU(adap)↑AUC↑AUC(adap)↑cIoU↑cIoU(adap)↑AUC↑AUC(adap)↑
+Attention [5] 18.50 – 30.20 – 66.00 – 55.80 –
+CoarseToFine [16] 29.10 – 34.80 – – – – –
+LCBM [17] 32.20 – 36.60 – – – – –
+LVS [6] 30.30 40.47 36.40 41.75 71.20 77.20 58.06 62.72
+HardPos [18] 34.60 – 38.00 – 75.20 – 59.70 –
+SSPL [19] 27.00 – 34.80 – 69.90 – 58.00 –
+EZ-VSL [7] 35.96 43.52 38.20 42.41 72.80 78.00 58.82 63.82
+SLA VC [20] 37.79 49.41 39.40 45.79 – – – –
+MarginNCE [21] 38.25 50.7639.0646.39 84.7486.00 63.0868.32
+FNAC [22]39.5047.0039.6643.30 78.71 84.40 59.33 64.16
+EchoLoc(Ours)36.36 44.31 38.28 41.19 84.34 88.2254.2979.99
+Table 2:Ablation results on VGG-SS, showing the impact of
+adding the box prediction module in EchoLoc
+Method VGG-SS
+cIoU↑AUC↑
+Only heatmap prediction module 31.73 32.06
+Heatmap module + Box prediction head36.36 38.28
+ization.
+3.4. Discussion: Complementary audio cues under weak
+textual supervision
+Real-world multimodal videos are often accompanied by imper-
+fect textual signals rather than carefully curated captions. Under
+such weak textual supervision, text-based grounding methods
+that rely on explicit noun phrases become unstable; while they
+can predict precise object boundaries under ideal conditions,
+their reliability often degrades when descriptions are noisy or
+under-specified. In contrast,EchoLocleverages audio cues
+to estimate sound-generating regions and produces more fine-
+grained soft localization in the form of heatmaps, even when
+textual information is insufficient. As illustrated in Figure 2 on
+the VGG-SS dataset, the heatmap provides a continuous spatial
+distribution that successfully captures audio–visual contextual
+consistency, instead of enforcing a single hard boundary.
+These observations suggest that text-based grounding and
+audio-based localization provide complementary supervisory
+signals. While text excels at precise boundary prediction given
+clear linguistic instructions, audio serves as auxiliary and or-
+thogonal cues when reliable text is difficult to obtain. Thus,
+EchoLoccomplements text-based grounding by offering robust
+localization cues under weak textual supervision.
+4. Conclusion
+We have presentedEchoLoc, an audio-aware grounding frame-
+work that jointly performs heatmap-based and box-level lo-
+calization. On the Flickr-SoundNet benchmark,EchoLochas
+achieved 88.22 cIoU (adap) and 79.99 AUC (adap), demon-
+strating the effectiveness of integrating audio-guided heatmap
+cues with object-centric box prediction. Our key contribution
+is to train a heatmap module via spatial and global contrastive
+learning, and use pseudo boxes generated from the predicted
+Figure 2:Qualitative comparison of sound source localiza-
+tion on the VGG-SS dataset under weak textual supervision.
+MDETR produces hard, object-centric predictions biased to-
+ward salient visual objects, whereas EchoLoc generates soft,
+audio-guided heatmaps.
+heatmap as supervision for training the box prediction module.
+In this way,EchoLocyields more precise object-centric boxes
+while also providing heatmap-based soft localization.
+Despite these advantages, box-level predictions depend on
+the quality of the underlying heatmap estimation, since both
+pseudo supervision and box selection are guided by heatmap-
+based audio-visual similarity. As future work, we may improve
+the robustness of heatmap learning by incorporating additional
+training signals, such as explicit positive and negative audio-
+visual pairs explored in prior studies, and investigate strategies
+that can reduce the dependency of box prediction on heatmap
+quality.
+1119
+5. Generative AI Use Disclosure
+Generative AI tools were used solely for language editing and
+proofreading of this manuscript. All technical content, method-
+ology, experiments, and conclusions were developed and veri-
+fied by the authors.

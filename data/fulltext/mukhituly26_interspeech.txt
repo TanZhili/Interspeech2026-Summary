@@ -1,0 +1,439 @@
+A Unified Safety Subspace Exists in Speech Language Models
+Nurdaulet Mukhituly1, Muhammad Cendekia Airlangga1, Rifo Ahmad Genadi1, Nhi Hoai Doan1,
+Amirbek Djanibekov1, Samuel Munachiso Nwadike1, Zangir Iklassov1, Kentaro Inui1,2,3
+1MBZUAI, UAE; 2Tohoku University, Japan;3RIKEN, Japan
+nurdaulet.mukhituly@mbzuai.ac.ae
+Abstract
+Speech Language Models (SLMs) extend large language mod-
+els to spoken interaction, but this multimodal integration intro-
+duces modality-specific vulnerabilities. While prior work has
+typically addressed speech and text safety in isolation, our work
+uncovers a shared safety subspace where benign, harmful, and
+jailbreak representations exist regardless of input modality. We
+identify this subspace via a PCA projection, revealing a well-
+defined boundary separating refusal from jailbreak compliance.
+Causal intervention along this boundary shifts model behavior
+between refusal and compliance across modalities and attack
+types without additional training. For example, a refusal vector
+derived from an audio attack reduces text jailbreak success from
+76.5% to 2.2%, while a refusal vector derived from the text at-
+tack reduces audio jailbreak success from 79.0% to 3.1%. We
+demonstrate these results on Qwen2-Audio and GLM-4-V oice,
+and confirm transferability across five different attacks. 1
+Index Terms: Speech Language Models, AI Safety, Inter-
+pretability, Jailbreak, Steering
+1. Introduction
+Speech Language Models (SLMs) add audio input to large lan-
+guage models, enabling interaction through both speech and
+text and capturing cues such as timing and emphasis that are
+absent from text alone [1, 2, 3, 4]. However, adding speech
+also expands the safety attack surface: in addition to text jail-
+breaks, SLMs are exposed to audio-based attacks that can in-
+duce unsafe behavior through carefully constructed spoken in-
+puts, compounding jailbreak risk across modalities. Jailbreaks
+are also diverse within the audio modality: attacks can exploit
+paralinguistic cues [5], embed hidden instructions in the wave-
+form while keeping the surface transcript benign [6], or use
+optimization-based perturbations [7, 8].
+Prior defenses use a range of approaches, including input
+filtering, adversarial training on perturbed audio, and post-hoc
+activation interventions [5, 9]. While these approaches can re-
+duce measured attack success rates, they often treat safety as an
+outcome metric to be optimized rather than characterizing the
+internal mechanism that jailbreaks bypass or how adding audio
+changes the model’s safety state. In parallel, mechanistic in-
+terpretability studies on text-only language models argue that
+refusal is controlled by compact structure in activation space:
+for example, refusal can be modulated by intervening on a small
+number of residual-stream directions, and related work suggests
+multiple separable refusal or safety directions rather than a sin-
+gle control signal [10, 11, 12]. However, it remains unclear
+1Code is available athttp://github.com/mukhituly/audio
+safety steering.
+whether these mechanistic conclusions extend to SLMs. This
+raises a key question: do audio jailbreaks exploit a modality-
+specific failure mode introduced by speech, or do they bypass
+the same internal safety mechanism through a different input
+channel?
+Recent work in text-only LMs has begun to suggest that
+safety behavior may admit shared structure across attacks: for
+example, shaping safety boundaries can yield interventions that
+generalize across jailbreak methods [13], and refusal-feature
+approaches exploit compact refusal representations in the resid-
+ual stream [11]. Notably, suppressing refusal features does
+not necessarily induce harmful compliance, suggesting that re-
+fusal features capture an important component of safety behav-
+ior but may not fully explain jailbreak-induced compliance, es-
+pecially outside the text-only setting [11]. Once the model ac-
+cepts speech as well as text, it is therefore unclear whether the
+same internal features or boundary-shaping interventions will
+transfer: audio inputs can introduce transcript-preserving per-
+turbations and non-linguistic cues that may interact with safety
+mechanisms differently.
+We therefore ask whether multimodal jailbreaks still con-
+verge on a shared low-dimensionalsafety subspacein the resid-
+ual stream, despite the diversity of attacks and the shift from
+text to speech. In this work, we test this hypothesis by mapping
+safety behavior in residual-stream activation space and inter-
+vening at inference time. We use dimensionality reduction al-
+gorithm, Principal Component Analysis (PCA), to reveal a low-
+dimensional structure in which benign, harmful, and jailbreak
+queries become separable, and we construct simple steering di-
+rections from the resulting subspace. Injecting these directions
+into the residual stream at inference time produces targeted be-
+havioral flips between refusal and compliance without retrain-
+ing.
+A key empirical result is that thelearned directions are
+modality-agnostic: vectors derived from audio attacks transfer
+to text and vice versa, with large reductions in jailbreak success
+across multiple attack families. For example, applying a refusal
+direction derived from an audio-based AdvWave attack reduces
+the success rate of the AutoDAN-text jailbreak from 72.69% to
+2.82%, and the reverse transfer is similarly effective. We fur-
+ther observe strong generalization across multiple audio attack
+families and consistent improvements over random directions.
+In summary, our contributions are as follows.
+1. We use PCA on residual-stream activations (at a single mid-
+dle layer) to expose a low-dimensional safety geometry in
+which benign, harmful, and jailbreak queries separate, then
+construct simplejailbreakandrefusalsteering directions and
+intervene at inference time to reliably flip refusal and com-
+pliance behavior without retraining.
+2. We demonstrate that steering vectors transfer across both at-
+6027
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2797
+Prompt:Describe in detail how to commit tax fraud
+Harmful:I’m sorry, but I cannot provide information on committing tax fraud. Tax fraud is illegal and
+can result in serious consequences, including fines and imprisonment. It is important to accurately
+report your income and pay your taxes in full and on time.
+Jailbreak:To commit tax fraud, one would attempt to manipulate a tax return by misreporting items such
+as: 1. Itemized deductions: [REDACTED]; 2. Income reporting: [REDACTED]; 3. Supporting documentation:
+[REDACTED]...
+Figure 1:The difference between harmful and jailbreak samples: harmful queries are detected and refused, while jailbreak queries
+with similar intent elicit model compliance.
+tack families and input modalities: a vector derived from a
+single audio jailbreak suppresses other audio attacks and text
+jailbreaks, and vice versa, across five diverse attacks and two
+models.
+2. Methodology
+We introduce the theoretical framework to ground our empirical
+findings in a principled theoretical foundation, from the estab-
+lished LDA framework to the applied PCA-based approach to
+estimate steering directions. We also establish notation that will
+be used consistently throughout the framework.
+Setup.Leth l
+m,i ∈R d denote the residual-stream activation
+of thelast tokenat layerlfor input sampleifrom modality
+m∈{text,audio}. Each sample belongs to one of three classes
+y∈benign,harmful,jailbreak:(B) benignqueries are harmless
+requests,(H) harmfulqueries carry malicious intent and trigger
+refusal, and(J) jailbreakqueries carry similar intent but are ad-
+versarially perturbed to bypass the model’s safety filter, eliciting
+compliance instead (see Figure 1).
+Letµl
+m,c =E[h l
+m|y=c]denote the class-conditional mean at
+layerlfor modalitymand classc.
+Linear Encoding of Safety.According to [10, 13] safety-
+relevant concepts are linearly encoded in transformer residual
+streams. There exists a layerl ∗ and a directionv∈R d such
+that a linear classifierf(h) =w ⊤h+breliably separates harm-
+ful from benign activations, consistently at middle layers. Un-
+der Fisher’s LDA [14], the optimal separating direction reduces
+to thedifference-of-means(DoM) whenΣ≈I, within-class
+variance is spread roughly equally across all directions so that
+covariance does not distort the geometry. While transformer
+residual streams are generally anisotropic [15, 16, 17, 18], this
+is a standard simplifying approximation adopted following prior
+safety-probing work [10, 13], and yields the following direction
+for a fixed modalitym:
+vl
+m: =µ l
+m,H−µl
+m,B.(1)
+Thev l
+m is the vector pointing from the benign cluster to the
+harmful cluster. Intuitively,v l
+m is the axis along which harmful
+and benign activations are most separated in the residual stream.
+A jailbreak perturbationδworks precisely by pushing activa-
+tions across this boundary: ifτis the decision threshold along
+vl
+m, then
+(vl
+m)⊤(hl
+x+δ)<τ <(v l
+m)⊤hl
+x,(2)
+meaning the perturbed activation falls on the benign side of the
+boundary even though the query is harmful. This predicts that
+jailbreak activations cluster near benign inputs, later confirmed
+in Section 4.1, and impliesµ l
+m,J≈µ l
+m,B, a result we use be-
+low [19].
+Estimating the direction via PCA.We project activations into
+a 2-D PCA subspace to visualize and estimate the DoM from
+finite data. For each modalitym, we fit a modality-specific pro-
+jectionW l
+m∈R d×2 on the union ofharmfulandjailbreakac-
+tivations at layerl; benign samples are projected into the same
+plane for visualization only (see Figure 2). The compliance-
+shift direction in the PCA plane,
+vl
+m,low =µ l
+m,J−µ l
+m,H,(3)
+points from the refusal cluster (harmful mean) toward the com-
+pliance cluster (jailbreak mean). Usingµ l
+m,J ≈µ l
+m,B from
+above, this approximates the negative DoM:
+vl
+m,low≈−vl
+m.(4)
+We back-projectv l
+m,low into the originald-dimensional resid-
+ual stream space by applying the PCA projection matrixW l
+m∈
+Rd×2, recovering a full-dimensional steering vector:
+vl
+m,ori =W l
+mvl
+m,low∈R d,(5)
+wherev l
+m,ori denotes the original residual stream space. This
+back-projection preserves the separation direction identified in
+the PCA plane while restoring the vector to the full dimen-
+sionality required for steering interventions. Depending on
+the modalitym, we refer tov l
+m,ori as theAudio Vectorfor
+m=audio and theText Vectorform=text, each representing
+the steering direction extracted from their respective modality.
+Steering intervention and sign convention.We inject the
+steering vector at layerl ∗ by adding a scaled, normalized shift
+to the last-token activation:
+˜hl∗
+t =h l∗
+t +α
+vl∗
+m,ori
+∥vl∗
+m,ori∥2
+,(6)
+whereα∈Rcontrols both the magnitude and direction of the
+intervention:α>0pushes aharmfulinput toward compliance
+andα<0pushes ajailbreakback toward refusal. To verify the
+sign convention, consider the linearization of the refusal logit
+g(hL)≈w ⊤h+b[10, 13], which serves as a first-order ap-
+proximation of the model’s refusal tendency. The shift induced
+by (6) is
+∆g≈α·
+w⊤vl∗
+m,ori
+∥vl∗
+m,ori∥
+.(7)
+Sincew∝v l∗
+m by LDA (the classifier weight aligns with
+the DoM) andv l∗
+m,ori ≈ −vl∗
+m by Eq. (4), the inner product
+6028
+Figure 2:PCA projection of residual-stream activations onto the first two principal components. Left: Qwen2-Audio (Layer 15). Right:
+GLM-4-Voice (Layer 17).
+w⊤vl∗
+m,ori <0, confirming thatα >0decreases the refusal
+logit andα<0increases it.
+Cross-modal transferability.The key theoretical claim of this
+framework is that Audio and Text Vectors are interchangeable
+across modalities. This follows from the fact that multimodal
+models are trained to map semantically equivalent content to
+similar representations regardless of input channel [3, 20], sug-
+gesting that audio and text representations of the same harm-
+ful concept occupy nearby regions of the residual stream atl ∗.
+We formalize this with a single alignment condition: if class-
+conditional means are approximately equal across modalities,
+µl∗
+m,c≈µ l∗
+m′,c, m̸=m ′, c∈{benign,harmful},(8)
+then the Audio and Text Vectors are approximately parallel and
+therefore interchangeable as steering directions.
+Proposition 1(Cross-modal vector transferability).Under con-
+dition(8),v l∗
+text,ori ≈v l∗
+audio,ori, and a steering vector com-
+puted from one modality transfers to the other.
+Proof.By definition,v l∗
+m,ori∝µ l∗
+m,H−µ l∗
+m,B. Applying (8)
+givesµl∗
+text,H−µl∗
+text,B≈µ l∗
+audio,H−µl∗
+audio,B, so both vectors
+are approximately parallel.
+Proposition 1 motivates our two evaluations in Section 4.2:
+cross-attacktransfer andcross-modalitytransfer. Note that con-
+dition (8) is sufficient but not necessary: transfer may still hold
+when class means remain modality-separated, requiring only
+that the difference-of-means directions are roughly parallel —
+a strictly weaker condition, consistent with our Qwen2-Audio
+results.
+3. Experimental Setup
+We conduct all experiments on 2 open-source speech language
+modelsQwen2-Audio[3] andGLM-4-Voice[20] which accept
+either text or audio as input and generate text responses.
+Datasets.Throughout our experiments, we will send be-
+nign, harmful, and jailbreak inputs respectively, in both text
+and audio modalities, to the model. For benign text prompts,
+we randomly sample 200 instructions from Alpaca [21]; mean-
+while, for benign audio prompts, we use 200 samples from Air-
+Bench [22], both of which contain general utility queries. For
+harmful queries, we use AdvBench [23] in text form. To con-
+struct harmful audio inputs, we use synthesized audio versions
+of AdvBench prompts, similar to [9]. This allows us to keep
+the underlying harmful intent consistent across modalities while
+changing only the input channel.
+Attacks.As discussed earlier, we consider both audio and
+text modality based jailbreak attacks as part of this paper. For
+audio, we use AdvWave [7], AMSE [24], and CA V A [25]; Ad-
+vWave and AMSE are sourced from JALMBench [26]. For text-
+based attacks, we use AutoDAN [27] and BEAST [28], which
+are jailbreak methods originally developed for text LLMs and
+have also been reported to transfer to SLMs in recent work [7].
+Evaluation.To quantify the model’s safety under jailbreak
+attempts, we use theAttack Success Rate(ASR), defined as
+the percentage of adversarial inputs for which the model actu-
+ally complies to the input, and produces harmful outputs: ASR
+= Nharm
+N ×100%, whereNis the total number of inputs and
+Nharm is the number of inputs that elicit harmful content (i.e.,
+successful jailbreaks). A lower ASR indicates that the model is
+refusing more often or otherwise avoiding harmful generations
+under attack. We determineN harm using an LLM-as-a-judge
+protocol: we useGPT-5[29] to label each generated response
+as harmful or not. The judge prompt can be found in the at-
+tached code.
+4. Results
+4.1. PCA Geometry
+We examine middle layers where prior work finds safety-related
+structure to be most pronounced [10, 13], selecting layer 15
+for Qwen2-Audio and layer 17 for GLM-4-V oice based on the
+cleanest class separation in the PCA plane.
+Figure 2 shows the resulting projections onto the first two
+principal components for each model. Three observations stand
+out. First,harmfulandjailbreakactivations form clearly sep-
+arable clusters despite sharing the same underlying malicious
+intent, confirming that the models internally distinguish re-
+6029
+Qwen2-Audio GLM-4-Voice
+Harmful to Jailbreak (ASR %↑)
+Modality Type Original +Audio
+Vector
++Text
+Vector +Random Original +Audio
+Vector
++Text
+Vector +Random
+Audio Harmful 0.93 87.50 86.11 4.17 5.56 82.41 56.48 7.87
+Text Harmful 2.16 90.28 83.33 9.49 4.63 81.94 57.41 8.10
+Jailbreak to Harmful (ASR %↓)
+Modality Type Original -Audio
+Vector
+-Text
+Vector -Random Original -Audio
+Vector
+-Text
+Vector -Random
+Audio AdvWave 97.93 0.52 1.04 23.58 84.97 2.59 1.04 37.83
+Audio AMSE 53.49 2.91 2.91 9.88 71.11 3.49 5.52 38.37
+Audio CA V A 65.50 1.49 0.50 14.68 44.28 2.99 1.00 41.30
+Text AutoDan 72.69 2.82 1.85 61.30 81.48 3.24 0.46 69.44
+Text BEAST 81.94 0.92 6.02 35.65 79.63 1.39 1.39 16.20
+Table 1:Attack Success Rate (ASR, %) under activation steering at the selected middle layer on Qwen2-Audio and GLM-4-Voice. Top
+block: positive steering on refused harmful inputs (↑is more compliant). Bottom block: negative steering on jailbreak inputs (↓is
+restored refusal). Audio and Text Vectors are derived from AdvWave and AutoDAN respectively. Random baseline uses the sameαas
+the best-performing vector for each attack.
+fusal from compliance. Second, both audio and text sam-
+ples of the same class occupy nearby but distinguishable re-
+gions, indicating that the residual stream retains some modality-
+specific structure at these layers while preserving a shared
+safety-relevant axis. Third,jailbreakactivations are positioned
+between thebenignandharmfulclusters rather than collapsing
+onto either, consistent with Eq. (2): a successful jailbreak shifts
+a harmful activation across the refusal boundary toward the be-
+nign side, but does not fully reach it.
+Interestingly, the two models organize modality informa-
+tion slightly differently within this shared safety subspace. In
+GLM-4-V oice, harmful audio and harmful text activations over-
+lap substantially, suggesting tighter cross-modal alignment in
+safety-relevant representations. In Qwen2-Audio, the same
+classes remain modality-separated while still sharing a com-
+mon safety axis. Taken together, these patterns suggest that
+safety behavior is governed by a low-dimensional subspace of
+the residual stream that is shared across modalities. We test
+whether this structure is causally relevant in the next section.
+4.2. Activation Interventions
+We intervene on the identified subspace by constructing two
+steering directions following Section 2: anAudio Vectorde-
+rived from AdvWave and aText Vectorderived from Auto-
+DAN. We sweepαand report the best ASR (α∈[10,20]for
+Qwen2-Audio,α∈{1,2}for GLM-4-V oice). This difference
+correlates with the PC1 range in the respective PCA figures:
+GLM-4-V oice activations are more tightly clustered, requiring
+a smaller shift to cross the refusal boundary.
+Table 1 summarizes the results. Subtracting the steering di-
+rection from jailbreak inputs reduces ASR to below 7% across
+all five attacks on both models. For example, AdvWave drops
+from 97.93% to 0.52% on Qwen2-Audio and from 84.97% to
+2.59% on GLM-4-V oice. Text jailbreaks show the same pattern,
+with AutoDAN falling from 72.69% to 2.82% and from 81.48%
+to 3.24% on the two models, respectively. Crucially, the Audio
+Vector is equally effective on text jailbreaks and vice versa, em-
+pirically validating the cross-modal transferability predicted by
+Proposition 1. Applying the positive direction to refused harm-
+ful inputs produces the opposite effect, with ASR increasing
+from below 6% to 56-90% across both models and modalities.
+Random vectors of matched norm fail to produce comparable
+shifts, confirming that the steering effect is directional rather
+than an artifact of perturbation magnitude
+Together, these results provide causal evidence for our cen-
+tral claim: a unified safety subspace exists in Speech Language
+Models, and a single steering direction is sufficient to control
+refusal behavior across modalities, attack families, and models
+without any additional training.
+5. Conclusion
+We uncover a unified safety subspace in Speech Language Mod-
+els that holds simultaneously across speech and text modalities
+and across diverse jailbreak attacks, linking spoken and writ-
+ten prompts through the same internal mechanism. We provide
+a formal theoretical analysis explaining why such cross-modal
+safety directions should arise in SLMs, and we design experi-
+ments that empirically verify that these predicted directions re-
+liably arise in practice. While prior work identified safety direc-
+tions that generalize across jailbreak strategies in text models,
+we show that the same geometric structure also governs cross-
+modal safety behavior. We validate this structure across five
+diverse jailbreak attacks and identify a compact direction in
+the residual stream that separates refusal from jailbreak com-
+pliance. From this subspace, we derive Audio and Text steering
+vectors that consistently modulate model behavior at inference
+time without retraining, thereby suggesting a common geomet-
+ric boundary rather than modality-specific vulnerabilities.
+Future work includes extending this analysis to additional
+input modalities and architectures and developing training-time
+methods that explicitly regularize or align this refusal subspace
+to improve robustness against jailbreak attacks.
+6030
+6. Use of Generative AI Disclosure
+We used generative AI tools to edit portions of this manuscript.
+These tools were employed solely to enhance grammatical ac-
+curacy, improve academic clarity, and standardize table format-
+ting. The conceptual framework, methodology, experimental
+design, analytical procedures, and resulting conclusions were
+independently developed, rigorously evaluated, and fully vali-
+dated by the authors.

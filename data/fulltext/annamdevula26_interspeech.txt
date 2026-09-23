@@ -1,0 +1,387 @@
+CrossAccent-TTS: Cross-Lingual Accent-Intensity Controllable
+Text-to-Speech via Disentangled Speaker and Accent Representations
+Ram Annamdevula ID ∗, Ankit Tatawat ID ∗, Ashishkumar P . Gudmalwar ID ,
+Nirmesh J. Shah ID , Pankaj Wasnik ID
+Media Analysis, Sony Research India
+{ram.annamdevula,ankit.tatawat,ashish.gudmalwar1,nirmesh.shah,pankaj.wasnik}@sony.com
+Abstract
+Accent conversion and controllability remain fundamental chal-
+lenges in cross-lingual text-to-speech (TTS), particularly for
+low-resource and phonetically diverse Indic languages. While
+recent large language model (LLM)-based TTS systems ex-
+hibit strong cross-lingual generalization, they provide limited
+explicit control over accent characteristics and intensity. In this
+paper, we propose CrossAccentTTS, a framework that enables
+both accent control and conversion while preserving speaker
+identity. Specifically, we introduce an Accent Intensity Con-
+troller (AIC) that injects weighted language embeddings into
+the accent subspace, allowing smooth interpolation between ac-
+cents and fine-grained modulation of accent strength at infer-
+ence time. Experiments on the Indic Multilingual and L2-arctic
+datasets shows that CrossAccent-TTS achieves precise control
+of accent intensity, outperforming strong baselines in accent
+similarity and controllability by maintaining speaker similarity
+and naturalness.
+Index Terms: LLM based TTS, Controllable Speech Synthesis,
+Accent, Accent Conversion
+1. Introduction
+Speech accent refers to systematic variations in phonemes,
+rhythm, intonation, and linguistic structure, often providing
+cues about a speaker’s background, such as their geographic
+origin or native language [1]. However, disentangling accent
+from other speaker-specific attributes, such as pitch range, tim-
+bre, and vocal-tract characteristics, remains challenging [2, 3],
+as accent is inherently embedded within individual speech pat-
+terns [4]. Although accented TTS systems have numerous real-
+world applications, such as voice dubbing and conversational
+bots, they have not been a primary focus in mainstream TTS re-
+search. The ability to reproduce and control specific accents
+for a given speaker enables more authentic and personalized
+speech synthesis [3]. In particular, in dubbing or voice acting,
+preserving a character’s L2 accent, i.e., the foreign accent that
+arises when speaking a non-native language, enhances realism
+and audience immersion. Conversely, overly strong or uncon-
+trolled accents may reduce intelligibility, underscoring the need
+for fine-grained control over accent intensity to balance authen-
+ticity, clarity, and expressiveness.
+While accent-controllable TTS remains underexplored, re-
+cent advances in LLM-based neural codec TTS have demon-
+strated scalable and flexible speech synthesis frameworks [5, 6,
+7]. These approaches combine the language modeling capa-
+bilities of LLMs with discrete acoustic representations derived
+from neural speech codecs. In this paradigm, speech is first en-
+*These authors contributed equally.
+coded into a sequence of discrete acoustic tokens using a neural
+codec. A large language model is then trained to autoregres-
+sively generate these tokens conditioned on text, speaker iden-
+tity, accent, or other controllable attributes. The generated token
+sequence is finally decoded by the decoder to reconstruct the fi-
+nal waveform.
+To achieve accent-controllable TTS, we propose a Qwen-
+2.5-based model that uses a neural speech codec (Neucodec)
+to convert audio into discrete acoustic tokens. The model
+leverages the generative capability of LLMs to produce accent-
+conditioned acoustic representations while maintaining speaker
+identity. In contrast, we address the problem of controllable ac-
+cent generation in text-to-speech, with particular emphasis on
+Indic languages, which remain low-resource and underexplored
+in this context. We additionally validate our method on foreign
+English accents to demonstrate generalization. Demo samples
+are available at URL1. Our contributions are summarized as fol-
+lows:
+1. We introduce an Accent Intensity Controller that enables con-
+tinuous accent modulation at inference time without requir-
+ing accent-specific training data.
+2. We propose an Accent Suppression Module that promotes ad-
+versarial disentanglement of accent from speaker and style
+representations, thereby preserving speaker similarity.
+3. We evaluate our method on the Indic Multilingual and L2
+ARCTIC datasets, demonstrating consistent accent control-
+lability across Indian and foreign accents.
+The rest of the paper is organized as follows: Section 1
+covers related work, followed by Section 3, where we describe
+the proposed method. Section 4 details the training procedure
+and experiments, and finally, Section 5 concludes the study.
+2. Related Works
+Early Text-to-Speech (TTS) systems primarily focused on im-
+proving naturalness and speaker similarity, with limited atten-
+tion given to accent modeling. Traditional approaches [8] at-
+tempted to handle accent and speaker variation by conditioning
+multi-speaker TTS systems on speaker embeddings extracted
+using a speaker-verification encoder, which generates a fixed-
+dimensional representation from a short reference speech sam-
+ple. These embeddings are then used to condition an acoustic
+model and a neural vocoder, enabling speech synthesis in the
+voices of both seen and unseen speakers. Since accent infor-
+mation is implicitly embedded within the learned speaker rep-
+resentations, such methods capture accent characteristics indi-
+rectly but do not provide explicit control over accent during in-
+1Demo:https://research.sri-media-analysis.co
+m/interspeech26-cross-accent-tts/
+1974
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1744
+Figure 1:Model architecture of the proposed CrossAccent TTS
+ference. Other than this, Codec based TTS [9, 10, 11] initially
+focused on extracting semantic tokens. More recently, single-
+stream acoustic tokenization approaches have been introduced
+[12, 13], which directly encode both linguistic and acoustic in-
+formation, simplifying downstream TTS models and improving
+synthesis quality.
+In the context of accent-controllable TTS, [14] explored
+Indic-language-accented TTS, reducing L2 accent leakage by
+disentangling accent and speaker representations. However,
+comparable studies on accent controllability for Indic languages
+remain limited. To establish strong baselines for Indian lan-
+guages, we adopt IndicF5[15] and XTTS-v2 [6], which have
+demonstrated competitive performance on Hindi and other re-
+lated Indic languages. For English, [16] demonstrated accent
+control using large-scale datasets and data augmentation strate-
+gies. However, such approaches rely heavily on abundant la-
+beled data and are not directly applicable in low-resource Indic
+settings. To evaluate under controlled low-resource conditions,
+we use the L2-ARCTIC dataset [17] and compare against CV AE
+[18] and GST-based [19] baselines. Closest to our inspira-
+tion, [20] proposed expanding language embeddings across all
+acoustic tokens to suppress L2 accent leakage in cross-lingual
+synthesis. We build on this direction by extending token-level
+language conditioning to accent-agnostic representations de-
+rived from speech codecs.
+3. Proposed Methodology
+This section describes the proposed Cross-Accent TTS frame-
+work. An overview of the architecture is illustrated in 1. The
+system consists of four main components: (i) speech tokeniza-
+tion using Neucodec, (ii) a Perceiver Resampler for speaker and
+style encoding with a fixed-length bottleneck, (iii) adversarial
+suppression of accent and language features, and (iv) explicit
+language embedding conditioning for controllable accent ren-
+dering, followed by auto-regressive acoustic token generation
+and Neucodec-based waveform synthesis.
+3.1. Speech Tokenization with Neucodec
+Neucodec [21] is a finite scalar quantization (FSQ)–based neu-
+ral acoustic speech codec that operates at 50 tokens per sec-
+ond with 16 bits per token. It takes a 16 kHz input and recon-
+structs speech at 24 kHz using an upsampling decoder. The
+FSQ encoding scheme also provides improved robustness to
+bit-level errors. Ground-truth speech is first converted into dis-
+crete acoustic tokens using the Neucodec encoder. This encoder
+maps raw audio waveforms into a sequence of discrete latent
+codes that preserve perceptual speech quality while providing a
+compact token-based representation suitable for sequence mod-
+eling. These acoustic tokens are used to extract both speaker
+and style from the reference speech and to train acoustic token
+generation. During training, a random chunk of acoustic to-
+kens is sampled from each reference utterance. This random
+chunking strategy reduces overfitting to utterance-level linguis-
+tic content and encourages the Perceiver Resampler to focus on
+speaker-related characteristics rather than specific phonetic se-
+quences.
+3.2. Accent Intensity Controller (AIC)
+The Accent Intensity Controller learns accent-agnostic speaker
+features while modeling accent features independently. Both
+are integrated as conditional embeddings to support explicit
+control over accent intensity.
+3.2.1. Perceiver Resampler
+The sampled acoustic token embeddings are fed into a Per-
+ceiver Resampler to obtain fixed-length speaker and style em-
+beddings. Perceiver maps variable-length token sequences into
+a predefined set of latent vectors using cross-attention followed
+by self-attention layers. Before entering the encoder, learnable
+positional encodings are added to the reference token embed-
+dings to preserve temporal structure. The fixed-length bottle-
+neck constrains the information capacity of the input acoustic
+1975
+embeddings, encouraging the model to retain speaker-specific
+characteristics such as timbre and vocal quality, forming com-
+pact speaker and style embeddings of shape(B,N s,d). Since
+these embeddings are used to condition the autoregressive de-
+coder to predict acoustic tokens from text, the bottleneck en-
+courages the model to focus on speaker-related features while
+discarding linguistic and phonetic variations.[22]
+3.2.2. Adversarial learning with Accent Suppression Module
+To further suppress residual accent and language information in
+the speaker and style embeddings, we employ adversarial train-
+ing with a gradient reversal layer (GRL). An auxiliary classi-
+fier is trained to predict the language or accent label from the
+speaker and style embeddings. During backpropagation, GRL
+inverts the gradient signal flowing from the classifier to the Per-
+ceiver Resampler, encouraging the encoder to remove accent- or
+language-discriminative information from the speaker and style
+embeddings. Formally, the Perceiver Resampler is optimized
+to minimize the TTS reconstruction loss while maximizing the
+classification error of the auxiliary accent/language classifier.
+This adversarial objective drives the encoder to produce accent-
+and language-invariant speaker and style embeddings during in-
+ference.
+3.2.3. Accent Control using Explicit Language Conditioning
+To explicitly control accent and language, we introduce a
+learned language embedding for each supported language or
+accent. A simple learnable embedding table is used to obtain
+a language embedding of shape(B,1,d). This embedding is
+then expanded across all latent slots of the speaker and style
+representations and added to each speaker and style embedding,
+yielding a combined representation of shape(B,N s,d). This
+expansion and addition mechanism increases the relative influ-
+ence of language conditioning and enables the model to explic-
+itly control linguistic and accent-related factors independently
+of the speaker and style.
+3.3. Autoregressive Acoustic Token Generation
+The combined speaker–language representation is provided
+as conditional input to an autoregressive decoder based on
+the Qwen architecture. We use Qwen 2.5 (0.5B) [23] with
+the same configuration as the original model. The decoder
+jointly conditions on text token embeddings and the combined
+speaker–language embeddings to predict sequences of acous-
+tic tokens. This autoregressive formulation allows the model to
+capture long-range dependencies and produce coherent acous-
+tic token sequences conditioned on both linguistic content and
+controllable accent information. The final training objective is
+defined as:
+Ltotal =L decoder +λ GRLLGRL (1)
+whereL decoder is the autoregressive acoustic token prediction
+loss, andL GRL is the adversarial classification loss used for ac-
+cent and language suppression andλ GRL is a weighting factor
+that controls the relative contribution of the GRL loss in the to-
+tal training objective.
+4. Training and Evaluation Setup
+This section describes the experimental setup, evaluation met-
+rics, and results to assess the proposed model’s performance.
+4.1. Datasets
+We conduct experiments on two datasets, Indic Multilingual
+and L2 ARCTIC, to evaluate performance in low-resource and
+second-language (L2) accent scenarios.
+4.1.1. Indic Multilingual Dataset
+We use a multilingual speech corpus comprising Hindi, Telugu,
+Tamil, Bengali, Marathi, and English. The dataset contains 636
+hours of internal in-house Indic speech data and 350 hours of
+custom-split speech from the Emilia Yodas dataset [24], totaling
+approximately 986 hours of speech. All audios are resampled
+to 16 kHz for Neucodec encoding. Language labels are used
+to explicitly condition language embeddings and to perform ad-
+versarial training.
+4.1.2. L2 Arctic Dataset
+The L2 Arctic corpus comprises 27 hours of non-native English
+speech from 24 speakers, with six distinct accent backgrounds.
+The dataset provides aligned text and speech with annotated
+speaker and native-language labels, making it suitable for eval-
+uating accent neutrality and for controllable accent rendering in
+L2 English synthesis.
+4.2. Training Setup
+The proposed model is trained end-to-end using paired text and
+speech data. The text is converted to International Phonetic Al-
+phabets (IPA) and tokenized using a shared tokenizer that maps
+speech tokens. The Perceiver Resampler usesN s = 32latent
+slots and embedding dimensiond= 768. The autoregressive
+decoder is initialized from Qwen 2.5 (0.5B) and fine-tuned for
+acoustic token generation. The auxiliary accent/language clas-
+sifier is trained jointly with the main model using the accent
+suppression module. The total training loss is defined as shown
+in Eq. 1, whereλ GRL controls the strength of adversarial accent
+and language suppression.
+We setλ GRL = 0.1in all experiments. The decoder is first
+trained on the full 986-hour multilingual dataset for 5 epochs,
+then fine-tuned on the L2 Arctic dataset with a reduced learn-
+ing rate for 3 additional epochs. During inference, the refer-
+ence speech is used to extract speaker and style information,
+and multiple language embeddings can be linearly combined to
+control accent intensity. Specifically, given language embed-
+dingse lang1 ande lang2, a weighted combination is used,
+λelang1 + (1−λ)e lang2 (2)
+whereλ∈[0,1]controls the relative contribution. The pre-
+dicted acoustic tokens are passed through the Neucodec decoder
+to reconstruct the time-domain speech waveform.
+4.3. Evaluation Metrics
+We evaluate the model’s performance using both objective and
+subjective metrics.
+4.3.1. Objective Metrics
+To obtain accent embeddings for evaluation, we use the
+GenAID model originally introduced in the Accent Box [17] for
+L2 English accent analysis. For Indic languages, we fine-tune
+the same model using approximately 100k samples from 11 In-
+dian languages and around 3,300 speakers from the Indic V oices
+dataset [25] for two epochs. Accent embeddings extracted from
+1976
+this fine-tuned model are used for Indic accent evaluations. We
+report the following objective measures:
+•Accent Similarity:Measures how closely synthesized
+speech matches the target accent. We compute cosine sim-
+ilarity between the accent embeddings of generated speech
+and those of ground-truth speech in the target accent. Higher
+values indicate better accent rendering.
+•Accent Leakage:Measures how much accent information
+from the reference audio is preserved when synthesizing in a
+different target accent. We compute the cosine similarity be-
+tween the accent embeddings of the reference and generated
+audio. Lower values indicate better suppression of source ac-
+cent.
+•UTMOS [26]:This metric is used to assess overall speech
+quality.
+•Speaker Similarity:Computed using a pretrained speaker
+verification model (Resemblyzer) [27] to assess speaker iden-
+tity preservation.
+4.3.2. Subjective Metrics
+Subjective listening tests are conducted using the Mean Opinion
+Score (MOS) to evaluate how closely the synthesized speech
+matches the target accent. Listening tests are conducted with
+20 participants (aged between 23 to 35 with no known hearing
+impairments).
+4.4. Evaluation Results
+4.4.1. Objective Results
+Table 1 and Table 2 report the objective evaluation results on the
+Indic multilingual and L2 Arctic datasets. The proposed method
+achieves reduced accent leakage compared to baselines, demon-
+strating more effective suppression of source accent in accent-
+neutral synthesis. When explicit language embeddings are ap-
+plied, accent similarity increases in a controlled manner, con-
+firming the effectiveness of the proposed accent control mech-
+anism. The proposed method also maintains speaker similarity
+scores comparable to the external speaker embedding baseline,
+indicating that speaker identity is preserved despite adversarial
+accent suppression. The UTMOS results further show that over-
+all speech quality is maintained or improved relative to baseline
+systems.
+Table 1:Objective evaluation results on Indian accent conver-
+sion (↑higher is better ,↓lower is better).
+Model UTMOS↑AccLeak↓AccSim↑SpkSim↑
+IndicF5 2.817 0.312 0.3120.843
+XTTS v2 3.168 0.284 0.284 0.832
+Proposed3.181 0.203 0.3710.842
+Table 2:Objective evaluation results on L2 Arctic dataset with
+English accents (↑higher is better ,↓lower is better).
+Model UTMOS↑AccLeak↓AccSim↑SpkSim↑
+CV AE-L 2.810 0.487 0.612 0.677
+CV AE-NL 2.714 0.530 0.491 0.673
+GST 3.044 0.544 0.6700.732
+Proposed4.001 0.439 0.6860.693
+4.4.2. Subjective Results
+Figure 2 and Figure 3 represent the subjective listening test re-
+sults for Indian accents and foreign accents, respectively. The
+proposed method achieves higher MOS scores for accent sim-
+ilarity compared to baseline systems. In accent-controlled set-
+tings, listeners rate the synthesized speech as more similar to
+the target accent, confirming that weighted language embedding
+enables perceptually meaningful accent control.
+Figure 2:Accent Similarity
+MOS of Indic Accents
+Figure 3:Accent Similarity
+MOS of F oreign Accents
+4.5. Accent-intensity Control Analysis
+To assess accent-intensity control, we synthesize samples us-
+ing cross-lingual reference audio, scaling the accent intensity
+to 0, 0.3, 0.6, and 1.0. Accent embeddings from the synthe-
+sized speech are extracted using GenAID, and accent similarity
+scores are computed with the mentioned intensity scores. From
+the Figure 4, it is evident that as accent intensity increases, the
+accent similarity score also rises, demonstrating effective and
+controllable accent modulation.
+Figure 4:Effect of Accent Intensity on Accent Similarity score
+5. Conclusion
+This paper presents CrossAccent TTS, a cross-lingual, accent-
+controllable text-to-speech framework that enables both accent
+conversion and continuous modulation of accent intensity while
+preserving speaker identity. The proposed Accent Intensity
+Controller injects weighted language embeddings into disen-
+tangled representations, allowing smooth interpolation across
+accents and dynamic control during inference. Extensive objec-
+tive and subjective evaluations demonstrate that the proposed
+approach consistently outperforms strong baselines in accent
+similarity and controllability, while maintaining speaker simi-
+larity and naturalness. The effectiveness of the learned accent
+representations is further supported by accent-intensity control
+analysis. Overall, the proposed framework provides a practical
+and scalable solution for accent-controllable speech synthesis
+in low-resource and multilingual settings.
+1977
+6. Generative AI Use Disclosure
+Generative AI tools were used solely for language refinement,
+grammar correction, and improving the overall clarity and read-
+ability of the manuscript. These tools assisted in polishing and
+structuring the text but were not used to generate or design the
+core research ideas, methodology, experimental setup, analy-
+sis, or conclusions presented in this work. All scientific con-
+tributions, technical implementations, and interpretations were
+developed and validated by the authors. In accordance with pol-
+icy guidelines, no generative AI system is listed as a co-author,
+and all authors take full responsibility and accountability for the
+content and integrity of this paper.

@@ -1,0 +1,488 @@
+Online Predictive Coding for Dual-Mode Self-Supervised Speech Models
+Keita Goto1, Takashi Maekaku1, Jin Sakuma1, Jinchuan Tian2, Yusuke Shinohara1, Shinji Watanabe2
+1 LY Corporation, Tokyo, Japan
+2 Carnegie Mellon University, PA, USA
+keitgoto@lycorp.co.jp, tmaekaku@lycorp.co.jp, jsakuma@lycorp.co.jp,
+jinchuat@andrew.cmu.edu, yusshino@lycorp.co.jp, shinjiw@ieee.org
+Abstract
+Dual-mode self-supervised speech models are pre-trained to
+handle streaming and non-streaming conditions simultaneously.
+However, their attention is computed over different context
+ranges, which often makes optimization difficult. In previous
+work, we proposedonline registers, additional tokens intended
+to compensate for missing future context in streaming mode,
+but the gains remained limited. To address these issues, we in-
+troduce two improvements for robust dual-mode pre-training:
+(1) Online Predictive Coding (OPC), which regularizes the reg-
+isters through multi-step future prediction, and (2) Dual-mode
+Layer Normalization, which stabilizes optimization. We fine-
+tune the proposed dual-mode self-supervised speech models for
+speech recognition on LibriSpeech and WSJ. Results show that
+OPC consistently reduces the online–offline performance gap;
+at 160 ms latency on LibriSpeech, word error rates improve
+from 3.65% to 3.40% ontest-cleanand from 10.15% to 9.65%
+ontest-other.
+Index Terms: speech recognition, self-supervised learning,
+dual-mode
+1. Introduction
+Self-supervised speech models (S3Ms) [1] have become a foun-
+dational paradigm for a wide range of speech processing tasks.
+By pre-training on large-scale unlabeled speech, they achieve
+strong performance across diverse downstream tasks, as evi-
+denced by SUPERB [2] and multilingual speech recognition
+benchmarks [3, 4, 5]. However, most leading S3Ms, such as
+wav2vec 2.0 [6], HuBERT [7], and BEST-RQ [8], are trained
+underoffline(non-streaming) conditions. As a result, their per-
+formance often degrades when deployed in real-timeonline
+(streaming) applications, where future context is unavailable.
+To enable streaming capability, several adaptation strate-
+gies for S3Ms have been explored. Distillation-based ap-
+proaches [9, 10, 11] train a streaming model to mimic a strong
+non-streaming teacher. While effective, these methods typi-
+cally require complex training pipelines. Dual-mode frame-
+works [12, 13, 14] offer a more direct solution by jointly pre-
+training in online and offline modes within a single model.
+However, sharing parameters across the two modes introduces
+optimization challenges, and such models often underperform
+compared to single-mode counterparts.
+To reduce the discrepancy between online and offline
+modes, our prior work introduced online registers [15], learn-
+able tokens appended to each chunk in online mode. These
+registers provide additional representational capacity to com-
+pensate for missing future context, thereby mitigating the atten-
+tion mismatch between modes. That work further incorporated
+a future prediction objective within the self-supervised learning
+framework, pre-training each register to directly predict specific
+future frames so as to explicitly encode future context. While
+this constraint encouraged the registers to encode future infor-
+mation, the overall gains remained limited.
+In this paper, we propose an improved pre-training frame-
+work for dual-mode S3Ms using online registers to reduce the
+gap between online and offline modes. The framework consists
+of two main modifications. First, we extend the original future
+prediction constraint into a more flexibleOnline Predictive
+Coding (OPC)framework inspired by Contrastive Predictive
+Coding [16]. OPC is jointly optimized with the wav2vec 2.0
+framework, encouraging the online pathway to learn represen-
+tations that are predictive of future context. Second, we adopt
+Dual-mode Layer Normalization, originally proposed for au-
+tomatic speech recognition (ASR), in SSL training by maintain-
+ing separate LayerNorm [17] parameters for online and offline
+modes to mitigate mode-specific distribution shifts.
+These modifications stabilize dual-mode pre-training and
+enhance robustness in both online and offline downstream tasks
+without increasing algorithmic latency. On the LibriSpeech
+ASR benchmark at 160 ms latency, OPC reduces online word
+error rate (WER) from 3.65% to 3.40% ontest-cleanand from
+10.15% to 9.65% ontest-other. In parallel, offline WER im-
+proves from 2.73% to 2.64% and from 6.63% to 6.41% ontest-
+cleanandtest-other, respectively, helping narrow the online–
+offline performance gap.
+2. Related Work
+Dual-mode architectures for ASR.Dual-mode models sup-
+port both online and offline inference within a single archi-
+tecture and have been studied in automatic speech recognition
+(ASR) [18, 19, 20]. They are typically trained by jointly opti-
+mizing online and offline pathways with a shared encoder, of-
+ten combined with Dynamic Chunk Training [21] to support
+variable-latency conditions.
+However, these models are specialized for the ASR task,
+and information such as speaker identity or emotion may not be
+inherently embedded in the model representations. By focusing
+ondual-mode self-supervised models, our approach aims for de-
+ployment across a wide range of streaming and non-streaming
+applications beyond ASR.
+Dual-mode self-supervised learning.With the growing de-
+mand for diverse applications, dual-mode strategies have been
+extended to self-supervised speech models (S3Ms). Wav2vec-
+S [12] and UFO2 [13] apply dual-mode pre-training following
+the wav2vec 2.0 pre-training scheme, while DuRep [14] focuses
+on ASR-oriented multi-stage pre-training.
+In previous work, we proposed online registers [15], learn-
+able tokens appended to each chunk in online mode to mitigate
+1443
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1997
+attention mismatch caused by missing future context. Although
+these registers alleviate the discrepancy between online and of-
+fline pathways, they were not explicitly regularized to encode
+future information, and the overall gains remained limited.
+Motivated by the need to make online registers capture
+more information about the unseen future context, we draw in-
+spiration from Contrastive Predictive Coding (CPC) [16], which
+learns contextual representations by predicting future latent
+states from past representations. We extend this predictive-
+learning principle to dual-mode S3Ms and developOnline Pre-
+dictive Coding(OPC) built upon online registers. Unlike CPC,
+OPC is jointly optimized with the masked prediction objective
+of wav2vec 2.0 during pre-training, enabling the model to ac-
+quire representations that leverage both preceding and succeed-
+ing context.
+Normalization and parameter sharing.Another important
+design choice concerns parameter sharing in normalization lay-
+ers. The original dual-mode ASR study [18] advocates sepa-
+rating normalization parameters for each mode, while other ap-
+proaches [14, 20] maintain shared normalization across modes.
+When additional learnable tokens, such as online registers, are
+introduced, shared normalization may amplify statistical dis-
+crepancies between pathways. We revisit this design choice and
+adoptDual-mode Layer Normalizationto stabilize dual-mode
+optimization.
+3. Methods
+3.1. Dual-mode Transformer with Online Registers
+Our encoder is based on wav2vec 2.0 [6] and is pre-trained in
+a dual-mode manner. LetX= (x 1, . . . ,xT )denote the latent
+features extracted by a convolutional feature encoder, where
+xt ∈R d andTis the number of feature frames. For online
+mode, we partitionXinto chunks of sizeN c with an optional
+lookahead ofN l frames. For thei-th chunk, the chunkC i and
+lookaheadL i are defined as
+Ci =X (i−1)Nc+1:iNc ,L i =X iNc+1:iNc+Nl .(1)
+We appendN r learnable online registers to each chunk:R i =
+(r1, . . . ,rNr ), where the register embeddings{r m}Nr
+m=1 are
+shared across all chunks.
+We denote the Transformer encoder byf(·). In online
+mode, an attention maskMmasks out positions beyond the
+current chunk and lookahead1. During training, we concatenate
+Ci,L i, andR i over all chunks asC,L, andR, respectively,
+and encode them in parallel usingMto emulate streaming con-
+straints [15]:
+
+ˆCon, ˆLon, ˆRon
+
+=f
+ 
+(C,L,R);M
+
+,
+ˆXoff =f(X).
+(2)
+At inference time, online representations are extracted in a
+chunk-by-chunk manner without attention masks. Online regis-
+ters introduce only a marginal increase in memory and compu-
+tation, without affecting algorithmic latency.
+3.2. Why Online–Offline Attention Mismatch Happens
+The key difference between online and offline modes lies in the
+context available to self-attention. Offline self-attention can at-
+tend to the entire utterance, whereas online self-attention is re-
+stricted to the current chunk and lookahead. Since dual-mode
+1In this paper, online mode masks only future context; past context
+remains fully visible.
+𝑿𝑪! 𝑹!
+0OMJOF4FMG"UUFOUJPO 0GGMJOF4FMG"UUFOUJPO
+Figure 1:Online vs. offline self-attention visibility. The figure il-
+lustrates the case where the chunk size isN c = 4, withN r = 2
+registers per chunk and no lookahead (N l = 0). Offline at-
+tention attends to all frames inX, whereas online attention is
+restricted to the chunkC i and its online registersR i.
+$PODBUFOBUF
+0GGMJOF.PEF0OMJOF.PEF
+1SPKFDU
+ℒopc
+𝑿&	off𝑪&"
+on 𝑹&"
+on
+Figure 2:Overview of Online Predictive Coding (OPC) for the
+case ofN c = 4,N r = 2registers per chunk, no lookahead
+(Nl = 0), andN f = 4future prediction steps. For thei-th
+chunk, the online registers jointly predict four future offline rep-
+resentations at subsequent time steps. The OPC loss is com-
+puted over all chunks.
+models share the same parameters across both modes, this mis-
+match makes optimization challenging.
+Online registers mitigate this issue by introducingextra
+learnable slotsin online mode, providing a surrogate pathway
+for the missing future context. As illustrated in Figure 1, of-
+fline attention can reference all frames, whereas online attention
+is restricted to the past and current chunks along with the ap-
+pended registers. If the registers encode sufficient future infor-
+mation, the attention behaviors of the two modes become more
+aligned. The remaining question is how to ensure that the reg-
+isters stably encode future context; we address this withOnline
+Predictive Coding.
+3.3. Online Predictive Coding
+Online registers act as surrogates for the unseen future, but the
+key challenge is to make them robustly encode future informa-
+tion. To address this, we proposeOnline Predictive Coding
+(OPC), a future prediction objective that trains the online reg-
+isters to jointly predict multiple future offline representations
+at arbitrary offsets. Similar to CPC [16] and NEST-RQ [22],
+OPC encourages the registers to predict future context. How-
+ever, by jointly optimizing OPC with wav2vec 2.0’s masked
+prediction objective, our model can still leverage bidirectional
+context during pre-training and thus acquire stronger contextual
+representations. Unlike these previous methods, our approach
+performs multi-step feature prediction from register representa-
+tions at each frame, since the model can access future frames
+within each chunk.
+Figure 2 illustrates an overview of OPC.Let ˆRon
+i =
+(ˆri,1, . . . , ˆri,Nr )denote the output representations of the reg-
+isters associated with chunki, as defined in Equation 2. We
+concatenate them and predictN f future offline representations
+1444
+using linear projectionsW j∈R dNr×d:
+ˆfi,j =W ⊤
+j
+
+
+ˆri,1
+...
+ˆri,Nr
+
+∈R d,
+fi,j = ˆxoff
+iNc+Nl+j, j= 1, . . . , N f .
+(3)
+For each chunk, we predictN f future representations from the
+offline pathway and defineL opc as the objective that minimizes
+the cosine distance between vectors:
+Lopc =
+⌊T /Nc⌋+1X
+i=1
+NfX
+j=1
+
+1−cos
+
+ˆfi,j,SG (f i,j)
+
+.(4)
+We stop the gradient through the offline target usingSG(·)to
+avoid collapsing the offline pathway. This objective makes the
+registers predictive: to minimizeL opc, the online registers must
+encode information useful for reconstructing future offline rep-
+resentations. Consequently, OPC encourages the registers to
+approximate the contribution of the unseen future frames, as il-
+lustrated in Figure 1.
+We jointly optimize the OPC loss with the wav2vec 2.0 ob-
+jectives for online and offline modes (L on andL off) and the
+codebook diversity lossL d:
+L= 1
+2
+
+Lon +L off
+
++w dLd +w opcLopc,(5)
+wherew d andw opc are hyperparameters.
+3.4. Dual-mode Layer Normalization
+Dual-mode training inherently induces mode-dependent feature
+statistics. As analyzed in Section 3.2, in dual-mode attention,
+different statistics are computed for the online and offline path-
+way. Furthermore, the introduction of online registers exac-
+erbates this discrepancy; as these learnable tokens are explic-
+itly regularized by OPC to compensate for the missing future
+frames, their activation patterns and norms can differ signifi-
+cantly from those of standard speech frames.
+To mitigate interference between modes, we adoptDual-
+mode Layer Normalization[18]: each LayerNorm has sepa-
+rate affine parameters (γandβ) for offline and online modes,
+while all other weights are shared:
+(γ,β) =
+( 
+γoff ,β off
+for offline mode,
+(γon,β on)for online mode. (6)
+This simple decoupling stabilizes optimization under distribu-
+tion shifts and improves robustness across latency conditions.
+4. Experiments
+4.1. Experimental Settings
+Unless otherwise stated, we follow the official Fairseq [23]
+wav2vec 2.0 configurations as our baseline and introduce only
+the modifications described in Section 3.
+Datasets.Pre-training was conducted on the 960-hour Lib-
+riSpeech corpus [24] without transcriptions. For ASR fine-
+tuning, we used LibriSpeech 960h and report WER ontest-
+cleanandtest-other. For cross-domain evaluation, we addi-
+tionally fine-tuned and evaluated on the Wall Street Journal
+(WSJ) [25] corpus usingtrain si284for training,test dev92for
+validation, andtest eval92andtest eval93for testing.
+Pre-training.We follow the official Fairseq wav2vec 2.0 BASE
+configuration for LibriSpeech 960h. Our model is pre-trained
+in a dual-mode manner as formulated in Equation 5 with shared
+parameters except for LayerNorm. Streaming behavior is simu-
+lated using chunk-based attention masks [26] together with Dy-
+namic Chunk Training (DCT) [21], where the chunk size and
+lookahead are sampled asN c∼U(2,32)andN l∼U(0, N c),
+whereUis the uniform distribution. In our experiment, the
+number of online registersN r is fixed at 1. The weight pa-
+rameters in Equation 5 are set tow d = 0.1andw opc = 0.1.
+Pre-training is conducted for 100k steps using 16 NVIDIA
+H200 GPUs. The learning rate is linearly warmed up to
+1×10 −4 over the first 8k steps and then linearly decayed to
+zero for the remaining steps. The batch size corresponds to 350
+seconds of audio per GPU. All parameters, including the online
+registers’ embeddings, are optimized using Adam [27].
+Following wav2vec-S [12], we removed relative positional
+encodings and instead applied sinusoidal positional encodings.
+Models were initialized from the official checkpoint trained on
+LibriSpeech 960h. The parameters for Dual-mode Layer Nor-
+malization are initialized using the parameters from the check-
+point for both modes.
+Fine-tuning and Decoding.For LibriSpeech, we adopt the of-
+ficial Fairseq wav2vec 2.0 BASE 960h fine-tuning configura-
+tion, while for WSJ we follow the Fairseq LibriSpeech 100h
+setup. We replace the pre-training projection head with a linear
+layer and optimize the average Connectionist Temporal Classifi-
+cation (CTC) [28] loss over online and offline modes. Dynamic
+Chunk Training is also applied during fine-tuning to support ar-
+bitrary chunk sizes. Fine-tuning is performed for 320k steps
+on 8 NVIDIA H200 GPUs. The batch size corresponds to 200
+seconds of audio per GPU.
+For LibriSpeech decoding, we use the Flashlight beam
+search decoder [29] with the officially released 4-gram language
+model and a beam size of 50. For WSJ, we use the same decod-
+ing framework with a 4-gram language model trained on the
+WSJ text data.
+4.2. Main Results
+Table 1 summarizes ASR performance on LibriSpeech and WSJ
+in both online and offline settings, using the dual-mode model
+without online registers as the baseline. We first consider the
+LibriSpeech streaming condition with a chunk size ofN c = 8
+and zero lookahead (N l = 0), which corresponds to a low-
+latency setting (160 ms). Under this condition, adding online
+registers yields relative WER reductions of 4.1% ontest-clean
+and 3.4% ontest-otherin online mode. Incorporating Online
+Predictive Coding (OPC) further improves streaming recogni-
+tion, achieving relative WER reductions of 6.8% ontest-clean
+and 4.9% ontest-other. These results support our hypothesis
+that predictive supervision encourages the registers to store in-
+formation that compensates for missing future context. This
+narrows the offline–online attention mismatch as mentioned in
+Section 3.2 and improves low-latency streaming ASR.
+On WSJeval93, OPC slightly degrades offline performance
+(a 1.2% relative increase in WER), suggesting that the auxil-
+iary future-prediction task can introduce domain-specific bias
+when the target domain differs from the pre-training distribu-
+tion. Nevertheless, it still outperforms the dual-mode baseline.
+Table 2 compares our approach with representative self-
+supervised baselines under a comparable latency setting: a
+640 ms chunk size with zero lookahead. While offline-only
+wav2vec 2.0 [6] does not support online inference, dual-mode
+1445
+Table 1:Word error rate (WER, %) of the dual-mode baseline and our proposed variants after ASR fine-tuning, evaluated on Lib-
+riSpeech (test-clean, test-other) and WSJ (eval92, eval93). Online decoding uses a160 mschunk size (N c = 8) with no look-ahead
+(Nl = 0). For Online Predictive Coding, we show the best-performing setting with the number of predicted future framesN f = 4.
+Pre-train Method test-clean test-other eval92 eval93
+Offline Online Offline Online Offline Online Offline Online
+Dual-mode Only 2.73 3.65 6.63 10.15 7.24 8.99 10.08 8.12
+w/ Online Registers 2.70 3.50 6.52 9.80 7.14 8.6510.05 7.60
+w/ Online Predictive Coding2.64 3.40 6.41 9.65 6.94 8.1310.20 7.86
+Table 2:Word error rate (WER, %) on LibriSpeech test-clean
+and test-other for prior methods and our model. For fair com-
+parison, all online results are decoded with a640 mschunk size
+(for our model,N c = 32) and no look-ahead (N l = 0). Our
+model additionally uses Online Predictive Coding withNf = 4
+predicted future frames. Values are rounded to one decimal
+place for consistency with results reported in prior work.
+Method test-clean test-other
+Offline Online Offline Online
+wav2vec 2.0 [6]2.6-6.1-
+UFO2 [13] 3.0 3.8 7.1 9.4
+Ours2.6 3.16.48.3
+approaches enable both online and offline recognition within a
+single model. Our method achieves offline performance compa-
+rable to wav2vec 2.0 and lower online WER than UFO2 [13] on
+bothtest-cleanandtest-other. 2 These results indicate that im-
+proving dual-mode consistency can enhance online recognition
+without sacrificing offline accuracy.
+4.3. Analysis
+Latency vs. Accuracy.Figure 3 illustrates ASR performance
+on the LibriSpeechtest-cleanset under various latency condi-
+tions. Figure 3 (a) shows results with the lookahead fixed at
+Nl = 0while varying the chunk size (N c = 8,16,32). No-
+tably, the performance gains are most pronounced at smaller
+chunk sizes, particularly at 160 ms latency (N c = 8). Sim-
+ilarly, Figure 3 (b) shows results with the chunk size fixed at
+Nc = 8while varying the lookahead (N l = 0,2,4,8), demon-
+strating that high accuracy is maintained even with zero looka-
+head. This indicates that OPC explicitly strengthens the mitiga-
+tion of attention mismatch as discussed in Section 3.2.
+Notably, the combination of online registers and OPC
+achieves comparable accuracy at 160 ms latency to the base-
+line operating at 320 ms in Figure 3 (a). The same applies to the
+conditions with and without 40ms lookahead in Figure 3 (b).
+These results indicate that the proposed method can reduce la-
+tency while maintaining comparable recognition accuracy.
+The Number of Future Frames.Table 3 presents the results
+obtained with different numbers of predicted future framesN f
+in OPC. While predicting more future frames increases the diffi-
+culty of the auxiliary task, it may encourage the online registers
+to encode richer contextual information. This is expected to
+mitigate the gap of the online and offline self-attention shown
+in Figure 1.
+The results show that accuracy degrades whenN f is either
+too small (N f = 2) or too large (N f = 8). This suggests
+2We note that this is not a strictly controlled comparison, since
+UFO2 uses attention rescoring with a Transformer decoder, whereas
+our model uses ann-gram language model.
+160 320 640
+Chunk Size (ms)
+3.1
+3.2
+3.3
+3.4
+3.5
+3.6
+WER (%)
+No registers
+Online Registers
+Online Registers + OPC
+(a)
+0 40 80 160
+Look Ahead (ms)
+3.1
+3.2
+3.3
+3.4
+3.5
+3.6
+WER (%)
+No registers
+Online Registers
+Online Registers + OPC (b)
+Figure 3:Word error rate (WER, %) on LibriSpeech test-clean
+under different online latency settings: (a) varying chunk size
+with no look-ahead (N l = 0) and (b) varying look-ahead size
+with a fixed 160 ms chunk size (Nc = 8). The number of online
+registers and the number of OPC predicted future frames are
+fixed toN r = 1andN f = 4, respectively.
+Table 3:Word error rate (WER, %) of our model with Online
+Predictive Coding (OPC) for different numbers of predicted fu-
+ture frames (Nf ), evaluated on LibriSpeech test-clean and test-
+other. All online decoding uses a160 mschunk size (N c = 8)
+with no look-ahead (Nl = 0).
+#framesN f
+test-clean test-other
+Offline Online Offline Online
+22.68 3.49 6.48 9.83
+42.64 3.406.419.65
+62.65 3.436.399.72
+82.65 3.47 6.42 9.78
+that long-term prediction is difficult and may negatively affect
+the learning process itself. The best performance was observed
+whenN f = 4, except in the offline condition on thetest-other
+set. Since thetest-otherset contains more challenging samples
+for speech recognition, a richer future context may have been
+crucial.
+5. Conclusion
+In this paper, we proposed the pre-training framework named
+Online Predictive Coding (OPC), which explicitly encourages
+robust modeling of future context. By enabling online registers
+to encode predictive information about unseen future frames,
+our method reduces the offline–online attention gap. In ad-
+dition, Dual-mode Layer Normalization mitigates distribution
+shifts between online and offline pathways, particularly those
+introduced by online registers. Our experiments showed that
+these modifications improve ASR performance, especially on
+more challenging test sets, without increasing algorithmic la-
+tency.
+1446
+6. Generative AI Use Disclosure
+Generative AI tools are used for grammar and style editing of
+the manuscript and for assistance in implementing experimen-
+tal code. The tools were not used to write major parts of the
+manuscript, formulate the research questions, design the exper-
+iments, analyze the results, or draw conclusions.

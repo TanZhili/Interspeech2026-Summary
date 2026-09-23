@@ -1,0 +1,467 @@
+StyleStream: Real-Time Zero-Shot V oice Style Conversion
+Yisi Liu1, Nicholas Lee1, Gopala Anumanchipalli1
+1 UC Berkeley, USA
+louis liu@berkeley.edu, nicholas.lee@berkeley.edu, gopala@berkeley.edu
+Abstract
+V oice style conversion aims to transform an input utterance to
+match a target speaker’s timbre, accent, and emotion, with a
+central challenge being the disentanglement of linguistic con-
+tent from style. While prior work has explored this issue,
+conversion quality remains limited, and real-time voice style
+conversion has not been addressed. We propose StyleStream,
+the first streamable zero-shot voice style conversion system
+that achieves state-of-the-art performance. StyleStream con-
+sists of two components: a Destylizer, which removes style
+attributes while preserving linguistic content, and a Stylizer, a
+diffusion transformer (DiT) that reintroduces target style condi-
+tioned on reference speech. Robust content-style disentangle-
+ment is enforced through text supervision and a highly con-
+strained information bottleneck. This design enables a fully
+non-autoregressive architecture, achieving real-time voice style
+conversion with an end-to-end latency of 1s. We release our
+code here.1
+Index Terms: voice style conversion, real-time, zero-shot
+1. Introduction
+Zero-shot voice style conversion seeks to modify an input ut-
+terance so that it reflects the timbre, accent, and emotion of
+an unseen target speaker (collectively defined in this work as
+voice style) while preserving the original linguistic content, us-
+ing only a few seconds of reference speech. Although zero-shot
+voice style cloning has been extensively studied in the text-to-
+speech (TTS) domain [1, 2, 3, 4, 5, 6, 7], progress on zero-shot
+voice style conversion remains limited. In TTS, the linguistic
+content is taken directly from text, which is fully disentangled
+from the target speech that provides voice style. In contrast,
+zero-shot voice style conversion requires the model to first ex-
+tract the content features from the source utterance, and then
+generate speech in the target style. This content extraction re-
+lies on clean content-style disentanglement, which is the core
+challenge in speech-to-speech conversion.
+Existing strategies for disentanglement include information
+bottleneck [8, 9, 10, 6, 7, 11], signal perturbation [12, 13, 14,
+15], mutual information minimization [16, 17], etc. While these
+approaches achieve reasonable content-timbre disentanglement,
+the extracted features often remain entangled with accent and
+emotion. For example, CosyV oice 2 [7] combines information
+bottlenecks with ASR for supervised disentanglement, yet its
+“semantic tokens” still encode considerable accent and emotion
+information due to the large codebook size (6561), as demon-
+strated in Section 6.3. The current state-of-the-art framework,
+1https://berkeley-speech-group.github.io/
+StyleStream
+Vevo [11], employs VQ-V AE [18] to quantize HuBERT [19]
+features with a compact codebook of size 32, producing dis-
+crete content tokens. Although Vevo demonstrates good con-
+version performance, its purely self-supervised training pro-
+vides no guarantee on what information is discarded by the bot-
+tleneck, and linguistic content is prone to degradation during
+quantization, leading to suboptimal intelligibility and conver-
+sion quality (see Section 6). Beyond disentanglement, another
+open challenge is real-time application: while real-time voice
+conversion (timbre only) has been widely studied [20, 21, 22],
+there is no existing work that addresses real-time voice style
+conversion (timbre, accent and emotion), leaving an important
+gap.
+Motivated by these challenges, we present StyleStream, a
+novel framework that, for the first time, supports zero-shot real-
+time voice style conversion across timbre, accent, and emotion,
+achieving state-of-the-art performance. As shown in Figure 1,
+the Destylizer first extracts content features that are disentan-
+gled from style information. The Stylizer then takes these con-
+tent features and, conditioned on the target speech, generates
+the stylized mel-spectrogram, which is subsequently converted
+into waveform by the vocoder.
+To achieve better content-style disentanglement, inspired
+by CosyV oice 2 [7], we train the Destylizer with an ASR loss
+and apply finite scalar quantization (FSQ) [23] as an informa-
+tion bottleneck, but unlike CosyV oice 2, where a large codebook
+size (6561) is used, we constrain the codebook size to 45. This
+combination of text supervision and a compact codebook en-
+ables cleaner disentanglement. The choice of content features
+is also crucial: rather than using the discrete codes directly, we
+adopt the continuous representations immediately preceding the
+FSQ layer as content features, following the intuition of SoftVC
+[24]. As shown in Section 6.4, this design is another critical fac-
+tor for effective disentanglement.
+For the Stylizer, we train a diffusion transformer (DiT) [25]
+with a spectrogram inpainting objective, similar to [1, 2, 3].
+Since no autoregressive modules are involved, the input and out-
+put lengths remain identical, which makes streaming straight-
+forward and avoids lag or overlap caused by input-output length
+mismatches.
+In summary, our contributions include:
+• We introduce StyleStream, the first real-time voice style con-
+version system with an end-to-end latency of 1 second.
+• By combining ASR loss and a compact quantization code-
+book, the Destylizer achieves cleaner content-style disentan-
+glement compared to existing methods.
+• Trained on 50k hours of English data, StyleStream delivers
+state-of-the-art conversion quality, substantially improving
+accent and emotion similarity over prior work.
+1347
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-404
+Destylizer Stylizer Vocoder
+Source TargetContent Converted
+“Kids are talking 
+by the door.”
+“Kids are talking 
+by the door!”
+Figure 1:System overview of StyleStream. The Destylizer extracts content features disentangled from style, and the Stylizer generates
+speech that preserves the source linguistic content while adopting the target timbre, accent, and emotion.
+Round
+Destylizer
+Content
+FSQ Down
+FSQ Up
+HuBERT
+Large
+Conformer
+Blocks
+ASR
+Decoder
+Kids are talking 
+by the door.
+Figure 2:Destylizer architecture. The Destylizer, as part of the ASR encoder, is trained with a sequence-to-sequence ASR loss. The
+continuous representations immediately before the FSQ module are taken as content features.
+2. Related Work
+2.1. V oice Style Cloning
+V oice style cloning aims to reproduce a target speaker’s tim-
+bre, accent, and emotion from reference speech. A large body
+of prior work has explored this problem in the text-to-speech
+(TTS) domain, where textual input provides a clean and natu-
+rally disentangled representation of linguistic content. Modern
+TTS-based voice style cloning approaches can be broadly cat-
+egorized into two architectural classes: (1) non-autoregressive
+models, which primarily rely on diffusion transformers trained
+with feature inpainting objectives [1, 2, 3, 4]; and (2) autore-
+gressive models, which condition on text as a prefix and gener-
+ate speech tokens using next-token prediction [26, 5, 6, 7, 27].
+These methods have demonstrated impressive synthesis quality
+and style fidelity, but their reliance on text limits their applica-
+bility to speech-to-speech conversion scenarios.
+In contrast, speech-to-speech voice style conversion op-
+erates directly on acoustic signals and thus requires explicit
+content–style disentanglement. Most prior work in this area
+focuses on transferring individual style attributes in isolation,
+such as timbre [8, 28, 29, 30], accent [31, 32, 33], or emotion
+[34, 35, 36]. While effective for targeted attribute transfer, these
+methods do not enable holistic voice style cloning that jointly
+matches the target speaker’s timbre, accent, and emotion.
+Only a limited number of works attempt to jointly clone
+timbre, accent, and emotion in a unified speech-to-speech set-
+ting. Among existing approaches, Vevo [11] is, to our knowl-
+edge, the only system that explicitly targets holistic voice style
+cloning. However, Vevo operates in an offline setting, relies
+on non-streamable architectures, and exhibits a clear tradeoff
+between content preservation and style fidelity. These limita-
+tions highlight the difficulty of achieving clean content-style
+disentanglement while maintaining high-quality and streamable
+speech generation.
+In this work, we address these challenges by proposing a
+streamable speech-to-speech framework that performs holistic
+voice style cloning, jointly transferring timbre, accent, and emo-
+tion from reference speech while preserving high intelligibility.
+2.2. Speech Content Disentanglement
+A key difficulty in speech-to-speech conversion lies in isolating
+linguistic content from the input speech. Research on speech
+content disentanglement generally falls into a few main cate-
+gories: (1) Information bottleneck: one line of work introduces
+a quantization layer [24, 37, 31] or a low-dimensional hidden
+representation [38, 39, 40], often combined with proxy tasks
+such as ASR [34, 6, 7, 41] or autoencoding [8, 9, 11], to en-
+courage the separation of content from style; (2) Signal per-
+turbation: another family of methods [12, 13, 14, 29] modifies
+style-related cues in the signal (e.g., pitch randomization, for-
+mant shifting) while preserving linguistic content, and trains
+the model to produce similar representations for the original
+and perturbed inputs; (3) Training loss design: alternative ap-
+proaches incorporate objectives such as GAN loss [28, 42, 43],
+mutual information loss [16, 17, 44], or gradient reversal loss
+[10, 45] to explicitly promote disentanglement. However, con-
+tent features extracted by these methods often still leak accent
+and emotion information, which degrades the quality of voice
+style conversion.
+2.3. Real-Time V oice Conversion
+The field of real-time voice conversion has seen rapid progress
+in both quality and latency [22, 21, 20, 46]. For example, RT-
+VC [20] achieves state-of-the-art real-time zero-shot voice con-
+version quality with a CPU latency of only 61.4ms. However,
+no existing work has addressed the problem of real-time zero-
+shot voice style conversion, where the goal is to modify not
+only timbre but also accent and emotion. This gap motivates
+1348
+our work, where we present StyleStream, the first system for
+real-time zero-shot voice style conversion.
+3. Method
+3.1. Destylizer: Content-Style Disentanglement
+To achieve clean content-style disentanglement, we introduce
+the Destylizer (Figure 2). It consists of a frozen HuBERT-Large
+encoder [19] followed by several conformer blocks [47]. Simi-
+lar to CosyV oice 2 [7], the Destylizer and the FSQ module to-
+gether form the ASR encoder. The continuous output features
+of the Destylizer, denoted as content featuresf c, are first pro-
+jected down to aD-dimensional space, and each dimension is
+quantized to the nearest integer in the range[−Ki,Ki], where
+Vi = 2Ki + 1, K i∈Z >0 (1)
+denotes the number of codes for thei-th dimension. The quan-
+tized low-dimensional features are then projected back to the
+original dimension and passed to the ASR decoder to predict
+text character tokens. The whole pipeline is trained end-to-end
+with a sequence-to-sequence ASR loss. At inference time, we
+use only the Destylizer to extract disentangled content features,
+operating at a sampling rate of 50 Hz.
+There are three keys to successful content-style disentan-
+glement:
+Text Supervision.Unlike Vevo [11], whose content tok-
+enizer is trained in a purely self-supervised manner, we fol-
+low CosyV oice 2 and impose text supervision for training the
+Destylizer. This directs linguistic content through the FSQ bot-
+tleneck, while style is suppressed since it does not aid ASR pre-
+diction and the bottleneck provides limited capacity. In contrast,
+Vevo relies on a reconstruction objective with no explicit cue for
+separating content from style, causing style leakage and partial
+loss of linguistic content, which degrades disentanglement qual-
+ity, as shown in Section 6.
+Compact Codebook.Unlike CosyV oice 2, where a large
+codebook size (6561) is used, we use a much smaller codebook
+to enforce a narrower information bottleneck, following the in-
+tuition of AutoVC [8]. Specifically, the vocabulary sizeVfor
+FSQ levels[V 1,V 2,...,V D]is given by:
+V=
+DY
+i=1
+Vi (2)
+AdjustingDandV i controls the bottleneck width. As demon-
+strated in Section 6.3, CosyV oice 2’s “semantic tokens” remain
+largely entangled with style information, whereas our Destyl-
+izer provides much cleaner content features due to a compact
+codebook.
+Continuous Pre-quantization Features.Unlike Vevo [11]
+or CosyV oice 2 [7], which use discrete tokens as content, we in-
+stead adopt the continuous representations immediately before
+FSQ, inspired by SoftVC [24]. SoftVC demonstrated that such
+“soft units” strike an effective balance between disentanglement
+and content preservation. Moreover, as shown in Section 6.3,
+our continuous features contain even less style information than
+the discrete tokens of Vevo and CosyV oice 2, while using FSQ
+indices directly as content leads to unintelligible speech.
+3.2. Stylizer: Stylized Acoustic Modeling
+After obtaining disentangled content features, the Stylizer gen-
+erates mel-spectrograms conditioned on the target style. As
+shown in Figure 3, it consists of two components:
+Diffusion Transformer .We use a diffusion transformer
+(DiT) [25] as the backbone of the Stylizer, as it has demon-
+strated strong performance in in-context voice style cloning
+[1, 2, 3]. The Stylizer is trained with a spectrogram in-painting
+objective: given a temporal binary maskm, the model recon-
+structs the masked segmentm⊙x 1 of a mel-spectrogramx 1∈
+RF×T , conditioned on the unmasked context(1−m)⊙x 1,
+the content featuresfc∈R Dc×T , and a style embeddinge(de-
+scribed below), where⊙denotes elementwise multiplication.
+Concretely, the noisy mel-spectrogramx t, context(1−
+m)⊙x 1 and content featuresf c are concatenated along the
+channel dimension to form the DiT input. To ensure compati-
+bility, the mel-spectrogram is calculated at the same rate asf c
+(50 Hz). The flow time stept∼U[0,1]is embedded with a si-
+nusoidal positional encoding, and added to the style embedding,
+which is then integrated into DiT via adaLN-Zero [25].
+During training, we adopt the conditional flow matching
+(CFM) loss with an Optimal Transport (OT) path formulation.
+Letx 1∼q(x)denote the ground-truth mel-spectrogram drawn
+from the data distribution, andx 0∼p(x) =N(0,I)be the
+standard normal prior. We sample a time stept∼U[0,1]and
+define the OT flow path asψ t(x) = (1−t)x+tx 1. Conse-
+quently, the noisy mel-spectrogram state at timetis generated
+asxt =ψ t(x0). The predicted vector field is defined as:
+ˆv=vθ
+ 
+ψt(x0),t;f c,(1−m)⊙x 1, e
+
+(3)
+wheremis the binary mask indicating the generation target,f c
+represents the content features, andedenotes the style embed-
+ding. The training objective is to minimize the difference be-
+tweenˆvand the target velocity, computed strictly on the masked
+regions:
+LCFM(θ) =E t,x1,x0,m
+m⊙
+ 
+ˆv−d
+dtψt(x0)
+
+2
+(4)
+During inference, we concatenate the content features of
+the target and source utterances along the time axis. The target
+utterance provides the mel-spectrogram context and the style
+embedding, while the source region is masked and generated
+by the Stylizer. To balance diversity with fidelity, we employ
+Classifier-Free Guidance (CFG):
+vθ,CFG =v θ(xt,t;c) +α(v θ(xt,t;c)−v θ(xt,t;∅))(5)
+where∅denotes null condition,cdenotes all conditions, in-
+cludingfc,(1−m)⊙x 1,e, andαis the CFG strength.
+Style Encoder .For style conditioning, we introduce a
+style encoder to capture global style attributes. Its architecture
+follows WavLM-TDNN2: representations from frozen WavLM
+layers [48] are aggregated using learnable coefficients, and the
+aggregated features are then passed to a Time Delay Neural Net-
+work (TDNN) [49]. Attentive statistics pooling [50] is applied
+to obtain the final style embedding, which is fused into DiT
+through adaLN-zero. The style encoder is trained jointly with
+the DiT in an end-to-end manner.
+3.3. V ocoder
+We trained a causal vocoder to synthesize 16 kHz speech from
+50 Hz mel-spectrograms for real-time inference. The design
+follows V ocos [51], with all convolution layers replaced by
+causal convolution. The training objective combines GAN loss,
+2https://huggingface.co/microsoft/
+wavlm-base-plus-sv
+1349
+Source ContentTarget Content
+t
+Style
+Encoder
+Destylizer
+Diffusion Transformer
+Discarded
+Discarded
+To Generate
+Target Style
+Target Source
+Figure 3:Stylizer architecture. The Stylizer contains a style encoder and a diffusion transformer.
+reconstruction loss, and feature matching loss, using the same
+configurations as V ocos. The original V ocos checkpoint3 is used
+as a warm start.
+3.4. Real-Time Design
+To enable streaming, we apply a chunked-causal attention mask
+to both the Destylizer and Stylizer, where each chunk attends
+to its own features and all preceding chunks, but not to future
+chunks. In the Destylizer, the HuBERT layers are unfrozen
+and made chunked-causal, and all convolution layers are con-
+verted to causal. The streaming Destylizer is initialized from its
+non-streaming checkpoint and trained with a mean squared er-
+ror (MSE) distillation loss against the non-streaming teacher’s
+content features. Once trained, the streaming Stylizer, warm-
+started from its non-streaming counterpart, is trained on top of
+the streaming Destylizer’s outputs.
+For real-time inference, we maintain a fixed-length target
+utterance and a ring buffer of input chunks of content features.
+This provides sufficient past context for the Stylizer while keep-
+ing latency manageable. The end-to-end latencyLis calculated
+as:
+L=t chunksize +t proc (6)
+wheret chunksize is the input speech chunk size andt proc is the
+processing time per chunk. As long ast proc < tchunksize, the
+model is streamable.
+4. Experimental Setup
+4.1. Dataset
+For the training data, the Stylizer is trained using the English
+portion of Emilia [53], which contains 50k hours of diverse in-
+the-wild English speech. The Destylizer is trained on a com-
+bined training set from LibriTTS [54], MSP-Podcast [55], and
+GLOBE [56], totaling approximately 1300 hours of speech that
+covers a wide range of speakers, emotions and accents. We refer
+3https://github.com/gemelo-ai/vocos
+to this combined dataset as LMG. LMG is also used for training
+in the analysis and ablation studies (Sections 6.3, 6.4, 6.5).
+For evaluation, we randomly sample 300 source utterances
+from a combination of the Emotion Speech Dataset (ESD) [57],
+GLOBE-test, and LibriTTS-test-clean. We also select 10 target
+utterances from ESD, RA VDESS [58], GLOBE-test, and L2-
+ARCTIC [59], covering 5 emotions (happy, angry, sad, fear-
+ful, calm) and 5 accents (British, American, Indian, Arabic,
+Mandarin). This results in300×10 = 3000source-target
+pairs, which we denote as StyleStream-Test. All the objec-
+tive and subjective evaluations in Section 6.1 are conducted on
+StyleStream-Test. Moreover, to evaluate content-style disen-
+tanglement (Section 6.3), we train style classifiers on top of the
+content features extracted from different models. The speaker
+classifier is trained on the V oxCeleb training set [60] and eval-
+uated on its test set, which contains 1,251 speakers. The accent
+classifier is trained on L2-ARCTIC, which includes 6 accents;
+6 speakers (one per accent) are held out for testing, and the re-
+maining 18 speakers are used for training. The emotion classi-
+fier is trained on EmoV-DB [61], which covers 5 emotions; 2
+speakers (each with all 5 emotions) are held out for testing, and
+the remaining 18 speakers are used for training.
+4.2. Training
+Destylizer .We take the 18th layer of HuBERT-Large-ASR 4
+as input to six conformer blocks, followed by an FSQ module
+and four transformer decoder layers (hidden size 768, FFN size
+3072). ALiBi positional encoding [62] is adopted to reduce
+long-context reliance, making the model suitable for length
+extrapolation and real-time inference. FSQ levels are set to
+[5,3,3], yielding a compact codebook of 45 codes. The model is
+trained for 100k steps on 8 NVIDIA RTX A6000 GPUs (batch
+size 32) using AdamW [63] with a peak learning rate of 1e-4,
+4k warm-up steps, and cosine annealing. The streaming vari-
+ant uses a chunk size of 600 ms but otherwise follows the same
+4https://huggingface.co/facebook/
+hubert-large-ls960-ft
+1350
+Table 1:Results for zero-shot voice style conversion. The best results are shown inbold, and the second best results are underlined .
+Model WER (%)↓S-SIM↑A-SIM↑E-SIM↑NMOS↑A-SMOS↑E-SMOS↑S-SMOS↑
+Ground Truth 3.8 — — — 3.71±.11— — —
+FACodec [10] 15.5 0.763 0.408 0.668 2.55±.132.02±.132.76±.142.98±.14
+CosyV oice 2.0 [7] 9.5 0.794 0.450 0.6553.47±.112.26±.132.58±.153.25±.14
+SeedVC v27 21.7 0.766 0.549 0.688 2.65±.123.34±.123.21±.133.11±.13
+Vevo [11] 17.5 0.818 0.596 0.712 3.38±.123.93±.113.49±.133.76±.13
+Vevo 1.5 [52] 20.5 0.798 0.554 0.683 3.10±.123.15±.143.15±.143.34±.14
+StyleStream (streaming) 15.30.8550.635 0.803 3.34±.134.28 ±.094.37 ±.094.29 ±.10
+StyleStream (offline)9.20.852 0.640 0.8273.42 ±.124.32±.094.42±.094.36±.10
+Table 2:Chunk size vs. quality tradeoff
+Chunk size (ms) WER (%)↓S-SIM↑A-SIM↑E-SIM↑UTMOS↑
+200 19.8 0.797 0.586 0.704 2.33±.02
+400 15.0 0.806 0.597 0.720 2.69±.03
+600 13.6 0.811 0.602 0.734 2.85±.03
+800 12.7 0.816 0.607 0.745 2.94±.03
+1000 12.6 0.820 0.613 0.751 3.00±.03
+training configuration.
+Stylizer .The Stylizer consists of 16 transformer layers
+(hidden size 768, FFN size 3072). Speech is sampled at 16 kHz
+and converted to 100-bin mel-spectrograms with a hop size of
+320, producing a 50 Hz frame rate. During training,70−100%
+of mel-spectrogram frames are randomly masked for inpaint-
+ing. To support CFG inference, content features are dropped
+with probability 0.2, while context spectrograms and style em-
+beddings are dropped with probability 0.3. Training uses 6s
+segments for 400k steps on 8 A6000 GPUs (batch size 64), with
+AdamW at a peak learning rate of 1e-4, 2k warm-up steps, and
+cosine annealing. The streaming Stylizer also uses a 600 ms
+chunk size under the same configuration. Throughout the ex-
+periments, the CFG strength is fixed at 2 and the Number of
+Function Evaluations (NFE) is set to 16, utilizing the standard
+Euler sampling method.
+V ocoder .We follow the design choice of V ocos [51], but
+modify the convolution layers in ConvNext [64] blocks into
+causal convolutions. Training is initialized from the official
+checkpoint and performed on the LibriTTS training set for 100k
+steps, using 2 A6000 GPUs with a batch size of 64 and 2s input
+segments. The mel-spectrogram setup matches that of the Styl-
+izer, and all remaining training configurations follow V ocos.
+5. Baselines
+We compare StyleStream against several representative voice
+conversion and voice style conversion systems.FACodec5 [10]
+disentangles speech into phoneme content, normalized pitch,
+and speaker residuals using an information bottleneck with a
+gradient reversal layer, and performs conversion by swapping
+speaker embeddings.CosyV oice 2.06 [7] employs a supervised
+semantic speech tokenizer trained with an ASR loss and fi-
+nite scalar quantization (FSQ) with a 6561-entry codebook, fol-
+lowed by a flow-matching transformer trained with a spectro-
+gram in-painting objective conditioned on semantic tokens and
+5https://github.com/open-mmlab/Amphion/tree/
+main/models/codec/ns3_codec
+6https://github.com/FunAudioLLM/CosyVoice
+Table 3:Chunk size vs. processing time on RTX 4060 and RTX
+A6000. Entries show mean±standard deviation over runs.
+Chunk size (ms) RTX 4060(s)RTX A6000(s)
+100 0.537±.0530.427±.013
+200 0.574±.0590.429±.009
+300 0.615±.0570.432±.010
+400 0.647±.0900.441±.008
+500 0.653±.0510.431±.009
+600 0.668±.0480.429±.006
+70

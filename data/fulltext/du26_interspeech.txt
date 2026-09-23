@@ -1,0 +1,529 @@
+Streaming T5-based Text-to-Speech Synthesis with Limited Lookahead
+Muyang Du1, Jason Roche2, Junjie Lai1
+1NVIDIA, China
+2NVIDIA, USA
+{myrond,jroche,julienl}@nvidia.com
+Abstract
+Streaming text-to-speech synthesis in cascaded LLM-TTS sys-
+tems still faces latency challenges as most TTS models require
+full context before initiating generation. We present S5-TTS,
+aStreaming variant of T5-TTSthat enables low-latency, word-
+by-word incremental speech synthesis through encoder-decoder
+language modeling and monotonic alignment learning. S5-TTS
+begins generating speech immediately after receiving the first
+few words, substantially reducing end-to-end response latency.
+To maintain quality under limited lookahead, we introduce a
+lookahead-causal masking mechanism with Conv-based auxil-
+iary attention that preserves intelligibility and speaker similar-
+ity, and employ interleaved multi-source distillation to further
+restore naturalness. Experiments show that S5-TTS achieves
+comparable quality to full-context T5-TTS, supports zero-shot
+synthesis with high speaker similarity, and significantly reduces
+end-to-end latency for practical conversational AI systems. 1
+Index Terms: speech synthesis, streaming tts, incremental tts,
+low-latency tts, zero-shot tts
+1. Introduction
+Large language models (LLMs) have become the cornerstone
+of generative AI, with state-of-the-art models adopting either
+decoder-only [1–3] or encoder-decoder architectures [4–6]. Re-
+cent advances in neural audio codecs [7,8] have enabled speech
+to be represented as discrete tokens, paving the way for LLM-
+based text-to-speech (TTS) models in both decoder-only [9–11]
+and encoder-decoder forms [12–14]. Compared to traditional
+TTS models [15, 16], LLM-based TTS models benefit from
+large-scale training, resulting in significantly improved natural-
+ness and diversity of generated speech. Unlike text-to-text mod-
+eling, where alignment is flexible, TTS typically exhibits near-
+monotonic alignment between text and speech. This property
+is difficult to capture with decoder-only models that rely solely
+on self-attention but can be effectively modeled through cross-
+attention in encoder-decoder architecture. For instance, T5-
+TTS [13] explicitly encourages monotonic alignment in decoder
+cross-attention, thereby effectively reducing hallucinations and
+enhancing robustness. Although recent Omni-modal models
+have emerged [17–19], most interactive AI systems are still pre-
+dominantly built upon a cascaded pipeline of text LLMs fol-
+lowed by TTS, due to its controllability and modularity. How-
+ever, because most TTS models require full context and take full
+sentences as input before synthesis begins, these systems suffer
+from high end-to-end speech response latency.
+Streaming incremental text-to-speech (iTTS) has been ac-
+tively studied to reduce response latency before the full input
+1Audio samples:https://s5-tts.github.io/
+sentence becomes available. Neural iTTS [20] demonstrates the
+feasibility of neural incremental synthesis by adapting Tacotron
+[21] with Griffin-Lim [22] and shows that lookback acoustic
+context is crucial for natural prosody. Inspired by the prefix-
+to-prefix framework for simultaneous translation [23], subse-
+quent work [24] introduces the lookahead policy into Tacotron
+2 [25] with Parallel WaveGAN [26], showing that even a single
+future word substantially improves naturalness. Further anal-
+yses [27] quantify this effect, reporting that one-word looka-
+head already recovers 88% of the full-context representation,
+while two-word lookahead increases this to 94%. Speech-T [28]
+extends the idea with a transducer-based architecture for uni-
+fied ASR and TTS, likewise confirming that lookahead is suf-
+ficient to close the gap with non-streaming quality. More re-
+cently, InstantSpeech [29] reduces iTTS latency further with a
+fully parallel design inspired by FastPitch [15] and Causal HiFi-
+GAN [30], while leveraging knowledge distillation to mitigate
+degradation under limited lookahead. Collectively, these stud-
+ies establish a solid foundation for streaming iTTS and highlight
+the critical role of lookahead. Nevertheless, existing approaches
+remain restricted to single-speaker or few-speaker setups and
+show limitations in naturalness and zero-shot synthesis.
+In this paper, we propose S5-TTS, a streaming variant of
+T5-TTS that enables low-latency, word-by-word incremental
+speech synthesis via encoder-decoder language modeling and
+monotonic alignment learning. Our key contributions are as fol-
+lows: (1) S5-TTS can initiate speech synthesis immediately af-
+ter the first few words become available, substantially reducing
+response latency in cascaded streaming LLM-TTS systems; (2)
+we introduce a lookahead-causal masking mechanism enabled
+by a Conv-based auxiliary attention, which allows the model to
+maintain high intelligibility and speaker similarity under lim-
+ited lookahead; (3) we adopt an interleaved multi-source dis-
+tillation strategy to effectively restore speech naturalness under
+limited lookahead; and (4) extensive experiments demonstrate
+that S5-TTS produces natural and intelligible speech compara-
+ble to the full-context T5-TTS, supports zero-shot synthesis for
+unseen speakers with high speaker similarity, and significantly
+reduces end-to-end speech response latency.
+2. Proposed Method
+2.1. Model Overview
+S5-TTS adopts a T5-based architecture, consisting of a paral-
+lel Transformer encoder and an autoregressive Transformer de-
+coder. The encoder takes as input a phoneme sequence obtained
+via G2P conversion. At each decoding step, the decoder con-
+sumes the sum of the embeddings of theKcodec tokens pre-
+dicted at the previous step and jointly predictsKnew codec
+tokens, each corresponding to one codebook in a Finite Scalar
+4746
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-235
+I'm your personal assistant. Just tell me
+Just tell me what
+Just tell me what you
+Just tell me what you need.
+1 2 3 4Transcript of the     reference audio
+Codec of the     reference audio
+1 2 3 4
+Just tell me what you need.
+S
+E
+Squared 
+Euclidean 
+Attention
+Conv-based Auxiliary Attention
+Monotonic 
+Alignment 
+Search
+Text 
+Sequence
+Encoder Lookahead-CausalMask Decoder Lookahead-CausalMask Binarized Monotonic Alignment
+T5 Encoder Embedding
+T5 Decoder Embedding
+Self-Attn
+Cross-AttnSelf-Attn
+Words in red: words to be synthesized
+Underlined words: lookahead words
+reference audio
+T5 Encoder 
+Embedding
+T5 Decoder 
+Embedding
+Codec 
+Sequence
+Phoneme 
+Sequence
+T5 decoder cross-attention alignment withlookahead-causal mask applied 
+StreamingT5 Decoder     
+StreamingT5 Encoder
+Key 
+Projection
+Query 
+Projection
+G2P 
+Conversion Mapping Mapping
+Mapping
+Figure 1:(Left) The overall architecture of S5-TTS. (Right) Lookahead-Causal Masks and Conv-based Auxiliary Attention.
+Quantization (FSQ) [31] audio codec. For each codebook, an
+embedding table is used, and its codec token is predicted using a
+dedicated linear projection head. As shown in Figure 1, S5-TTS
+is conditioned on reference audio during synthesis. Specifically,
+the transcript of the reference audio is concatenated with the
+target text as the encoder input, while the corresponding codec
+frames serve as a prompt to the decoder to guide generation.
+Unlike T5-TTS, both the encoder and decoder in S5-TTS
+operate in a word-level streaming manner. For each word to
+be synthesized, the encoder processes the current word together
+with all preceding words andklookahead words, while the de-
+coder autoregressively generates the codec chunk of the current
+word. During generation, the same lookahead setting is applied
+to G2P conversion for consistency, and we monitor the average
+cross-attention weights across all heads at each decoding step to
+identify word boundaries. Specifically, at decoder stepswhile
+synthesizing wordi, if the most attended encoder position shifts
+into the lookahead region, we consider the generation of wordi
+to be complete. The completion flagc i
+s for wordiat decoding
+stepsis defined as:
+ci
+s = argmax(αs)>
+" iX
+j=1
+Wj
+!
+−1
+#
+(1)
+whereαs denotes the cross-attention weight vector over all en-
+coder steps at decoder steps, with theargmaxindex starting
+from 0, andW j representing the number of encoder steps cor-
+responding to wordj. When the final word of the target text en-
+ters the lookahead window, we stop monitoring the word com-
+pletion flags and continue decoding until the decoder generates
+the final stop token. The codec chunk generated for wordiis
+converted into a waveform chunk by the FSQ codec decoder. To
+ensure smooth transitions between adjacent waveform chunks,
+we apply an overlap of two codec frames and perform crossfad-
+ing using coefficients defined by a Hanning window.
+To enable S5-TTS to operate under limited lookahead, we
+apply lookahead-causal masks to both the encoder and decoder,
+denoted asM enc andM dec, respectively. The encoder mask
+M enc restricts each word’s encoder steps to attend only to the
+current word, all preceding words, andklookahead words.
+Likewise, the decoder maskM dec constrains each word’s de-
+coder steps to cross-attend only to the corresponding encoder
+steps of the current word, all preceding words, andklooka-
+head words. To ensure consistency between training and in-
+ference, both masks are applied in both phases. The construc-
+tion ofM dec relies on an auxiliary attention module that is
+jointly trained with the encoder-decoder backbone using the
+auxiliary lossL aux. Detailed definitions ofM enc,M dec, and
+Laux are provided in the following subsections. Following T5-
+TTS, we additionally apply a Connectionist Temporal Classifi-
+cation (CTC) [32] loss to the cross-attention weight matrixα,
+obtained by normalizing the cross-attention scores over encoder
+steps, to encourage monotonic alignments during training.
+Formally, letTandSdenote the numbers of encoder and
+decoder steps, respectively, and let each codebook haveVdis-
+crete codec tokens. The overall loss is defined as:
+L=CE
+ 
+softmax(z),y
+
++CTCLoss(α,ω) +L aux (2)
+wherez∈R S×Q×V denotes the decoder output logits,yde-
+notes the ground-truth codec frames, andω={1,...,T}de-
+notes the ideal monotonic alignment path over encoder steps.
+2.2. Lookahead-Causal Masks
+Given a text withNwords, which may be either a full sequence
+(during training) or a partial sequence with lookahead words
+(during incremental inference), the encoder steps correspond-
+ing to then-th word are denoted by the setW n, wheren∈
+{1,...,N}. Encoder steps are indexed byt,t ′∈{1,...,T},
+and decoder steps bys∈{1,...,S}.
+2.2.1. Encoder Mask Definition
+In the encoder, the mask is applied to the self-attention heads
+in all layers. Letπ(t)denote the mapping from encoder step
+tto its corresponding word index. The encoder maskM enc∈
+{0,1}T×T withklookahead words is defined as:
+M enc
+t,t′ =
+(
+1, t′∈
+ Sπ(t)
+q=1Wq
+
+∪
+ Smin(π(t)+k,N)
+q=π(t)+1 Wq
+
+0,otherwise (3)
+whereπ(t)can be directly obtained from the G2P conversion.
+2.2.2. Decoder Mask Definition
+In the decoder, the mask is applied to the cross-attention heads
+in all layers. LetA(s)denote the mapping from decoder step
+sto its corresponding word index. The decoder maskM dec∈
+{0,1}S×T withklookahead words is defined as:
+M dec
+s,t =
+(
+1, t∈
+SA(s)
+q=1 Wq
+
+∪
+Smin(A(s)+k,N)
+q=A(s)+1 Wq
+
+0,otherwise
+(4)
+whereA(s)is obtained by first mapping decoder stepsto the
+corresponding encoder phoneme, and then to its word:
+A(s) =π(ϕ(s))(5)
+whereϕ(s)maps decoder stepsto its corresponding encoder
+step, representing the alignment between phonemes and codec
+frames. Although this alignment can be inferred from decoder
+cross-attention, it is required beforehand to construct the mask.
+We therefore predictϕ(s)using an auxiliary attention module.
+4747
+2.2.3. Conv-based Auxiliary Attention
+LetQdenote the decoder embedded codec frames andKde-
+note the encoder embedded phonemes. We first project them
+into a common attention space of dimensionCbyf Q andfK:
+Q′ =f Q(Q), K ′ =f K (K)(6)
+where bothfQ andfK consist of a 3×3 convolution with ReLU
+activation followed by a 1×1 convolution.
+The attention weightse∈R S×T between thes-th decoder
+step and thet-th encoder step are computed using the scaled
+negative squared Euclidean distance between projectedQ′ and
+K′, and then normalized with a softmax over the encoder steps:
+es,t = softmax(−δ
+CX
+c=1
+ 
+Q′
+c,s−K′
+c,t
+2
+)(7)
+Then the binarized alignment ˆA∈{0,1} S×T can be ob-
+tained by taking the logarithm of the attention weights followed
+by Monotonic Alignment Search (MAS) [33], defined as:
+ˆAs,t = MAS(log(es,t))(8)
+Subsequently, the mappingϕ(s)from decoder stepsto its
+corresponding encoder step is given by:
+ϕ(s) = min
+n
+t
+
+ tX
+i=1
+SX
+s′=1
+ˆAs′,i
+!
+≥s
+o
+(9)
+During training, the auxiliary attention is jointly optimized
+with the S5-TTS backbone using the CTC loss, defined as:
+Laux =CTCLoss(e,ω)(10)
+During inference, auxiliary attention is used only once to
+obtain the alignment of the reference audio, asA(s)for the
+generation phase can be recorded during incremental decoding
+by tracking the completion flags of each word.
+2.3. Interleaved Multi-Source Distillation
+Knowledge distillation has been shown to effectively improve
+the naturalness of lookahead-constrained TTS models [29]. In
+this work, we adopt a distillation strategy in which T5-TTS
+serves as the teacher and S5-TTS as the student. The pretrained
+student is distilled with supervision from both a paired text-
+audio datasetD audio ={(text i,audioi)}and a text-only dataset
+Dtext ={textj}. ForD audio, the teacher generates soft labels un-
+der decoder-side teacher forcing. ForD text, soft labels are ob-
+tained via autoregressive decoding with sampling. To improve
+the reliability of supervision from text-only data, the decoded
+utterances are passed through an ASR filter, and only sam-
+ples with zero WER are retained for distillation. During train-
+ing, mini-batches fromD audio andD text are interleaved within
+each gradient accumulation cycle, allowing their gradients to
+be jointly aggregated before each parameter update. We refer to
+this strategy as Interleaved Multi-Source Distillation (IMSD).
+The distillation objective comprises three terms: an MSE
+loss on the final decoder hidden statesh, a KL divergence loss
+on the decoder logitsz, and a standard cross-entropy (CE) loss.
+The overall distillation loss is defined as:
+Ldistill =λ h MSE(hstu,h tea) +λz KL(zstu∥ztea)
++CE
+ 
+softmax(zstu),y
+ (11)
+whereyis the ground-truth codec frames forx∈D audio and the
+teacher-decoded codec frames forx∈D text after ASR filtering.
+3. Experiments
+3.1. Experimental Setup
+■Datasets.For initial training, both S5-TTS and T5-TTS
+are trained on the full training splits of LibriTTS [34] and Hi-
+FiTTS [35] speech datasets, comprising 845.04 hours of speech
+from 2,319 speakers. For distillation, we use the same speech
+datasets together with additional conversational text sampled
+from UltraChat-200k [36]. These sentences are synthesized by
+the T5-TTS teacher using randomly selected reference audio
+from the LibriTTS and HiFiTTS training sets, and subsequently
+filtered by the Parakeet-TDT [37] 0.6B ASR model. This pro-
+cess yields 1.3 million utterances, corresponding to 3,827.50
+hours of synthetic speech with soft labels for distillation.
+■Model Architectures.S5-TTS comprises 4 encoder layers
+and 8 decoder layers, each with 8 attention heads. Both the
+encoder and decoder use 768-dimensional embeddings, a feed-
+forward hidden size of 4096, and a dropout rate of 0.1, resulting
+in 160 million parameters. For T5-TTS, we adopt the same ar-
+chitecture described in its original paper. Both S5-TTS and T5-
+TTS employ the NeMo pretrained FSQ Mel codec model [38]
+with 8 codebooks. This codec model encodes 22.05 kHz audio
+at 86.1 tokens per second with 80 bits per token, corresponding
+to a bitrate of 6.9 kbps. We use the phonemizer [39] for G2P
+conversion and adopt IPA as the phoneme set. In the auxiliary
+attention module, scaling factorδis empirically set to5×10 −5.
+■Training and Evaluation.All models are trained on 4
+NVIDIA B200 GPUs with a mini-batch size of 32 and a gra-
+dient accumulation factor of 4, resulting in an effective batch
+size of 128. Training is conducted for 250,000 steps using the
+AdamW [40] optimizer. The learning rate is linearly warmed
+up to2×10 −4 over the first 10,000 steps, and then decayed to
+1×10−4 following a cosine schedule. For distillation, we fine-
+tune the pretrained model using a fixed learning rate of1×10−4
+for 100,000 steps withλ h = 10.0andλ z = 1.0. Training is
+performed in a purely language-modeling manner without ref-
+erence audio. During inference, multinomial top-ksampling is
+applied withk= 80and temperature 0.85. For evaluation, we
+primarily compare S5-TTS with T5-TTS, as both models adopt
+an encoder-decoder architecture and support zero-shot synthe-
+sis, allowing a more meaningful comparison than prior incre-
+mental TTS models that are restricted to single or few-speaker
+training settings. For comparison with other AR and NAR TTS
+models, we use their publicly released checkpoints. Subjective
+Mean Opinion Score (MOS) evaluation and preference tests are
+conducted on Prolific [41] with 20 native English speakers.
+3.2. Discussion
+Analysis of Intelligibility and Speaker Similarity:We an-
+alyze the effect of the lookahead parameterkon S5-TTS by
+training three model variants withk= 1,2,and3, and compar-
+ing them to T5-TTS and ground-truth. Intelligibility is eval-
+uated using WER and CER computed by the Parakeet-TDT
+0.6B ASR model, while speaker similarity is measured as the
+cosine similarity between WavLM [42] embeddings of synthe-
+sized and ground-truth utterances. For both LibriTTS (includ-
+ingtest-cleanandtest-other) and VCTK [43], we randomly se-
+lect 200 test utterances from unseen speakers for evaluation.
+As shown in Table 1, S5-TTS achieves intelligibility and
+speaker similarity comparable to T5-TTS when using one or
+two lookahead words. Withk= 1, S5-TTS even achieves
+lower WER than T5-TTS, which may be attributed to the lim-
+ited lookahead encouraging the model to focus more on the cur-
+rent word during synthesis. In contrast, increasingkto 3 leads
+4748
+Table 1:Intelligibility, speaker similarity, and naturalness.
+Eval Set ModelkCER↓WER↓SSIM↑UTMOS↑
+LibriTTS
+(Unseen)
+Ground Truth - 0.91% 2.02% 1.00003.79
+T5-TTS - 2.05% 3.20% 0.9356 3.77
+S5-TTS
+1 1.68% 3.03%0.93763.63
+2 2.12% 3.49% 0.9328 3.66
+3 4.90% 7.27% 0.9335 3.58
+S5-TTS w/ IMSD 21.47% 2.65%0.9340 3.72
+VCTK
+(Unseen)
+Ground Truth - 0.56% 1.82% 1.0000 3.91
+T5-TTS - 1.27% 1.63%0.9379 3.99
+S5-TTS
+1 0.98% 1.51% 0.9350 3.88
+2 1.09% 1.80% 0.9378 3.91
+3 4.02% 5.70% 0.9291 3.86
+S5-TTS w/ IMSD 20.70% 1.11%0.9362 3.93
+UltraChat
+(Unseen)
+T5-TTS - 0.75% 1.06% 0.97764.28
+S5-TTS 2 0.29% 0.97%0.97984.13
+S5-TTS w/ IMSD 20.27% 0.83%0.9791 4.17
+to a degradation in intelligibility, suggesting that larger looka-
+head is not always beneficial, as excessive future context may
+instead distract the model and result in less precise alignment.
+In addition, UTMOS [44] indicates that settingk= 2results in
+more natural-sounding speech thank= 1. To validate this ob-
+servation, we conduct a preference test on 50 paired LibriTTS
+samples with 20 evaluators comparing thek= 1andk= 2
+variants. The results indicate that thek= 2variant is preferred
+in 65.9% of the comparisons. Therefore, we adoptk= 2as the
+optimal trade-off for distillation and subsequent evaluations.
+Table 2:Ablation study of lookahead-causal masks (LCMs).
+Model Variant CER↓WER↓Ins.↓Del.↓Sub.↓SSIM↑
+S5-TTS2.12% 3.49% 0.66%1.01%0.46% 0.9328
+w/o both LCMs 12.53% 14.20% 10.20% 1.00% 1.33% 0.9310
+w/o enc. LCM 33.04% 40.15% 26.54% 2.55% 3.96% 0.9281
+w/o dec. LCM 3.41% 4.92% 2.32%0.36%0.73% 0.9323
+Ablation Study of Lookahead-Causal Masks:We investigate
+the impact of lookahead-causal masks (LCMs) on the same Lib-
+riTTS test utterances described earlier. As shown in Table 2,
+removing both LCMs leads to a substantial degradation in in-
+telligibility. Notably, removing only the encoder LCM leads to
+an even higher WER than removing both LCMs, as the encoder
+is trained on full sequences, causing the decoder to depend on
+complete contextual information. During inference, the lack of
+future context disrupts this dependency, leading to increased er-
+rors. In comparison, removing both LCMs ensures consistency
+between training and inference, as the model treats each input
+with lookahead words as a complete sequence during inference,
+though overall quality degrades. Removing the decoder LCM
+has a smaller but also notable impact on WER. Overall, the re-
+sults confirm that both encoder and decoder LCMs are essential
+for preserving S5-TTS performance under limited lookahead.
+Ablation Study of Distillation:We conduct an ablation study
+on the proposed distillation method IMSD by applying it to
+thek= 2variant of S5-TTS. As shown in Table 1, incorpo-
+rating IMSD substantially improves intelligibility and natural-
+ness over the naive S5-TTS, with WER reduced from 3.49% to
+2.65% and UTMOS increased from 3.66 to 3.72 on LibriTTS.
+Since UltraChat is used for distillation, we further evaluate 200
+unseen UltraChat test sentences using a high-quality proprietary
+female voice as reference. The distilled S5-TTS achieves the
+best intelligibility among the compared variants on this set as
+well. No notable change in SSIM is observed after distillation.
+Comparison with Other TTS Models:S5-TTS is primarily
+designed to provide a practical incremental synthesis approach
+for T5-based TTS models. For reference, we also compare the
+distilled S5-TTS with representative AR and NAR TTS models,
+including E2-TTS, MaskGCT, CosyV oice, and FireRedTTS, on
+the same LibriTTS test utterances described earlier. Notably, all
+Table 3:Comparison with other AR and NAR TTS models.
+Model Params Data (h) WER↓UTMOS↑STOI↑PESQ↑SSIM↑
+S5-TTS w/ IMSD160M 4.67K2.65% 3.720.179 1.0750.9340
+E2-TTS [45] 335M 100K 2.82% 3.65 0.137 1.071 0.9487
+FireRedTTS [46] 400M 248K 4.70% 3.82 0.157 1.074 0.9229
+MaskGCT [47] 315M 100K2.31%3.74 0.156 1.0710.9495
+CosyV oice [48] 300M 170K 2.46%3.950.152 1.060 0.9117
+compared baseline models are trained on more than 100K hours
+of speech, whereas the distilled S5-TTS is trained using only
+4.67K hours in total. As Table 3 shows, S5-TTS outperforms
+all compared models in terms of STOI [49] and PESQ [50]. In
+addition, S5-TTS achieves lower WER than E2-TTS and Fir-
+eRedTTS, and yields higher UTMOS than E2-TTS.
+Subjective Evaluation of Speech Quality:We conduct MOS
+evaluations on the LibriTTS and UltraChat testsets. For each
+model, 50 audio samples are rated by evaluators using a 5-point
+scale. For UltraChat, the same reference audio sample is used
+as described earlier. The MOS results with 95% confidence in-
+tervals are reported in Table 4. Despite achieving comparable
+WER and SSIM, the naive S5-TTS shows a noticeable degra-
+dation in perceived quality compared to T5-TTS. In contrast,
+the distilled S5-TTS achieves MOS scores close to those of T5-
+TTS on both datasets, with gaps of only 0.04 on LibriTTS and
+0.09 on UltraChat. This indicates that the proposed distillation
+method IMSD effectively restores the perceived speech quality
+and naturalness of S5-TTS under limited lookahead, achieving
+performance comparable to full-context T5-TTS.
+Table 4:MOS and Efficiency Metrics (latency in seconds).
+Eval Set Model MOS↑RTF↓FCL↓E2E↓
+LibriTTS
+(Unseen)
+Ground Truth 3.81±0.065 – – –
+T5-TTS3.75±0.0640.728 0.262 0.728
+S5-TTS 3.64±0.067 0.616 0.181 0.354
+S5-TTS w/ IMSD3.71±0.0620.609 0.169 0.343
+UltraChat
+(Unseen)
+T5-TTS4.21±0.0510.722 0.263 0.868
+S5-TTS 3.99±0.0580.6150.186 0.365
+S5-TTS w/ IMSD4.12±0.0540.6180.176 0.356
+Analysis of Model Efficiency:We compare S5-TTS with T5-
+TTS using naive PyTorch on the same B200 GPU used for train-
+ing. For fairness, T5-TTS decoding is performed in a streaming
+manner with a fixed chunk size of 30 steps, closely matching the
+average step count of S5-TTS (30.2) measured on UltraChat.
+As

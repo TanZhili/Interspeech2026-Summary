@@ -1,0 +1,505 @@
+VISA: A Visual Information Strengthened Audio-Reasoning System for the
+Interspeech 2026 ARC Agent Track
+Wenming Tu1,4,∗, Jian Gao3,∗, Yanru Huo1,4, Yixuan Wang3, Jing Peng1, Bohan Li1, Ziyang Ma1,2,
+Tao Liu3, Shuai Fan3,∗∗, Kai Yu1,3, Xie Chen1,2, Zilong Zheng4,∗∗
+1 X-LANCE Lab, Department of Computer Science and Engineering
+Shanghai Jiao Tong University, Shanghai, China
+2 Shanghai Innovation Institute, Shanghai, China 3 AISpeech Ltd, Suzhou, China
+4 State Key Laboratory of General Artificial Intelligence, BIGAI, Beijing, China
+tuwenming@sjtu.edu.cn, shuai.fan@aispeech.com, zlzheng@bigai.ai
+Abstract
+Audio reasoning requires multi-step, evidence-grounded infer-
+ence over temporally dynamic and acoustically mixed signals,
+exceeding conventional perception tasks such as ASR or cap-
+tioning. We present VISA, our submission to the Interspeech
+2026 Audio Reasoning Challenge (Agent Track), evaluated
+via the MMAR Rubrics for correctness and reasoning qual-
+ity. Under a “LALM as a Tool” paradigm, VISA strengthens
+large audio language models with auxiliary multi-modal evi-
+dence while avoiding heavy orchestration. The system integrat-
+es three components: multi-modal feature extraction for com-
+plementary audio and acoustic-visual clues, model-voting in-
+ference with consistency checking for stable predictions, and
+fine-grained category-aware routing to resolve disagreements
+and select rubric-aligned reasoning chains. On the official lea-
+derboard, VISA ranks 2nd overall in the Agent Track with a
+Rubrics score of 66.23%, while achieving the top Accuracy of
+77.40% in both the Single Model and Agent tracks.
+Index Terms: Audio Reasoning, Multi-modal Agent, Large
+Audio Language Model
+1. Introduction
+Humans routinely infer events, social roles, intentions, and
+causal relations from speech, music, and ambient sound. Repli-
+cating this capability in machines is a core goal of multi-modal
+AI. Unlike conventional tasks such as ASR [1, 2], sound event
+detection [3, 4], and audio captioning [5] that mainly evalu-
+ate perception, audio reasoning requires multi-step, evidence-
+grounded inference under mixed sources, temporal dynam-
+ics, and noise. While recent Large Audio Language Models
+(LALMs) excel at auditory understanding, their reasoning re-
+mains less reliable and interpretable [6, 7, 8].
+Recent benchmarks such as MMAR [9], MMAU-Pro [10],
+and Omni-Bench [11] make this gap explicit. MMAR includes
+1,000 real-world audio QA instances spanning sound, music,
+speech, and their mixtures, and many models still struggle when
+questions require integrating multiple clues with contextual or
+domain knowledge. Moreover, benchmarks that emphasize
+only final accuracy can mask shortcut learning and provide lim-
+ited visibility into whether the predicted answer is supported by
+a coherent reasoning process.
+Recent progress in audio reasoning has largely built on the
+strong perception and understanding of LALMs. Directly an-
+*These authors contributed equally.
+**indicates the corresponding author.
+swering audio-grounded questions works for short inferences
+tied to salient clues, but often fails when reasoning requires in-
+tegrating evidence over time or across mixed sources [12, 13, 7].
+To address this, recent studies enrich supervision with rationale-
+style signals and apply post-training methods such as scaling
+and reinforcement learning to encourage more deliberate in-
+ference [8, 14, 15]. In parallel, training-free agent systems
+decompose reasoning into iterative planning, perception, and
+integration, typically converting audio into intermediate text
+or structured representations to leverage text LLM reasoning
+and external tools [16, 17, 18]. While agents improve ro-
+bustness by explicitly collecting and cross-checking evidence,
+they also introduce orchestration complexity and may produce
+hallucinated intermediate reasoning. Moreover, transcription-
+style intermediates can propagate recognition errors or yield un-
+grounded justifications when incomplete. End-to-end LALMs
+avoid such tool overhead and operate directly on the original au-
+dio, but remain brittle under uncertainty and long-horizon rea-
+soning. Specifically, with the rise of increasingly capable open-
+source models such as Step-Audio-R1 [19] and Qwen3-Omni-
+Thinking [20], it remains unclear how to effectively integrate
+auxiliary multi-modal evidence into these powerful reasoners to
+further mitigate their remaining brittleness in complex scenes.
+In this report, we present our submission to theInter-
+speech 2026 Audio Reasoning Challenge (Agent Track)1, which
+evaluates both final answer correctness and the quality of in-
+termediate reasoning chains using the MMAR Rubrics proto-
+col [21]. We proposeVISA, a system under the “LALM as a
+Tool” paradigm that combines multiple LALMs with auxiliary
+multi-modal evidence to improve robustness in complex audi-
+tory scenes. VISA stabilizes predictions via consensus-based
+inference and resolves model disagreements with fine-grained,
+category-aware decision rules. On the official final-stage leader-
+board, VISA achieved2ndplace overall in the Agent Track with
+a Rubrics score of66.23%. Notably, it achieved the highest Ac-
+curacy of77.40%across all submissions in both the Agent and
+Single Model tracks, demonstrating consistently top-tier cor-
+rectness together with strong reasoning quality.
+2. System Design
+As illustrated in Figure 1, VISA consists of three key compo-
+nents.(1) Multi-modal Feature Extractionsummarizes au-
+dio using acoustic descriptors and auxiliary visual clues (e.g.,
+spectrogram analysis via a VLM) to capture fine-grained de-
+1https://audio-reasoning-challenge.github.io/
+217
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2381
+Multi-modal Feature Extraction
+General Audio Feature Extration Agentic Sound Event Detection Multi-View Acoustic-Visual Analysis
+Audio 
+Captioner
+Detailed
+Caption
+Librosa
+Acoustic
+Description
+Event
+Candidates
+SED
+Model
+Event Fuzzy 
+Mathing
+Event Cnts
+&Timestamp
+VLM
+Verified
+Event
+Timestamp
+Probility 
+Heatmap
+Spectrogram
+Generation
+VLM
+Analyze
+Acoustic-
+Visual Clues
+Fine-Grained Category-Aware Routing
+CoT& Answer
+Rewriter
+Final 
+CoT& Answer
+LLM Reasoning
+And Selection
+VLM-Empowered 
+Spectral Reasoning
+Direct Expert 
+Selection
+Answer 1
+Answer 2
+Consistency
+Check
+ 27 Fine-grained
+Categories & Routing 
+Strategy
+Category-Aware
+Router
+Question: From how 
+many seconds to how 
+many seconds in the audio 
+was slow motion applied?
+Options:
+A. 0-5s B. 1-6s
+C. 3-8s D. 2-7s
+Audio Reasoning Model
+Voting Inference
+…
+Voting
+…
+Voting
+Task Category
+Classification
+Figure 1:Overview of VISA.The system performs multi-modal feature extraction (audio descriptors, agentic SED, and VLM-based
+acoustic visual analysis), then conducts multi-model voting with consistency checking, and finally applies fine-grained category-aware
+routing to select the final CoT and answer.
+tails, temporal dynamics, and spatial clues.(2) Audio Rea-
+soning Model Voting Inferencequeries multiple LALMs
+and applies consistency-based voting to produce stable, high-
+confidence predictions.(3) Fine-Grained Category-Aware
+Routingleverages sub-category heuristics to resolve disagree-
+ments by selecting the most suitable output, fully exploiting
+each model’s strengths and improving overall robustness.
+2.1. Multi-modal feature extraction
+Reliable audio reasoning necessitates evidence that is both
+comprehensive and easily interpretable by LALMs. To this
+end, we extract complementary clues from three distinct per-
+spectives: general acoustic descriptions, question-driven event
+timestamps, and VLM-interpreted acoustic-visual clues. This
+multi-faceted approach provides a robust and cross-checkable
+foundation for downstream inference.
+General Audio Feature Extraction.To comprehensively
+represent audio content, we adopt a dual-level extraction strat-
+egy. We first utilize the librosa 2 library to extract low-level
+acoustic descriptions across the temporal, spectral, and cepstral
+domains, capturing key physical attributes such as energy dis-
+tribution, timbre (e.g., spectral centroid, bandwidth), and har-
+monic structures (e.g., MFCCs, HPSS). Complementing these
+objective signals, we employ the Qwen3-Omni-Captioner [5] to
+generate high-level semantic descriptions. These captions ex-
+plicitly articulate auditory events, speaker characteristics, and
+environmental contexts, thereby translating raw audio signals
+into interpretable linguistic evidence for subsequent reasoning.
+Agentic Sound Event Detection.To extract critical au-
+ditory events relevant to the question, we propose anAgen-
+tic SEDworkflow that dynamically identifies and localizes
+events by integrating query context, audio captions, and an-
+swer choices. This process begins with an LLM that ex-
+2https://librosa.org/
+tracts potential event candidates from the captions and maps
+them to standard AudioSet labels via fuzzy matching, ensur-
+ing compatibility with the detection model. Subsequently, the
+FlexSED [4] model generates initial detection timestamps and
+probability heatmaps. Crucially, a Vision Language Model
+(e.g., Qwen3-VL [25]) then visually inspects these heatmaps
+to verify confidence patterns, correcting fragmented or merged
+detections. This LLM-guided, VLM-verified pipeline substan-
+tially improves both the relevance of detected events and the
+precision of their temporal localization, which in turn benefits
+answers to queries that depend on event counts and accurate
+event timing.
+Multi-View Acoustic-Visual Analysis.We observe that
+LALMs often struggle with precise temporal localization and
+fine-grained signal perception, particularly for spatial or dy-
+namic acoustic changes. Acoustic visualizations, however, in-
+herently encode rich time-frequency information where such
+variations manifest as distinct visual patterns. For instance, a
+sudden deceleration in tempo appears as a downward shift in
+frequency components, while the approach or retreat of a sound
+source is clearly reflected in the rising or falling amplitude of
+the RMS energy curve, consistent with the Doppler effect. Mo-
+tivated by these visual first principles, we employ a VLM to ana-
+lyze five types of visualized acoustic representations (e.g., Mel,
+CQT, RMS). This visual-acoustic grounding enables the model
+to explicitly capture these signal-level anomalies and temporal
+dynamics, thereby mitigating hallucinations and enhancing rea-
+soning accuracy for complex auditory scenes.
+2.2. Audio reasoning model voting inference
+To reduce stochastic hallucinations in single-pass generation
+and exploit complementary reasoning strengths of heteroge-
+neous models, we adopt a hybrid stochastic–deterministic vot-
+ing strategy. We construct an ensembleM={M Qwen,M Step},
+218
+Table 1:Performance Comparison on MMAR, reported by modality categories and overall average. All numbers are taken from
+original papers or official benchmarks. The best-performing models in each category are highlighted inbold, and the second-best ones
+are underlined. Results from proprietary models are shown in gray.
+Models Size
+Single Modality (%) Mixed Modalities (%)
+Avg (%)
+Sound Music Speech Sound-Music Sound-Speech Music-Speech Sound-Music-Speech
+Random Guess - 29.39 25.88 31.48 25.00 29.30 31.10 28.13 29.32
+Large Audio Language Model
+GPT-4o Audio [6] - 53.9 51.0 70.4 63.6 72.5 62.2 75.0 63.5
+Gemini 2.5 Flash [22] - 60.0 53.4 77.2 63.6 76.2 69.5 75.0 68.4
+Qwen3-Omni Flash Instruct [20] - 66.7 58.3 74.281.878.4 64.6 70.8 69.8
+Qwen3-Omni Flash Thinking [20] - 65.5 51.9 75.5 63.6 76.2 65.9 70.8 68.1
+Audio-CoT [23] 7B 35.8 25.2 34.0 9.1 30.7 30.5 37.5 31.3
+SALMONN [13] 13B 30.3 31.1 34.7 9.1 34.9 35.4 41.7 33.2
+Audio-Reasoner [14] 7B 43.6 33.5 33.0 45.5 42.7 31.7 25.0 36.8
+R1-AQA [24] 7B 55.8 37.4 49.0 9.1 50.0 50.0 50.0 47.6
+Step Audio R1 [19] 32B 61.2 52.4 81.3 54.6 80.3 81.7 79.271.5
+Qwen3-Omni Thinking [20] 30B 67.3 51.0 77.6 54.6 78.9 73.2 70.8 69.9
+Multi-modal Agent
+AudioToolAgent[17] Agent 61.8 51.9 77.6 72.7 76.6 72.0 70.8 68.8
+AudioToolAgent-Open[17] Agent 59.4 45.6 67.3 54.6 70.6 59.8 70.8 61.7
+AudioGenie-Reasoner [14] Agent 49.7 43.3 69.2 45.5 64.5 65.3 59.1 58.9
+SAR-LM [18] Agent 52.7 56.3 81.0 - - - - 69.3
+VISA(ours)Agent71.5 62.6 84.063.686.2 81.775.0 77.4
+corresponding to Qwen3-Omni-Thinking and Step-Audio-R1.
+Given an input tuplex= (A,Q,C), whereAdenotes au-
+dio features,Qthe query, andCthe candidate set, each model
+Mi ∈ Mindependently predicts an answer.
+For eachM i, inference proceeds in three stages:
+1.Stochastic Sampling:We sampleK= 3outputs with
+temperatureτ >0, forming a candidate setY i =
+{y(1)
+i ,...,y (K)
+i }to capture output uncertainty.
+2.Majority Voting:LetCount(c,Y i)denote the frequency of
+candidatecinY i. The provisional prediction is obtained via:
+ˆyi = arg max
+c∈C
+Count(c,Y i).(1)
+3.Deterministic Fallback:WithK= 3, we use the majority-
+voted answerˆyi when two or more sampled outputs agree. If
+all three sampled outputs disagree, we regard the stochastic
+predictions as unstable and re-run the model using greedy
+decoding (τ= 0).
+Formally, the final predictiony∗
+i for modelM i is defined as:
+y∗
+i =
+(
+ˆyi,if a majority exists,
+Mi(x;τ= 0),otherwise. (2)
+This strategy filters out random noise while preserving the
+correct reasoning path when the model is confident, ensuring
+each agent delivers its most reliable answer before the subse-
+quent routing stage.
+2.3. Fine-grained category-aware routing
+While model ensembling commonly adopts majority voting,
+our analysis shows that heterogeneous audio models exhibit
+complementary capability boundaries. Specifically, Step-
+Audio-R1 performs strongly in acoustic quality assessment
+and fine-grained difference analysis, whereas Qwen3-Omni-
+Thinking excels in environmental perception and speaker-
+related tasks. To resolve conflicts when predictions diverge, we
+introduce aDisagree-then-Routemechanism.
+We find that coarse-grained routing under broad task la-
+bels obscures fine capability distinctions. For example, “Aes-
+thetic Analysis” mixes low-level signal quality evaluation (fa-
+voring signal-driven models) with high-level stylistic reasoning
+(requiring stronger logical inference). To address this issue, we
+conduct a heuristic analysis to identify sub-domains where each
+model consistently dominates, as well as failure cases caused by
+modality gaps. Based on these observations, we refine the tax-
+onomy into27 fine-grained categoriesand design three routing
+strategies (Table 3):
+1.LLM Reasoning and Selection:For high-level reasoning
+tasks (e.g.,Semantic Logic,Emotion), where perception is
+reliable but inference is complex, an LLM judge evaluates
+both models’ CoTs with supporting evidence and selects the
+most coherent answer.
+2.VLM-Empowered Spectral Reasoning:For tasks requiring
+precise quantification or pattern recognition (e.g.,Counting,
+Rhythm,Pitch), which are susceptible to auditory hallucina-
+tion, we bypass audio models and delegate prediction to a
+VLM that directly interprets acoustic-visual clues.
+3.Direct Expert Selection:For perception-dominant tasks, we
+route queries to the empirically superior experts: Qwen3-
+Omni-Thinking for environmental and speech-related tasks,
+and Step-Audio-R1 for source and duration analysis.
+3. Results
+We submitted VISA to the Interspeech 2026 Audio Reasoning
+Challenge (Agent Track) and conducted a comprehensive eval-
+uation on the MMAR benchmark in terms of both final pre-
+diction accuracy and CoT reasoning quality. Results show that
+VISA achieves state-of-the-art performance across key metrics,
+validating the effectiveness of its advanced system architecture.
+Implementation.For LALMs, we selected Qwen3-Omni-
+Thinking and Step-Audio-R1. We adopt GLM-4.6 [26] as the
+LLM backbone, due to its strong general-purpose reasoning and
+instruction-following capabilities. For the analysis of visual
+information, we utilized Qwen3-VL-235B-A22B [25] as our
+219
+Table 2:Comparison of accuracy (%) across 16 sub-categories grouped by hierarchical layers.
+Models Avg
+Signal Layer Perception Layer Semantic Layer Cultural Layer
+Acoustic
+Quality
+Analysis
+Anomaly
+Detection
+Audio
+Difference
+Analysis
+Spatial
+Analysis
+Temporal
+Analysis
+Correlation
+Analysis
+Counting
+and Statistics
+Music
+Theory
+Env. Perception
+& Reasoning
+Content
+Analysis
+Emotion and
+Intention
+Speaker
+Analysis
+Culture of
+Speaker Imagination Aesthetic
+Analysis
+Prof. Knowledge
+& Reasoning
+Step-Audio-R1 71.50 61.11 70.5987.5073.33 60.71 70.00 39.39 61.90 77.18 79.28 83.33 77.08 82.69 60.00 62.50 66.20
+Qwen3-Omni-Thinking 69.90 77.78 76.47 50.00 66.67 46.43 78.00 59.60 44.44 77.85 76.64 66.67 75.00 76.92 60.0075.0059.15
+VISA(ours)77.40 88.89 82.3562.5086.67 64.29 80.00 59.60 63.49 80.54 82.24 85.00 87.50 86.54 60.0062.50 70.42
+w/o fine-grained category73.30 83.33 70.59 62.50 66.67 53.57 72.00 51.52 57.14 77.85 81.25 85.00 77.08 73.08 60.00 75.0073.24
+Table 3:Taxonomy of 27 fine-grained audio reasoning cate-
+gories and their corresponding routing strategies.
+Category Description
+LLM Reasoning And Selection
+Semantic Logic Reasoning Logical inference from spoken content.
+Emotion and Intention Inference Infer speaker emotion or underlying intent.
+Music Theory Reasoning Analyze concepts like chords or scales.
+Style and Genre Classification Identify specific musical styles or genres.
+Language/Culture Recognition Recognize languages and cultural traits.
+Multi-speaker Reasoning Understand turn-taking and dialogue logic.
+Music Structure Understanding Identify overarching structural elements.
+Aesthetic and Quality Judgment Evaluate audio aesthetics or quality.
+Temporal Order Reasoning Reason about sound sequence and overlap.
+Pattern Change Detection Detect shifts in rhythm, pitch, or structure.
+Loudness and Intensity Detection Judge changes in volume or energy.
+Multi-source Reasoning Isolate co-occurring sound sources.
+Noise and Anomaly Detection Detect abnormal sounds or noise.
+VLM-Empowered Spectral Reasoning
+Event Counting and Statistics Count sound events and provide statistics.
+Rhythm and Beat Analysis Analyze tempo, beat patterns, and rhythm.
+Instrument Identification Identify specific instruments or families.
+Distance and Perspective Est. Estimate sound source distance and depth.
+Audio Difference Comparison Compare differences across audio clips.
+Pitch and Freq. Identification Identify pitch, frequencies, or intonation.
+Direct Selection (Qwen3-Omni-Thinking)
+Environmental Scene Recognition Recognize acoustic environment.
+Speech Content Recognition Understanding spoken sentences.
+Speaker Identity Analysis Identify speaker identity, gender, or age.
+Timbre and Texture Recognition Distinguish acoustic timbre and textures.
+Spatial Localization Locate origin or track movement.
+Direct Selection (Step-Audio-R1)
+Sound Source Identification Identify the sound source.
+Acoustic Quality Assessment Assess clarity or distortion.
+Duration Estimation Judge duration of specific acoustic events.
+VLM. SED was handled by FlexSED, enabling precise tem-
+poral localization and classification of acoustic events. Addi-
+tionally, we used Qwen3-Omni-Captioner [5] to generate de-
+tailed captions describing the acoustic and semantic content of
+the audio. All components are integrated and configured in ac-
+cordance with the requirements of the Interspeech 2026 Audio
+Reasoning Challenge (Agent Track).
+Comprehensive Performance Analysis.As shown in Ta-
+ble 1, VISA achieves an average accuracy of 77.4% on the
+MMAR benchmark, outperforming representative agent-based
+systems such as SAR-LM, the open-source reasoning model
+Step-Audio-R1, and proprietary models such as GPT-4o-Audio
+and Gemini 2.5 Flash. This demonstrates that an open-source
+agent framework can effectively narrow the gap with closed-
+source models.
+Effectiveness of Fine-Grained Category-Aware Rout-
+ing.As shown in Table 2 and Table 4, removing fine-grained
+Table 4:Leaderboard results of the Audio Reasoning Chal-
+lenge. “Rubrics” denotes the official CoT quality score, and
+“Acc” denotes the objective accuracy.
+Model / Team Rubrics (%) Acc (%)
+Single Model Track
+Team A (1st Place) 65.29 74.00
+Team B (2nd Place) 62.55 71.00
+Team C (3rd Place) 62.22 71.70
+Step-Audio-R1 58.76 71.50
+Qwen3-Omni-Thinking 58.41 69.90
+Agent Track
+Team D (1st Place)69.8376.90
+Team E (3rd Place) 66.09 75.10
+VISA(ours)66.23 77.40
+w/o fine-grained category62.63 73.30
+category-aware routing decreases both overall accuracy and
+Rubrics score, highlighting the importance of structured rout-
+ing across 27 sub-categories. Specialized assignment, such as
+routing anomaly detection to a VLM and duration estimation
+to dedicated models, improves system robustness. Subcategory
+results further show gains in Signal Layer, Spatial Analysis, and
+Temporal Analysis, mainly due to the VLM’s ability to extract
+time-frequency clues from diverse acoustic-visual representa-
+tions, enabling more precise reasoning over acoustic structure
+and spatial-temporal dynamics.
+Challenge Leaderboard Performance and Reasoning
+Quality.On the final Agent Track leaderboard (Table 4), VISA
+ranks 2nd overall with a Rubrics score of 66.23%, an instance-
+level metric evaluating the factuality, logical coherence, and
+completeness of reasoning paths. It also achieves 77.40% Ac-
+curacy, the highest among all systems listed across both the
+Single Model and Agent tracks. These results show that VISA
+provides accurate answers with high-quality, rubric-aligned rea-
+soning.
+4. Conclusion
+We present VISA, a system for complex audio reasoning in the
+Interspeech 2026 Audio Reasoning Challenge (Agent Track).
+VISA enhances LALMs with visualized acoustic evidence and
+structured inference strategies, achieving strong accuracy while
+maintaining high-quality, rubric-aligned reasoning chains. The
+combination of multi-modal feature extraction, voting-based
+consistency checking, and category-aware routing proves effec-
+tive in stabilizing predictions and improving reasoning relia-
+bility. Future work will investigate how acoustic-visual clues
+strengthen audio understanding and multi-step reasoning in
+LALMs, and explore adaptive, scalable agent-level coordina-
+tion for complex audio-centric tasks.
+220
+5. Acknowledgments
+This work was supported by the Science and Technology Inno-
+vation (STI) 2030-Major Project (2022ZD0208700), National
+Natural Science Foundation of China (No. U23B2018), Shang-
+hai Municipal Science and Technology Major Project under
+Grant 2021SHZDZX0102 and Yangtze River Delta Science
+and Technology Innovation Community Joint Research Project
+(2024CSJGG1100).
+6. Generative AI Use Disclosure
+During this work, we utilized LLMs to assist in several aspects
+of the writing and presentation process. The specific applica-
+tions of LLMs were as follows:
+1.Grammar and Language Refinement:LLMs were em-
+ployed to proofread the manuscript for grammatical errors,
+spelling mistakes, and awkward phrasing. This use was in-
+tended to improve the clarity, readability, and overall quality
+of the written text.
+2.Code Correction and Debugging:For the source code and
+algorithms presented in this paper, LLMs were used as a
+tool to help identify and correct syntax errors, debug logical
+issues, and suggest potential code optimizations.
+3.Assistance in Figure Creation:LLMs provided support
+in the generation of figures and diagrams. This included
+generating plotting scripts (e.g., Python’s Matplotlib) and
+offering suggestions for the effective visual representation
+of data and concepts.
+The core scientific contributions, including the research
+concepts, experimental design, data analysis, and the final
+conclusions, are entirely the work of the authors.The role of
+LLMs was strictly limited to that of an assistive tool to enhance
+the presentation and accuracy of this work.

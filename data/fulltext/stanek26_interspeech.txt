@@ -1,0 +1,448 @@
+What Do Deepfake Speech Detectors Actually Hear?
+Vojtˇech Stanˇek ID , Veronika Jirmusov´a, Anton Firc ID ,
+Kamil Malinka ID , Jakub Reˇs ID , Martin Pereˇs´ıni ID
+Security@FIT, Brno University of Technology, Czech Republic
+istanek@fit.vut.cz, xjirmu00@vut.cz, ifirc@fit.vut.cz,
+malinka@fit.vut.cz, iresj@fit.vut.cz, iperesini@fit.vut.cz
+Abstract
+Deepfake speech detectors often output a single score without
+explainingwhyan audio sample is flagged,wherein the signal
+the evidence lies, orwhatcues drive the decision. We propose
+an audio-native explainability pipeline using Integrated Gradi-
+ents on time-aligned self-supervised representations to localize
+decision evidence over time. We apply the proposed method
+to three WavLM-based detectors (AASIST, CA-MHFA, SLS)
+on ASVspoof 5 and manually annotate the highest-attribution
+regions to provide a semantic meaning of the most important
+cues. Despite similar performance, the detectors rely on differ-
+ent cues: AASIST emphasizes non-speech/environment cues,
+CA-MHFA focuses on localized phoneme artifacts, and SLS
+relies on word boundaries and spectral integrity. We move be-
+yond speculative reasoning and validate our findings by causal
+masking of the primary detector cues. Observed performance
+degradation further supports the explained detector semantics.
+Index Terms: deepfake speech detection, ASV anti-spoofing,
+explainable AI, Integrated Gradients, self-supervised learning
+1. Introduction
+High-quality speech deepfakes are now easy to generate. In re-
+sponse, deepfake speech detectors are employed as the primary
+defense [1, 2, 3]. A key limitation is that these systems typically
+output a single score [4, 5], with little insight intowhya record-
+ing received the score,wherein the utterance the detector finds
+evidence, orwhattype of cue it relies on, especially for self-
+supervised (SSL) pipelines that dominate recent systems [6, 7].
+In this work, we study the explainability (XAI) of what
+modern deepfake speech detectors rely on by analyzing three
+current WavLM-based architectures: AASIST [8, 9], Context-
+Aware MHFA (CA-MHFA) [10, 11], and Sensitive Layer Se-
+lection (SLS) [6]. The examined detectors represent modern
+systems (EER 3.98%-5.26% on ASVspoof 5 [1]; see Table 1)
+with competitive performance compared to the current single-
+system state-of-the-art (EER 3.75%) [12].
+We explain the detectors’ decisions using an audio-native
+adaptation of Integrated Gradients (IG) [13] on time-aligned
+SSL frame representations. To move beyond isolated qualitative
+examples, we conduct a structured annotation and evaluation of
+regions with the highest IG attributions and provide a character-
+ization of consistent cues and failure patterns across detectors.
+While prior analyses typically remain qualitative, our approach
+assigns semantic meaning towhatdrives each of the examined
+detectors, supported by a causal masking validation.
+Our results on ASVspoof 5 show that detectors with simi-
+lar performance can learn significantly different decision logic:
+AASIST often emphasizes non-speech and environmental re-
+gions, CA-MHFA focuses on highly localized phoneme arti-
+facts, and SLS concentrates on word boundaries and spectral in-
+tegrity cues. These findings provide a practical answer to what
+deepfake speech detectors actually learn and where they look
+when producing a decision score. Ultimately, this interpretabil-
+ity empowers forensic analysts to justify detection scores, sup-
+ports informed detector design choices, and helps anticipate and
+mitigate failures in deployment. Our contributions are:
+• We introduce anaudio-native adaptationof IG to explain
+SSL-based detectors and localize evidence in time.
+• We performsemantic analysisof AASIST, CA-MHFA, and
+SLS on ASVspoof 5 to characterize each detector’s focus and
+assign semantic meaning to the identified patterns.
+• Wecausally validatethe identified primary cues of the de-
+tectors via targeted cue masking.
+2. Background
+Current deepfake detection systems rely on architectures that
+use SSL front-ends [14]. Pretrained models like Wav2Vec
+2.0 [15, 16] and WavLM [7, 17] are favored for their ability
+to extract rich speaker representations directly from raw audio.
+These features are processed most often by AASIST [8, 18, 19],
+SLS [6, 20], or (CA-)MHFA [10, 11, 21]. Architectures
+also often incorporate ResNet-based features [22] or ECAPA-
+TDNN [23] blocks to enhance channel attention. While these
+deep networks generalize well by capturing complex dependen-
+cies, their structure creates black-box opacity, requiring rigor-
+ous interpretability methods to validate decision logic [24].
+To address this opacity, Explainable AI (XAI) has emerged
+as a critical component in audio forensics. In speech process-
+ing, post-hoc methods like SHAP [25, 26] and LIME [27] are
+frequently employed. Within deepfake speech detection, prior
+work relied on Class Activation Mapping (CAM) [28] or atten-
+tion visualization [6, 18]. In contrast, Integrated Gradients [13]
+offer an axiomatic alternative, avoiding hard masking by inte-
+grating from a bona fide centroid baseline to the input.
+3. Method
+To interpret the decision-making logic of deepfake detectors, we
+employ the Integrated Gradients (IG) [13] method. IG enables
+precise attribution of decision scores, which is crucial for dis-
+tinguishing whether a model detects genuine synthesis artifacts
+or merely exploits channel-specific noise.
+3.1. Integrated Gradients for SSL Representations
+Given an input recordingr, the front-end SSL encoder (WavLM
+base+) [17] produces hidden representationsH∈R L×T×D ,
+whereLrepresents the number of transformer layers (including
+the output of the convolutional encoder),Tis the number of
+5981
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-123
+time frames, andDis the feature dimension. The back-end
+detector can be formally defined asF:R L×T×D→R, which
+maps these representations to a scalar spoofing score (logitz).
+IG assigns an attribution to each elementh i ∈Hby in-
+tegrating the gradient ofzalong the straight-line path from a
+baselineH′ (described in subsection 4.1) to the inputH:
+IGi(H,H′) = (hi−h′
+i)
+Z 1
+α=0
+∂F(H′ +α(H−H ′))
+∂hi
+dα
+whereidenotes the feature dimension index andαis the in-
+terpolation step. We leverage theCaptumlibrary, which ap-
+proximates this integral with a Riemann sum. We compute the
+attributions with respect toHtargeting the logitz=F(H).
+Since the WavLM convolutional encoder operates with a stride
+of 320 samples, the time dimensionTcorresponds to overlay-
+ing frames of approximately 20 ms (at 16kHz).
+3.2. Temporal Attribution Map
+IG yields attributionsIGl,t,d for each SSL embedding element.
+Since our goal is to localizewherein the utterance the detector’s
+focus lies, we sum the attribution scores across allLlayers and
+Dfeatures to obtain a unified temporal mapA t∈R T :
+At =
+LX
+l=1
+DX
+d=1
+IGl,t,d(H,H′).
+This produces a time-attribution signal in which large positive
+values correspond to evidence that increases the spoof score,
+while large negative values correspond to evidence that in-
+creases the bona fide score. To mitigate frame-level noise,
+we smoothA t using a sliding window average of 6 frames
+(≈120ms). Both the raw and smoothed attributions are used
+to identify primary cue regions in our annotation protocol.
+3.3. Annotation Protocol
+To evaluate the semantic relevance of the generated attribu-
+tions, we establish a structured annotation protocol using a cus-
+tom web-based interface. Human annotators analyze both the
+smoothed and raw attribution mapsAt alongside the audio sig-
+nal and its STFT spectrogram. The protocol has three stages:
+1. The analyzed recording and its spectrogram are presented to
+the annotators for inspection. The annotators can input a gen-
+eral observation about the recording.
+2. A series of annotations is gathered for each of the detectors.
+•Primary cue:Annotators identify a primary segment that
+corresponds to the highest IG attributions.
+•Cue type:Each identified cue is assigned a type from a
+predefined set: local glitch, phoneme content/articulation,
+voiced-unvoiced transition, silence, breath, channel/codec
+noise, spectral artifact, unclear/diffuse attribution.
+•Locality:Assessing how concentrated or spread is the at-
+tribution (Likert scale 1-5 [29]).
+•Qualitative Comment:A brief description of the specific
+nature of the cue (optional).
+3. Finally, for the same recording, similarity or disparity be-
+tween the cues identified by different detectors is assessed.
+The protocol is designed to both localize the dominant evi-
+dence driving the detector’s decision and assign an interpretable
+semantic label to that evidence. Our method is not model-
+agnostic and focuses on SSL-based models. But, importantly, it
+enables analysis of the detector semantics and can be general-
+ized to other models operating on time-frame representations.
+4. Experimental Setup
+We evaluate three modern deepfake detection architectures:
+AASIST [8], Context-Aware MHFA (CA-MHFA) [10], and
+Sensitive Layer Selection (SLS) [6]. All systems utilize the pre-
+trained WavLM Base+ model as the front-end feature extractor.
+To ensure optimal adaptation, we employ a joint training strat-
+egy in which both the SSL front-end and the classifier are fine-
+tuned simultaneously for 10 epochs. We use the AdamW opti-
+mizer with a learning rate of10 −6 for the WavLM parameters
+and10−3 for the classifier parameters with a batch size of 16.
+We apply stochastic data augmentation with 30% chances of
+applying each of the following: time masking, mu-law encod-
+ing/decoding, RawBoost (LnL-ISD) [30], adding noise, and one
+of several filter types (band-pass, high/low-pass, shelf, peak-
+ing). Experiments are conducted on the ASVspoof 5 dataset
+and use the Equal Error Rate (EER) and minDCF performance
+metrics [1]. Code and implementation details are available in a
+GitHub repository1.
+4.1. Baseline Implementation
+ThebaselineH ′ is computed individually for each system.
+Since the SSL front-end is fine-tuned jointly, the resulting fea-
+ture spaces differ across architectures. We derive a model-
+specific centroidµl,d∈R L×D by averaging bona fide features
+across allNtraining samples andTtime steps:
+µl,d = 1
+N·T
+NX
+n=1
+TX
+t=1
+Hn,l,t,d
+This centroidµ l,d is then broadcast across the temporal di-
+mension to form the baselineH ′, such that for every time step
+t∈{1,...,T}, the representation remains constant.
+Choosing the bona fide centroid as a reference is crucial
+for SSL-based encoders. Since these models are pre-trained on
+vast amounts of speech, an auxiliary baseline, such as a zero
+vector0, can represent an out-of-distribution input that intro-
+duces undesired artifacts. We also considered alternative base-
+lines, such as a centroid computed over the entire data set (in-
+cluding spoofed samples) or a noise-only vector. However, a
+global centroid would introduce bias from specific spoofing at-
+tacks present in the training partition, potentially masking the
+very artifacts we aim to detect. Similarly, a noise-only base-
+line fails to provide a meaningful semantic reference for speech
+analysis. By referencing against the bona fide centroid, we en-
+sure that the resulting attributions strictly isolate the deviation
+caused by spoofing artifacts and digital processing, effectively
+highlighting what distinguishes a deepfake from natural speech.
+4.2. Subset Selection for Interpretability
+To conduct a rigorous, granular analysis, we curated a represen-
+tative subset of 100 recordings from the ASVspoof 5 evaluation
+partition. The selection process was divided into three cate-
+gories based on model consensus and prediction confidence:
+1.High-confidence correct predictions: First, we identified
+samples where all three detectors correctly classified the in-
+put with high certainty (filtering for correct decisions at an
+operating point of FAR/FRR<0.1% for all three detectors).
+From this pool, we selected 32 spoofed recordings (2 samples
+per attack algorithm) and 28 bona fide recordings.
+1 https://github.com/Security- FIT/IG_for_SSL_detectors
+5982
+0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0
+Time (s)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Waveform
+AASIST IG (smooth)
+CA-MHFA IG (smooth)
+SLS IG (smooth)
+AASIST primary cue
+CA-MHFA primary cue
+SLS primary cue
+Figure 1:Spoof IG attributions (smoothed) of the three examined detectors for the file E0005076209 (spoofed recording from the High-
+confidence correct predictions category). The highlighted regions represent the primary cue regions identified by one of the annotators.
+2.High-confidence errors: To investigate severe model failures,
+we selected 20 samples where all three detectors were con-
+fidently wrong (similarly as above). This subset includes 10
+bona fide samples misclassified as spoof (false reject) and 10
+spoofed samples misclassified as bona fide (false accept).
+3.Boundary cases: We compute the EER threshold for each
+detector on the dev set, then select evaluation recordings near
+these thresholds for which all three detectors agree on the
+predicted label. From this pool, we sample 5 recordings from
+each outcome category (TP, TN, FP, FN).
+This selection strategy yields a subset of 100 recordings,
+balancing clear cases with borderline decisions, providing com-
+prehensive coverage for the subsequent IG analysis. Annota-
+tions were completed by three researchers with deepfake speech
+expertise in a quiet setting using headphones, requiring approx-
+imately 40 person-hours in total. The complete list of selected
+recordings and the annotation methodology details are available
+in the GitHub repository.
+5. Results
+Across the 100 examined recordings, we observe two dataset-
+level patterns: (1) most high-confidence errors are associated
+with aggressive compression; (2) the attack A28 (pretrained
+YourTTS [31]) dominates the high-confidence error category.
+Regarding the examined models, the IG annotations show that
+the three detectors rely on distinct cues, effectively acting as
+complementary observers, as visible in Figure 1. The quali-
+tative findings presented below are grounded in the structured
+annotations of the primary cue regions (subsection 3.3). Specif-
+ically, we characterize detector behavior by aggregating the
+identified cue types, locality scores, and annotator comments
+across the annotated subset.
+5.1. Primary Focus of Detectors
+AASISTprimarily evaluates non-speech and environmental
+cues. Rather than analyzing what is present in the speech sig-
+nal, it frequently evaluates what is missing. It assigns high at-
+tribution to low-energy regions, often flagging unusually clean
+silence as a strong deepfake indicator. Otherwise, AASIST’s
+attributions are usually scattered across the recording (Locality
+1 or 2). Attribution peaks are usually tied to abrupt changes in
+the noise profile (e.g., sharp cuts to silence or abrupt sentence
+starts), indicating sensitivity to unnatural editing and channel
+artifacts. Because AASIST monitors the overall acoustic envi-
+ronment, it is highly susceptible to misinterpreting low-quality
+audio, frequently attributing widespread codec artifacts in bona
+fide recordings as spoof.
+In contrast,CA-MHFAacts as a highly localized detector
+focused on articulation and phonemes. Attributions are predom-
+inantly spiky (Locality 4-5), highlighting short segments within
+speech such as robotic phonemes, consonant bursts, and unnat-
+ural phonetic transitions. It is particularly sensitive to sibilants
+and fricatives (e.g., “s” phonemes). Furthermore, CA-MHFA
+focuses on speech fluency, marking abrupt word onsets/offsets
+as spoof cues. Conversely, it relies on natural connections, re-
+verb, and word continuation, with accented ending consonants
+being significant contributions to bona fide attributions.
+SLSemphasizes global signal integrity and spectral consis-
+tency. Its attributions are often spread (Locality 1), with peaks
+at transition events such as unnatural cuts, artificial cutoffs, and
+word endings that lack natural reverb. It also responds to broad
+spectral anomalies (e.g., missing frequency bands or unnatural
+high-frequency energy). SLS also shows higher attribution in
+voiced segments than in silent or unvoiced regions.
+Disparity and Complementarity: The detector-similarity
+evaluation shows a lack of consensus among detectors. The
+models often correctly flag a spoof, but for entirely different rea-
+sons. For example, in recording E 0005076209 (Figure 1), AA-
+SIST flagged a “s” fricative, CA-MHFA pinpointed a specific
+“e” phoneme, and SLS targeted word offset and silence. Even
+when evaluating a similar region, the models appear to capture
+different phenomena. Agreement across models occurs mainly
+in two cases. Firstly, heavy compression removes the disparity,
+as all three models evaluate background noise and misclassify
+the file based on extreme compression artifacts. Secondly, the
+models occasionally align on strong bona fide cues, such as a
+natural, breathy speaking style or fluent word transitions and
+prominent ending consonants. Overall, the low overlap of pri-
+mary cues suggests that the detectors rely on distinct representa-
+tions of synthetic speech and are therefore complementary (see
+Figure 1). This provides strong empirical evidence that ensem-
+ble methods could benefit from combining these models, as the
+learned factors do not naturally overlap unless forced by heavy
+compression. To validate, we train a simple logistic regression
+fusion on the three detector scores on the development subset
+and observe improved evaluation performance in Table 1. The
+performance gain is modest, likely because the detectors share
+failure modes (primarily due to compression), further suggest-
+ing that targeted mitigation of common weaknesses could gen-
+erally improve all three systems.
+Natural Breathing as a Bona Fide Marker: The man-
+ual annotations uncovered that respiratory sounds are a strong
+marker for the bona fide class and one of the few phenomena
+where detectors often agree. When a natural breath is present,
+it frequently generates strong bona fide attributions, whereas
+distorted, abrupt, or otherwise unnatural breath-like segments
+(e.g., E 0002422651, E 0006333696) are highlighted with high
+spoof attributions, reflecting flawed breath synthesis in deep-
+fake synthesizers. Unfortunately, the models can be tricked by
+deepfakes that convincingly mimic respiratory noise.
+5983
+Table 1:Performance on ASVspoof 5 evaluation set. LR fusion
+denotes a logistic regression score fusion of the three detector
+scores trained on the development set.
+Metric AASIST CA-MHFA SLS LR Fusion
+EER (%) 4.06% 5.26% 3.98% 3.77%
+minDCF 0.1015 0.1330 0.1040 0.0970
+Vulnerability to Audio Compression: A critical vulnera-
+bility shared across all three models is severe degradation un-
+der heavy audio compression, which was highly prevalent in
+theHigh-confidence errorssubset. Heavily compressed bona
+fide recordings (e.g., AMR 8kHz or Opus codecs) were consis-
+tently assigned high spoof scores. For example, in compressed
+bona fide files, annotators noted that the speech was “missing
+depth” and that “energy is flat even in strong phonemes” (e.g.,
+E 0009198285), and the models flagged codec artifacts across
+the entire recording. This reveals a shared weakness: the mod-
+els incorrectly treat the compression artifacts as those of deep-
+fake synthesis, as shown in Table 2.
+5.2. Validation
+By ablating attributes that appear to drive the detector, we aim
+to experimentally validate the observed phenomena. We apply
+each operation to the full eval set and report the performance
+shifts in Table 2:
+Silence masking: Using a Wav2Vec2 forced-aligner [15],
+we detect non-speech frames and mix their SSL embeddings
+with a bona fide silence centroid ash m = 0.1hsil + 0.9µsil
+wherehm,hsil are the masked and detected non-speech frame,
+respectively, andµ sil is the bona fide silence centroid 2. This
+ensures that we do not introduce auxiliary artifacts through hard
+cuts or out-of-domain replacements (see subsection 4.1).
+High-energy phoneme masking: We use the same forced-
+aligner to mark high-energy phoneme frames (above 75% en-
+ergy range of the recording) and replace each marked SSL
+frame by the mean of its nearest unmasked neighbors, removing
+localized content while preserving in-domain continuity.
+Spectral masking: To test frequency-specific cues, we ap-
+ply an STFT with a Hann window and reduce the energy of
+the frequency band between 1000Hz and 1600Hz to 10% of the
+original energy, followed by inverse STFT reconstruction.
+Compressor effect: To test sensitivity to energy dynam-
+ics, we attenuate amplitudes exceeding -20dB and subsequently
+add10dB gain to the entire recording. This effectively reduces
+the dynamic range, suppressing high-energy peaks and boosting
+quieter segments and background noise.
+Results in Table 2 experimentally complement the manual
+annotations3.Silencemasking catastrophically impacts AA-
+SIST (FARb jumps to 99.99%, strongly shifting scores toward
+bona fide) and heavily degrades SLS (FARb 47%), while leav-
+ing CA-MHFA relatively unaffected. This directly validates
+the findings that AASIST evaluates the environmental noise
+floor and unvoiced regions. CA-MHFA immunity to this mask-
+ing confirms it primarily hunts for artifacts within articulated
+speech rather than evaluating non-speech pauses.
+High-energy phoneme maskingmassively derails AASIST
+(EER jumping to 17.81%, with FAR b at 22.41%) while CA-
+MHFA and SLS remain largely robust. Replacing high-energy
+2The centroid is computed similarly asµin subsection 4.1, but with
+silence from bona fide training recordings only.
+3FARb,FRRb are computed under a fixed baseline EER threshold.
+Table 2:Ablation results (percentages %) on the ASVspoof 5
+evaluation set. FAR b (deepfake accepted as bona fide) and
+FRRb (bona fide flagged as deepfake) are evaluated at the fixed
+decision threshold derived from the Baseline EER to illustrate
+the directional shift in scores.
+Modif. AASIST CA-MHFA SLS
+EER FARb FRRb EER FARb FRRb EER FARb FRRb
+Baseline 4.06 4.06 4.06 5.26 5.26 5.26 3.98 3.98 3.98
+Silence5.08 99.99 0.01 5.32 5.50 5.19 4.54 47.01 0.90
+Phoneme17.81 22.41 8.73 5.17 5.12 5.20 4.03 5.64 3.20
+Spectral4.53 3.97 4.48 5.55 4.83 6.05 4.53 4.30 4.52
+Compr .6.78 4.61 8.38 7.67 3.86 11.93 7.32 4.18 9.82
+frames with smoothed neighborhoods introduces a messy effect
+into the signal. Because AASIST operates as a global environ-
+mental anomaly detector, it flags this artificial, non-reverberant
+edit as a massive spoofing artifact. Conversely, the smooth-
+ing operation replaces spiky glitches that SLS disregards (only
+a small change in EER), but it also likely shifts CA-MHFA’s
+focus to other unmasked consonants and word boundaries.
+Spectral maskingslightly degrades all detectors, consis-
+tent with our observations: SLS focuses on the missing mid-
+energy frequency band, CA-MHFA relies on missing formants
+or phoneme integrity, and AASIST is sensitive to the environ-
+ment anomaly created by the masking.
+Finally, theCompressorablation significantly degrades all
+three models. The directional error shift is heavily concentrated
+in false rejections (FRRb spikes to 8.38-11.93% while FARb re-
+mains relatively stable), i.e., more spoof-like scores. By boost-
+ing the background noise floor and attenuating peak speech
+dynamics, the compressor computationally mimics the lossy
+codec artifacts observed in the manual analysis. This confirms
+our hypothesis that the models universally connect flattened en-
+ergy and diffuse codec noise to synthesis artifacts, thereby more
+likely flagging bona fide human speech as a deepfake.
+6. Conclusion
+We introduce an audio-native explainability pipeline that moves
+beyond speculative reasoning and empirically demonstrates
+which specific cues the detectors focus on. Through rigor-
+ous manual annotations and causal experimental validation, we
+identify the primary cues of the examined detectors and assign
+them semantic meaning:
+•AASISTacts as an

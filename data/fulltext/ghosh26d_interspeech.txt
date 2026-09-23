@@ -1,0 +1,455 @@
+ASR-Synchronized Speaker-Role Diarization
+Arindam Ghosh ID 1,∗∗, Mark Fuhs1, Bongjun Kim1, Anurag Chowdhury1, Monika Woszczyna1
+1 Solventum Health Information Systems, USA
+aghosh4@solventum.com, mark.fuhs@solventum.com, bkim11@solventum.com,
+achowdhury2@solventum.com, mwoszczyna@solventum.com
+Abstract
+Speaker-role diarization (RD), e.g., doctor vs. patient, is often
+more practically useful than conventional speaker diarization
+(SD), which assigns generic labels, e.g., speaker-1, speaker-2.
+For joint ASR+RD, the current best model uses a single trans-
+ducer to serially predict words and roles (at speaker turns), but
+at the cost of degraded ASR performance. To address this, we
+adapt a recent dual-transducer ASR+SD model for ASR+RD.
+We first show that SD and RD are fundamentally different
+tasks, exhibiting different dependencies on acoustic and linguis-
+tic cues. We then propose (1) task-specific predictors, (2) use of
+higher-layer ASR encoder features as input to the RD encoder,
+and (3) cross-entropy loss along the 1-best ASR path instead
+of the full RNNT loss. Experiments on a public and a private
+dataset of doctor-patient conversations show that our method
+outperforms the best baseline by relative6.2%and4.5%, re-
+spectively, in role-based word diarization error rate (R-WDER).
+Index Terms: ASR, diarization, speaker-role, transducer
+1. Introduction
+In multi-speaker conversations such as doctor-patient encoun-
+ters, lawyer-client interactions, ASR captures “what was spo-
+ken,” while SD determines “who spoke when.” Similarly, joint
+ASR+SD aims to determine “who spoke when and what,” im-
+proving the intelligibility of otherwise lengthy and unstructured
+transcripts and supporting downstream natural language pro-
+cessing (NLP) tasks, such as summarization and information
+extraction, by providing more accurate and meaningful insights.
+An issue with SD is that it assigns generic labels (e.g.
+speaker-1, speaker-2) without any prior knowledge of their
+identities [4]. For real-world applications, such as summa-
+rization, identifying thespeaker-role(doctor, patient, lawyer,
+client, etc.) is more valuable than knowing arbitrary speaker la-
+bels. Although one can utilize external speaker profiles to map
+the generic labels to actual speakers, enabling role inference,
+such external data is often unavailable. In these scenarios, joint
+ASR+RD becomes crucial.
+An approach to RD is to infer roles directly from ASR tran-
+scripts [5–7]. Large language models (LLMs) have also been
+shown to be effective for this task to some extent [6, 7]. How-
+ever, it is well established that text-only approaches generally
+underperform methods that leverage both textual and acous-
+tic information [8–10]. Text-only methods struggle when tran-
+scripts lack distinguishing linguistic cues, such as in short back-
+and-forth utterances (e.g., “yeah”, “right”), when speakers use
+similar vocabulary, or when ASR error rates are high. In these
+situations, incorporating acoustic information becomes essen-
+tial for reliable role separation [9].
+**indicates the corresponding author.
+Existing approaches that combine both acoustic and lin-
+guistic information for RD [8, 11–14] fall into two categories:
+modular and end-to-end models. Modular systems, such as
+[13], use role-oriented language models for classification, re-
+fined with x-vector clustering. Similarly, [8] integrates a BERT-
+based classifier with role-constrained x-vector clustering. Early
+work on end-to-end models employed a transducer model to
+jointly perform ASR+RD by inserting role tokens at speaker
+turns in the training text [1], and further explored unified
+ASR+RD models for air traffic control conversations [14]. The
+end-to-end models offer flexibility in that they can be used
+either as standalone systems or as components within larger
+modular frameworks. For example in [15] and [16], end-to-
+end ASR+SD/RD models are integrated into modular pipelines.
+Motivated by this flexibility and complementary nature, in this
+paper, we focus on end-to-end ASR+RD models.
+Integrating ASR and RD into an end-to-end model poses
+its own challenges. Direct multitask learning leads to ASR
+performance degradation [1, 16], a concern also noted for joint
+ASR+SD [2,17]. To mitigate this, [17] trained the ASR and the
+turn-prediction transducers separately to preserve the word er-
+ror rate (WER). For joint ASR+SD, [2] addressed this by freez-
+ing the ASR transducer and training an auxiliary SD transducer
+synchronized via blank logit sharing (ASR-synchronized SD),
+a technique also adopted in [3] for speaker-attributed ASR.
+In this paper, inspired by the success of the ASR-
+synchronized SD model [2], we propose an ASR-synchronized
+RD framework that predicts a speaker role synchronously for
+each ASR-generated word. This proposal is not straightfor-
+ward, as we demonstrate that speaker diarization and role di-
+arization are fundamentally different tasks, requiring distinct
+acoustic and linguistic contexts, as well as appropriate archi-
+tectural modifications and adjustments to the training strategy.
+The novel contributions of this work are summarized as follows.
+1. We provide, to the best of our knowledge, the first analysis
+of the relative importance of acoustic and linguistic modali-
+ties for joint ASR+RD. While SD relies mainly on acoustic
+differences, the relative contributions of these modalities for
+RD (simultaneous speaker differentiation and role inference)
+are not immediately clear. Our results establish that RD relies
+more heavily on linguistic cues than on acoustic features.
+2. Based on this, we modify the ASR-synchronized SD ar-
+chitecture to inject more linguistic information into the RD
+transducer. This is achieved through (1) task-specific pre-
+dictors (CNN for ASR and RNN for RD) and (2) the use of
+higher-layer ASR encoder features as input to the RD trans-
+ducer. These proposals lead to substantial relative R-WDER
+reductions of19.23%on the private DoPaCo dataset and
+54.5%on the public SiMeCo dataset (described in Section 4).
+5282
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-880
+(a)Role-ASR [1].
+ (b)ASR-Synchronized SD [2, 3].
+ (c)ASR-Synchronized RD.
+Figure 1:Prior work in (a) and (b), and our proposed RD training in (c), for an audioxwith ground-truth label sequences:y Role-ASR =
+[hello,there,DOC,hi,PAT],y ASR = [hello,there,hi],y SD = [s 1,s 1,s 2], andy RD = [DOC,DOC,PAT]. Blue colored ASR modules
+remain frozen during the training of auxiliary SD and RD transducers. The graphs at the top of each network shows the alignment
+paths used to compute the training loss. In (c), the path with bold arrows represent the 1-best forced-alignment path.
+3. For training the RD transducer, we replace the blank-shared
+RNNT loss of ASR-synchronized SD with a cross-entropy
+loss computed along the 1-best forced-aligned ASR path.
+This not only simplifies training, reducing compute and
+memory costs, but also achieves additional relative R-WDER
+reductions of3.2%on DoPaCo and16%on SiMeCo.
+2. Preliminaries
+In this section, we revisit the Role-ASR [1] and ASR-
+synchronized SD [2] models that serve as baselines for this
+paper. Letϕbe the blank token,{w 1,...,w NASR}de-
+note the set of subwords,{s 1,...,s NSD}the set of speakers,
+and{r 1,...,r NRD}the set of speaker-roles, whereN RD ≤
+NSD. Let a transducer model be denoted byM, where
+M∈ {Role-ASR,ASR,SD,RD}as shown in Figure 1. For
+a given audiox= [x 1,...,x T ]and the ground-truth la-
+bel sequencey= [y 1,...,y U ], let theM-encoder’s out-
+put be[f M
+1 (x),...,f M
+T (x)]and theM-predictor’s output be
+[gM
+1 ,...,g M
+U ], wheref M
+t ∈R Nf andg M
+u ∈R Ng , withtandu
+denoting the frame and label indices andN f andN g represent-
+ing the encoder and predictor dimensions, respectively. Then,
+M-joiner’s raw logitsj M
+t,u are given by
+hM
+t,u =P M·f M
+t (x1:T ) +Q M·g M
+u (y1:u−1) +b M
+h (1)
+jM
+t,u =A M·tanh(h M
+t,u) +b M
+s ∈R|VM| (2)
+whereP M,Q M andA M are projection matrices,b M
+h andb M
+s are
+bias terms, and|V M|is the vocabulary size. LetA(y)be the set
+of all possible alignments betweenyandx, more specifically
+betweenyandf M
+1:T (x).
+2.1. Baseline 1: Role-ASR [1]
+RNNT model [18] was originally proposed for ASR as an im-
+provement over the CTC model. Shafey et al. [1] first used
+it for joint ASR and RD by inserting role tokens at the end
+of each speaker’s turn, e.g.y= [hello,there,DOC,hi,PAT],
+and training directly using the RNNT loss, as shown in Fig-
+ure 1a. For this model, using Equation 1 and 2, the prob-
+ability distribution over the vocabularyˆy t,u ∈ VRole-ASR =
+{w1,...,w NASR}∪{r 1,...,r NRD}∪{ϕ}is
+P(ˆyt,u|x1:T,y 1:u−1) =softmax(j Role-ASR
+t,u ),
+and the RNNT loss for labelyabove is given by
+LRNNT =−lnP(y|x 1:T ) =−ln
+X
+a∈A(y)
+P(a|x1:T )
+=−ln
+X
+a∈A(y)
+Y
+ˆyt,u∈a
+P(ˆyt,u|x1:T,y 1:u−1).(3)
+We use this model with an RNN predictor as our first baseline
+system B1: Role-ASR (RNN) in Table 2.
+2.2. Baseline 2: ASR-Synchronized SD [2]
+Huang et al. [2] introduced an ASR+SD model that jointly pre-
+dicts words and corresponding speaker labels using two syn-
+chronized hybrid auto-regressive transducers (HAT) [19], as
+shown in Figure 1b. First, the ASR transducer is trained in-
+dependently using the vocabularyV ASR ={w 1,...,w NASR}∪
+{ϕ}. Using Equation 1 and 2, the probabilities of blank and
+non-blanks,ˆyt,u∈V ASR, are given by
+P(ˆyt,u =ϕ|x 1:T,y 1:u−1) =sigmoid(j ASR
+t,u [0]) =:b t,u (4)
+P(ˆyt,u =w i|x1:T,y 1:u−1) = (1−b t,u)·softmax(j ASR
+t,u [i]),
+fori∈{1,...,N ASR}. Using these, RNNT loss for an example
+sequencey= [hello,there,hi]is obtained from Equation 3.
+Next, the ASR transducer is frozen and the SD transducer
+is trained using blank-shared RNNT loss (BS-RNNT) with the
+vocabularyV SD∪{ϕ}, whereV SD ={s 1,...,s NSD}andϕis
+borrowed from ASR. The SD encoder takes features from an
+intermediate (5th) layer of the ASR encoder as input. Since
+SD predictor, a 1-D convolutional layer with a kernel size of
+2(CNN-2), is also borrowed from the ASR transducer,g SD
+u =
+gASR
+u . While the blank posterior is the same as in Equation 4,
+the probability of speaker labels,ˆyt,u∈V SD, are given by
+P(ˆyt,u|x1:T,y 1:u−1) = (1−b t,u)·softmax(j SD
+t,u).
+Using these, the RNNT loss for a corresponding speaker-label
+sequencey={s 1,s 1,s 2}is obtained from Equation 3.
+During inference, whenever ASR emitsˆyt,u̸=ϕ, the cor-
+responding speaker label is predicted by applying an argmax(·)
+over the SD logitsj SD
+t,u. We apply this model as it is to RD to
+obtain our second baseline B2: ASR (CNN-2) + RD (CNN-2,
+L5) BS-RNNT in Table 2.
+3. Proposed ASR-Synchronized RD
+We propose modifications to the ASR-Synchronized SD model
+in terms of (1) predictor network, (2) ASR encoder’s features as
+input to RD encoder, and (3) training criterion to make it suit-
+able for ASR-Synchronized RD. The rationales are as follows.
+5283
+(a)Word-prediction capability.
+ (b)Role-prediction capability.
+Figure 2:Effect of Role-ASR predictor’s context length (number
+of BPE tokens) on (a) WER and (b) R-WDER when trained on
+DoPaCo and evaluated on the validation set of DoPaCo.
+3.1. Role Diarization Relies More on Linguistic Features
+Intuitively, SD is expected to rely primarily on speaker-specific
+acoustic cues rather than linguistic context. In contrast, RD in-
+volves not only differentiating between speakers, but also deter-
+mining the roles they play in the interaction, which necessitates
+both acoustic and semantic (i.e., what was spoken) information.
+The relative importance of these two modalities, however, is
+not immediately clear for RD. In the following, through two
+complementary studies, we show that RD is more strongly in-
+fluenced by linguistic context than by acoustic features.
+One source of linguistic context in a transducer model is the
+predictor network. Using the Role-ASR model (Section 2.1),
+we show that while ASR may benefit from a smaller predictor’s
+context [19–21], role prediction definitely requires a longer con-
+text. For this, in Figure 2, we plot the word-prediction capability
+(WER) and the role-prediction capability (R-WDER defined in
+Section 4) of the Role-ASR model versus the predictor’s con-
+text length (number of BPE tokens). To model a finite context
+length ofntokens, we use CNN-n, and for an infinite context,
+we use an RNN. We observe that while WER remains mostly
+unchanged (CNN-2being the best), R-WDER improves signif-
+icantly as we increase the context length. This confirms that,
+unlike word prediction, role prediction benefits from the long-
+range linguistic information provided by the predictor. There-
+fore, the proposed system P1 differs from baseline system B2
+by using separate task-specific predictors: CNN-2for ASR and
+RNN for RD. We label this system as P1: ASR (CNN-2) + RD
+(RNN, L5) BS-RNNT in Table 2.
+The second source of linguistic information is the word-
+level features from the upper layers of the ASR encoder. We
+show that while speaker prediction works best with features
+from intermediate layers (5th layer in [2]) that encode more
+speaker-level information, role prediction works best with fea-
+tures from upper layers that store more word-level information.
+For this, we take system P1 from above and use it with features
+from different layers of the ASR encoder. In Table 1, we see that
+R-WDER improves as we go from lower to higher layers for
+both the DoPaCo and SiMeCo sets. Note that since the model
+has been trained only on DoPaCo, R-WDER on out-of-domain
+SiMeCo is comparatively much worse; however, the trend is the
+same. Based on this, we modify the system P1 to instead use
+the last layer (L12) features and denote it as P2: ASR (CNN-2)
++ RD (RNN, L12) BS-RNNT in Table 2.
+3.2. 1-Best Alignment Path + Cross Entropy Loss
+The baseline system B2 [2] employs blank-factorized HAT
+transducers [19] so that the ASR transducer’s blank-emission
+probability at each(t,u)step can be shared with the auxil-
+iary transducer, providing soft alignment information along all
+RNNT paths (Figure 1b). The auxiliary SD/RD transducer then
+uses the full RNNT loss, computed over all alignment paths, to
+ASR Encoder Layer DoPaCo Val SiMeCo Val
+L-2 8.1 42.1
+L-5 7.2 40.3
+L-86.934.3
+L-10 7.0 30.9
+L-126.9 29.5
+Table 1:R-WDER of the model ASR (CNN-2) + RD (RNN, L-n)
+BS-RNNT, with RD encoder taking input from layer L-nof the
+ASR encoder. The model is trained on DoPaCo and evaluated
+on DoPaCo and out-of-domain SiMeCo.
+train its corresponding emissions.
+In this paper, we instead propose to train the RD transducer
+simply using cross-entropy loss only along the 1-best alignment
+path. Unlike the RNNT loss, the 1-best alignment provides a de-
+terministic target sequence, simplifying the optimization land-
+scape. This also eliminates the compute and memory overhead
+associated with marginalizing on all alignment paths, allowing
+larger batch sizes and a shorter overall training time. Moreover,
+while RNNT loss must be recomputed at every epoch for all
+training samples, forced alignments can be computed once and
+reused every epoch, further improving efficiency.
+For this, as shown in Figure 1c, the reference text is first
+forced aligned with the ASR-transducer to identify the(t,u)
+steps at which non-blank tokens are emitted. Then, using
+the cross-entropy loss, the RD transducer is trained to emit
+role tokens at its corresponding(t,u)steps. For example,
+for the ASR label sequencey= [hello,there,hi], leta ∗ =
+[hello,there,ϕ,ϕ,hi,ϕ]∈ A(y)be the 1-best forced-aligned
+path, anda∗
+r = [DOC,DOC,−,−,PAT,−]be the correspond-
+ing role label path (Figure 1c), where−indicates no train-
+ing on blank emissions. Then, with the vocabularyV RD =
+{r1,...,r NRD}, the role probabilities, for r t,u∈V RD, and the
+cross-entropy-based RD loss are given, respectively, by
+P(r t,u|x1:T,y 1:u−1) =softmax(j RD
+t,u),
+LRD =
+X
+rt,u∈a∗r , r t,u̸=−
+−lnP(r t,u|x1:T,y 1:u−1).
+During inference, similar to [2], at(t,u)steps where ASR
+emit non-blank tokens, we apply argmax(·)on the RD logits
+jRD
+tspeaker,u to predict the corresponding speaker role. This is
+our final proposed model denoted by P3: ASR (CNN-2) + RD
+(RNN, L12) 1Best-CE in Table 2.
+4. Experiments
+Dataset.We use an internal dataset of real-world doctor-patient
+conversations (DoPaCo) and a public dataset of simulated medi-
+cal conversations (SiMeCo) [22]. DoPaCo consists of conversa-
+tions recorded with microphones placed at medium-to-far-field
+positions within medical exam rooms, covering a wide range
+of medical specialties. These are manually transcribed and
+anonymized, where speakers in a conversation are labeled ac-
+cording to their functional role: doctor, patient, other1, other2,
+etc. The dataset is divided into training (1750h), validation
+(26.5h), and test (35.0h) sets. SiMeCo consists of simulated
+near-field conversations between only two roles: doctor and pa-
+tient. Of the total 272 recordings, we remove 9 that appear to
+be telephony. The remaining 263 conversations are from the
+specialties of respiratory (207), musculoskeletal (46), cardiol-
+ogy (5) and gastroenterology (5). Each specialty is split in a
+60:20:20 ratio to form training (21.3h), validation (6.75h), and
+evaluation (8.5h) sets. On all recordings, we apply a TDNN-
+LSTM-based voice activity detector to split them into segments
+of length typically less than 18 sec. For text tokenization, we
+use SentencePiece [23] with a vocabulary of size 5000.
+5284
+Table 2:WER and R-WDER of different baseline and proposed models trained on DoPaCo and evaluated on DoPaCo and out-of-domain
+SiMeCo. The column with “finetuned” refers to DoPaCo-trained models further finetuned on SiMeCo and evaluated on SiMeCo. The
+type of the predictor and the ASR encoder layer from which RD encoder takes features as input are shown in parentheses. The best
+results are shown in bold. Since systems B2, P1, P2, and P3 share the same frozen ASR module, the WER is reported only once.
+DoPaCo Eval SiMeCo Eval SiMeCo Eval (finetuned)
+Model Model Size WER R-WDER WER R-WDER WER R-WDER
+Baseline
+B1:Role-ASR (RNN) [1] 104M 16.03 6.5 10.62 34.28.82.2
+ASR (CNN-2) + 62.4M +15.67-10.56-8.8-
+B2:RD (CNN-2, L5) BS-RNNT Loss [2] 41.6M=104M ” 7.8 ” 44.3 ” 5.5
+Ours
+P1:RD (RNN, L5) BS-RNNT Loss 42.6M=105M ” 7.1 ” 41.3 ” 5.0
+P2:RD (RNN, L12) BS-RNNT Loss 42.6M=105M ” 6.3 ” 28.9 ” 2.5
+P3:RD (RNN, L12) 1Best-CE Loss 42.6M=105M ”6.1”27.2”2.1
+Model Architecture.The ASR encoder contains two con-
+volutional subsampling layers that reduce the frame rate by a
+factor of 4, followed by 12 e-branchformer layers [24], each
+with a dimensionality of 384, 6-headed self-attention, and feed-
+forward projection sublayers with 1536 dimensions. The RD
+encoder is similar to ASR encoder but with 9 e-branchformer
+layers and convolutional layers replaced by linear layers to pre-
+serve the frame rate. The RNN predictor is a single-layer LSTM
+with 384 dimensions, and the CNN-2predictor is a 1-D con-
+volutional layer with a kernel size of 2. Role-ASR transducer
+is made up of a 21-layer e-branchformer encoder and a 2-layer
+RNN predictor to match the size of the dual-transducer systems.
+The joint network of all transducers has 512 hidden units.
+Training.We use the ESPnet framework [25] for training
+the models. We use audio segments of up to 20 seconds pro-
+cessed into 64-dimensional log-Mel features (25 ms window
+and 10 ms frame shift) and apply speed perturbation [26] and
+SpecAugment [27]. We train the Role-ASR and ASR trans-
+ducers on DoPaCo for 40 epochs using Adam with an initial
+learning rate of2×10 −3,15k warm-up steps, and a weight
+decay of10 −6. On SiMeCo, because of its smaller size, we
+initialize the Role-ASR and ASR transducers with their cor-
+responding DoPaCo-trained weights and then fine-tune for 30
+epochs with an initial learning rate of10−4,10k warm-up steps,
+and a weight decay of10 −6. We average the ten best models
+based on the validation loss to get the final model. We train
+the RD transducer from scratch for 30 epochs, for both DoPaCo
+and SiMeCo, with an initial learning rate of10−4,1k warm-up
+steps, and a weight decay of10 −6. We average the ten best
+models based on the validation R-WDER to get the final model.
+Inference and Scoring.For ASR and Role-ASR inference,
+we use beam search [18] of size 20. For RD inference, we use
+the argmax method in Section 3. For scoring, we useasclite
+from the NIST Scoring Toolkit (SCTK) [28] for multi-speaker
+alignments. ASR performance is measured using WER and role
+diarization performance is measured using role-based WDER
+(R-WDER). R-WDER is computed same as WDER [1], but hy-
+pothesized words from doctor are only scored as correct against
+reference doctor words; the same for the patient. Other-role
+words can match words from any single other reference speaker.
+4.1. Results
+In Table 2, we first report the performance of the baseline mod-
+els B1 (Section 2.1) and B2 (Section 2.2). When they are trained
+on DoPaCo and evaluated on in-domain DoPaCo, we see that
+ASR (CNN-2) achieves the better WER (15.67vs.16.03) while
+Role-ASR (RNN) achieves the better R-WDER (6.5vs.7.8).
+When evaluated on out-of-domain SiMeCo, we see the effect
+of domain mismatch with both models performing poorly, es-
+pecially in terms of R-WDER (34.2and44.3). When these
+DoPaCo-trained models are finetuned on SiMeCo, we see the
+expected gains, with both achieving the same WER (8.8) and
+Role-ASR outperforming in terms of R-WDER (2.2vs.5.5).
+The reason for the poor R-WDER performance of base-
+line B2, as discussed in Section 3.1, is the lack of injection
+of the necessary linguistic information into the RD transducer.
+Thus, applying the proposed modifications of (1) task-specific
+RNN predictor and (2) use of ASR encoder’s 12th-layer fea-
+tures, we get systems P1 and P2, respectively, that achieve sig-
+nificant R-WDER improvements across all settings (7.8→6.3,
+44.3→28.9,5.5→2.5). Finally, applying the 1-best path +
+cross-entropy loss, proposed in Section 3.2, we get our final
+system P3 that achieves the best R-WDER in all cases.
+Overall, the results show that our proposed ASR+RD
+model, with separate task-specific predictors and trained using
+cross-entropy loss along the 1-best ASR path, outperforms other
+models in terms of both WER and R-WDER. Note that con-
+sidering only the SiMeCo results, one might conclude that our
+method provides only modest improvements over Role-ASR;
+however, it is important to clarify that SiMeCo does not reflect
+real-world challenges, as it consists of clean, near-field, arti-
+ficially simulated two-role conversations that are highly struc-
+tured and free from overlaps, interruptions, or rapid turn-taking.
+Experiments on SiMeCo are included primarily to demonstrate
+the generalization of our contributions across multiple datasets.
+In contrast, DoPaCo comprises real-world medical exam room
+recordings captured in medium-to-far-field conditions, some-
+times involving more than two roles (e.g., doctor, patient, fam-
+ily members, interpreters, and other clinicians) and containing
+unstructured, overlapping, and interruption-heavy interactions.
+While Role-ASR already performs quite well on the clean and
+simulated SiMeCo dataset, its performance degrades in more
+challenging real-world scenarios such as DoPaCo, where our
+proposed method delivers improvements in both ASR and role
+diarization. Therefore, the DoPaCo results are more indicative
+of practical impact, whereas the SiMeCo results are primarily
+for establishing the generalization of our approach.
+5. Conclusion
+This work demonstrated that a modified version of the auxiliary
+speaker diarization network [2] can be successfully adapted for
+speaker-role diarization, achieving superior performance over
+the integrated approach in [1]. The study also established that,
+unlike speaker prediction, role prediction depends more on lin-
+guistic context than on acoustic cues, motivating two modifica-
+tions: (1) separate task-specific predictors: CNN for ASR and
+RNN for role prediction, and (2) use of higher-layer ASR en-
+coder features which encode richer linguist

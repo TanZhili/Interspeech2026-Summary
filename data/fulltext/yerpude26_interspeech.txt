@@ -1,0 +1,455 @@
+Attention-Based Multiple Instance Learning with Tabular Stacking for
+Ambulatory Detection of PVH and NPVH
+Kiran Yerpude ID 1,2, Seung Gyu Jeong ID 1,2, Seong-Eun Kim ID 1,2,∗∗
+1 Seoul National University of Science and Technology, Seoul, South Korea
+2 Medisensing, Seoul, South Korea
+yerpudekiran@gmail.com, wa3229433@gmail.com, sekim@seoultech.ac.kr
+Abstract
+Phonotraumatic vocal hyperfunction (PVH) and non-
+phonotraumatic vocal hyperfunction (NPVH) are voice
+disorders that result from excessive laryngeal muscle activity.
+The PVH is associated with tissue lesions, while the NPVH
+refers to functional dysregulation without tissue damage.
+Ambulatory accelerometers enable the ecological assessment
+of daily voice behavior, which is noisy and variable. Our
+method consists of a tabular model at the subject level and a
+deep multiple instance learning (MIL) model with fixed-length
+windows of frame-level features. The predictions of these two
+models are combined via a stacking ensemble method. The
+tabular model employs CatBoost with day-level features to
+account for long-term voice behavior, while the MIL model
+uses a 1D residual network with gated attention pooling
+to focus on relevant voice segments. The proposed method
+achieves an official test AUC of 0.891 for PVH (rank 3) and
+0.861 for NPVH (rank 1) on the NeckVibe Challenge 2026.
+Index Terms: ambulatory voice monitoring, vocal hyperfunc-
+tion, multiple instance learning, CatBoost, attention-based pool-
+ing, quantile transformers
+1. Introduction
+V ocal hyperfunction has been defined as the “overuse or ineffi-
+cient use of laryngeal muscles for phonation,” and is commonly
+classified into two types: phonotraumatic vocal hyperfunction
+(PVH), which is accompanied by vocal-fold lesions such as
+nodules or polyps; and non-phonotraumatic vocal hyperfunc-
+tion (NPVH), which exhibits hyperfunction without such le-
+sions [1, 2, 3]. Both forms have the potential to cause persis-
+tent voice problems, so it is important to detect and treat vocal
+hyperfunction at an early stage [4]. Figure 1 contrasts the two
+conditions with normal vocal folds.
+The clinical assessment of vocal hyperfunction has tradi-
+tionally relied on laboratory recordings. Although such methods
+are useful, they capture only a limited range of vocal behav-
+iors and do not accurately reflect voice production in real-world
+scenarios [4]. This highlights the need for continuous, everyday
+voice monitoring systems [1].
+Ambulatory monitoring with a tiny neck-surface ac-
+celerometer (ACC) is a feasible way to collect real-world vocal
+behavior [1]. As the ACC signal does not capture intelligible
+speech, it can monitor voice for multiple days while preserving
+privacy and enables estimation of CPP, spectral, and impedance-
+based inverse filtering (IBIF) parameters [1, 5]. ACC param-
+eters have been used to differentiate PVH patients from con-
+trols with statistical and conventional machine-learning classi-
+fiers [6, 1, 2], and recent work has examined NPVH and com-
+pared ambulatory with laboratory measurements [7, 4, 8].
+Figure 1:Schematic comparison of normal vocal folds, phono-
+traumatic vocal hyperfunction (PVH), and non-phonotraumatic
+vocal hyperfunction (NPVH).
+Most prior approaches, however, rely on hand-crafted sum-
+mary features and shallow models, with labels available only
+at the subject level even though the recordings split into many
+short segments whose informative parts are hard to identify un-
+der supervision [6, 1]. Advances in weakly supervised [9] and
+attention-based time-series learning [10] motivate a multi-scale
+approach combining global distributional modeling with local
+event detection.
+The NeckVibe Challenge [11] provides weeklong neck-
+ACC recordings with subject-level PVH and NPVH labels. As
+outlined in Figure 2, we propose a stacked two-branch archi-
+tecture: a subject-level tabular model over day-aggregated dis-
+tributional statistics trained with CatBoost [12], and a deep
+multiple-instance learning (MIL) model [13] over short win-
+dows of 50 ms frames whose convolutional embeddings are
+pooled by gated attention into a subject-level prediction.
+The main contributions of this study are:
+•Robust ambulatory preprocessing and statistics:A frame-
+filtering and feature-engineering pipeline that selects only
+voiced, non-singing, device-on frames; removes extreme out-
+liers; encodes missingness explicitly, and constructs subject-
+level distributional descriptors over multiple mask condi-
+tions.
+•Dual-branch CatBoost–MIL architecture:A tabular Cat-
+Boost branch on day-level statistics and a deep MIL branch
+on 12 s windows with SE (squeeze-and-excitation) ResNet
+encoders and gated attention pooling, both tailored to subject-
+level PVH and NPVH detection.
+•Stacked ensemble and ablation:A stacking ensemble that
+combines rank-normalized probabilities from both branches,
+with ablations and comparisons against earlier subject-level
+ensembles and CNN–LSTM baselines on 5-fold stratified
+GroupKFold cross-validation.
+1027
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2355
+Figure 2:Overview of the proposed dual-branch CatBoost–MIL stacking pipeline for ambulatory PVH/NPVH detection from neck-
+surface accelerometer data. Frame-level preprocessing yields 50 ms voiced, non-singing, device-on segments, transformed into subject-
+level day statistics for the tabular CatBoost branch and fixed-length windows for the MIL branch. Quantile-based normalization and
+logistic regression stacking combines both branches into the final PVH and NPVH probabilities.
+2. Method
+2.1. Frame-level preprocessing
+The NeckVibe dataset [11] provides 50 ms frame-level fea-
+tures from multi-day neck-surface accelerometer recordings, in-
+cluding acoustic channels, IBIF-derived signals where avail-
+able, and frame-wise masks. We retain only voiced, non-
+singing, device-on frames (recordingOn=1,voiced=1,
+voiced singing=0), remove per-channel amplitude outliers
+via robustz-score thresholding, and encode missing values as
+zeros with appended binary missingness indicators to distin-
+guish true zeros from sensor dropout [14].
+2.2. Tabular subject-level representation
+PVH produces transient phonatory bursts detectable in short
+windows, while NPVH reflects sustained inefficiency dis-
+tributed across days [7]. For each acoustic and IBIF channel
+under multiple mask conditions, we compute day-level robust
+statistics (mean, variance, skewness, kurtosis, IQR, MAD, tail
+percentiles, Gini coefficients, and frame-to-frame differences),
+then aggregate across days via mean, minimum, and maximum
+to yield a fixed-dimensional subject-level feature vector. For
+NPVH, interaction features — phonation efficiency (CPP/f 0),
+closure-periodicity ratios, and harmonic stability ratios — are
+additionally engineered to capture subtler hyperfunctional pat-
+terns. We train CatBoost [12] as the tabular classifier, tuning
+depth, learning rate (≈0.01), iterations (≈1500),L 2 regular-
+ization, and class weighting via 5-fold stratified GroupKFold;
+NPVH requires stronger class weighting and regularization to
+handle its greater imbalance and heterogeneity.
+2.3. Multiple-instance learning branch
+Each subject is modeled by the deep branch as a bag of fixed-
+length windows, each of which consists of a series of succes-
+sive 50 ms frames across all channels. For PVH, each frame
+includes 12 raw acoustic channels, an energy channel, a global
+missingness indicator, and 117 auxiliary channels obtained by
+broadcasting day-level statistics over time, for a total of 131
+channels. We limit the number of sampled windows per sub-
+ject at 24 windows of 12 s each, padding shorter recordings
+where necessary. The 12 s window length was selected to cap-
+ture complete phonatory phrases while remaining computation-
+ally manageable; the 24-window cap balances coverage with
+training stability across subjects of varying recording length.
+Each window is passed through a 1D convolutional stem
+followed by four residual blocks [15] with squeeze-and-
+excitation modules [16], producing a 256-dimensional embed-
+ding per window. SE (squeeze-and-excitation) modules were
+chosen over plain CNNs for their ability to recalibrate channel-
+wise feature responses, which is critical given the heteroge-
+neous nature of ACC channels. A gated attention MIL mecha-
+nism [13] then aggregates the window embeddings into a single
+subject-level representation. Attention weights are computed as:
+A= softmax
+
+w⊤ 
+tanh(VZ)⊙σ(UZ)
+
+∈R N,(1)
+whereZ∈R N×256 are theNwindow embeddings,U,V∈
+Rr×256 are learned projection matrices, and⊙denotes element-
+wise multiplication. The subject-level representation is com-
+puted asP
+iAizi, focusing on clinically informative segments
+such as high-intensity or hyperfunctional events. The aggre-
+gated embedding is fed into a three-layer MLP with LayerNorm
+and dropout (0.3), trained with class-weighted binary cross-
+1028
+entropy plus a focal-loss component [17] to emphasize hard ex-
+amples.
+2.4. Stacking ensemble
+For each subject, OOF probabilistic predictions from both
+branches are obtained under 5-fold stratified GroupKFold, en-
+suring all days per subject remain in the same fold. For NPVH,
+rank-based normalization (Quantile Transformer to uniform)
+is applied to correct fold-wise calibration drift [18]; PVH re-
+tains raw probabilities. The meta-feature vector comprises the
+(possibly transformed) tabular and MIL probabilities, their ab-
+solute difference, and their product, capturing both agreement
+and disagreement between branches. A logistic regression meta-
+classifier with balanced class weights is trained on these OOF
+meta-features [19].
+For each subjecti, the base probabilities are:
+ptab
+i ∈[0,1], p mil
+i ∈[0,1].(2)
+After quantile transformation with empirical CDFsF tab and
+F mil:
+eptab
+i =F tab(ptab
+i ),ep mil
+i =F mil(pmil
+i ).(3)
+The 4-dimensional meta-feature vector and ensemble probabil-
+ity are:
+xi =
+
+
+eptab
+i
+epmil
+ieptab
+i −epmil
+i
+
+eptab
+i epmil
+i
+
+,ˆp ens
+i =σ(w⊤xi +b).(4)
+Binary predictions are obtained by thresholding at 0.5:
+ˆyi =
+(
+1,ifˆp ens
+i ≥0.5,
+0,otherwise. (5)
+3. Experimental Setup
+3.1. Dataset and tasks
+The NeckVibe Challenge dataset [11]. comprises long-term
+neck-surface accelerometer (ACC) recordings from 582 indi-
+viduals: 213 PVH patients with 169 matched controls, and 116
+NPVH patients with 84 matched controls. The primary input
+consists of frame-level features derived from ACC at 50 ms res-
+olution —f 0, SPL, CPP, H1–H2, spectral tilt, L/H ratio, and
+glottal measures based on IBIF (absent for a subset of subjects
+and handled in preprocessing). We define two binary tasks: (i)
+PVH vs. non-PVH and controls, (ii) NPVH vs. non-NPVH and
+controls All experiments use only the official training split [11].
+3.2. Evaluation metrics and protocol
+To maintain consistency with the NeckVibe challenge evalu-
+ation, we report the subject-level area under the ROC curve
+(AUC) as our primary metric [11]. For baselines and ablations,
+we additionally report accuracy, F1-score, precision, sensitiv-
+ity, and specificity at thresholds selected by default (0.5) or via
+per-fold grid search over[0.1,0.9].
+To prevent data leakage, we employ 5-fold Stratified
+GroupKFold with subject ID as the grouping key. For each fold,
+both branches are trained on four folds and evaluated on the
+held-out fold, generating OOF predictions that train the stack-
+ing meta-classifier. This protocol is applied separately for PVH
+and NPVH; final AUCs are based on OOF predictions.
+Figure 3:Reliability diagrams for PVH and NPVH. Red diag-
+onal = perfect calibration. Tabular = CatBoost; MIL = SE-
+ResNet with gated attention; Stacked = logistic meta-learner
+with quantile-normalised inputs.
+Figure 4:ROC curves of the stacked ensemble (5-fold stratified
+GroupKFold OOF) for PVH (AUC = 0.886, left) and NPVH
+(AUC = 0.756, right).
+3.3. Implementation details
+CatBoost hyperparameters (depth, learning rate, iterations, reg-
+ularization) are selected via inner CV; class imbalance is han-
+dled viascale pos weight. The MIL models are imple-
+mented in PyTorch [20] with Adam/AdamW, cosine learning-
+rate scheduling, early stopping on validation AUC, and dropout
+0.3 in the MLP head. GPU is used for training; inference runs
+on CPU. The stacking meta-classifier and quantile transformers
+are implemented in scikit-learn [21] and trained separately for
+PVH and NPVH on OOF predictions.
+4. Results
+4.1. Official challenge evaluation
+Our system achieved AUC 0.891 on PVH (Task 1, rank 3) and
+AUC 0.861 on NPVH (Task 2, rank 1) [11]. Table 1 lists repre-
+sentative prior results for contextual reference; direct compari-
+son is not valid due to differing datasets and task definitions.
+4.2. Internal cross-validation
+Table 2 reports OOF AUC with 95% bootstrap CIs (2000
+stratified resamples). The stacked ensemble outperforms both
+individual branches on every task. For PVH, the stacked
+CI[0.850,0.917]lies entirely above the MIL-only CI
+[0.797,0.872], confirming a statistically meaningful gain
+from stacking. For NPVH, CIs partially overlap (stacked:
+[0.697,0.810]; CatBoost:[0.696,0.805]), consistent with
+greater class imbalance and subtler phonatory signatures [7].
+Figure 4 shows OOF ROC curves for both tasks.
+1029
+Table 1:Prior ambulatory vocal hyperfunction studies included for contextual reference only. Datasets, task definitions, and recording
+protocols differ across all rows; direct numerical comparison is not valid.†PVH vs. control (easier than our pooled non-PVH).‡NPVH
+vs. control (easier than our pooled non-NPVH).
+Study Method / Features Modality Task AUC
+Ghassemiet al.[6] SVM (RBF) onf 0, SPL distributions Neck ACC PVH vs. ctrl † 0.82
+Cort´eset al.[1] L1-LR on IBIF glottal airflow Neck ACC+IBIF PVH vs. ctrl † 0.82
+Van Stanet al.[2] LR on SPL skewness, H1–H2 Neck ACC PVH vs. ctrl † 0.82
+Ghasemzadehet al.[8] LR on H1–H2, CPP distributions Neck ACC PVH vs. ctrl † 0.81
+Van Stanet al.[7] LR on CPP, H1–H2, vocal dose Neck ACC NPVH vs. ctrl ‡ 0.70
+Ours(test) [11]CatBoost–MIL stacking Neck ACC+IBIF PVH vs. NPVH, PVH-C, NPVH-C 0.891
+Ours(test) [11]CatBoost–MIL stacking Neck ACC+IBIF NPVH vs. PVH, PVH-C, NPVH-C 0.861
+Ours(train)CatBoost–MIL stacking Neck ACC+IBIF PVH vs. NPVH, PVH-C, NPVH-C 0.886
+Ours(train)CatBoost–MIL stacking Neck ACC+IBIF NPVH vs. non-NPVH 0.756
+Table 2:OOF AUC with 95% bootstrap confidence intervals
+(2000 stratified resamples).
+Task Model Mean AUC 95% CI
+3*PVH CatBoost 0.875 [0.840,0.908]
+MIL 0.835 [0.797,0.872]
+Stacked 0.885 [0.850,0.917]
+3*NPVH CatBoost 0.751 [0.696,0.805]
+MIL 0.717 [0.659,0.771]
+Stacked 0.757 [0.697,0.810]
+Table 3:Within-dataset ablation and baseline comparison (5-
+fold stratified GroupKFold OOF AUC). All rows use identical
+NeckVibe data, splits, and evaluation protocol [11].
+Configuration PVH NPVH
+CNN–LSTM baseline 0.764 0.673
+MIL only (no stacking) 0.871 0.718
+CatBoost only (no interaction feats) 0.851 0.724
+CatBoost only (full features) 0.885 0.751
+w/o day-level stats in MIL 0.840 0.722
+w/o missingness indicators 0.851 0.730
+w/o quantile normalization 0.874 0.739
+w/o interaction features (NPVH) – 0.724
+Full system (proposed) 0.886 0.753
+4.3. Calibration
+Figure 3 shows a diagram for both tasks. The stacked model
+benefits from quantile normalization to stabilize fold-wise cali-
+bration drift, and PVH predictions closely follow the diagonal.
+NPVH is consistently underconfident; observed positive rates
+only reach 0.3–0.5 at projected probability of 0.8–0.9, which
+is consistent with intra-class diversity [7] and class imbalance
+(≈20%positives).
+4.4. Ablation and hyperparameter tuning
+Table 3 reports component ablations under identical splits. Re-
+moving the MIL branch reduces PVH AUC by 0.010 and NPVH
+by 0.002; removing CatBoost interaction features costs 0.027 on
+PVH. Excluding day-level statistics, missingness indicators, or
+quantile normalization, each degrades NPVH AUC, underscor-
+ing the importance of global temporal context, sensor-dropout
+modelling [14], and calibration correction [18].
+5. Conclusion
+We presented a dual-branch CatBoost–MIL stacking architec-
+ture for subject-level PVH and NPVH detection from multi-day
+neck-surface accelerometer recordings, achieving official test
+AUCs of 0.891 (PVH, rank 3/6) and 0.861 (NPVH, rank 1/3)
+in the NeckVibe Challenge [11]. Combining long-term dis-
+tributional statistics via CatBoost with attention-based MIL
+and rank-normalised logistic stacking proved complementary
+across both tasks, with the tabular branch driving NPVH per-
+formance and the MIL branch capturing transient phonatory
+events critical for PVH [1, 7]. Future work will explore multi-
+task PVH/NPVH formulations, subject-adaptive modelling for
+NPVH, and validation on independent groups.
+6. Discussion
+Although attention-based MIL, SE-ResNet encoders, and stack-
+ing are established elsewhere, their adaptation to ambulatory
+neck-ACC biomarkers is new for vocal hyperfunction, and the
+two branches mirror the disorders’ pathophysiology: the MIL
+branch localizes the brief, high-intensity events characteristic of
+PVH within its 12 s windows, whereas CatBoost’s day-level dis-
+tributional statistics capture the diffuse, sustained inefficiency
+of NPVH [3, 22]. Consistent with this, the ablations show the
+MIL branch helping PVH most and the tabular branch dominat-
+ing NPVH. As the full system improves over the CatBoost-only
+model by only 0.001 (PVH) and 0.002 (NPVH) AUC, we do
+not claim a large gain from the deep branch; its value is com-
+plementary, adding calibration stability and an interpretable at-
+tention map over the segments driving each decision [13].
+1030
+7. Acknowledgments
+This work was supported by the National Research Foundation
+of Korea (NRF) grants funded by the Korean Government under
+Grants RS-2024-00422599 and RS-2026-25492338, and by the
+AI Seoul Tech Research Support Program of the Seoul Future
+Foundation.
+8. Generative AI Use Disclosure
+We used generative AI tools to assist with English proofreading
+and stylistic polishing of the manuscript (e.g., improving clarity,
+grammar, and readability). All technical content, experimental
+design, implementation, results, and conclusions were produced
+and verified by the authors. The authors take full responsibility
+for the content of this paper, and no generative AI tool was used
+as a co-author.
+9. References
+[1] J. P. Cort ´es, V . M. Espinoza, M. Ghassemi, D. D. Mehta, J. H.
+Van Stan, R. E. Hillman, J. V . Guttag, and M. Za˜nartu, “Ambula-
+tory voice monitoring in patients with phonotraumatic vocal hy-
+perfunction using glottal airflow measures estimated from a neck-
+surface accelerometer,”PLOS ONE, vol. 13, no. 12, p. e0209017,
+2018.
+[2] J. H. Van Stan, D. D. Mehta, D. Sternad, and R. E. Hillman,
+“Differences in acoustic and aerodynamic measures of voice pro-
+duction during rehabilitation of patients with phonotraumatic ver-
+sus nonphonotraumatic vocal hyperfunction,”Journal of Speech,
+Language, and Hearing Research, vol. 63, no. 6, pp. 1836–1849,
+2020.
+[3] R. E. Hillman, C. E. Stepp, J. H. Van Stan, M. Za ˜nartu, and D. D.
+Mehta, “An updated theoretical framework for vocal hyperfunc-
+tion,”American Journal of Speech-Language Pathology, vol. 29,
+no. 4, pp. 2254–2260, 2020.
+[4] D. D. Mehta, J. H. Van Stan, and R. E. Hillman, “Relationship
+between laboratory and ambulatory measures of vocal function in
+individuals with phonotraumatic vocal hyperfunction,”Journal of
+Voice, 2024.
+[5] M. Za ˜nartu, J. C. Ho, D. D. Mehta, R. E. Hillman, and G. R.
+Wodicka, “Subglottal impedance-based inverse filtering of voiced
+sounds using neck surface acceleration,”IEEE Transactions on
+Audio, Speech, and Language Processing, vol. 21, no. 9, pp.
+1929–1939, 2013.
+[6] M. Ghassemi, J. H. Van Stan, D. D. Mehta, M. Za ˜nartu, H. A.
+Cheyne, R. E. Hillman, and J. V . Guttag, “Learning to detect vocal
+hyperfunction from ambulatory neck-surface accelerometer data,”
+inProc. IEEE Int. Conf. Acoustics, Speech and Signal Processing
+(ICASSP). IEEE, 2014, pp. 4303–4307.
+[7] J. H. Van Stan, D. D. Mehta, and R. E. Hillman, “Differences in
+the daily voice use of patients with nonphonotraumatic vocal hy-
+perfunction and matched controls,”Journal of Speech, Language,
+and Hearing Research, vol. 64, no. 6, pp. 2059–2071, 2021.
+[8] H. Ghasemzadeh, J. H. Van Stan, R. E. Hillman, and D. D.
+Mehta, “Consistency of ambulatory voice measures in patients
+with phonotraumatic vocal hyperfunction across different phona-
+tory conditions,”Journal of Voice, 2024.
+[9] G. Campanella, M. G. Hanna, L. Geneslaw, A. Miraflor, V . Wer-
+neck Krauss Silva, K. J. Busam, E. Brogi, V . E. Reuter, D. S.
+Klimstra, and T. J. Fuchs, “Clinical-grade computational pathol-
+ogy using weakly supervised deep learning on whole slide im-
+ages,” vol. 25. Springer Nature, 2019, pp. 1301–1309.
+[10] M. Horn, M. Moor, C. Bock, B. Rieck, and K. Borgwardt, “Set
+functions for time series,” inProc. Int. Conf. Machine Learning
+(ICML), 2020, pp. 4353–4363.
+[11] NeckVibe Challenge Organizers, “NeckVibe Challenge 2026:
+Ambulatory Detection of V ocal Hyperfunction,” Interspeech
+2026 Satellite Challenge, 2026, https://sites.google.com/view/
+neckvibe-challenge/home.
+[12] L. Prokhorenkova, G. Gusev, A. V orobev, A. V . Dorogush, and
+A. Gulin, “CatBoost: Unbiased boosting with categorical fea-
+tures,” inAdvances in Neural Information Processing Systems
+(NeurIPS), vol. 31, 2018.
+[13] M. Ilse, J. M. Tomczak, and M. Welling, “Attention-based deep
+multiple instance learning,” inProc. Int. Conf. Machine Learning
+(ICML), 2018, pp. 2127–2136.
+[14] Z. C. Lipton, D. C. Kale, and R. Wetzel, “Modeling missing data
+in clinical time series with RNNs,” inProc. Machine Learning for
+Healthcare (MLHC), 2016.
+[15] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning
+for image recognition,” inProc. IEEE Conf. Computer Vision and
+Pattern Recognition (CVPR). IEEE, 2016, pp. 770–778.
+[16] J. Hu, L. Shen, and G. Sun, “Squeeze-and-excitation networks,”
+inProc. IEEE Conf. Computer Vision and Pattern Recognition
+(CVPR). IEEE, 2018, pp. 7132–7141.
+[17] T.-Y . Lin, P. Goyal, R. Girshick, K. He, and P. Doll´ar, “Focal loss
+for dense object detection,” inProc. IEEE Int. Conf. Computer
+Vision (ICCV). IEEE, 2017, pp. 2980–2988.
+[18] A. Niculescu-Mizil and R. Caruana, “Predicting good probabili-
+ties with supervised learning,” inProc. Int. Conf. Machine Learn-
+ing (ICML), 2005, pp. 625–632.
+[19] D. H. Wolpert, “Stacked generalization,” vol. 5, no. 2, 1992, pp.
+241–259.
+[20] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan,
+T. Killeen, Z. Lin, N. Gimelshein, L. Antigaet al., “PyTorch:
+An imperative style, high-performance deep learning library,”
+Advances in Neural Information Processing Systems (NeurIPS),
+vol. 32, 2019.
+[21] F. Pedregosa, G. Varoquaux, A. Gramfort, V . Michel, B. Thirion,
+O. Grisel, M. Blondel, P. Prettenhofer, R. Weiss, V . Dubourget al.,
+“Scikit-learn: Machine learning in Python,”Journal of Machine
+Learning Research, vol. 12, pp. 2825–2830, 2011.
+[22] V . M. Espinoza, M. Za ˜nartu, J. H. Van Stan, D. D. Mehta, and
+R. E. Hillman, “Glottal aerodynamic measures in women with
+phonotraumatic and nonphonotraumatic vocal hyperfunction,”
+Journal of Speech, Language, and Hearing Research, vol. 60,
+no. 8, pp. 2159–2169, 2017.
+1031

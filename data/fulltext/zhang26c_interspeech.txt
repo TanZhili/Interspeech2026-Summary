@@ -1,0 +1,495 @@
+AQA-TTRL: Self-Adaptation in Audio Question Answering with Test-Time
+Reinforcement Learning
+Haoyu Zhang1, Jiaxian Guo1, Dong Yang1, Yusuke Iwasawa1, Yutaka Matsuo1,∗∗
+1 The University of Tokyo, Japan
+{haoyu.zhang, jiaxian.guo, iwasawa, matsuo}@weblab.t.u-tokyo.ac.jp, ydqmkkx@gmail.com
+Abstract
+Large Audio Language Models (LALMs) exhibit strong ca-
+pabilities in general audio understanding but remain static af-
+ter deployment, limiting their adaptability to real-world data.
+Since supervised fine-tuning is costly, we propose AQA-TTRL,
+a novel framework for audio understanding that enables on-the-
+fly evolution via test-time reinforcement learning using only
+unlabeled test data. It generates pseudo-labels via majority
+voting and optimizes the model through reinforcement learn-
+ing. To address the noise in self-generated labels, we in-
+troduce confidence weighting to adjust training signals. Fur-
+thermore, multiple-attempt sampling mitigates advantage col-
+lapse and stabilizes training. Across MMAU, MMAR, and
+MMSU, AQA-TTRL achieves significant average improve-
+ments of 4.42% for Qwen2.5-Omni 7B and 11.04% for the 3B
+model. Notably, the adapted 3B model outperforms direct infer-
+ence of the unadapted 7B model, highlighting the effectiveness
+of test-time adaptation in audio understanding.
+Index Terms: large audio language models, reinforcement
+learning, test-time adaptation, audio question answering
+1. Introduction
+The application of Large Audio Language Models (LALMs)
+has led to notable improvements in audio understanding [1, 2,
+3, 4, 5, 6]. In practical speech and audio applications, test-time
+inputs typically vary due to background noise, recording con-
+ditions, and speaker variability, leading to acoustic mismatch
+that degrades AQA performance. A straightforward solution is
+to collect and annotate new audio-question pairs for supervised
+updates; however, this process is costly and time-consuming,
+motivating the need for label-free adaptation mechanisms.
+Enabling LALMs to self-evolve on unlabeled test data at in-
+ference time provides a promising direction, mirroring how hu-
+mans adapt to new situations without explicit instruction. While
+Test-Time Reinforcement Learning (TTRL) [7] has shown the
+potential for such self-improvement in mathematical domains,
+its application to the complexities of audio remains unexplored.
+In this paper, we focus on improving performance in Audio
+Question Answering (AQA) tasks by introducing AQA-TTRL,
+a novel self-adaptation method that builds a closed-loop for self-
+improvement (Fig. 1). It first establishes its consensus on an an-
+swer by performing majority voting over multiple outputs, cre-
+ating a pseudo-label that acts as a self-generated reward signal.
+This signal then guides policy optimization using Group Rela-
+tive Policy Optimization (GRPO) [8, 9]. To establish a reliable
+self-improvement loop with the inherent noisy pseudo-label, we
+further introduce two innovations: (1) a confidence-weighting
+**indicates the corresponding author.
+Model UpdateQuestion
+Unseen Test Data
+LALM
+LALM
+ Pseudo 
+Label via RL
+Test Time: AQA-TTRL
+Question
+LabelText
+ LALM
+Model Update
+LALM
+Model Update
+Pretrain Data Labeled Data
+Pretrain SFT/RFT
+Figure 1:Role of AQA-TTRL: When faced with unseen test
+data, AQA-TTRL enables an automatic, label-free adaptation
+pipeline where model updates are driven by self-generated
+pseudo-labels, without any human annotation or external data.
+scheme to prioritize high-quality internal signals by reweight-
+ing the training gradients, and (2) a multiple-attempt sampling
+strategy to mitigate the “advantage collapse” problem, where
+advantage degenerates to zero and model updates stagnate.
+We provide empirical evidence that this self-improvement
+process is highly effective. Experimental results demonstrate
+that AQA-TTRL achieves an average improvement of 4.42%
+on Qwen2.5-Omni 7B and 11.04% on the 3B model across four
+benchmarks. Notably, the adapted 3B model surpasses the static
+7B model. In summary, our contributions are:
+• We propose AQA-TTRL, a novel self-adaptation method for
+model self-improvement in audio understanding, leveraging
+confidence-weighted advantage and a novel sampling strat-
+egy to create a stable and effective test-time learning loop.
+• To our knowledge, we provide the first empirical evidence
+that LALMs can achieve significant self-improvement in
+AQA tasks, demonstrating this new paradigm on the MMAU
+(test-mini/test) [10], MMAR [11], and MMSU [12].
+• We justify our approach by demonstrating a strong posi-
+tive correlation between model confidence and correctness
+on test data, validating the core mechanism that drives our
+self-improvement framework.
+2. Related works
+Large audio language models. Large Audio Language Models
+(LALMs) demonstrate strong abilities in understanding and rea-
+soning across a variety of tasks involving auditory input, such
+as speech, sound, and music. They typically use LLMs as their
+backbone for understanding and text generation, while incorpo-
+4603
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-288
+rating an audio encoder to enable auditory perception. Repre-
+sentative models include LTU [1, 13], SALMONN [2], Audio
+Flamingo series [3, 14, 15], DeSTA series [4, 16, 17], Step-
+Audio series [6, 18], Qwen Audio series [19, 20] and Qwen
+Omni series [5, 21]. By formulating diverse tasks as text gener-
+ation, LALMs overcome task-specific constraints. These works
+improve the accuracy on traditional audio tasks and are capable
+of processing open-ended Audio Question Answering (AQA).
+Reinforcement learning with verifiable rewards. Rein-
+forcement Learning with Verifiable Rewards (RLVR) has been
+proven effective in improving LLMs. DeepSeek Math [8] and
+DeepSeek-R1-Zero [9] use RLVR to improve reasoning abil-
+ity without reward models. SEED-GRPO [22] applies semantic
+entropy to represent uncertainty for calculating the advantage.
+TTRL [7] uses RLVR with majority voting at test time to boost
+performance on math benchmarks. Spurious Rewards [23]
+shows that even weak or spurious labels can improve perfor-
+mance with RLVR. For the combination of LALMs and RLVR,
+R1-AQA [24] shows that GRPO can outperform supervised
+finetuning on MMAU benchmarks. Omni-R1 [25] achieves the
+SOTA performance on MMAU and MMAR by applying GRPO
+with an LLM augmented dataset. In contrast to prior work that
+relies on labeled training data for RL post-training, our method
+is under a label-free training paradigm.
+3. Method
+In this section, we first present the problem setting of test-
+time adaptation using unlabeled test data. Next, we present an
+overview of our method, covering pseudo-label generation and
+model update, followed by its two key innovations: confidence-
+weighted advantage and multiple-attempt sampling.
+3.1. Problem setting
+Audio understanding models are often improved by collecting
+domain audios and questions, annotating them, and updating
+the model with labeled pairs. However, this procedure is costly,
+making full automation difficult. Moreover, domain data col-
+lection may induce a distribution shift relative to real-world test
+data, potentially affecting robustness. If the model can adapt
+itself at test timewith unlabeled test data only, it not only re-
+duces annotation costs but also facilitates adaptation to new test
+conditions without additional annotation. In this work, we fo-
+cus on Audio Question Answering (AQA) as a representative
+task, and our problem setting is to improve AQA performance
+through test-time adaptation under a label-free paradigm.
+3.2. Overview of the AQA-TTRL
+In order to improve the model quality without annotated data,
+AQA-TTRL contains two stages, as Fig. 2 shows: 1) Pseudo-
+label generation. 2) Pseudo-label Guided Model Updates.
+Motivated bySelf-Consistency[26], for each audio-question
+pair(a,q), the model first generatesMpredictionsY=
+{y1,y 2,...,y M}. It then conducts majority voting over can-
+didate answersc∈Yto aggregate these stochastic predictions
+into a consensus pseudo-label:
+ˆy= arg max
+c∈Y
+PM
+m=1 1{ym =c},ˆy:pseudo-label.(1)
+For model updates, we adopt Group Relative Policy Opti-
+mization (GRPO) [8, 9]. Unlike supervised fine-tuning, which
+directly imitates noisy pseudo labels, GRPO optimizes reward
+LALM
+	𝑞
+Test Data
+Policy Optimization
+		𝑟!
+		𝑟"
+		𝑟#
+…
+Rewards Advantage
+		𝐴!
+		𝐴"
+		𝐴#
+…
+Multiple-Attempt
+𝑦&Majority Voting 𝑓(𝐶𝑜𝑛𝑓)
+		𝑦!
+		𝑦"
+		𝑦$
+…
+Label Generation and Confidence Estimation
+	𝐴𝑢𝑑𝑖𝑜
+LALM
+Predicting
+Pseudo-label
+		𝑜!
+		𝑜"
+		𝑜#
+…Sampling
+Response
+		𝜋!
+Figure 2:Overview of AQA-TTRL. The framework derives
+pseudo-labels with confidence through majority voting, con-
+ducts multiple-attempt sampling for effective response gener-
+ation, and scales the learning signal by confidence.
+signals and provides a more noise-robust foundation for test-
+time adaptation. For each audio-question pair, the policy model
+πθ generates a set of responses{o 1,o 2,...,o G}, each referred
+to as a rollout. Subsequently, the reward scorer i is calculated
+by comparing the responseo i with the pre-generated pseudo-
+labelˆyusing the reward function. Following prior work [24],
+we adopt two binary exact-match rewards: a format reward and
+an accuracy reward, defined asri =r acc(oi,ˆy) +rformat (oi)
+The advantageA i is derived by normalizing the rewards
+{r1,r 2,...,r G}within each group. The policy modelπ θ is
+then optimized by maximizing the following objective:
+JGRPO(θ) =E q,a,{oi}
+"
+1
+G
+GX
+i=1
+1
+|oi|
+|oi|X
+t=1
+(Oi,t−βdi,t)
+#
+,(2)
+where
+Oi,t = min
+
+ci,t(θ)Ai,clip
+
+ci,t(θ),1−ϵ,1 +ϵ
+
+Ai
+
+,
+ci,t(θ) = πθ(oi,t|q,a,o i,<t)
+πθold (oi,t|q,a,o i,<t), d i,t =D KL (πθ∥π ref ).
+Hereadenotes the audio input, andϵ,βare hyperparameters
+that limit per-iteration deviation from the base model.
+However, label-free test-time adaptation with pseudo-labels
+faces two challenges. First, the self-generated pseudo-labels
+are inherently noisy, and learning from them directly is not
+desirable. Second, high-confidence samples tend to produce
+identical rollouts, making rewards constant within a group and
+causing the normalized advantage to vanish (advantage col-
+lapse). To address these challenges, we introduce two coordi-
+nated mechanisms that jointly restore stable and reliable learn-
+ing dynamics: (1) Confidence-weighted advantage (Sec. 3.3),
+which re-scales normalized gradients according to pseudo-label
+reliability, aligning update magnitude with signal quality; and
+(2) Multiple-attempt sampling (Sec. 3.4), which detects rollout
+collapse and sequentially selects the first non-identical group,
+thereby mitigating advantage collapse.
+3.3. Confidence-weighted advantage
+LALMs output answers in text without explicit confidence
+scores. We estimate pseudo-label confidence via majority-vote
+consistency,Conf= 1
+M
+PM
+m=1 1{ym = ˆy}, and use it to
+weight the normalized advantage:
+Ai = ri−mean({r 1,r 2,...,r G})
+std({r1,r 2,...,r G}) ·f(Conf).(3)
+4604
+We usef(Conf) = exp(Conf)in all experiments; linear
+and square-root were also tested, with the exponential variant
+performing best overall. We build on the observation that higher
+prediction confidence is generally associated with higher label
+reliability. We therefore use confidence for relative reweight-
+ing: higher-confidence pseudo-labels receive larger weights
+than lower ones. Moreover, the exponential mapping yields a
+bounded weight range ([1,e]), which preserves the difference
+across confidence levels while limiting over amplification from
+potentially miscalibrated high-confidence pseudo-labels.
+3.4. Multiple-attempt sampling
+Algorithm 1Multiple-attempt sampling
+1:input:policyπ θ, old policyπ θold, group sizeG, pseudo-
+labeled datasetD
+2:foreach(q,a,ˆy,Conf)∈Ddo
+3:Generate candidatesG 1,G 2,G 3∼π θ(·|q,a)
+4:if notall same(G1)then
+5:{o i}G
+i=1←G 1
+6:else if notall same(G2)then
+7:{o i}G
+i=1←G 2
+8:else
+9:{o i}G
+i=1←G 3
+10:end if
+11:(followed by optimization steps)
+12:end for
+When a limited number of responses are sampled, high-
+confidence questions may collapse to identical outputs, leading
+to vanishing advantage and stalled updates. Although increas-
+ing the group size can reduce collapse, incorporating audio to-
+kens in LALMs increases sequence length and GPU memory
+consumption, making large groups memory-prohibitive. We
+therefore adopt sequential multi-attempt sampling. As illus-
+trated in Algorithm 1, multiple response groups with equal size
+are generated, and the first group with non-identical samples is
+selected, using later groups as fallback when earlier ones col-
+lapse. Since high-confidence samples are generally of higher
+quality, leveraging them is crucial for effective self-adaptation.
+While this strategy does not guarantee diversity, it mitigates the
+issue under a limited computing budget. Combined with confi-
+dence weighting, it preserves informative training signals.
+4. Experiments
+In this section, we introduce our experimental settings and re-
+port performance on the following AQA benchmarks: MMAU-
+v05.15.25 (test-mini/test), MMAR, and MMSU.
+4.1. Experimental settings
+We use Qwen2.5-Omni 7B and 3B [5] as base models for test-
+time adaptation. The pseudo-label is obtained via majority vot-
+ing over 64 predictions (T=1) in advance. For RL-based adap-
+tation, we perform GRPO rollouts with 4 generations (T=1) and
+run 500 update steps for all datasets. We report results at step
+100 for smaller datasets (MMAU test-mini and MMAR), and
+at step 500 for larger datasets (MMAU test and MMSU). We
+fine-tune all model parameters using AdamW (lr=1e−6, weight
+decay=0.01) with a global batch size of 8 (4 GPUs, micro-
+batch=1, gradient accumulation=2) and gradient clipping of 1.0
+in bf16. Following prior GRPO practice [23, 27], theϵis 0.2 and
+βis 0. The prompt is: “{question}Please choose the answer
+from the following options:{choice string}. Output the final
+answer in<answer></answer>.” Similar to the previous re-
+search [24, 25], we disable thinking and let the model output
+the answer directly. We additionally include a Supervised Fine-
+Tuning (SFT) baseline that optimizes cross-entropy on the same
+majority-vote pseudo-labels for 3 epochs.
+4.2. Main results across different benchmarks
+Table 1:Accuracies across different benchmarks: DI = Direct
+Inference, DIMV = Direct Inference with Majority Voting
+Model MMAU
+test-mini
+MMAU
+test MMAR MMSU Avg.
+Qwen2.5-Omni 7B:
+DI 72.40 70.60 57.70 56.84 64.39
+DIMV 73.30 72.01 58.90 58.16 65.59
+SFT 73.90 71.74 58.60 58.02 65.57
+Ours76.80 73.74 63.20 61.48 68.81
+Qwen2.5-Omni 3B:
+DI 61.50 61.55 46.90 45.34 53.82
+DIMV 63.90 62.59 46.70 47.90 55.27
+SFT 65.20 62.84 48.20 48.74 56.25
+Ours72.30 71.05 57.90 58.18 64.86
+We take Direct Inference (DI) of the unadapted model as
+a baseline and use reproduced results for a consistent infer-
+ence setting. As shown in Table 1, our method demonstrates
+its effectiveness by outperforming DI across all benchmarks
+with an average improvement of 4.42% (7B) and 11.04% (3B).
+Our method also outperforms DIMV (majority-vote inference,
+which provides pseudo-labels) and SFT trained on the same
+pseudo-labels. We attribute this improvement to the ability
+of reinforcement learning to tolerate a certain degree of la-
+bel inaccuracy and capture the underlying distribution rather
+than merely imitating. Notably, the self-adapted 3B model sur-
+passes the unadapted 7B model under direct inference on aver-
+age (64.86 vs. 64.39). These results demonstrate the potential
+of LALMs to self-improve under a label-free training paradigm
+at test time, and further suggest that small models can also
+achieve comparative performance without manual annotation.
+4.3. Ablation studies
+Table 2:Module ablation (7B): G-MV = GRPO with Majority
+Voting, C = Confidence-weighted advantage, MA = Multiple-
+attempt sampling
+Method MMAU
+test-mini
+MMAU
+test MMAR MMSU Avg.
+G-MV 74.10 72.86 62.50 60.54 67.50
++MA 75.0073.7961.90 60.98 67.92
++C76.8072.45 62.90 60.40 68.14
++C+MA
+(Ours) 76.8073.7463.20 61.48 68.81
+Confidence-weighted advantage and multiple-attempt
+sampling.Table 2 reports an ablation study of confidence-
+weighted advantage and multiple-attempt sampling. GRPO
+with Majority V oting (G-MV) achieves the lowest average
+4605
+0 8 12 16 24 32 64
+M
+72
+74
+76
+78Accuracy%
+Ours
+SFT
+DIMV
+DI
+Figure 3:Accuracy vs.Mon MMAU test-mini.Mis majority-
+vote sample count: inference-time voting for DIMV , adaptation-
+time pseudo-label voting for SFT/Ours (single-pass eval).
+accuracy. Adding multiple-attempt sampling improves per-
+formance on most benchmarks, except MMAR. Meanwhile,
+confidence weighting improves performance on MMAU test-
+mini and MMAR, but brings limited gains on larger datasets.
+When advantage collapse occurs, confidence weighting ampli-
+fies differences between samples and leads to more uneven up-
+dates. The combination of these two modules consistently im-
+proves performance with an average gain of 1.31%. Overall,
+the ablations indicate that confidence weighting and multiple-
+attempt sampling are complementary: the former reweights
+noisy pseudo-labels, while the latter reduces advantage-collapse
+updates, leading to the most consistent gains when combined.
+Table 3:Audio-type-wise accuracy on MMAU test-mini with ab-
+lations on audio-type-restricted adaptation (7B).
+Method Adaptation Sound Music Speech Avg.
+DI – 75.08 68.86 73.27 72.40
+DIMV – 77.48 69.16 73.27 73.30
+SFT All 78.38 69.16 74.17 73.90
+Ours All 82.88 72.16 75.38 76.80
+Sound 80.78 69.76 75.98 75.50
+Music 82.28 70.96 76.58 76.60
+Speech 80.48 70.66 75.08 75.40
+Audio-type-wise results and adaptation ablation.We
+further analyze performance across different audio types and
+conduct ablations by restricting adaptation to each audio type,
+using a fixed number of update steps per subset for consistency.
+Our method consistently outperforms DIMV and SFT across all
+audio types. Among different settings, music-only adaptation
+achieves the highest average accuracy, while single-type adapta-
+tion remains competitive with training-label baselines (DIMV).
+This suggests that reinforcement learning enables robust test-
+time adaptation without overfitting to a specific audio type.
+Effect of voting budget.As shown in Fig. 3, we sweepM,
+the number of samples used for majority voting when construct-
+ing pseudo-labels during adaptation. For SFT/Ours, voting is
+applied only during adaptation, and inference after adaptation
+remains single-pass, whereas DIMV performsM-vote at in-
+ference. Our method consistently outperforms both baselines
+acrossM. While our method uses additional sampling dur-
+ing adaptation (e.g., GRPO rollouts), it aims to convert multi-
+sample voting gains into improved single-pass performance.
+Notably, withM=8it reaches 76.6% accuracy and surpasses
+DIMV even withM=64inference-time votes, indicating that
+the gains do not rely on largeMat test time. In contrast, DIMV
+is sensitive toM, requiring many votes to stabilize stochastic
+LLM outputs. Our method maintains strong performance even
+0 10 20 30 40 50 60 70 80 90 100
+Confidence%
+0
+50
+100Accuracy%
+MMAU test-mini
+MMAR
+MMSU
+Figure 4:Accuracy vs. Confidence of Pseudo-Label
+0 100 200 300 400 500
+Step
+56
+58
+60
+62Accuracy%
+Figure 5:Case study: accuracy over training steps (MMSU).
+We report accuracy at the fixed 500th update step for a consis-
+tent label-free protocol. Accuracy improves rapidly and largely
+stabilizes before a full pass over the test set (5,000 samples;
+global batch size 8), suggesting that adaptation on a subset of
+unlabeled test samples can already benefit the remaining sam-
+ples from the same distribution.
+when the pseudo-label is unstable, owing to the RL framework
+and the confidence-weighted design. Beyond the effect of the
+voting budget, we further provide a case study of adaptation dy-
+namics on MMSU in Fig. 5.
+4.4. Correlation between pseudo-label quality and confi-
+dence
+To examine the effectiveness of the confidence weighting mech-
+anism, we investigate how pseudo-label accuracy varies with
+confidence. We bin confidence into 5% intervals, compute
+mean pseudo-label accuracy per bin, and fit a regression line.
+Since the MMAU test labels are unavailable due to online evalu-
+ation, we report the remaining test datasets. As shown in Fig. 4,
+a strong positive correlation between confidence and accuracy
+across different test datasets is observed, indicating that higher-
+confidence pseudo-labels are more reliable. Since training sig-
+nals obtained from higher-confidence pseudo-labels are more
+reliable, they should be encouraged to contribute more to the
+model updates. The results indicate that the confidence weight-
+ing mechanism with reinforcement learning can effectively em-
+phasize informative samples while tolerating noisy ones, align-
+ing the model update with the inherent data distribution.
+5. Conclusion
+We propose AQA-TTRL, a label-free test-time adaptation
+framework for audio question answering. By combining
+majority-vote pseudo-labeling with GRPO-based optimization,
+along with confidence weighting and multiple-attempt sam-
+pling, the framework enables stable self-improvement on un-
+labeled test data. Experiments on MMAU (test-mini/test),
+MMAR, and MMSU demonstrate consistent gains, with av-
+erage improvements of 4.42% on the Qwen2.5-Omni 7B and
+11.04% on 3B. Notably, the self-improved 3B model surpasses
+the direct inference performance of the unadapted 7B model, in-
+dicating that targeted on-the-fly adaptation offers a parameter-
+efficient complement to model scaling.
+4606
+6. Generative AI Use Disclosure
+Generative AI tools were used solely for language polishing and
+clarity improvement.

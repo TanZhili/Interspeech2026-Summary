@@ -1,0 +1,563 @@
+TASU2: Controllable CTC Simulation for Alignment and Low-Resource
+Adaptation of Speech LLMs
+Jing Peng1,∗, Chenghao Wang2,∗, Yi Yang1, Lirong Qian1, Junjie Li1, Yu Xi1, Shuai Wang3, Kai Yu1,∗∗
+1X-LANCE Lab, Department of Computer Science and Engineering, Shanghai Jiao Tong University
+1MoE Key Lab of Artificial Intelligence, 1Jiangsu Key Lab of Language Computing, China
+2AISpeech Ltd, Suzhou, China
+3Nanjing University, Suzhou, China
+{jing.peng, kai.yu}@sjtu.edu.cn, voldbaboon@gmail.com, shuaiwang@nju.edu.cn
+Abstract
+Speech LLM post-training increasingly relies on efficient cross-
+modal alignment and robust low-resource adaptation, yet col-
+lecting large-scale audio-text pairs remains costly. Text-only
+alignment methods such as TASU reduce this burden by simu-
+lating CTC posteriors from transcripts, but they provide lim-
+ited control over uncertainty and error rate, making curricu-
+lum design largely heuristic. We proposeTASU2, a control-
+lable CTC simulation framework that simulates CTC poste-
+rior distributions under a specified WER range, producing text-
+derived supervision that better matches the acoustic decoding
+interface. This enables principled post-training curricula that
+smoothly vary supervision difficulty without TTS. Across mul-
+tiple source-to-target adaptation settings, TASU2 improves in-
+domain and out-of-domain recognition over TASU, and con-
+sistently outperforms strong baselines including text-only fine-
+tuning and TTS-based augmentation, while mitigating source-
+domain performance degradation.
+Index Terms: speech large language models, speech recogni-
+tion, domain adaptation
+1. Introduction
+The rapid progress of large language models has accelerated
+Speech LLM research [1, 2]. However, strong Speech LLM
+performance often comes with heavy reliance on large-scale
+audio–text pairs and compute-intensive pipelines [3], making
+post-training, adaptation, and reproduction costly. Recent stud-
+ies therefore revisit lightweight alignment between speech and
+text representations, including TASU [4], LegoSLM [5], and
+AlignFormer [6].
+Among them, TASU (Text-only Alignment for Speech Un-
+derstanding) is particularly appealing because it enablestext-
+onlypost-training: it stochastically simulates CTC posteriors
+from transcripts, allowing training without paired audio while
+retaining real-audio inference. In practice, TASU can serve as
+an effective curriculum and improves recognition both on the
+source domain and under domain shift. Yet its simulation pro-
+vides limited control over posterior uncertainty and the resulting
+error regime, making difficulty scheduling largely heuristic.
+In parallel,low-resourcespeech understanding remains a
+persistent challenge [7]. Many target domains lack sufficient
+paired audio, and straightforward audio-based fine-tuning can
+yield unstable gains and noticeablesource-domain degrada-
+tion[8, 9]. Text-centric adaptation has been explored to reduce
+*These authors contributed equally.
+**indicates the corresponding author.
+the need for paired audio, including parameter-efficient tun-
+ing [10] and text-only updates of the language component [11].
+However, using plain text as the training signal still suffers from
+a mismatch to the acoustic decoding interface, and its improve-
+ments can be limited compared to stronger audio-based aug-
+mentation baselines such as TTS [12].
+To address both limitations, we proposeTASU2, acontrol-
+labletext-to-CTC simulation framework for Speech LLM post-
+training. Instead of relying on unconstrained stochastic simula-
+tion, TASU2 generates pseudo CTC posterior distributionsun-
+der a specified target WER range, producing text-derived super-
+vision that better matches the acoustic decoding interface. This
+enables a principled curriculum that smoothly varies supervi-
+sion difficulty and error profiles without TTS or paired audio.
+Experiments show that TASU2 strengthens text-only align-
+ment beyond TASU, improving recognition on thesource do-
+mainand undercross-domain generalizationwithout any audio-
+text training. More importantly, under low-resource transfer set-
+tings, TASU2 consistently outperforms strong baselines includ-
+ing text-only adaptation [11] and TTS-based augmentation [12],
+while better preserving source-domain performance.
+In summary, our contributions are:
+• We introduce aWER-conditionedtext-derived post-training
+signal by simulating calibrated CTC posterior distributions
+from transcripts, bridging the gap between plain text supervi-
+sion and the acoustic decoding interface.
+• We develop a controllable text-to-CTC simulator that gener-
+ates posterior sequences under a specified WER range, en-
+abling explicit control over supervision difficulty and error
+profiles for curriculum design.
+• We demonstrate consistent gains over TASU on both source-
+domain and generalization evaluations without audio train-
+ing, and competitive improvements in low-resource transfer
+over text-only and TTS-based augmentation baselines.
+2. Text-only Alignment: From TASU to
+TASU2
+CTC introduces a blank symbol and marginalizes over align-
+ments, collapsing frame-level posteriors into compact label se-
+quences via blank removal and repetition merging [13, 14].
+This compact representation has inspired several speech-LLM
+alignment methods, like AlignFormer and LegoSLM. However,
+these methods still rely on paired audio–text data and exhibit
+performance drops under limited supervision.
+TASU eliminates the need for paired data by simulating
+CTC posteriors from text alone. During inference,Label-
+6405
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-866
+One-hot Vector
+Real CTC
+LP Encoder
+Decoder
+wer LP
+Concat
+Q
+K, V
+Pseudo CTCCE Loss
+Simulator
+LP
+b. The Structure of Simulator and Training details
+LibriSpeech Corpus 
+Augmented + Original Dataset 
+Low-WER Subset (WER < 5%)
+Interval 1
+wer: 0–6%
+Interval 2
+wer: 10–40%
+Interval 3
+wer: 50%+
+c. Simulator Training Data Construction
+3-Level Data
+Augmentation
+Evenly divided into 3 WER
+Intervals
+Simulator
+One-hot Vector
+5%  wer
+20% wer
+50% wer
+Pseudo CTC
+a. The function of Simulator 
+Hello, this is Daniel speaking.
+Figure 1:An Overview of TASU2.
+Synchronous Decoding (LSD)[15, 16] compresses real audio-
+derived CTC posteriorsP∈R T×V by removing frames where
+the blank probability exceeds a thresholdτ:
+P′
+t =
+(
+∅,ifP t(<blank>)>τ,
+Pt,otherwise, (1)
+and then merges consecutive identical frames via averaging:
+P′′
+t = 1
+|Sj|
+X
+t∈Sj
+P′
+t, j= 1,...,J.(2)
+For text-only training,CTC Posterior Simulation (CPS)gener-
+ates pseudo-posteriors ˜Sfrom token sequences by applying ran-
+dom label smoothing (˜p=αδ y + (1−α) 1
+V 1), deletions, and
+insertions (blanks or duplicates). A projector trained on these
+simulated posteriors maps them into a frozen LLM, enabling
+zero-shot speech recognition and, when used as a curriculum
+pre-training stage, improved domain generalization.
+Despite its effectiveness, TASU’s simulation remains un-
+controlled and may not fully capture real acoustic-phonetic con-
+fusions. This raises two questions:controllabilityandfidelity,
+which we focus on in TASU2.
+3. TASU2: WER-Controllable Text-to-CTC
+Posterior Simulation
+As motivated in related work, a key question in text-only align-
+ment is whether a simulator can generate CTC-like posteriors
+that areboth(i) close to real acoustic posteriors and (ii) con-
+trollable to support principled curricula and low-resource
+adaptation. We address this withTASU2, which learns acon-
+trollable text-to-CTC posterior simulatorthat outputs pseudo
+CTC posterior sequences conditioned on a transcript and a dis-
+crete WER control code. Fig. 1 overviews the pipeline.
+3.1. Task and Notation
+Let the transcript be a token sequencey= (y 1,...,y U)from a
+tokenizer with vocabulary sizeV(including the CTC blank).
+TASU2 learns a simulator that maps(y,c)to a posterior-
+frame sequence ˆP= ( ˆp1,..., ˆpT ), where ˆpt∈[0,1] V andPV
+v=1 ˆpt,v = 1. The control codec∈{1,...,K}indicates a
+target WER interval (e.g., 1,2,3 or low/medium/high).
+3.2. Training Signal: Distribution-level Supervision
+As described in detail in Algorithm 1, for each utterance, a
+teacher ASR system provides a real CTC posterior sequence
+P= (p 1,...,p T ⋆). SinceT ⋆ varies, we pad to a fixed hori-
+zonT train with a validity maskm∈{0,1} Ttrain. We train the
+simulator with posterior-level cross-entropy:
+Lsim(θ) =E
+"
+− 1P
+tmt
+TtrainX
+t=1
+mt
+VX
+v=1
+pt,v log ˆpt,v
+#
+.(3)
+Thisdistribution-matchingobjective encourages CTC-like
+structure like blank dominance and token confusability, which
+is more faithful to acoustic decoding than text-only perturba-
+tions.
+3.3. Architecture Design of Simulator
+We instantiate the simulator as a lightweight Transformer
+encoder–decoder (Fig. 1(b)). The transcript is embedded and
+combined with a learned embedding for the WER codec, which
+conditions generation. The decoder autoregressively outputs
+one posterior frame per step. During training we use teacher
+forcing; at inference time, the simulator runs autoregressively
+conditioned only on(y,c).
+3.4. WER-conditioned Data Construction
+To obtain controllable supervision, we need thesametran-
+script paired with teacher posteriors spanning different error
+regimes. Following Fig. 1(c), we sample onlya one-seventh
+portion of LibriSpeech and generate multiple augmented vari-
+ants (noise/reverb). For each variant, we run a teacher ASR
+model to obtain a greedy hypothesis ˜yand CTC posteriorsP.
+We compute WER(˜y,y)and map it to one ofKWER intervals
+to form the control codec. Using discrete intervals reduces sen-
+sitivity to measurement noise and alleviates skewed WER dis-
+tributions, yielding a more stable control signal. And we train
+the simulator on this data.
+3.5. Simulator Fidelity Analysis
+We further assess whether the simulator indeed reproduces
+acoustic-likeCTC posteriors and whether the WER control be-
+haves as intended. We consider two complementary aspects:
+(i) Posterior similarity to teacher CTC (unconditioned).We
+compare TASU2 against the TASU baseline simulation (without
+6406
+Algorithm 1:TASU2: WER-Conditioned Text-to-
+CTC Simulation
+Input:Transcripty, vocab sizeV(incl. blank), WER
+bins{Ik}K
+k=1, teacher ASRT, augmentorA,
+horizonT train
+Output:Simulator parametersθ
+1(1) Build multi-WER supervision
+2foreachutterance(x,y)do
+3Generate augmented waveforms{x (j)}←A(x)
+4foreachx (j) do
+5Obtain teacher posteriorsP (j)←T CTC(x(j))
+6Obtain greedy hypothesis ˜y(j)←T greedy(x(j))
+7ComputeWER (j) = WER(˜y(j),y)and
+assignc (j)←bin(WER (j);{Ik})
+8Store tuple(y,c (j),P (j))
+9(2) Train conditional simulator
+10whilenot convergeddo
+11Sample a tuple(y,c,P)
+12PadPto lengthT train and build maskm
+13Predict ˆP←p θ(·|y,c)with teacher forcing
+14Updateθby minimizingL sim in Eq. (3)
+Table 1:Posterior similarity metrics (lower is better except
+Acc).
+Method CE↓KL↓Acc↑ProbDiff↓
+TASU-style baseline 2.5149 2.3372 0.8220 0.0813
+TASU2 (AR simulator)1.2296 1.0497 0.8782 0.0615
+WER conditioning) using distribution-level metrics between
+teacher posteriorsPand simulated posteriors ˆP:
+CE = 1
+N
+NX
+t=1
+
+−
+VX
+v=1
+pt,v log ˆpt,v
+
+,
+KL = 1
+N
+NX
+t=1
+VX
+v=1
+pt,v logpt,v
+ˆpt,v
+,
+Acc = 1
+N
+NX
+t=1
+I
+
+arg max
+v
+pt,v = arg max
+v
+ˆpt,v
+
+,
+ProbDiff = 1
+N
+NX
+t=1
+max
+v
+pt,v−max
+v
+ˆpt,v
+,
+(4)
+whereNis the number of valid frames. As shown in Table 1,
+TASU2 yields substantially lower CE/KL and improved argmax
+agreement, indicating closer matching to real CTC posteriors.
+(ii) WER controllability (conditioned).To verify controllabil-
+ity, we inject WER-bin codes and decode the simulated poste-
+riors with a fixed decoder, then measure the realized WER for
+each bin. Fig. 2 reports the empirical WER distributions across
+bins, showing that TASU2 reliably separates error regimes and
+tracks the target intervals.
+4. Experiments
+To validate the effectiveness and controllability of TASU2, we
+evaluate (i) text-to-CTC alignment quality and cross-domain
+bin 1
+(0-6%)
+bin 2
+(10-40%)
+bin 3
+(50-150%)
+0.005
+0.01
+0.02
+0.06
+0.1
+0.14
+Probability Density
+WER Distribution
+bin 1
+bin 2
+bin 3
+Figure 2:WER controllability under WER-bin conditioning.
+generalization, and (ii) low-resource domain adaptation.
+4.1. Model Architecture
+Our simulator is a Transformer encoder–decoder with 6 encoder
+and 6 decoder layers and hidden size 512. It takes a tran-
+script and a WER-bin ID as input and autoregressively gener-
+ates pseudo CTC posterior frames. For the Speech LLM, we
+follow TASU [4] and use SenseV oice-Small [17] as the speech
+encoder and Qwen2.5-1.5B [18] as the LLM, connected by a
+Linear–SiLU–Linear projector.
+4.2. Datasets
+We pre-train the CTC simulator on one-seventh of LibriSpeech
+(960h) [19] with augmentation, to learn a general mapping
+from linguistic units to acoustic-like posterior distributions. For
+Stage 2 post-training, we synthesize pseudo CTC supervision
+from text-only corpora in LibriSpeech and Medical [20]. We
+evaluate on LibriSpeech (test-clean/other), Medical (8h), TED-
+LIUM 3 [21], SlideSpeech [22], and CoV oST2 En→Zh [23].
+4.3. Training and Evaluation Setup
+WER-conditioned simulation.We discretize the realized
+teacher WER into three bins: 0–6% (low), 10–40% (medium),
+and 50–150% (high). Unless otherwise stated, we use bin 1 for
+conditioning in the main experiments.
+Two-stage post-training.Stage 1 trains on simulated supervi-
+sion with learning rate5×10 −5 for 5 epochs. Stage 2 adapts
+the model using simulated text from the target domain (Medical
+or SlideSpeech), following the same optimization protocol.
+Optimization.We use AdamW with DeepSpeed ZeRO-2 on
+8×Ascend 910B NPUs. LoRA (rank=16,α=32) is used only
+for the two-stage adaptation setting in Table 4.
+5. Evaluation and Analysis
+We evaluate TASU2 from three perspectives. Table 2 probes
+whether simulated posteriors improve CTC-style alignment
+and cross-domain generalization without audio training. Ta-
+ble 3 provides a lightweight multi-task sanity check beyond
+ASR. Our key result is Table 4, where TASU2 achieves strong
+low-resource target gains while largely preserving source-
+domain performance, outperforming both text-only adaptation
+and TTS-based augmentation.
+6407
+Table 2:Alignment and generalization of simulated CTC
+training.All models are trained on LibriSpeech and evaluated
+on LibriSpeech, SlideSpeech, and TED-LIUM; WER (%)↓is re-
+ported.TASU2 conditions: ● None (no WER conditioning);
+❍ WER-binned (coarse 3-level WER bins; we use bin 1 here).
+System Train Data Libri Slide TEDText (Audio, Text)clean/other
+TASU Libri – 4.57 / 9.90 24.07 19.36
+TASU Libri+Slide – 4.21 / 10.31 18.7013.23
+SLAM-CTC – Libri3.13/ 8.59 18.59 14.61
+TASU2● Libri – 4.63 / 9.8216.4114.02
+TASU2❍ Libri – 3.41 /8.1517.67 14.49
+TASU2❍ Libri+Slide – 3.94 / 8.25 17.31 13.93
+5.1. Alignment and Generalization
+We evaluate simulated CTC training on both in-domain and out-
+of-domain test sets to probealignmentandgeneralizationof
+TASU2. We start from ASR and further extend the evaluation
+to a multi-task speech understanding setting.
+ASR performance.As illustrated in Table 2, relative to the
+original TASU random simulation, TASU2 consistently im-
+proves in-domain recognition while yielding much stronger
+cross-domain transfer. In particular, TASU2 reduces WER
+markedly onSlideSpeechandTED-LIUM3, and in several
+cases becomes competitive with, or even surpasses, the strong
+SLAM-CTC audio baseline, despite using text-only training
+inputs. Moreover, when we expand the text side by adding
+SlideSpeech transcripts (Libri+Slide), TASU2 further improves
+on the target and TED sets, indicating that text expansion and
+posterior simulation are complementary: additional target-style
+text benefits transfer, while TASU2 provides the CTC-like su-
+pervision signal needed to make such text effective.
+To understand the role of controllability, we compare two
+simulator variants for generating pseudo posteriors:uncondi-
+tionedsimulation (None) andWER-binnedsimulation (coarse
+3-level bins; we use bin 1 here). The ablation reveals a clear
+trade-off. The unconditioned simulator tends to improve out-
+of-domain recognition (better Slide/TED WER), but it incurs
+noticeable regression on the source domain (worse Libri). In
+contrast, WER-binned conditioning yields a better balance be-
+tween alignment and transfer: it preserves strong generalization
+while substantially reducing source-domain degradation. These
+results support our design choice that lightweight, discrete er-
+ror control is useful not only for curriculum design, but also for
+stabilizing domain shift behavior in simulated-CTC training.
+Table 3:TASU2 performance under multi-task evaluation.
+TASU2uses WER-conditioned simulation with WER bins and
+is jointly trained on multitask dataset; here we use onlybin 1.
+Model
+Train audio
+duration(h)
+LibriSpeech↓
+clean/other (WER↓)
+CoV oST2↑
+En2Zh (BLEU↑)
+TASU 0 6.47 / 10.35 33.35
+TASU2 0 3.68 / 8.25 33.08
+SLAM 1.8k 3.30 / 7.24 37.34
+Step-Audio>1M 2.36 / 6.32 –
+Qwen2.5-Omni>1M 2.37 / 4.21 41.40
+Multi-task performance.Table 3 provides a lightweight multi-
+Table 4:Two-stage domain adaptation (source→target).All
+systems are first trained on the source domain (LibriSpeech)
+and then adapted to the target domain (Medical). We report
+WER%↓. LoRA is used for all systems for better performance.
+System Train data LibriSpeech Medical
+Stage 1 Stage 2clean/other test
+SLAM-CTC Audio
+– 2.43 / 6.07 17.55
+Raw text [11] 2.56 / 6.62 13.62
+TTS audio 2.72 / 6.80 12.79
+Raw audio 2.70 / 6.76 12.35
+TASU2 ❍ Text Sim-CTC – 2.94 / 7.16 15.34
+Text Sim-CTC Text Sim-CTC 2.96 / 7.2312.12
+task sanity check. Since TASU2 simulates CTC posteriors
+with WER-conditioned control, its supervision is most directly
+aligned with token recognition and decoding, so gains beyond
+ASR are not necessarily expected. Still, TASU2 substantially
+improves over TASU on LibriSpeech without using any train-
+ing audio, and remains competitive on CoV oST2, suggesting
+that CTC-style simulated supervision can transfer modestly be-
+yond pure ASR under a zero-audio regime.
+5.2. Domain Adaptation
+Section 5.1 indicates that TASU2 achieves stronger alignment
+and generalization. In this section, we turn to its domain adapta-
+tion capability, with a particular focus on low-resource settings.
+We study two-stage domain adaptation from a source domain to
+a low-resource target domain. LibriSpeech serves as the source-
+domain pre-training data (Stage 1), while the medical set sim-
+ulates a low-resource target domain for adaptation (Stage 2).
+We report WER on both LibriSpeech and the medical test set to
+jointly measuretarget improvementandsource retention.
+Table 4 highlights a clear trade-off in conventional adapta-
+tion: target-domain gains often come with reduced source reten-
+tion. For SLAM-CTC, adapting with target-domain audio (raw
+or TTS) improves the Medical WER to 12.35/12.79, but also
+shifts LibriSpeech from 2.43/6.07 to around 2.70–2.72/6.76–
+6.80, indicating a non-trivial source-domain drop.
+In contrast, TASU2 yields a more favorable low-resource
+transfer profile. Using only text-derived simulated CTC su-
+pervision for Stage 2, TASU2 achieves the best Medical
+WER of12.12, outperforming text-only adaptation (13.62) and
+TTS augmentation (12.79), and even slightly surpassing raw-
+audio adaptation (12.35). Meanwhile, source-domain WER
+remains nearly unchanged from 2.94/7.16 to 2.96/7.23 (only
++0.02/+0.07), demonstrating strong source retention. These re-
+sults suggest that WER-controlled posterior simulation provides
+an effective and stable alternative to target-audio-heavy fine-
+tuning when paired data is scarce.
+6. Conclusion
+We presentedTASU2, a WER-controllable text-to-CTC sim-
+ulator trained with distribution-level supervision. By generat-
+ing pseudo posteriors that better match acoustic CTC behavior,
+TASU2 provides stronger alignment signals for speech foun-
+dation models and Speech LLMs. Across evaluations, it im-
+proves robustness and cross-domain generalization, and enables
+effective source-to-target adaptation. In low-resource targets,
+TASU2 can outperform TTS-based augmentation, offering a
+practical alternative when paired audio is scarce.
+6408
+7. Generative AI Use Disclosure
+During the preparation of this work, we used generative AI tools
+for assistance. The AI tools were only employed for improving
+the presentation, readability, and formatting of the manuscript,
+as well as for auxiliary support in code development and verifi-
+cation. They were not used to generate any substantial content,
+core ideas, experimental design, analysis, or conclusions of the
+paper.
+8. Acknowledgments
+This work has been supported by the China NSFC Projects (No.
+92370206 and No. 62401377) and YangtzeRiver Delta Science
+and Technology Innovation Community Joint Research Project
+(Grant No. 2024CSJGG1100).
+9. References
+[1] J. Peng, Y . Wang, B. Li, Y . Guo, H. Wang, Y . Fang, Y . Xi, H. Li,
+X. Li, K. Zhang, S. Wang, and K. Yu, “A survey on speech large
+language models for understanding,”IEEE Journal of Selected
+Topics in Signal Processing, p. 1–32, 2025. [Online]. Available:
+http://dx.doi.org/10.1109/JSTSP.2025.3640535
+[2] S. Arora, K.-W. Chang, C.-M. Chien, Y . Peng, H. Wu, Y . Adi,
+E. Dupoux, H.-Y . Lee, K. Livescu, and S. Watanabe, “On the
+landscape of spoken language models: A comprehensive survey,”
+2025. [Online]. Available: https://arxiv.org/abs/2504.08528
+[3] A. Radford, J. W. Kim, T. Xu, G. Brockman, C. McLeavey,
+and I. Sutskever, “Robust speech recognition via large-
+scale weak supervision,” 2022. [Online]. Available: https:
+//arxiv.org/abs/2212.04356
+[4] J. Peng, Y . Yang, X. Li, Y . Xi, Q. Tang, Y . Fang, J. Li, and
+K. Yu, “Tasu: Text-only alignment for speech understanding,”
+2026. [Online]. Available: https://arxiv.org/abs/2511.03310
+[5] R. Ma, T. Chen, K. Audhkhasi, and B. Ramabhadran, “Legoslm:
+Connecting llm with speech encoder using ctc posteriors,”arXiv
+preprint arXiv:2505.11352, 2025.
+[6] R. Fan, B. Ren, Y . Hu, R. Zhao, S. Liu, and J. Li, “Alignformer:
+Modality matching can achieve better zero-shot instruction-
+following speech-llm,”IEEE Journal of Selected Topics in Signal
+Processing, pp. 1–10, 2025.
+[7] J. Zhao and W.-Q. Zhang, “Improving automatic speech recogni-
+tion performance for low-resource languages with self-supervised
+models,”IEEE Journal of Selected Topics in Signal Processing,
+vol. 16, no. 6, pp. 1227–1241, 2022.
+[8] Y . Takashima, S. Horiguchi, S. Watanabe, P. Garc ´ıa, and
+Y . Kawaguchi, “Updating only encoders prevents catastrophic
+forgetting of end-to-end asr models,” 2022. [Online]. Available:
+https://arxiv.org/abs/2207.00216
+[9] S. Burdisso, E. Villatoro-Tello, A. Carofilis, S. Kumar,
+K. Hacioglu, S. Madikeri, P. Rangappa, M. K. E, P. Motlicek,
+S. Venkatesan, and A. Stolcke, “Text-only adaptation in llm-
+based asr through text denoising,” 2026. [Online]. Available:
+https://arxiv.org/abs/2601.20900
+[10] F.-T. Liao, Y .-C. Chan, Y .-C. Chen, C.-J. Hsu, and D.-s. Shiu,
+“Zero-shot domain-sensitive speech recognition with prompt-
+conditioning fine-tuning,” in2023 IEEE Automatic Speech Recog-
+nition and Understanding Workshop (ASRU). IEEE, 2023, pp.
+1–8.
+[11] Y . Fang, J. Peng, X. Li, Y . Xi, C. Zhang, G. Zhong, and K. Yu,
+“Low-resource domain adaptation for speech llms via text-only
+fine-tuning,”arXiv preprint arXiv:2506.05671, 2025.
+[12] E. Casanova, C. Shulby, A. Korolev, A. C. Junior,
+A. da Silva Soares, S. Alu ´ısio, and M. A. Ponti, “Asr
+data augmentation in low-resource settings using cross-lingual
+multi-speaker tts and cross-lingual voice conversion,” 2023.
+[Online]. Available: https://arxiv.org/abs/2204.00618
+[13] M. Jung, O. Kwon, S. Seo, and S. Seo, “Blank collapse:
+Compressing ctc emission for the faster decoding,” 2023.
+[Online]. Available: https://arxiv.org/abs/2210.17017
+[14] K. Deng, S. Cao, Y . Zhang, and L. Ma, “Improving hybrid
+ctc/attention end-to-end speech recognition with pretrained
+acoustic and language model,” 2021. [Online]. Available:
+https://arxiv.org/abs/2112.07254
+[15] Z. Chen, W. Deng, T. Xu, and K. Yu, “Phone synchronous decod-
+ing with ctc lattice.

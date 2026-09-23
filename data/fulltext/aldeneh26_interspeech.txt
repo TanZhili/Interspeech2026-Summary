@@ -1,0 +1,486 @@
+Which Data Matter?
+Embedding-Based Data Selection for Speech Recognition
+Zakaria Aldeneh1, Skyler Seto1, Maureen de Seyssel1, Jie Chi1, Zijin Gu1, Takuya Higuchi1,
+Jee-weon Jung1, Shinji Watanabe2, David Grangier1, Barry-John Theobald1,
+Tatiana Likhomanenko1
+1Apple
+2Carnegie Mellon University
+zaldeneh@apple.com
+Abstract
+Modern ASR systems are typically trained on large-scale
+pseudo-labeled, in-the-wild data spanning multiple domains.
+While such heterogeneous data benefit generalist models de-
+signed for broad deployment, they pose challenges for special-
+ist models targeting specific domains: specialist models lack
+the capacity to learn from all available data. In this work, we
+study targeted data selection to address these challenges, se-
+lecting relevant subsets from100k hours of in-the-wild training
+data to optimize performance on target domains. We represent
+speech samples using embeddings that capture complementary
+characteristics—speaker attributes, phonetic content, and se-
+mantic meaning—and study how relevance and diversity along
+these axes when performing data selection affect ASR perfor-
+mance. Our experiments with CTC-based models show that
+training on a strategically selected5%subset can exceed the
+performance of models trained on the full data by up to36.8%
+relative WER reduction.
+Index Terms: speech recognition, data selection, speech repre-
+sentations
+1. Introduction
+The curation of large-scale training datasets has had a notable
+impact on speech processing tasks, including automatic speech
+recognition (ASR) [1–4]. Such datasets expose speech models
+to a wide range of acoustic conditions, speakers, and record-
+ing scenarios, enabling them to learn robust representations and
+achieve strong performance. However, such success is typically
+achieved with generalist models that have the capacity to lever-
+age the scale and heterogeneity of the training data. In practice,
+we often deploy specialist models tailored to specific domains
+or tasks—models that lack the capacity to learn from all avail-
+able training data effectively. For these specialist models, do-
+main mismatch between training and test conditions becomes
+essential: a specialist model cannot capture all the details of
+a large, heterogeneous dataset and must instead focus on data
+closely aligned with the target conditions. This scenario moti-
+vates our central question:Can we strategically select subsets
+of large-scale, in-the-wild data that enable specialist models to
+outperform models trained on the full dataset?
+Mismatch between the train and test domains along any di-
+mension of variation in speech can degrade performance. Prior
+work has shown, for example, that models trained primarily
+on read speech perform poorly when evaluated on spontaneous
+speech [5]. Similarly, the performance of models trained on na-
+tive accents degrades when applied to accented or non-native
+speech [6–8]. These observations highlight that not all training
+data are equally useful for a given target domain, and an ef-
+fective data selection strategy cannot rely on a single notion of
+similarity. Effective data selection, therefore, requires capturing
+relevance across multiple, complementary axes of speech vari-
+ability, rather than relying on a single notion of similarity when
+addressing the mismatch between train and test conditions.
+We study targeted data selection for ASR in the regime
+of large-scale in-the-wild training data (over100k hours) and
+specialist models with approximately10-100M parameters
+(production-size models). We represent speech samples using
+embeddings that capture diverse properties—speaker, phonetic,
+and semantic—and use them to select subsets of data that are
+both relevant to the target domain and diverse along these di-
+mensions. We analyze which characteristics matter most for
+downstream performance, and whether combining multiple rep-
+resentations yields additional gains. Our experiments span mul-
+tiple target datasets and operate at a scale representative of mod-
+ern ASR training pipelines that rely on large-scale in-the-wild
+pseudo-labeled data, offering insights into effective data selec-
+tion in that regime. Specifically, we show that one can achieve
+up to36.8%improvement in performance on target domains
+with data selection in this training regime, even with5%of the
+total available training data.
+2. Related Work
+Data selection has been studied in the context of ASR [9–19].
+Prior work approached the problem from several perspectives:
+improving training efficiency by reducing dataset size [9–12],
+selecting samples for active learning [13, 15], selecting sam-
+ples to annotate by humans under limited annotation bud-
+gets [14, 20], and improving domain-specific performance by
+prioritizing relevant data [16–19]. Our work focuses on the last
+setting: selecting relevant samples from large-scale in-the-wild
+training corpora to accommodate train/test mismatches to im-
+prove performance on a specific target domain.
+Confidence-based strategies have been widely used in semi-
+supervised and active learning settings, where samples are cho-
+sen based on model prediction confidence. However, selecting
+data solely based on confidence has been shown to be subop-
+timal for downstream performance [13]. These findings mo-
+tivated distribution-matching approaches that account for do-
+main mismatch. For example, Zhang and Rudnicky [9] se-
+lected subsets with uniform coverage over linguistic units such
+as words or phonemes. Other methods used learned representa-
+tions for data selection. Acoustic-based approaches have used
+i-vectors [21] and other low-level signal statistics to measure
+similarity between candidate and target samples. Lu et al. [18]
+641
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3073
+proposed unsupervised selection using discrete speech units de-
+rived from self-supervised models. Afshan et al. [17] used
+sequence-level confidence scores from pre-trained ASR mod-
+els to identify informative samples for domain adaptation. Ran-
+gappa et al. [22] combined domain classifiers with pseudo-label
+filtering to select unlabeled data for fine-tuning. In the context
+of self-supervised learning, Gody et al. [23] explored data selec-
+tion for fine-tuning pre-trained speech models on downstream
+tasks.
+We differ from prior work in three key aspects: (1)
+Scale: we operate on100k+ hours of in-the-wild pseudo-
+labeled data (Granary [24, 25]) to train production-scale spe-
+cialist models (10-100M parameters), whereas most prior work
+used small-scale datasets (e.g., Switchboard, LibriSpeech); (2)
+Multi-embedding selection: we capture complementary speech
+characteristics—speaker, phonetic, and semantic—and analyze
+both their individual impact and the benefits of combining them,
+rather than focusing on a single aspect; (3)Multi-target selec-
+tion: we balance relevance and diversity while selecting for
+multiple target domains simultaneously, rather than optimizing
+for one domain at a time.Overall, we study a setting increas-
+ingly common in practice: using large-scale, diverse in-the-
+wild pseudo-labeled data to train specialist ASR models for
+specific target domains.
+3. Approach
+3.1. Subset Selection
+LetD source denote a large-scale in-the-wild training dataset and
+Dtarget a small validation set drawn from the target domain. Note
+thatD target is small (e.g., one hour of speech) and insufficient
+for training a model from scratch. We seek to select a subset
+S⊂D source, substantially smaller than the full dataset, that is
+informed byD target and can be used to train an ASR model that
+performs well on the target domain. Letϕbe an embedding
+extractor that maps a variable-length utteranceu i to a fixed-
+size embeddingx i ∈R d, capturing relevant characteristics
+of the utterance. For example, ifϕis a speaker embedding
+function, similarity between embeddings reflects closeness in
+speaker characteristics. Using these embeddings, we can iden-
+tify source samples that are most relevant to the target domain.
+Specifically, for each candidate training samplex∈D source, we
+define its relevance to the target set as the maximum similarity
+to any target embedding:
+sim(x,D target) = max
+y∈Dtarget
+sim(x,y),(1)
+where sim(·,·)is a similarity measure, e.g., cosine similarity.
+A simple strategy would be to select the top-ksamples
+by this relevance score. However, this strategy can lead to
+redundant samples that provide overlapping information. To
+address this limitation, we use Maximal Marginal Relevance
+(MMR) [26], which balances relevance to the target set with di-
+versity among the selected samples in aniterativefashion. At
+each selection step, MMR chooses the next samplexby maxi-
+mizing:
+MMR(x) =λsim(x,D target)−(1−λ) max
+s∈S
+sim(x,s),(2)
+whereSis the set of samples already selected, andλ∈[0,1]
+controls the trade-off between relevance and diversity. This pro-
+cedure produces a subset that is both representative of the tar-
+get domain and non-redundant, improving model generalization
+compared to random selection.
+3.2. Embedding Selection
+Our data selection framework relies on an embedding function
+ϕ(·)that captures relevant characteristics of speech to quantify
+the similarity between source and target utterances. A key de-
+sign choice is therefore which characteristics of the speech sig-
+nal should be emphasized when defining relevance and diver-
+sity. We evaluate three embeddings—speaker embeddings[27],
+WavLM embeddings[28], andSBERT embeddings[29]—each
+capturing distinct aspects of speech. By comparing their ef-
+fectiveness within the same MMR-based selection framework,
+we can determine which characteristics are most important for
+data selection in ASR training and separate the benefits of
+embedding-based selection from other factors.
+Speaker Embeddings (Speaker Characteristics).Speaker
+embeddings are designed to encode speaker-specific attributes
+such as vocal tract characteristics, demographic cues, and
+speaking style, while being largely invariant to linguistic con-
+tent. However, prior probing studies [30] have shown that
+speaker embeddings capture additional factors beyond speaker
+identity. These factors include session conditions, recording en-
+vironments, data augmentations, and even transcription-related
+artifacts. As a result, using speaker embeddings for data se-
+lection biases the selected subset toward source samples whose
+speakers and acoustic conditions are most similar to those in the
+target domain.
+WavLM Embeddings (Phonetic Characteristics).WavLM
+embeddings are designed to encode phonetic and sub-phonetic
+information while being largely invariant to speaker identity and
+acoustic variations [28]. WavLM extends HuBERT [31] by in-
+corporating noise-robust and mixture-aware pretraining objec-
+tives, enabling it to learn phonetic representations that are in-
+variant to background noise, reverberation, and speaker over-
+lap. Prior probing studies on HuBERT have shown that its
+representations strongly correlate with linguistic units such as
+phones and articulatory features [32–34]. As a result, using
+WavLM embeddings for data selection biases the selected sub-
+set toward source samples that are similar to the target domain
+in terms of phonetic coverage and pronunciation patterns rather
+than speaker characteristics.
+SBERT Embeddings (Semantic Characteristics).SBERT
+embeddings [29] are derived from textual transcripts and cap-
+ture the semantic and syntactic properties of utterances. Us-
+ing SBERT for data selection emphasizes coverage of linguistic
+meaning, vocabulary, and sentence structure present in the tar-
+get domain. Using SBERT embeddings enables us to assess
+whether aligning the semantic distributions of the training data
+with those of the target domain improves ASR performance,
+especially in domains with distinctive topics or lexical distribu-
+tions. Unlike speaker or WavLM embeddings, SBERT embed-
+dings require access to transcripts.
+3.3. Multi-Embedding Subset Selection
+In the single-embedding setting, MMR selects samples based
+on a trade-off between relevance to the target domain and diver-
+sity among selected samples, using a single embedding type,
+ϕ(·). To use multiple embedding types, we can generalize the
+relevance and diversity computations as follows. Let each utter-
+anceu i haveKembeddings:
+x(1)
+i ,x (2)
+i ,...,x (K)
+i ;x (k)
+i ∈R dk,
+642
+where each embedding corresponds to a different captured char-
+acteristic of speech (e.g., speaker, phonetic, or semantic). For
+relevance to the target domain, we compute a similarity score
+for each embedding type and combine them via a weighted sum:
+simmulti(xi,D target) =
+KX
+k=1
+wk max
+y∈D(k)
+target
+sim
+ 
+x(k)
+i ,y (k)
+,(3)
+wherew k controls the contribution of thek-th embedding.
+Similarly, to encourage diversity, we compute for each em-
+bedding the maximum similarity between the candidate utter-
+ance and the already selected setS, and aggregate across em-
+beddings using a weighted sum:
+vi =
+KX
+k=1
+wk max
+s∈S
+sim
+ 
+x(k)
+i ,s (k)
+.(4)
+The generalized MMR selection criterion becomes:
+MMRmulti(xi) =λsim multi(xi,D target)−(1−λ)v i,(5)
+whereλ∈[0,1]again controls the relevance–diversity trade-
+off.
+This formulation corresponds to a late-fusion strategy,
+where relevance and diversity are computed separately within
+each embedding space and combined at the score level. As a
+result, samples that jointly satisfy multiple embedding criteria
+are favored. In particular, a candidate that is close to the tar-
+get domain across allKembeddings receives a high relevance
+score, while a candidate that is dissimilar to previously selected
+samples across all embeddings contributes to diversity and is
+therefore more likely to be selected. While an early-fusion al-
+ternative (e.g., concatenating embeddings prior to selection) is
+possible, late fusion offers greater interpretability and control
+by allowing explicit weighting of each embedding type viaw k.
+3.4. Multi-Dataset Subset Selection
+In some settings, we aim for a model that performs well on mul-
+tiple target domains, without training a model for each domain
+independently. In these settings, the target domain is composed
+of multiple datasets,D target ={D (1)
+target,...,D (M)
+target}, each corre-
+sponding to a different domain. To measure the relevance of a
+source sample with embeddingxto multiple target datasets, we
+consider two aggregation strategies: maximum aggregation and
+mean aggregation.
+In the maximum aggregation strategy, a source sample is
+considered relevant if it closely matches at least one of the target
+datasets:
+simmax(x,D target) = max
+m∈{1,...,M}
+max
+y∈D(m)
+target
+sim(x,y).(6)
+This formulation is equivalent to taking the union of the target
+data and then computing the maximum similarity between the
+target data and samples from that union. In the mean aggre-
+gation strategy, we define the relevance score by averaging the
+maximum similarity within each target dataset:
+simavg(x,D target) = 1
+M
+MX
+m=1
+max
+y∈D(m)
+target
+sim(x,y).(7)
+This formulation promotes selecting source samples that are
+useful across multiple target domains rather than overly special-
+ized to a single domain. The resulting relevance score is used
+within the MMR objective to balance relevance and diversity
+during subset selection.
+Table 1:Summary of source and target datasets used in our
+experiments. Granary serves as the large-scale, in-the-wild,
+training source data. The target datasets—LibriSpeech, Com-
+monVoice, and TED-LIUM—cover a wide range of domains.
+Dataset sizes (in hours) are reported when available.
+Type Dataset Hours (Train / Dev / Test)
+Source Granary (English) 102,458 / – / –
+Target LibriSpeech 961 / 10.5 / 10.7
+Target CommonV oice 1,594 / 27.1 / 26.9
+Target TED-LIUM 452 / 1.6 / 2.6
+4. Datasets
+We use the English portion of the Granary dataset as our pri-
+mary source of training data [25]. Granary is a large-scale,
+open-source, in-the-wild pseudo-labeled collection of speech
+recordings covering a wide range of speakers and acoustic con-
+ditions. Granary is based on YODAS [24] and provides a realis-
+tic regime that closely reflects the data conditions encountered
+when training speech models at scale, where large quantities of
+pseudo-labeled data must be used to construct effective training
+sets. Its large scale and diversity ensure that the subset selection
+process provides sufficient coverage to demonstrate effective-
+ness across different target domains. Although pseudo-labels
+may introduce some noise, the dataset’s scale and variability
+help mitigate this effect, and our experiments focus on measur-
+ing relative improvements through subset selection.
+To evaluate our subset selection approach, we consider
+three widely used target speech corpora:
+• LibriSpeech [35]: A high-quality dataset derived from audio-
+books, commonly used for ASR benchmarking. LibriSpeech
+contains both clean and noisy recordings across a diverse set
+of speakers.
+• CommonV oice English [1]: A crowdsourced dataset with
+recordings from speakers with varied accents and recording
+conditions. CommonV oice is useful for evaluating general-
+ization to real-world scenarios.
+• TED-LIUM [36]: A dataset of TED talk recordings, which
+introduces domain-specific challenges such as spontaneous
+speech, variable speaking rates, and diverse topics.
+These target datasets span a broad spectrum of domain char-
+acteristics and provide a diverse testbed for our data selection
+framework. Detailed statistics for all datasets are provided in
+Table 1.
+5. Experiments
+5.1. Main Experiments
+The goal of the first set of experiments is to assess whether train-
+ing on chosen subsets aimed at matching the target domain dis-
+tribution outperforms training on the full, large-scale training
+corpus.
+5.1.1. Setup
+Data.We use the English portion of Granary as our source
+training datasetD source, and LibriSpeech, CommonV oice, and
+TED-LIUM as our target domainsD target. The test sets of the
+target datasets are kept untouched; only their validation sets
+643
+Algorithm 1Batched Greedy MMR Subset Selection
+Input:Candidate embeddingsX∈R N×D , candidate durationsd∈R N , target embeddingsY∈R M×D , trade-off parameter
+λ∈[0,1], subset fractionα, prefilter fractionρ, batch sizeB.
+Output:Selected index setS.
+1:T←α PN
+i=1di ▷Target total duration
+2:Compute relevance scoresr i = maxy∈Y sim(Xi,y)for alli
+3:LetI←indices of the topρNcandidates ranked byr i ▷Relevance prefilter
+4:InitializeS←∅,D sel←0
+5:Selecti ∗ = arg maxi∈Iri
+6:S←S∪{i ∗},D sel←d i∗
+7:whileD sel <Tdo
+8:R←I\S ▷Remaining candidates
+9:ifR=∅then break
+10:end if
+11:Compute diversity scoresv i = maxs∈S sim(Xi,X s)for alli∈R
+12:Compute MMR scoresm i =λr i−(1−λ)v i
+13:Select top-Bindices fromRranked bym i
+14:S←S∪top-B, updateD sel
+15:end while
+16:returnS
+are used for subset selection. We apply Whisper normalizer1 to
+all transcripts and use the same8k-token word-piece tokenizer
+used in [37]. The audio is represented as80-dimensional log-
+mel filterbank features, extracted using a25ms sliding window
+with a10ms stride.
+Embeddings.We extract speech and text embeddings from
+pretrained models. Speaker representations are extracted from
+an MFA-Conformer speaker recognition model [38]. We use ac-
+tivations from the3072-dimensional penultimate layer. These
+embeddings are subsequently projected to256-dimensional
+space using Gaussian random projection [39]. 2 We use a pre-
+trainedWavLM Base+ 3 model with768-dimensional embed-
+dings to extract frame-level speech representations that primar-
+ily capture phonetic and acoustic information. These embed-
+dings are mean-pooled over time to obtain a single utterance-
+level representation, which is then projected to256dimensions
+using Gaussian random projection. Finally, to capture semantic
+information, we use SBERT with theall-MiniLM-L12-v2
+model to extract384-dimensional text-based sentence embed-
+dings.4 These embeddings are used at their original dimension-
+ality and are not projected to a lower dimension, as they are
+already compact.
+Model Architecture.We implement two variants of the Con-
+former model for our experiments: Conformer-Small and
+Conformer-Large. Conformer-Small (9M parameters) consists
+of a convolutional encoder with1D convolution (kernel size7,
+stride3,288filters) followed by16Conformer blocks with
+an embedding dimension of144,4attention heads,576MLP
+hidden units, and dropout of0.1. Conformer-Large (107M pa-
+rameters) follows the same architecture but with larger dimen-
+sions:1536convolutional filters, an embedding dimension of
+1https://github.com/openai/whisper
+2We quantify cosine preservation after random projection by com-
+puting the correlation of pairwise cosine similarities over100k ran-
+domly sampled pairs. We obtain a correlation of0.96and0.98for
+speaker and WavLM, respectively, indicating that Gaussian random pro-
+jection preserves relative geometry.
+3https://github.com/microsoft/unilm/blob/
+master/wavlm/README.md
+4https://sbert.net/docs/sentence_transformer/
+pretrained_models.html
+512, and2048MLP hidden units, while maintaining16Con-
+former blocks,4attention heads, and a dropout rate of0.1.
+Training Recipe.Models are trained for500k steps on
+8×A100(80GB) GPUs using AdamW optimizer and CTC loss.
+Each GPU processes batches of up to500seconds of speech.
+We apply gradient clipping with a maximum norm of0.5.
+We use SpecAugment [40] after10k steps with two frequency
+masks (maximum width30) and ten time masks (maximum
+width50, maximum time-masking ratio0.1). The learning rate
+is linearly warmed up to0.002over the first10k steps. Begin-
+ning at step200k, we apply a cosine decay schedule, which is
+updated every50k steps.
+Data Selection.We set the MMR trade-off parameter toλ=
+0.7, and ablate its effect in a later experiment. To scale MMR
+to large datasets, we implement several modifications to im-
+prove its efficiency: a batched selection procedure, candidate
+pre-filtering, and limiting the number of target embeddings via
+k-means clustering (k= 200). The detailed selection proce-
+dure is summarized in Algorithm 1.
+5.1.2. Results
+We present our experimental results in two parts. Tables 2 and 3
+establish the value of embedding-based data selection by com-
+paring models trained on the full Granary corpus, random sub-
+sets, and MMR-selected subsets across all three target domains.
+Table 4 then examines multi-dataset selection strategies. We ad-
+dress each of these comparisons in turn through the following
+questions.
+How does the performance of an ASR model trained on the
+large-scale Granary dataset compare to models trained di-
+rectly on the training sets of each target domain?Table 2
+shows that training on the large-scale Granary dataset consis-
+tently yields stronger cross-domain generalization than training
+directly on the in-domain data of each target dataset. Models
+trained exclusively on LibriSpeech or CommonV oice achieve
+the best performance on their respective domains but exhibit
+degradation when evaluated on mismatched test sets. Models
+trained on TED-LIUM, however, lag behind models trained on
+644
+Table 2:WER (%) of Conformer models trained on different source datasets. The models are evaluated on LibriSpeech (clean/other),
+CommonVoice (CV), and TED-LIUM test sets. Results are reported for both Conformer-Large and Conformer-Small architectures.
+“Granary (Random 5%)” denotes training on a randomly selected 5% subset of Granary, while “Granary (Full)” uses the complete
+dataset. Lower WER indicates better performance. Best results are shown inbold, and second-best results are underlined .
+Model Training Data LS-clean LS-other CV TED-LIUM
+Conformer-Small
+LS-9605.2 12.245.4 18.9
+CommonV oice 27.8 39.432.743.8
+TED-LIUM 13.5 24.5 41.39.4
+Granary (Full) 12.5 23.2 36.6 11.0
+Granary (Random 5%) 12.5 23.5 37.1 10.7
+∆%(Full→Random 5%)+0.0% +1.3% +1.4% -2.7%
+Conformer-Large
+LS-9603.2 8.040.4 14.9
+CommonV oice 12.6 21.319.321.4
+TED-LIUM 11.8 22.5 40.2 7.8
+Granary (Full) 6.7 14.3 25.4 6.5
+Granary (Random 5%) 7.1 14.9 26.2 6.9
+∆%(Full→Random 5%)+6

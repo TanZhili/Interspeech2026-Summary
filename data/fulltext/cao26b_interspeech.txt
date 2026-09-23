@@ -1,0 +1,407 @@
+Audio-NSP: Data-Centric Semi-Autoregressive Generation for Large
+Audio-Language Models
+Liang Cao1,∗, Xize Cheng2,∗, Dongjie Fu2, Weihao Wu1, Fuming You3, Zhiyong Wu1,∗∗, Haifeng Hu3
+1 Shenzhen International Graduate School, Tsinghua University, China
+2 Zhejiang University, China
+3 Tencent, China
+cao-l24@mails.tsinghua.edu.cn, chengxize@zju.edu.cn, zywu@se.cuhk.edu.hk
+Abstract
+Large Audio-Language Models (LALMs) suffer from high la-
+tency due to the autoregressive decoding of long audio se-
+quences. We propose Audio-NSP (Next Sequence Prediction),
+a framework that activates semi-autoregressive parallel gener-
+ation in pre-trained LALMs solely through data-centric Super-
+vised Fine-Tuning. By restructuring training sequences with
+blockwise attention, Audio-NSP enables simultaneous multi-
+token prediction without architectural modifications. Crucially,
+applying this to audio reveals a decoding dilemma caused by
+the entropy gap between deterministic text and highly vari-
+able audio tokens. To resolve this, we introduce a modality-
+aware dynamic truncation strategy. It applies strict thresholds
+for text and lenient thresholds for audio, preventing degenera-
+tion into single-step decoding while preserving fidelity. Experi-
+ments show Audio-NSP achieves speedups of up to 3.42x while
+significantly outperforming Multi-Token Prediction baselines in
+quality preservation.
+Index Terms: Large Audio Language Models, efficient infer-
+ence, semi-autoregressive generation
+1. Introduction
+The speech processing field is converging on Large Audio-
+Language Models (LALMs) [1, 2, 3, 4, 5]. While integrating
+speech and text into a shared autoregressive backbone enables
+seamless interaction, its deployment is bottlenecked by infer-
+ence latency. Discrete audio sequences are orders of magnitude
+longer than text, making token-by-token decoding prohibitively
+slow. Thus, enabling parallel decoding is imperative.
+Achieving parallel generation typically involves Non-
+Autoregressive (NAR) paradigms [6, 7, 8, 9] or auxiliary au-
+toregressive techniques. However, applying these to LALMs
+presents severe challenges. Native NAR architectures require
+pre-training from scratch, destroying the inherent cross-modal
+reasoning abilities of the foundation model. Alternatively,
+Multi-Token Prediction (MTP) [10, 11] and Speculative Decod-
+ing [12, 13] preserve the backbone but introduce separate draft
+models or prediction heads, increasing memory overhead. More
+importantly, employing lightweight auxiliary heads for aggres-
+sive multi-token prediction struggles to model complex continu-
+ous acoustic mappings, often causing severe quality degradation
+in audio tasks.
+To overcome this, we propose Audio-NSP (Next Sequence
+Prediction). Inspired by data-centric text generation like SDLM
+[14] and Block Diffusion [15], Audio-NSP extends standard
+next-token prediction to generating a dynamic-length sequence
+*These authors contributed equally.
+**indicates the corresponding author.
+simultaneously. It activates block-wise parallel generation
+solely through data-centric Supervised Fine-Tuning (SFT). By
+restructuring sequences, customizing attention masks and ad-
+justing loss function, our method achieves parallel decoding
+with zero parameter overhead.
+However, seamlessly applying parallel generation to unified
+models faces a severe decoding dilemma due to modal asym-
+metry. Text generation is tightly constrained by semantics and
+exhibits low entropy, whereas speech exhibits an inherent one-
+to-many mapping [16, 17], resulting in high entropy. Conse-
+quently, applying a strict text-calibrated confidence threshold to
+audio shrinks the dynamic sequence length to one, degenerat-
+ing the process into standard autoregressive decoding with no
+speedup. Conversely, employing fixed-step parallel decoding
+forces predictions across highly uncertain acoustic boundaries,
+severely destroying audio fidelity.
+We address this with a modality-aware dynamic truncation
+strategy. By differentiating between semantic text and acous-
+tic audio tokens, this mechanism adaptively adjusts the gener-
+ation step size: accelerating in high-confidence regions while
+reverting to fine-grained steps during high-entropy transitions,
+thereby balancing inference speed and fidelity. Our main con-
+tributions are summarized as follows:
+• We propose Audio-NSP, a data-centric semi-autoregressive
+framework for LALMs. It enables parallel decoding via data-
+centric SFT, requiring zero structural modifications.
+• We identify the decoding dilemma caused by modal entropy
+gaps and resolve it via modality-aware dynamic truncation.
+• Audio-NSP achieves significant speedups of up to 3.42×
+with superior quality preservation compared to MTP base-
+lines across understanding and synthesis tasks.
+2. Related work
+LALMs and NAR Paradigms.Recent LALMs, such as GLM-
+4-V oice [2], Kimi-Audio [4], and FunAudioChat [5], unify
+speech and text via shared autoregressive decoders. They
+achieve strong cross-modal reasoning but suffer from high la-
+tency due to excessively long audio sequences [18]. While
+native NAR models like SoundStorm [6], MaskGCT [7], and
+DIFFA [8, 9] offer parallel decoding, they are typically limited
+to specific audio tasks. Adapting generalist LALMs to NAR ar-
+chitectures incurs prohibitive data and compute costs compared
+to accelerating existing autoregressive models.
+Accelerating Autoregressive Inference.Techniques such
+as Speculative Decoding (e.g., SpecASR [13]) and MTP (e.g.,
+Medusa [10] and VITA-Audio [11]) generate multiple tokens
+per step but introduce architectural complexity and memory
+overhead. Moreover, lightweight draft heads struggle to main-
+4088
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1737
+P1 P2 T2 BoA A1 A3 EoAEoS
+P1 P2 T1 T2 BoA A1 A2 A3 EoAEoS T1 M M M A1 M M M
+T1 A2X
+Xtrain
+Label T2 BoA A1 A2 A2 A3 EoAEoS
+prompt response
+position 0 1 2 3 4 5 6 7 8 9 2 3 4 5 5 6 7 8
+text token audio token mask token
+randomly sample block
+(a)
+oringinal sequence block block
+Casual
+history
+context
+intra-block
+intra-block (b)
+P1 P2 T1Step t ： M M M
+P1 P2 T1 T2 BoA A1 A3
+predict
+P1 P2 T1 T2 BoA A1 A3
+verify
+Step t+1 ：P1 P2 T1 T2 BoA A1 M M M
+accept (c)
+Figure 1:Overview of Audio-NSP .(a) Training sequence construction:Sampled anchor-mask blocks are appended to the original
+sequence, with positional embeddings kept at their original logical positions and labels aligned to shifted ground-truth tokens.(b)
+Customized attention mask:The top-left area (orange) keeps causal attention for the prefix; the bottom-left area (yellow) lets each
+block attend to its historical context; the bottom-right area (green) enables bidirectional intra-block visibility while isolating different
+blocks.(c) Inference cycle:The model predicts a block in parallel, applies modality-aware dynamic truncation using strictτ text and
+lenientτaudio Top-1 thresholds, and accepts a variable number of tokens for the next step.
+tain acoustic fidelity for long audio sequences. In text, data-
+centric semi-autoregressive approaches like SDLM [14] en-
+able parallel block generation without structural modifications.
+However, no prior work explores this paradigm in LALMs
+or addresses the inherent modal asymmetry and entropy gap,
+which Audio-NSP directly solves.
+3. Methods
+3.1. Training sequence construction
+To enable efficient parallel generation without compromising
+the LALM’s pre-trained autoregressive capabilities, we append
+multiple prediction blocks to the original sequence.
+Formally, letX={x 1,x 2,...,x L}denote the original in-
+terleaved sequence of lengthL, wherex i can be a text or audio
+token. As illustrated in Fig 1(a), we randomly sample a set ofK
+starting indicesI={t 1,t 2,...,t K}from the response part of
+X. For each start indext k∈I, we construct an Anchor-Mask
+BlockB (k) of lengthW. This block consists of the anchor to-
+kenxtk followed byW−1learnable mask tokensM. The final
+training input sequenceX train is constructed by concatenating
+the original sequence with allKblocks:
+Xtrain = [X||B (1)||...||B (K)](1)
+where||represents concatenation. To ensure the model pro-
+cesses the appended blocks at their correct logical positions,
+their positional embeddingsP(·)are explicitly assigned to
+match the original sequence positions. Specifically, for the an-
+chor tokenx tk and its subsequent mask tokensM j (1≤j <
+W) in blockB (k), their positional IDs areP(x tk) =t k and
+P(Mj) =t k +j.
+3.2. Attention mask and loss design
+To train multiple blocks simultaneously without inter-block in-
+terference, we design a customized Attention MaskA. Concep-
+tually, the original sequence retains standard causal attention,
+while the appended blocks can attend to their actual historical
+prefix and other positions within the same block.
+Formally, for a query token at indexiand a key token at
+indexjinX train, lett k denote the original starting index of
+blockB (k). As illustrated in Fig 1(b), the maskA i,j∈{0,1}
+is defined as:
+Ai,j =
+
+
+
+1,ifi,j∈Xandj≤i
+1,ifi∈B (k),j∈Xandj≤t k
+1,ifi,j∈B (k)
+0,otherwise
+(2)
+The training objective is to predict the corresponding
+shifted ground-truth sequencey (k) = [xtk+1,...,x tk+W ]for
+each block. The loss is computed solely on the mask tokens
+using standard Cross-Entropy (CE):
+L= 1
+K·W
+KX
+k=1
+W−1X
+j=0
+CE(Pθ(·|V k,j), xtk+j+1)(3)
+whereV k,j denotes the valid visible context for thej-th token
+in blockk, as rigidly constrained by the maskA. With these
+modifications, we train the model to fit in block-wise generation
+via a standard SFT.
+The appended-block construction maximizes training effi-
+ciency. Standard in-place masking only replaces a small frac-
+tion of tokens, wasting computation on the majority of un-
+masked context tokens since the loss is only computed on
+masked positions. Conversely, our construction completely iso-
+lates the context prefix from the target blocks, allowing us to
+pack an arbitrary number of prediction blocks into a single se-
+quence (up to the maximum context window), thereby comput-
+ing parallel losses for all blocks in one forward pass.
+3.3. Modality-aware sequence prediction
+Unlike the training phase, inference operates one block at a time
+in a predict-verify-accept cycle.
+As shown in Fig 1(c), at each decoding stept, starting from
+the current sequence tailx t, we appendW−1mask tokens
+Mto get a mask block. The model predicts the probability
+distributions for this block in parallel, and samples tokens via
+4089
+Table 1:Main Results across diverse audio tasks. We report the absolute metric and its degradation (∆) relative to baseline. VITA-Base
+and VITA-MTP abbreviate the official VITA-Audio-Plus-Vanilla and VITA-Audio-Plus-Boost [11] models. For SQA, S→T evaluates
+the direct text response, and S→S evaluates the transcribed audio response.
+Task and metric Dataset VITA-Base VITA-MTP Ours (Audio-NSP) TPSMetric∆Degradation Metric∆Degradation
+ASR(WER↓)
+WenetSpeech-meeting 7.12 9.38+2.26 9.39+2.27 2.83×
+WenetSpeech-net [19] 6.90 8.97+2.07 7.99+1.09 2.90×
+AIShell-test [20] 1.94 4.72+2.78 2.29+0.35 3.17×
+LibriSpeech-clean [21] 2.00 3.13+1.13 2.88+0.88 3.42×
+LibriSpeech-other 4.60 7.07+2.47 5.98+1.38 3.21×
+Average4.51 6.65+2.14 5.71+1.20 3.11×
+SQA(ACC↑)
+LlamaQuestion [22] (S→T) 75.6 76.3+0.7 75.4−0.2 2.54×LlamaQuestion (S→S) 68.0 64.6−3.4 65.1−2.9
+TriviaQA [23] (S→T) 45.9 43.6−2.3 42.7−3.2 2.49×TriviaQA (S→S) 42.7 39.5−3.2 40.1−2.6
+WebQuestion [24] (S→T) 45.0 44.2−0.8 45.3+0.3 2.16×WebQuestion (S→S) 41.7 40.0−1.7 40.5−1.2
+Average53.15 51.37−1.78 51.51−1.64 2.40×
+TTS(WER/CER↓)
+Seed-test-zh [25] (CER) 1.13 1.32+0.19 1.31+0.18 1.89×
+Seed-test-en (WER) 1.85 2.21+0.36 2.13+0.28 1.93×
+Seed-test-hard (WER) 10.21 12.05+1.84 10.87+0.66 1.88×
+LibriTTS-test-clean [26] (WER) 1.89 2.21+0.32 1.94+0.05 2.01×
+Average3.77 4.45+0.68 4.06+0.29 1.93×
+the backbone’s default strategies. Then we verify the predic-
+tion confidence to determine an optimal acceptance lengthL
+(1≤L≤W). Finally, we append theseLaccepted tokens
+to the current sequence and discard the unaccepted part. This
+predict-verify-accept cycle repeats until an End-Of-Sequence
+(EOS) token is generated or the maximum length is reached.
+The determination ofLis critical. As analyzed in Sec-
+tion 4.3, we observe a distinct modality gap: text tokens exhibit
+sharp probabilities, whereas acoustic tokens show flatter distri-
+butions and higher entropy. Applying a uniform, text-equivalent
+threshold to audio tokens limits acceptance to a single token
+per step, causing the generation to degenerate into autoregres-
+sive decoding. To prevent this, we propose a modality-aware
+dynamic truncation strategy.Lis adaptively defined based on
+modality-specific criteriami∈{text,audio}:
+L= max{k|∀i≤k,C(ˆx t+i)>τ(m i)}(4)
+whereC(·)denotes the Top-1 confidence or similar metrics.
+We assignτ text = 0.8to ensure semantic precision andτ audio =
+0.2to accommodate acoustic diversity, enabling fluent audio
+generation despite the inherent high uncertainty.
+4. Experiments
+4.1. Settings
+Model and Training Configurations.We utilize VITA-Audio-
+Plus-Vanilla [11] as our backbone model and fine-tune it on a
+subset of its open-source training corpus. Following SDLM
+[14], we set the block length toW= 4. Rather than fixing
+the number of appended blocksK, we adopt a dynamic pack-
+ing strategy to maximize training efficiency. Specifically, for
+each sequence, we append blocks for all valid token positions if
+the total sequence length remains within the model’s maximum
+context window (L max). If it exceedsL max, we uniformly
+sampleKstarting indices until the length limit is reached. The
+model is trained using a learning rate of 5e-6 with a batch size
+of 256 for 140k steps.
+Benchmarks and Metrics.We evaluate our method
+across several benchmarks spanning Automatic Speech Recog-
+nition (ASR), Spoken Question Answering (SQA), and Text to
+Speech (TTS). We employ Paraformer [27] to transcribe Chi-
+nese speech and Whisper-large-v3 [28] to transcribe English
+speech. Generation quality is measured by Word Error Rate
+(WER) / Character Error Rate (CER) for ASR/TTS and Ac-
+curacy (ACC) for SQA. The inference speedup is reported as
+Tokens Per Step (TPS). It is calculated as the total number of
+generated tokens divided by the number of forward passes, rep-
+resenting a hardware-agnostic, theoretical acceleration ratio.
+4.2. Main results
+High Acceleration and Quality Preservation in Understand-
+ing Tasks.The main experimental results are summarized
+in Table 1. Our method demonstrates substantial acceleration
+across diverse tasks, achieving up to a3.42×speedup. Impor-
+tantly, compared to the Multi-Token Prediction baseline (VITA-
+MTP), Audio-NSP significantly better preserves the generation
+quality of the original autoregressive model. In ASR tasks,
+MTP suffers from a severe performance drop (e.g., a+2.78%
+WER degradation on AIShell). This indicates that forcing fixed-
+length token generation derails the model’s precise acoustic
+recognition. Conversely, our adaptive mechanism effectively
+prevents this degradation, restricting the WER increase to a
+marginal+0.35%while maintaining a3.17×speedup. Similar
+advantages in accuracy retention are observed in multi-modal
+reasoning scenarios (SQA).
+Superior Audio Fidelity in TTS.For audio generation
+tasks (TTS), Audio-NSP strictly outperforms MTP in gener-
+ation quality across all evaluated benchmarks, achieving con-
+sistently lower WER and CER. While the speedup in TTS
+(∼1.9×) is more moderate compared to ASR (∼3.0×), this
+is a deliberate consequence of our modality-aware design. Con-
+tinuous acoustic representations exhibit inherently high entropy
+and have extremely low error tolerance. To prevent highly un-
+4090
+Figure 2:Cumulative Distribution Function (CDF) of token
+confidence (left) and entropy (right). Text tokens exhibit sharp,
+high-confidence probabilities, whereas acoustic tokens display
+flatter distributions and higher entropy. The distributions are
+calculated from ASR/TTS task done on dataset seed-en [25].
+certain acoustic variations from corrupting audio fidelity, our
+system intelligently falls back to finer-grained generation steps.
+Thus, it successfully maintains high audio quality while still de-
+livering nearly a2×acceleration.
+4.3. Ablation and analysis
+To investigate the optimal configuration for blockwise infer-
+ence, we conducted ablation studies on the TTS task using a
+random subset of the Seed-test-en [25] dataset.
+The Modality Gap and the Necessity of Decoupling.We
+analyzed the confidence and entropy distributions of generated
+tokens. As illustrated in Fig 2, a distinct modality gap is ob-
+served. Text tokens exhibit sharp distributions with high con-
+fidence, whereas audio tokens show significantly flatter distri-
+butions. Statistics reveal that for audio tokens, seemingly low
+Top-1 scores like 0.4 already represent quite certain prediction.
+We hypothesize that this gap stems from the inherentone-
+to-many mappingnature of speech generation [16, 17]. Unlike
+text, a single semantic unit in speech can be realized through di-
+verse acoustic variations, such as pitch, duration, and prosody.
+This continuous latent space forces audio tokens to distribute
+their probability mass more broadly, resulting in higher en-
+tropy. Consequently, imposing a text-calibrated strict threshold
+on audio forces single-token acceptance, reverting the process
+to naive autoregressive decoding. This justifies our modality-
+aware design, which decouples the validation criteria for text
+and audio.
+Modality-Aware Dynamic Truncation vs. Fixed-Step.
+To evaluate the quality-efficiency trade-off, we sweep the audio
+thresholdτaudio across a range of 0.05 to 0.4, measuring gener-
+ation quality via 1-WER and speed via TPS. For the fixed-step
+baseline, we vary the constant acceptance lengthk, where the
+empirical TPS is naturally bounded by early sequence termina-
+tion upon encountering an EOS token.
+As shown in Fig 3, the dynamic strategy consistently out-
+performs the fixed-step approach. This superiority manifests
+in two aspects. First, it achieves a better overall quality-speed
+Pareto frontier by aggressively accepting tokens during stable
+acoustic segments and safely falling back to finer steps at com-
+plex boundaries. Second, sweeping the continuous threshold
+provides flexible and fine-grained acceleration control. In con-
+trast, fixed-step decoding is restricted to rigid discrete points,
+limiting its adaptability to specific deployment latency budgets.
+Based on this trade-off curve, we can select an optimalτ audio
+Figure 3:Quality-Efficiency Trade-off. Continuous dynamic
+truncation yields a smooth Pareto frontier and outperforms
+fixed-step decoding at comparable speedups.
+that maximizes acceleration while maintaining acceptable qual-
+ity. A similar selection process is applied to determine the text
+threshold.
+Exploration of Verification Metrics.Finally, we explored
+three distinct metrics to quantify uncertainty for dynamic trun-
+cation: Top-1 confidence, Top-10 sum, and Entropy. Their
+specific definitions aremax v∈VP(v)for Top-1 confidence,P10
+i=1Pi for Top-10 sum and− P
+v∈VP(v) logP(v)for En-
+tropy, whereVis the vocabulary andP(v)is the predicted prob-
+ability for tokenv.
+As shown in Fig 3, identifying appropriate parameter
+ranges allows all three metrics to achieve comparable trade-offs.
+We avoid a strict ranking among them, as their marginal differ-
+ences are easily overshadowed by random variance. Instead,
+this consistent performance highlights our framework’s robust-
+ness to the choice of truncation metric. Furthermore, Table 2
+details their relative advantage ranges, providing multiple vi-
+able configurations for dynamic truncation. Among them, Top-
+1 confidence remains an attractive default choice for practical
+deployment due to its zero-overhead computational simplicity.
+Table 2:Comparison of alternative verification metrics at their
+advantage range for audio generation.
+Metric Threshold Speedup(TPS) WER (%)↓
+Top-1 Confidence>0.20 2.13×2.64
+Top-10 Sum>0.60 2.61×2.81
+Entropy<4.50 3.23×3.39
+5. Conclusion
+We presented Audio-NSP, a novel framework transforming au-
+toregressive LALMs into blockwise generators without archi-
+tectural modifications. Through rigorous entropy analysis, we
+identified the inherent uncertainty of audio tokens and pro-
+posed a modality-aware dynamic decoding mechanism to mit-
+igate degradation in speech synthesis. Our method achieves a
+superior Pareto frontier between speed and fidelity compared
+to fixed-step approaches, delivering1.89×to3.42×speedups
+across diverse tasks.
+4091
+6. Acknowledgements
+This work was supported by National Natural Science Founda-
+tion of China (62076144) and National Natural Science Foun-
+dation of China (13&ZD189).
+7. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools exclusively for the purpose of language editing
+and manuscript polishing to improve readability. These tools
+were not used to generate any core scientific ideas, experimen-
+tal data, or technical contributions. All authors have thoroughly
+reviewed and approved the final version of the manuscript, and
+assume full responsibility for the integrity and entirety of its
+content.

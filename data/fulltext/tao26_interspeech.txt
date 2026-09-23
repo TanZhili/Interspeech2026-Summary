@@ -1,0 +1,480 @@
+ANCHOR: Autoregressive Non-intrusive Chunk-Ordered Refinement for Joint
+Multi-Resolution Speech Quality Modeling
+Zhuoyan Tao ID 1, Jiatong Shi ID 2, Hye-jin Shim ID 2, Shinji Watanabe ID 2
+1 University of Southern California, USA
+2 Carnegie Mellon University, USA
+terryt@usc.edu, jiatongs@cs.cmu.edu, shimhz6.6@gmail.com, shinjiw@ieee.org
+Abstract
+While speech quality is typically assessed on complete utter-
+ances, streaming and generative systems require incremental es-
+timation from partial audio. Existing predictors assume full con-
+text, degrading on prefix-constrained inputs. Extending ARE-
+CHO, we propose ANCHOR, reformulating incremental assess-
+ment as a multi-resolution autoregressive task. It models chunk-
+and utterance-level quality within a single decoder using dual-
+resolution tokens and a resolution-aware hierarchy for coarse-to-
+fine refinement. Experiments show substantial robustness under
+partial input, including a 48% PLCMOS error reduction on 2-
+second prefixes. Convergence analysis reveals a 4–6 s effective
+perceptual context horizon. A stress test further isolates struc-
+tured extrapolation biases under localized corruption. Results
+demonstrate that hierarchical supervision improves incremental
+prediction and elucidates how perceptual quality accumulates
+over time.
+Index Terms: speech quality assessment, incremental evalua-
+tion, autoregressive modeling, pseudo-MOS
+1. Introduction
+Many practical speech systems, such as streaming communica-
+tion [1], speech enhancement [2], and autoregressive generative
+speech models [3–9], operate under partial acoustic context, mo-
+tivating perceptual quality estimation before full utterances are
+observed. This incremental setting mirrors human speech per-
+ception, where listeners process acoustic signals as they unfold
+in time rather than waiting for utterance completion [10]. In
+contrast, most existing objective and learned quality predictors,
+including PESQ [11] and ViSQOL [12], are designed under a
+full-context assumption: a complete utterance is available before
+a score is produced.
+Beyond intrusive metrics, many learned non-intrusive qual-
+ity predictors are likewise formulated as utterance-level regres-
+sion problems, where a single global score is inferred from rep-
+resentations aggregated over the entire signal. While such full-
+context aggregation promotes stability under complete input, it
+implicitly assumes that all acoustic information is available at
+inference time and that perceptual quality is inherently a holistic
+property.
+This limitation is particularly pronounced for localized ar-
+tifacts such as short packet-loss bursts, clipping events, or brief
+background intrusions. Because these distortions are temporally
+sparse, prediction mechanisms that rely on utterance-level pool-
+ing or global contextual integration may attenuate their influence
+until sufficient future context is observed. As a result, early qual-
+ity estimates may not faithfully reflect perceptual degradation.
+To address the mismatch between full-context inference and
+prefix-constrained evaluation, we reformulate quality estimation
+as a multi-resolution autoregressive prediction problem built on
+ARECHO [13]. The model jointly predicts chunk-level and full-
+utterance perceptual metrics within a unified decoding frame-
+work. To stabilize supervision across resolutions, we introduce
+aresolution-aware decoding hierarchy, in which chunk-level
+metric tokens are generated first, followed by full-utterance to-
+kens. This coarse-to-fine schedule mitigates supervision conflict
+between local and global objectives while preserving a shared
+encoder–decoder architecture.
+We note that our evaluation targets operational pseudo-MOS
+estimators (PLCMOS, UTMOS, NISQA) that serve as stan-
+dard metrics in production systems (e.g., Microsoft Teams) and
+community benchmarks (e.g., DNS Challenge, V oiceMOS Chal-
+lenge). Our contribution is not a new perceptual ground truth
+but rather a newinference regime: predicting these established
+metrics incrementally from partial input, which none of them
+natively support. Our contributions are as follows:
+• We introduce joint chunk-level and full-utterance multi-metric
+supervision within a unified autoregressive framework.
+• We propose a resolution-aware decoding hierarchy that
+enforces structured coarse-to-fine prediction under prefix-
+constrained inference.
+• Through prefix-to-full convergence analysis, we show that
+chunk-first supervision improves packet-loss–sensitive mod-
+eling under partial context and reveals an effective perceptual
+context horizon for incremental quality estimation.
+• We design a controlled distortion stress test to isolate partial-
+context behavior, demonstrating that ANCHOR maintains sta-
+ble extrapolation under localized corruption. This confirms
+the model captures genuine perceptual accumulation rather
+than merely overfitting to artificial truncation boundaries.
+2. Related Work
+Traditional speech quality assessment has relied on intrusive met-
+rics such as PESQ [11], ViSQOL [12], and STOI [14]. While ac-
+curate, these methods require a clean, time-aligned reference sig-
+nal, limiting their utility in real-world scenarios where only the
+degraded signal is available. To address this, non-intrusive (no-
+reference) assessment has emerged as a critical field. Early deep
+learning approaches, including UTMOS [15], DNSMOS [16],
+and MOSNet [17], framed this as a scalar regression task target-
+ing Mean Opinion Scores (MOS). Other frameworks, such as
+NORESQA [18], NISQA [19], NOMAD [20] explicitly model
+specific signal distortions to improve interpretability and robust-
+ness.
+Recent literature has expanded the scope of non-intrusive
+assessment beyond speech to music and sound evaluation
+through frameworks like SongEval [21] and Audiobox [22].
+Furthermore, the field has seen a shift toward more complex
+5672
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-927
+modeling paradigms. UrgentMOS [23] introduced preference-
+based learning to better capture human subjectivity, while Uni-
+VERSA [24] and ARECHO [13] leverage joint multi-metric re-
+gression and autoregressive token-based formulations to capture
+multi-dimensional perceptual attributes. While these models pri-
+marily operate on a full-utterance basis, often overlooking the
+temporal dynamics of quality within a single stream, there is an
+increasing demand for short-segment and streaming assessment.
+Initial efforts in this space, such as ChunkMOS [25], evalu-
+ate independent segments, while ChunkSSL [26] analyzes how
+self-supervised learning (SSL) encoders degrade under partial
+input. A fundamental challenge here is the local-global coupling
+issue; layer-wise analyses [27] reveal that SSL representations
+become increasingly invariant to local signal properties at deeper
+layers, prioritizing global context. This creates a bottleneck for
+incremental prediction, as global context mixing in self-attention
+mechanisms can complicate prefix-based estimations [25].
+To overcome this issue, we propose ANCHOR, a unified
+framework designed for hierarchical resolution-aware decoding.
+ANCHOR reformulates quality assessment as a structured multi-
+resolution autoregressive task, using ARECHO as a backbone
+model. By modeling both chunk-level and utterance-level per-
+ceptual quality within a single decoder, we maintain full decoder
+depth while mitigating the local-global coupling issue. Draw-
+ing inspiration from streaming transformer architectures [28],
+ANCHOR manages temporal dependencies through structured
+decoding order, providing a foundation for incremental quality
+assessment.
+3. Method and Task Formulation
+3.1. Multi-Resolution Autoregressive Modeling
+ANCHOR extends ARECHO [13] by introducing dual-
+resolution metric query tokens and a resolution-aware decoding
+hierarchy. We leverage two properties fundamental to ARECHO:
+(1) a unified token space for heterogeneous perceptual metrics
+and (2) autoregressive conditioning that captures inter-metric de-
+pendencies. These enable hierarchical supervision, where chunk-
+level predictions provide a conditional anchor for full-utterance
+refinement within a single decoding sequence.
+We formulate quality estimation as conditional token gener-
+ation over a discretized metric spaceV. LetX denote the contin-
+uous acoustic feature space. Given partial inputx1:t∈X t and
+metric query tokens{q 1,...,q K}, the decoder models:
+Pθ(Y|x 1:t) =
+KY
+k=1
+Pθ(yk|y <k,x 1:t;qk),(1)
+whereqk is a learned task-specific query embedding andyk∈V
+is a quantized score token.
+A query sequence may take the form
+{<UTMOS>,<UTMOS full>,<PLCMOS>,<PLCMOS full>}.
+Here, <UTMOS> denotes prediction on the available prefix
+x1:t, whereas <UTMOS full> denotes prediction of the
+full-utterance UTMOS score using only x1:t as input. The
+distinction lies in the supervision target rather than the
+metric definition: <UTMOS full> is supervised with the
+full-utterance score while the input remains the prefixx 1:t.
+We define chunk-level metrics as evaluations on the cur-
+rently available prefixx1:t and full-utterance metrics as evalua-
+tions on the complete utterancex1:T . LetMc andMf denote
+the disjoint sets of chunk-level and full-utterance metrics, re-
+spectively, withM=M c∪M f . For mc∈M c, the target
+ 
+Transformer Decoder
+     Audio Prefix  
+  Prefix Metric
+Prediction 
+Utterance Metric
+Prediction Prefix Queries  
+Figure 1:Joint multi-resolution autoregressive modeling. Given
+prefixx1:t, the shared decoder generates chunk-level quality fol-
+lowed by full-utterance quality.
+is
+yc(t) =m c(x1:t),
+while formf∈M f , the target is
+yf =m f (x1:T ),
+although the model input remainsx 1:t.
+3.2. Resolution-Aware Decoding Order
+To structure the dependency between local and global quality, we
+impose a specific decoding order. LetYc∈V M andYf∈V N
+denote the chunk-level and full-utterance token subsequences,
+respectively, with (M+N=K) . By enforcing chunk-first
+decoding, whereY= [Y c,Y f ], the joint probability factorizes
+as:
+Pθ(Y|x 1:t) =P θ(Yc|x 1:t)Pθ(Yf|x 1:t,Y c).(2)
+By avoiding the typical multi-task training pitfall where lo-
+cal and global predictions are interleaved without causal order-
+ing, our hierarchy enforces a structured gradient conditioning
+that respects the causal relationship between local and global
+resolutions. By enforcing a chunk-first sequence, full-utterance
+prediction is explicitly conditioned on chunk-level outputs, effec-
+tively treating these localized quality estimates as intermediate
+latent variables.
+The model predicts fθ(x1:t)→(ˆy c(t),ˆyf ) and is trained
+with paired supervision (x1:t,yc(t),yf ). Figure 1 illustrates the
+setup.
+3.3. Discrete Autoregressive Objective
+Each continuous metric value is discretized into percentile-based
+bins (B=500) and mapped to a token inV, ensuring balanced
+token frequency; categorical metrics are mapped directly to dis-
+crete tokens without quantization. At inference, predicted tokens
+are mapped back via bin centroids. For heavy-tailed metrics (e.g.,
+SI-SNR), signed log compression is applied prior to binning.
+The model is optimized via cross-entropy under teacher forcing:
+L(θ) =E (x,Y)∼D
+"
+−
+KX
+k=1
+logPθ(yk|y <k,x 1:t;qk)
+#
+.(3)
+4. Experimental Setup
+4.1. Dataset and Prefix Construction
+Dataset.Experiments utilize theOverall Baseconfiguration
+from [13], spanning 308.8 hours of clean, corrupted, and synthe-
+5673
+sized speech. The training set contains 170,013 utterances span-
+ning clean speech (OWSM-V3 [29 –31]), simulated/enhanced
+speech (URGENT2024 [32], V oiceBank+DEMAND [33, 34]),
+and synthesized speech (V oiceMOS 2022 [35], NISQA [19]).
+We follow the same data splits and preprocessing protocol as
+ARECHO [13].
+Prefix Expansion.To realize the proposed chunk evalua-
+tion, we employ cumulative prefixes at{2,4,6,8} s. Utterances
+shorter than 2 s are discarded for training. For utterances with
+duration 2≤T <8 , only valid prefixes satisfying t≤T are
+generated. Each prefixx1:t is supervised with two targets: (1) a
+prefix-level pseudo-MOS computed on the truncated signalx1:t,
+and (2) a full-utterance target computed on the complete signal
+x1:T . The full-utterance target includes all metrics defined in
+the original ARECHO metric set, while the prefix-level pseudo-
+MOS is obtained by applying the same reference-free estimators
+to the truncated signal x1:t. For complete utterances (t=T ),
+the prefix-level and full-utterance targets coincide.
+Prefix expansion yields 583,983 samples (≈3.4× increase),
+which are split 80/20 into 467,657 training and 116,326 valida-
+tion instances.
+We note that this expansion introducesnew supervision
+signalsat distinct truncation points rather than repeating full-
+utterance labels; the metric-specific pattern of gains (see Sec-
+tion 5) contradicts a pure data-volume explanation. The Overall
+Dev split (8,700 utterances) yields 34,726 prefix instances after
+expansion; we evaluate on this split to ensure direct comparabil-
+ity with the ARECHO checkpoint.
+4.2. Supervision and Metrics
+We supervise prefix-level prediction using UTMOS, PLCMOS,
+and NISQA as reference-free pseudo-MOS targets. Full-
+utterance supervision uses the complete metric set defined in
+ARECHO (Section 3). Since ARECHO uses identical supervi-
+sion for full utterances, the comparison isolates the architectural
+contribution. All metric values are discretized as described in
+Section 3.3. We report Mean Absolute Error (MAE), Pearson
+Correlation (PCC), and Spearman Rank Correlation (SRCC),
+evaluated separately for chunk-level and full-utterance predic-
+tion.
+4.3. Hyperparameter Setup
+We initialize from a pretrained ARECHO model trained for full-
+utterance multi-metric prediction. The pretrained checkpoint is
+publicly available online. 1 Specifically, WavLM-Large [36] is
+used as the acoustic frontend and frozen during finetuning. The
+audio encoder contains 4 Transformer layers, while the autore-
+gressive decoder contains 12 Transformer layers with 8 attention
+heads and embedding dimension 256. The decoder vocabulary
+was expanded from 32926 to 65828 to include chunk-level and
+full-utterance metric tokens.
+During training, we adopt AdamW optimizer with learning
+rate 4×10−4 and a linear warmup over 50k steps. For loss com-
+putation, we adopt a label smoothing of 0.1. The batch size is
+set to 12 with a gradient accumulation of 2. As the model is
+initialized from a pre-trained model, we only set 15 epochs for
+training, when the final checkpoint is used for evaluation. During
+inference, we apply standard greedy decoding under the prede-
+fined resolution-aware token order (i.e., chunk-based metrics are
+first predicted).
+1https://huggingface.co/espnet/arecho_scale_
+v0.1-large-decoder
+2s 4s 6s 8s
+Prefix Length
+0.4
+0.5
+0.6
+0.7MAE
+(a) PLCMOS (↓)
+2s 4s 6s 8s
+Prefix Length
+0.20
+0.25
+0.30
+(b) UTMOS (↓)
+ANCHOR ARECHO
+Figure 2:Chunk-level prediction MAE across prefix lengths. (a)
+PLCMOS: ANCHOR consistently outperforms ARECHO. (b)
+UTMOS: ANCHOR wins at 2 s but a crossover emerges at longer
+prefixes.
+4.4. Baseline
+Our primary baseline is the pretrained ARECHO check-
+point [13], which predicts multi-metric quality tokens from com-
+plete utterances using the same WavLM frontend and decoder
+architecture. ARECHO is trained exclusively with full-utterance
+supervision and has no mechanism for prefix-based or multi-
+resolution prediction. At evaluation, this checkpoint is applied
+directly to prefix inputs without adaptation, providing a con-
+trolled comparison that isolates the effect of ANCHOR’s three
+additions: dual-resolution query tokens, chunk-first decoding or-
+der, and prefix-expanded training.
+5. Results
+We organize results around three questions: (1) Does chunk-
+first decoding improve prefix-based prediction? (2) How quickly
+does full-utterance prediction converge as context grows? (3)
+How do the two systems behave under controlled distortion?
+5.1. Chunk-Level: Local vs. Global Trade-off
+Figure 2 compares ANCHOR and ARECHO on chunk-level
+(prefix-evaluated) prediction.
+ANCHOR dominates on local-sensitive metrics.For
+PLCMOS, ANCHOR reduces MAE by 48% at 2 s and maintains
+consistent gains across all prefix lengths (33% at 4 s, 16% at 6 s,
+12% at 8 s). The chunk-first schedule, which commits to local
+estimates before global refinement, directly benefits metrics that
+capture short-time discontinuities.
+A structured crossover appears on global metrics.For
+UTMOS, ANCHOR improves at 2 s (MAE: 0.241→0.214, PCC:
+0.935→0.950), but ARECHO surpasses it beyond 2 s. This is
+architecturally expected: as the decoder conditions on the pre-
+ceding chunk tokens, its attention shifts toward local history at
+the expense of global integration. The trade-off is bounded and
+occurs where ARECHO already benefits from near-complete
+context. This asymmetry also serves as implicit ablation evi-
+dence: if the 3.4× data expansion alone explained the gains, all
+metrics should improve uniformly, whereas the structured diver-
+gence matches the predicted signature of chunk-first ordering.
+5.2. Full-Utterance Convergence from Partial Context
+Table 1 reports a different task from Section 5.1: how accu-
+rately ANCHOR predictsfull-utterancequality from each prefix
+length. ARECHO lacks prefix-to-full training and cannot per-
+form this task.
+Most perceptual evidence accumulates by 4 s.Across all
+five metrics, the largest MAE reduction occurs between 2 s and
+5674
+2 4 6 8
+Prefix Length (s)
+0.00
+0.05
+0.10
+0.15MAE Gap to 8s
+(a)
+2 4 6 8
+Prefix Length (s)
+0.6
+0.7
+0.8
+0.9Pearson Corr.
+(b)
+UTMOS
+DNS
+NISQA-Noise
+PLCMOS
+Figure 3:Prefix-to-full convergence under ANCHOR. (a) MAE gap drops sharply between 2 s and 4 s, with diminishing returns thereafter.
+(b) Pearson correlation stabilizes by 4–6 s, indicating an effective context horizon.
+Table 1:ANCHOR full-utterance prediction from prefixes. MAE
+(↓) and Pearson correlation LCC (↑).
+MAE(↓)LCC(↑)
+Metric 2 s 4 s 6 s 8 s 2 s 4 s 6 s 8 s
+PLCMOS 0.865 0.725 0.734 0.758 0.629 0.719 0.689 0.684
+UTMOS 0.236 0.183 0.184 0.176 0.934 0.959 0.963 0.968
+DNS 0.312 0.238 0.218 0.195 0.838 0.895 0.893 0.902
+NISQA-Noi 0.477 0.325 0.322 0.303 0.820 0.916 0.908 0.908
+NISQA-MOS 0.598 0.466 0.486 0.469 0.831 0.888 0.876 0.879
+4 s. LCC patterns corroborate this: UTMOS correlation rises
+sharply in this window (0.934→0.959), and DNS and NISQA-
+Noise show similar jumps. Beyond 6 s, both MAE and LCC
+plateau.
+Convergence patterns are metric-dependent.UTMOS
+converges monotonically (LCC steadily increases to 0.968 at
+8 s). In contrast, PLCMOS exhibits non-monotonic behavior:
+MAE temporarily undershoots the 8 s baseline at 4 s, and LCC
+peaks at 4 s (0.719) then declines. This over-correction is consis-
+tent with the chunk-first bias overweighting local cues.
+An effective context horizon emerges at 4–6 s.Figure 3
+visualizes these trends: the MAE gap drops sharply between
+2 s and 4 s with diminishing returns beyond 6 s, while Pear-
+son correlation stabilizes by 4–6 s across metrics. We interpret
+this 4–6 s stabilization as aneffectivecontext horizon: beyond
+roughly 4–6 s, additional context yields little improvement in
+predicting full-utterance quality. The divergence across metrics
+(non-monotonic PLCMOS vs. monotonic UTMOS) indicates
+that this reflects the behavior of the metrics themselves rather
+than a purely architectural artifact.
+5.3. Controlled Distortion Stress Test
+We designed a tightly controlled test to isolate extrapolation be-
+havior under aknown, fixedcorruption, not to establish general
+robustness. We injected att= 1.5 s into 100 dev-set utterances:
+(i) a 100 ms noise burst at 5 dB SNR, and (ii) a 200 ms packet
+drop (silence). Predictions on prefixes (2–8 s) were compared
+against clean full-utterance ground truth (Table 2).
+Signal-domain metrics show divergent extrapolation.
+ANCHOR exhibits consistent positive bias on SI-SNR and
+SDR, while ARECHO shows substantial negative bias, indicat-
+ing fundamentally different behavior when extrapolating from
+corruption-containing prefixes.
+Perceptual predictors are more aligned but still differ.
+Both systems show mild negative bias on UTMOS and DNS, but
+ANCHOR is consistently less pessimistic. For NISQA distortion,
+ANCHOR ismorepessimistic, reflecting greater sensitivity to
+Table 2:Mean prediction bias under controlled distortion (100
+utterances). Positive = optimistic relative to clean full-utterance
+quality.
+Metric Mean Bias (ANCHOR) Mean Bias (ARECHO)
+PLCMOS+0.257−0.140
+SI-SNR+1.075−2.427
+SDR+1.480−1.754
+UTMOS−0.104−0.156
+NISQA-dist−0.370−0.132
+structural corruption.
+Bias direction is metric-dependent, not system-
+dependent.Across 13 evaluated metrics, ANCHOR is less
+pessimistic in 8 and positively biased in 6. The largest
+divergence occurs in signal-domain measures, confirming that
+prefix-based prediction under distortion is governed by what
+each metric captures rather than a uniform system-level effect.
+6. Conclusion
+We introduced ANCHOR, a unified autoregressive framework
+for joint chunk-level and full-utterance speech quality model-
+ing. By enforcing a resolution-aware decoding hierarchy, we
+mitigate supervision conflict between local and global objec-
+tives. Experiments show that ANCHOR substantially improves
+packet-loss–sensitive perceptual modeling under short-context
+conditions, while revealing a structured trade-off with global
+MOS prediction. Prefix-to-full convergence analysis further sug-
+gests the presence of an effective context horizon, where approx-
+imately 4–6 seconds of speech provide sufficient information
+for stable approximation of full-utterance quality (within the
+2–8 s range evaluated). A controlled distortion stress test fur-
+ther confirms that extrapolation bias is metric-dependent rather
+than system-dependent, with ANCHOR maintaining more sta-
+ble behavior under localized corruption. We note that ANCHOR
+currently relies on a non-causal frontend and therefore does not
+constitute a fully streaming system. Nevertheless, it establishes a
+principled framework for prefix-based quality assessment, prior-
+itizing local perceptual robustness to support future low-latency
+deployment scenarios. We acknowledge that formal component-
+wise ablations (e.g., interleaved vs. chunk-first ordering) were
+not included; however, the metric-specific pattern of gains in
+Section 5 provides indirect evidence that the decoding hierarchy,
+rather than data expansion alone, drives the observed behavior.
+5675
+7. Acknowledgments
+This work used the Bridges-2 system at PSC and the Delta sys-
+tem at NCSA through allocations CIS210014 and IRI120008P
+from the Advanced Cyberinfrastructure Coordination Ecosys-
+tem: Services & Support (ACCESS) program [37 –39], which
+is supported by U.S. National Science Foundation grants
+#2138259, #2138286, #2138307, #2137603, and #2138296.
+8. Use of Generative AI Disclosure
+Generative AI tools were used to assist with code implemen-
+tation and debugging, and for minor language editing of the
+manuscript. All experimental design, analysis, and scientific
+claims are the authors’ own, and the authors take full respon-
+sibility for the work and its content.
+9. References
+[1] Y . Shi, Y . Wang, C. Wu, C.-F. Yeh, J. Chan, F. Zhang, D. Le,
+and M. Seltzer, “Emformer: Efficient memory transformer based
+acoustic model for low latency streaming speech recognition,” in
+ICASSP 2021 – 2021 IEEE International Conference on Acoustics,
+Speech and Signal Processing (ICASSP), 2021, pp. 6783–6787.
+[2] A. Defossez, G. Synnaeve, and Y . Adi, “Real time speech enhance-
+ment in the waveform domain,” inProc. Interspeech 2020, 2020,
+pp. 3291–3295.
+[3] Y . Wang, R. J. Skerry-Ryan, D. Stanton, Y . Wu, R. J. Weiss,
+N. Jaitly, Z. Yang, Y . Xiao, Z. Chen, S. Bengio, Q. Le, Y . Agiomyr-
+giannakis, R. Clark, and R. A. Saurous, “Tacotron: Towards end-
+to-end speech synthesis,” inProc. Interspeech, 2017.
+[4] N. Kalchbrenner, E. Elsen, K. Simonyan, S. Noury, N. Casagrande,
+E. Lockhart, F. Stimberg, A. van den Oord, S. Dieleman, and
+K. Kavukcuoglu, “Efficient neural a

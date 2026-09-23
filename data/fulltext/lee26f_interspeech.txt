@@ -1,0 +1,450 @@
+SEMamba++: A General Speech Restoration Framework Leveraging Global,
+Local, and Periodic Spectral Patterns
+Yongjoon Lee1, Jung-Woo Choi1,∗∗
+1 Korea Advanced Institute of Science and Technology (KAIST), Daejeon, Korea
+yongjoonlee@kaist.ac.kr, jwoo@kaist.ac.kr
+Abstract
+General speech restoration demands techniques that can inter-
+pret complex speech structures under various distortions. While
+State-Space Models like SEMamba have advanced the state-of-
+the-art in speech denoising, they are not inherently optimized
+for critical speech characteristics, such as spectral periodicity or
+multi-resolution frequency analysis. In this work, we introduce
+an architecture tailored to incorporate speech-specific features
+as inductive biases. In particular, we propose the Global, Lo-
+cal, and Periodic (GLP) module, a frequency feature extraction
+block that effectively and efficiently leverages the properties of
+frequency bins. Then, we design a multi-resolution parallel
+time-frequency dual-processing block to capture diverse spec-
+tral patterns, and a learnable mapping to further enhance model
+performance. With all our ideas combined, the proposed SE-
+Mamba++ achieves the best performance among multiple base-
+line models while remaining computationally efficient.
+Index Terms: General speech restoration, GAN
+1. Introduction
+General speech restoration (GSR) [1] refers to the task of re-
+covering high-quality speech from signals affected by a range
+of degradations, such as noise, reverberation, bandwidth limita-
+tion, and clipping. This problem is particularly relevant in real-
+world environments, where speech is often captured under ad-
+verse acoustic conditions or with limited recording equipment,
+resulting in multiple and overlapping types of distortion. Unlike
+speech denoising or dereverberation that aims topredictclean
+speech by removing noise or reverberation, GSR not only pre-
+dicts clean speech but alsogeneratesthe missing speech frag-
+ment so that the resulting speech is perceptually natural. This
+fragment may be high-frequency bands in bandwidth-limited
+situations or a high-amplitude signal in clipped scenarios. This
+hybrid nature has led to various approaches to solving GSR.
+Generative methods have been used for their high percep-
+tual quality and versatility in generating missing speech frag-
+ments. Universe [2] introduced score-based diffusion [3] to
+solve GSR, on which Universe++ [4] improved using a hy-
+brid of score-matching [3] and generative adversarial networks
+(GAN) [5]. ANYENHANCE [6] is a multi-task masked
+generative model (MGM) [7] utilizing prompt-guidance and
+self-critic mechanisms to successfully solve speech enhance-
+ment. In generative methods, language models (LMs) have
+also emerged as a viable option due to their generalization ca-
+pacity. MaskSR [8] is a masked language model (MLM) ca-
+pable of restoring full-band speech with discrete acoustic to-
+kens from pretrained neural audio codecs. LLaSE-G1 [9] ad-
+**indicates the corresponding author.
+dresses multi-task GSR utilizing a language model. However,
+LM-based methods require substantial amounts of training data.
+Surprisingly, discriminative methods, although thought to
+be less perceptually natural and versatile than generative meth-
+ods, yield impressive results in GSR. Discriminative meth-
+ods [10, 11] achieved high performance in GSR challenges such
+as URGENT [12] and AATC [13]. This success can be at-
+tributed to architectural improvements and advanced training
+techniques (e.g., improved loss functions) inherited from speech
+denoising. CMGAN [14] introduced a Conformer [15]-based
+encoder-decoder architecture with dilated DenseNets [16]. CM-
+GAN used metric discriminator [17] with reconstruction losses
+to directly optimize perceptual metrics. MP-SENet extended
+this framework by introducing parallel magnitude and phase de-
+coding. More recently, SEMamba [18] replaced the Conformer
+with Mamba [19], leveraging its selective state-space mecha-
+nism. For the aforementioned methods, separate feature extrac-
+tion for time and frequency bins has been a key design; a proce-
+dure referred to as time-frequency dual-path (TFDP) processing
+in this work. Unlike the image domain, where the height and
+width represent the same characteristics at different locations,
+the time and frequency bins in a speech spectrum exhibit het-
+erogeneous properties. To this, feature extraction across time
+and frequency bins has been implemented separately.
+Although time and frequency features are processed sepa-
+rately, both are often processed with modules of the same ar-
+chitecture [14, 18, 20]. To better reflect the distinction between
+time and frequency features, the design should be tailored to ad-
+dress a specific domain. In particular, frequency feature extrac-
+tion modules need to capture global, local, and periodic patterns
+of the speech spectrum effectively. Conformer [14] and Spatial-
+Net [21]-style frequency feature extraction have been popular
+choices for extracting global and local features by jointly us-
+ing full-band (global) modules and sub-band (local) modules.
+However, this frequency feature mixing may not be optimal for
+GSR due to the lack of local-global selectivity and the spec-
+tral periodicity modeling capacity. First, the serially connected
+local and global modules reduce selectivity: the model’s abil-
+ity to prioritize either local or global frequency representations
+depending on the degradation characteristics. This selectivity
+between local and global representations is critical, as degraded
+speech in GSR exhibits distinct characteristics across different
+degradation kernels. For example, the global branch should
+be prioritized for bandwidth extension, where the distortion is
+caused by the truncation of a wide spectral region. Moreover,
+the periodicity in frequency has also been underexplored, de-
+spite the importance of near-harmonic structures from vocal ex-
+citations. In this regard, a means to focus on global, local, and
+periodic feature modeling is required.
+Aside from the frequency feature extraction methods, the
+5166
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-665
+single-resolution TFDP processing may not be optimal in GSR.
+TFDP is often implemented at a single resolution—without
+aggressive down- or upsampling—to preserve fine details and
+minimize upsampling artifacts [22]. Since this design entails a
+high number of TF bins, the models are necessarily equipped
+with modules capable of modeling long sequences (or many
+bins) [14, 18, 23, 20]. Single-resolution processing faces two
+limitations. First, scaling model capacity via deeper or wider ar-
+chitectures incurs excessive computational overhead due to the
+long sequence length. A recent work [10] resolves this prob-
+lem by utilizing progressive block expansion strategies. This
+approach enables efficient training of high-capacity TFDP mod-
+els, but the training strategy is complex and does not alleviate
+the heavy computations during inference, which is critical in
+resource-restrained settings. Second, single-resolution process-
+ing misses opportunities for multi-scale feature extraction. For
+instance, in bandwidth-limited signals, information from low-
+frequency bins can be better propagated to high-frequency bins
+when downsampling is applied along the frequency axis. A re-
+cent study [24] uses multi-resolution sequential TFDP process-
+ing to resolve this issue, though the sequential TFDP processing
+does not fully exploit the diverse speech spectral patterns since
+TFDP-processed output from #1 affects TFDP processing at #2
+and #3 in Figure 1.
+Input Output
+Input Output
+Input Output
+TFDP #1
+TFDP
+TFDP #2 TFDP #3
+ds ds us us
+TFDP #1
+TFDP #2
+TFDP #3
+ds
+ds us
+us
+(a) Single-resolution (SR)
+(c) Multi-resolution (MR) parallel
+(b) Multi-resolution (MR) sequential
+Figure 1:Various TFDP processing methods. ds and us denote
+downsampling and upsampling, respectively.
+To resolve the aforementioned issues, we first propose Fre-
+quency GLP (Global, Local, and Periodic), a novel frequency-
+processing block that employs a parallel connection of the
+global periodicity (GP) module and the local (L) module. The
+GP module comprises a series of Fourier Analysis Network
+(FAN) [25] applied directly to the frequency bins, whereas the L
+module comprises a series of convolutional blocks. The method
+effectively leverages the intrinsic properties of the speech spec-
+trum, achieving the best performance over a range of advanced
+baselines. Note that FAN has been applied in GSR [10] to re-
+place the Multi-Layer Perceptron (MLP), but the direct appli-
+cation on frequency bins to capture the periodicity in spectral
+patterns has been underexplored.
+Second, motivated by multi-resolution parallel processing
+in the image domain [26], we design a multi-resolution paral-
+lel TFDP processing with frequency-only downsampling. Our
+architecture operates on three frequency resolutions while pre-
+serving the temporal resolution. By downsampling only along
+the frequency axis, the architecture enables efficient perfor-
+mance elevation without sacrificing temporal fidelity. To fur-
+ther capture diverse spectral patterns in degraded speech, we
+conduct parallel TFDP processing for each resolution. As illus-
+trated in Figure 1, this strategy allows each resolution to special-
+ize in distinct spectral patterns, since TFDP-processed results
+from #1 do not affect TFDP processing at #2 or #3. Related to
+our work, DCCRN [27] explored the U-Net architecture with
+frequency-only downsampling, but its feature processing is pri-
+marily focused on the most compressed resolution, and empiri-
+cal comparisons across different downsampling strategies have
+been underexplored. Overall, our contribution can be summa-
+rized as follows:
+• We propose Frequency GLP, a novel frequency processing
+module that effectively and efficiently captures global, local,
+and periodic frequency patterns. This improves restoration
+quality in both in-domain and out-of-domain scenarios.
+• We design multi-resolution parallel TFDP processing with
+frequency-only downsampling. We demonstrate that paral-
+lel processing allows the model to capture diverse patterns in
+the speech spectrum.
+• We propose a learnable softplus-based mapping that as-
+signs frequency-wise hyperparameters to leverage the dis-
+tinct properties of frequency bins.
+2. Preliminary
+2.1. Fourier Analysis Network
+Recently, FAN [25] has emerged as a promising alternative to
+the MLP in modern deep learning models. FAN utilizes Fourier
+analysis to promote the periodicity in data. Given the inputx∈
+Rdx, FAN is defined as follows:
+ϕ(x)≜
+
+cos(xWp)∥sin(xWp)∥σ(B¯p+xW ¯p)
+
+,(1)
+whereϕ(x),σ(·), and
+
+·∥·
+
+refer to the FAN operation, stan-
+dard activation (e.g., Gaussian Error Linear Unit (GELU)), and
+concatenation, respectively.W p ∈R dx×dp,W ¯p∈R dx×d ¯p,
+B¯p∈R d ¯p, and FAN operation outputsϕ(x)∈R 2dp+d ¯p. The
+FAN layer balances periodicity and general-feature modeling
+through the feature sizesd p andd ¯p. In addition, it is necessary
+to apply at least one linear layer after FAN so that the Fourier
+coefficients can be learned explicitly. Since its sine and co-
+sine activations share the same parametersW p, FAN can have
+a smaller parameter size than that of a vanilla linear layer with
+the same output dimension.
+3. Methodology
+The proposed model, illustrated in Figure 2(a), has an encoder-
+bottleneck-decoder architecture. Its encoder and decoder design
+is inherited from [28]. In short, the degraded speech is con-
+verted into the magnitude and phase spectrum using the Short-
+Time Fourier Transform (STFT), followed by power-law com-
+pression [28] of the magnitude spectrum. The spectrums are
+then fed to the dilated DenseNet [16]-based encoder, which ex-
+pands the channel dimension toCand halves the number of
+frequency bins toF ′ =F/2, whereCandFdenote the num-
+ber of channels and frequency bins, respectively. We haveN
+bottleneck blocks to perform TFDP processing, where we set
+Nto 4 andCto 48. After the bottleneck blocks, the features
+are passed through two dilated DenseNet-based decoders to es-
+timate the magnitude and phase components of clean speech
+in parallel. Particularly, the number of frequency bins is dou-
+bled toF= 2F ′ in the decoder. The magnitude is power-
+law-decompressed, followed by the inverse STFT to generate a
+clean waveform. All source codes and demos are available1.
+3.1. Frequency GLP
+Frequency GLP, shown in Figure 2(b), is the core module intro-
+duced for frequency feature extraction. We explain Frequency
+1https://sites.google.com/view/semambapp
+5167
+Figure 2:Overall architecture of SEMamba++ (a) and Frequency GLP (b). In (a), ”Mag. ”, ”Comp. ”, and ”Decomp. ” refer to mag-
+nitude, compression, and decompression, respectively. ”Conv” and ”TrConv” indicate the 2d convolution and transposed convolution
+that down- and upsample along the frequency axis. (b) describes Frequency GLP with frequency dimensionF′.
+GLP by describing its two key aspects. First, the model com-
+prises a parallel connection of the GP module and the L module,
+each addressing the full frequency band and subbands, respec-
+tively. After each module aggregates spectral features, the con-
+catenation followed by a pointwise convolution serves as a se-
+lection operator to adjust the information flow from both mod-
+ules and restore a speech fragment with a given degradation.
+The features are fed into a channel feedforward network (FFN)
+module to enhance the expressivity of frequency processing.
+The second main component of Frequency GLP is the FAN-
+based GP module. In the GP module, FAN is applied directly to
+the frequency axis rather than to the channel axis. Specifically,
+the linear layer is directly applied to frequency bins of dimen-
+sionF eff, after which the sine and cosine activations follow.
+Feff refers to the effective number of frequency bins in each
+resolution illustrated in Figure 2(a). This enables the module to
+learn periodicity in the frequency bins, such as harmonics, via
+a Fourier series approximation. The GP module first employs a
+FAN layer to expand the feature dimension fromF eff to2F eff,
+followed by another FAN layer that maintains the dimension at
+2Feff. Finally, a linear layer-based gating is applied to learn the
+Fourier coefficients. The L module, consisting of a series of
+1D convolutions with a kernel size of 3 and GELU activation,
+operates along the frequency axis to capture local relationships
+within subbands. The local module is beneficial in capturing
+spectral relationships that cannot be captured by the FAN-based
+GP module. Next, the architecture of the channel FFN module
+is the same as that used in the GP module, but with a transposed
+input so that the channel dimensionCserves as the input to the
+linear layer. This design homogeneity is not only for simplify-
+ing the model architecture but also due to the finding [25] that
+applying FAN to latent features also helps capture periodicity.
+We setdp toC/4for both the GP module and the Channel FFN
+module throughout our experiments.
+3.2. Multi-resolution parallel TFDP block
+We design a multi-resolution parallel TFDP block. Unlike
+single-resolution TFDP or multi-resolution sequential TFDP in
+Figure 1, we stack multiple TFDP modules within a single block
+in parallel to process features of multiple resolutions, as illus-
+trated in Figure 2(a). We downsample frequency bins by the
+factor of2 r wherer= 1,2,...,R−1for each resolution,
+andRdenotes the number of resolutions in a multi-resolution
+parallel TFDP block. Parallel processing allows each branch
+to process the same signal at a different scale independently,
+so they learn complementary features. The frequency down-
+sampling and upsampling are done by strided convolutions and
+transposed convolutions with a kernel size of (3, 4) and a stride
+of (1, 2), respectively, where the dimensions are ordered as
+(T,F), followed by instance normalization [29] and parametric
+ReLU (Rectified Linear Unit) [30].Tdenotes the number of
+time bins. Note that the downsampling and upsampling oper-
+ations retain the same hidden dimensionC. TFDP processing
+comprises Time Mamba [18] and Frequency GLP, with the ex-
+pansion factor set to 2 in Time Mamba. After the TFDP pro-
+cessing, the bottom resolution (with frequency dimension equal
+toF ′/4) is first merged with the middle resolution through
+channel-wise concatenation and a pointwise convolution. The
+resulting features are then fused with the top resolution outputs
+in the same manner. While drawing architectural inspiration
+from MIRNet [31], our work departs from it by conducting an
+analytical study in Section 5.3 on the complementary feature
+extraction capacity of the parallel TFDP processing, which was
+underexplored in the original framework. Furthermore, when
+combined with Frequency GLP, the proposed frequency-only
+downsampling exhibits significant efficiency, as it reduces the
+computational complexity of the FAN operation quadratically
+with respect to the effective dimensionF eff.
+3.3. Learnable softplus mapping
+Unlike conventional masking-based magnitude decoders, we
+employ a mapping-based magnitude decoder. Even though
+masking methods have demonstrated strong performance in de-
+noising [18, 28], they show inconsistent performance in band-
+width extension, where bandlimited signals have zero energy
+in the upper frequency components. Inspired by the learnable
+masking in MetricGAN+ [32], we design a learnable softplus
+as a mapping function. To capture frequency band-specific pat-
+terns, the model learns a distinct parameterβ f for each fre-
+quency bandf∈ {1,2,...,F}. The learnable softplus, for
+the inputxand the activation outputy, is defined as
+y=
+1
+βf
+log
+
+1 +eβfx
+
+,(2)
+3.4. Vocoder-style training objective
+While MetricGAN methods [18, 28] effectively optimize the
+Perceptual Evaluation of Speech Quality (PESQ) [33], training
+with PESQ as the only adversarial objective may bias the model
+toward focusing only on enhancing PESQ instead of capturing
+the full aspects of perceptual quality [34]. To address this, we
+adopt Least Squares GAN (LSGAN) [35], a widely validated
+5168
+adversarial loss in neural vocoding [36] and bandwidth exten-
+sion [37]. LSGAN does not approximate an explicit objective
+quality score (e.g., PESQ) and lets the generator learn a more
+generalized notion of perceptual quality, which is empirically
+validated in Table 8. Moreover, recent work demonstrates that
+LSGAN can encourage deterministic, clean waveform predic-
+tion from degraded inputs [38]. We use Multi-Scale Sub-Band
+Constant Q Transform Discriminator (MS-SB-CQTD) [39] and
+Multi-Resolution Discriminator (MRD) [40] as our discrimi-
+nators. For MS-SB-CQTD, we used three sub-discriminators,
+setting the number of octaves to 8 and the number of bins per
+octave to 12, 24, and 36, respectively. The remaining settings
+for MS-SB-CQTD and MRD follow the approach in [36]. The
+adversarial training objective is formulated as
+Ladv(G;D) =E x
+
+(D(G(x))−1) 2
+(3)
+Ladv(D;G) =E y
+
+(D(y)−1) 2
++Ex
+
+D(G(x))2
+,(4)
+whereyandxrepresent the clean and degraded waveforms,
+respectively.DandGrepresent the discriminator and the
+generator, respectively. To stabilize the training, we employ
+several reconstruction losses. We use spectrogram magnitude
+L1 lossL mag, anti-wrapping phase loss [41]L awp, consis-
+tency loss [42]L con, complex loss [14]L RI, multi-scale mel
+spectrogram loss [43]L mel, and feature matching loss [44]
+LFM. Forλ mag,λ awp,λ con, andλ RI, we followed the hy-
+perparameters introduced in the previous work [18]. We set
+λmel = 0.1andλ FM = 1.0. Our discriminator training objec-
+tive isLD =L adv(D;G), and the generator training objective
+is formulated as below:
+LG =λ advLadv(G;D) +λ magLmag +λ awpLawp+(5)
+λconLcon +λ RILRI +λ melLmel +λ FMLFM (6)
+4. Experimental settings
+4.1. Training
+DatasetsWe utilized VCTK (version 0.92) [45] for speech data,
+except for speakers in p280 and p315 due to technical issues.
+For noise data, we used WHAM! [46] and DNS Challenge
+2020 [47]. WHAM! consists of various recordings from urban
+locations, whereas the DNS challenge 2020 noise dataset com-
+prises sound clips from YouTube videos. To simulate reverber-
+ation, we used Arni [48] and the DNS5 challenge [49]. Data
+were sampled at 16 kHz and split into VCTK-GSRtrainand
+VCTK-GSRtest, following [50]. Note that the noise and room
+impulse response sources were also split into train-test subsets.
+Degradation simulationWe considered noise, reverberation,
+bandwidth limitation, and clipping for distortion simulation. In
+training, we randomly applied various distortions. The signal-
+to-noise ratio (SNR) ranged from -10 to 20 dB, covering ex-
+tremely noisy to clean conditions. Bandwidth reduction is ap-
+plied at multiple cutoff frequencies (2–7 kHz) using various
+filter types (e.g., Chebyshev Type 1, Butterworth) and orders
+(2–8) to achieve diverse spectral effects.
+Training configurationsThe segment size of 24,000 samples
+(1.5 seconds) was used for training. For STFT, we used a Hann
+window with a window length of 400 samples and a hop size of
+100 samples. For the proposed method and variants in ablation
+studies, we set the learning rate as 2e-4 and the AdamW [51]
+optimizer withβ 1 andβ 2 set to 0.8 and 0.99, respectively. The
+batch size was 8, and training was done for 100 epochs. An
+exponential learning rate decay withγ= 0.99was used.
+4.2. Evaluation
+DatasetsFor in-domain performance evaluation, we used the
+VCTK-GSRtestdataset. Separately, to check generalization
+capacity to unseen data domains and degradations, we utilized
+the official validation set and blind test set in URGENT Chal-
+lenge 2025 [12], the DNS 2020 test set [47], and the test set
+of CCF-AATC Challenge 2025 [13]. The URGENT validation
+dataset (URGENT 2025val) employs a wider range of degra-
+dation types and languages.2 The URGENT blind test set (UR-
+GENT 2025test) comprises real-world GSR data. The DNS
+2020 test set (DNS 2020test) is a real-world dataset with noise
+and reverberation. Lastly, the CCF-AATC test set encompasses
+the widest range of degradation types, including secondary arti-
+facts from imperfect neural network-based enhancements.
+Baseline methodsWe have selected various baseline meth-
+ods to comprehensively show the effectiveness of our proposed
+method. We used two MetricGAN-based effective SE networks,
+MP-SENet [28] and SEMamba [18]. Although their initial task
+was denoising, results on recent challenges [13] also showed
+surprising performance in GSR settings. For LM-based ap-
+proaches, we used LLaSE-G1 [9] and MaskSR [8]. For non-
+LM generative methods, we used Universe++ [4]and ANYEN-
+HANCE [6]. Lastly, we employed V oiceFixer [1] and USE-
+Mamba [11]. V oiceFixer [1] is the first unified framework for
+high-fidelity speech restoration that uses a two-stage approach
+to restore degraded speech from multiple distortions. USE-
+Mamba [11] extended SEMamba to GSR via a hybrid flow-
+matching [52] and regressive modeling approach. In our case,
+we utilized the version without Flow matching, which achieved
+the best performance in non-blind phase results among other
+variants [18].The loss is purely regressive towards minimizing
+sample point-wise distance without requiring a GAN or any
+generative method. For all the baseline methods, we followed
+the official training codes. For LLaSE-G1, we used noise sup-
+pression mode, which may have degraded GSR performance
+since it only supports denoising and dereverberation. For USE-
+Mamba, because the code was unavailable, we implemented the
+model as described in the original paper.
+Evaluation MetricsWe considered a range of neural and sig-
+nal processing-based speech quality metrics. For neural speech
+quality prediction, we utilized SCOREQ [53], UTMOS [54],
+and DNSMOS [55] to assess the overall perceptual quality and
+naturalness. For SCOREQ, we used the version trained on
+synthetic data quality prediction in no-reference mode to bet-
+ter

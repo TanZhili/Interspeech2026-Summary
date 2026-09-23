@@ -1,0 +1,480 @@
+Decoupling Search and Evaluation: Efficient Beam Decoding for Language
+Model-Based Text-to-Speech Synthesis
+Chenlin Liu ID 1, Jie Gao ID 2, Wei Zhou ID 3, Guangyan Zhang3, Minghui Fang ID 2, Jiqing Han ID 1,∗∗
+1 Harbin Institute of Technology, China
+2 Tsinghua University, Shenzhen, China
+3 Zhejiang University, China
+chenlin.liu@stu.hit.edu.cn, jqhan@hit.edu.cn
+Abstract
+Language model (LM)-based text-to-speech (TTS) systems typ-
+ically rely on sampling-based decoding, which suffers from
+stochastic instability. While beam search offers a maximization-
+based alternative, it is limited in speech generation due to severe
+degeneration (e.g., temporal collapse) and high latency. Our
+analysis reveals that beam search cost is highly imbalanced
+between search and evaluation stages. Motivated by this, we
+propose Search-and-eValuatE beam decoding (SaVE-Beam),
+which decouples hypothesis expansion from sequence scoring.
+Specifically, a lightweight student model performs chunk-wise
+beam construction, while the teacher LM retains exact evaluation.
+Hard repetition constraints are introduced to prevent degener-
+ate loops. Experiments show that SaVE-Beam achieves up to
+5.1× speedup over conventional beam search without degrading
+speech quality, and reduces WER by up to 50% compared to
+sampling, enabling practical maximization-based decoding for
+real-time LM-based TTS.
+Index Terms: speech synthesis, beam search, decoding strategy
+1. Introduction
+Language model (LM)-based text-to-speech (TTS) systems have
+recently achieved remarkable progress by modeling speech as
+sequences of discrete codec tokens and generating them autore-
+gressively [1, 2, 3, 4]. By inheriting the generative capabilities of
+LM, these systems enable high-fidelity synthesis, strong speaker
+consistency, and zero-shot generalization.
+Despite these advances, decoding in LM-based TTS remains
+fundamentally fragile. Unlike text tokens, where local token
+errors may be semantically recoverable, speech tokens encode
+tightly coupled phonetic and prosodic structures over long tem-
+poral spans. A single erroneous token can disrupt pronunciation,
+rhythm, or speaker characteristics, and due to strong temporal au-
+tocorrelation, such errors are often irreversible and may rapidly
+cascade [5]. Consequently, speech synthesis is highly sensitive
+to decoding decisions.
+In practice, most systems rely on sampling-based strategies
+such as top-k [6] or nucleus sampling [7], typically with conser-
+vative configurations to stabilize generation [8, 9, 10, 4], includ-
+ing low temperatures, small sampling thresholds, or confidence-
+based filtering [11, 12]. While sampling mitigates catastrophic
+failures, it sacrifices determinism and may still produce tail-
+sample errors. Maximization-based decoding, particularly beam
+search [13], offers a principled alternative by explicitly maintain-
+ing multiple high-probability hypotheses and reducing random
+fluctuations. However, applying beam search to LM-based TTS
+introduces two critical challenges: degeneration and latency.
+First, due to the low information density and strong tempo-
+ral redundancy of speech tokens, beam search tends to amplify
+**indicates the corresponding author.
+locally dominant acoustic patterns, leading to temporal collapse
+such as prolonged silence or noise loops[14]. We observe that
+soft repetition penalties are often insufficient to prevent such col-
+lapse under maximization-based decoding, motivating stronger
+structural constraints. Second, and more fundamentally, beam
+search incurs prohibitive inference cost. In autoregressive speech
+generation, latency is dominated by token prediction, and beam
+search multiplies this cost by expanding multiple hypotheses
+at each step. As a result, conventional beam search becomes
+impractical for real-time or low-latency TTS systems.
+In this work, we revisit beam search from a computational
+perspective. Our analysis reveals a pronounced imbalance: over
+98% of decoding time is spent on beam expansion (search),
+while sequence evaluation and selection account for only a small
+fraction. Motivated by this asymmetry, we proposeSearch-
+and-eValuatEbeam decoding (SaVE-Beam), a framework that
+decouples hypothesis expansion from sequence scoring through
+model specialization. Specifically, a lightweight student model,
+obtained via self-distillation, is responsible for constructing local
+beam trees, significantly reducing expansion cost. The original
+teacher LM is retained for exact evaluation and final selection to
+preserve generation quality. To prevent error accumulation intro-
+duced by the weaker student, we further introduce chunk-wise
+beam expansion, where student-led search and teacher-led eval-
+uation alternate in short segments. In addition, we incorporate
+hard repetition constraints during beam construction to explicitly
+suppress degenerate loops, which we find to be crucial for stable
+maximization-based speech decoding.
+Unlike distill-to-decode approaches that replace the origi-
+nal model during inference [15], SaVE-Beam does not transfer
+final decoding responsibility to the student. Instead, it sepa-
+rates search from evaluation, accelerating beam construction
+while maintaining the original decoding objective. Experiments
+demonstrate that SaVE-Beam accelerates conventional beam
+search by up to 5.1× while achieving comparable or improved
+speech quality. Compared to original sampling-based decoding,
+it further reduces WER by up to 50% without sacrificing latency,
+making maximization-based decoding practical for LM-based
+TTS. Our contributions are summarized as follows:
+• We analyze the computational bottleneck of beam search in
+LM-based TTS and identify the severe imbalance between
+search and evaluation stages.
+• We propose SaVE-Beam, a decoupled search-and-evaluation
+framework that accelerates beam search via model specializa-
+tion and chunk-wise beam expansion.
+• We provide comprehensive experiments showing that SaVE-
+Beam achieves up to 5.1× speedup over standard beam search
+with robust quality improvements.
+• We identify and validate the critical role of hard repetition con-
+straints in preventing temporal collapse under maximization-
+based decoding for speech generation.
+6636
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1531
+Table 1:Analysis of Beam Search in TTS. TPS measures de-
+coding speed in tokens per second. S/E% denotes the time
+proportion of the search and evaluation stages. T2W is the
+token-to-waveform time. RTF is the real-time factor of the full
+TTS system.
+Model LM Module T2W (s) RTF
+Decoding (s) TPS↑S% E%
+baseline 12724.92 25.40 – – 1962.83 1.14
++ TRAD-BS 58338.12 5.22 98 2 1938.00 4.95
+2. Method
+2.1. Beam Search for LM-based TTS
+Autoregressive decoding is central to language models and their
+downstream generation tasks. Maximization-based decoding
+aims to find the most probable token sequence and provides
+stronger determinism than stochastic sampling, which is desir-
+able in TTS for stability and faithfulness to the input text.
+Beam search (BS) is a canonical maximization-based strat-
+egy that can be decomposed into two stages:SearchandEval-
+uation. At each step t, the search stage expands the current
+beam setXt−1 of size B over the vocabulary V, producing
+|V|×B candidates. The evaluation stage computes cumulative
+log-probabilities and retains the top-B sequences. For any hy-
+pothesis (partial sequence) x1:t = (x 1,...,x t), we define its
+cumulative score as
+s(x1:t)≜
+tX
+τ=1
+logp(xτ|x <τ ).(1)
+Given the previous beam setXt−1, the candidate set is formed
+via one-step expansion:
+Ct ≜{x 1:t−1◦v|x 1:t−1∈X t−1, v∈V},(2)
+where◦ denotes sequence concatenation. The beam set is then
+updated by selecting the top-Bcandidates unders(·):
+Xt ≜TopB x∈Ct s(x).(3)
+Compared to sampling-based decoding, BS explicitly pro-
+motes high-likelihood hypotheses and reduces stochastic vari-
+ability, making it appealing for speech generation.
+2.2. Temporal Collapse
+However, directly applying standard BS to LM-based TTS often
+results in temporal collapse. Speech token sequences differ fun-
+damentally from text: they are substantially longer and exhibit
+strong temporal autocorrelation with low information density.
+Speech signals also contain abundant low-energy segments, such
+as pauses, inhalations, trailing phonation, and background noise,
+which manifest as repeated or homogeneous tokens in the dis-
+crete domain. Under uncertainty, the model tends to favor these
+high-prior patterns [3].
+Beam search further amplifies this tendency. By determinis-
+tically selecting the highest-probability continuation at each step,
+BS reinforces locally dominant acoustic regimes. Once decoding
+enters a silence- or noise-dominated region, the self-reinforcing
+feedback loop may lead to persistent token repetition, producing
+prolonged silence or noise artifacts.
+2.3. Latency Bottleneck Analysis
+Recent work such as TRAD-BS [13] mitigates degeneration via
+temporal repetition penalties and related refinements, enabling
+BS for LM-based TTS. Nevertheless, a critical limitation re-
+mains: prohibitive inference latency. In standard BS, both the
+expansion that constructsCt and the scorings(·) in Eq. (3) are
+computed by the same full model, leading to aB× overhead in
+autoregressive decoding.
+To quantitatively examine latency bottleneck, we reproduced
+TRAD-BS on CosyV oice2 and evaluated it on the test-zh subset
+of SeedTTS-Eval [16] with beam sizeB= 5 . Latency profiling
+on an NVIDIA RTX 3090 GPU is summarized in Table 1. Com-
+pared to sampling-based decoding, BS incurs a 4.86× slowdown
+in the LM decoding stage and a 4.34× slowdown in end-to-end
+generation, yielding a real-time factor (RTF) of 4.95. Such over-
+head makes conventional BS impractical for latency-sensitive
+TTS applications. Further analysis reveals that the bottleneck of
+BS primarily lies in the search phase, which accounts for 98%
+of total decoding time. This asymmetry suggests that search and
+evaluation need not share the same model capacity.
+2.4. SaVE-Beam
+Inspired by the above imbalance, we propose SaVE-Beam, a
+decoding framework that decouples hypothesis expansion from
+sequence scoring via model specialization. Instead of executing
+beam expansion with the full-scale LM, we delegate the search
+phase to a lightweight student model, while preserving exact
+evaluation with the original LM. The overall decoding pipeline
+is illustrated in Figure 1. This separation significantly reduces
+search cost without altering the decoding objective.
+2.4.1. Model Specialization Strategy
+In conventional beam search, each decoding step requires ex-
+panding all B active beams, resulting in B forward passes
+through the full-scale LM. For long speech token sequences,
+thisB× overhead accumulates severely across autoregressive
+steps.
+SaVE-Beam mitigates this bottleneck by assigning beam
+expansion to a compact student model distilled from the teacher
+LM. Crucially, the student model is not intended to replace the
+teacher for final decoding, but rather to specialize in constructing
+high-quality beam candidates. Since beam search relies primarily
+on relative token ranking rather than exact probability calibration,
+the student model is optimized to preserve token ordering among
+high-probability candidates.
+Inspired by the training-time test paradigm in EAGLE-3
+[17], we train the student model under self-referential autoregres-
+sive conditions. During training, the student’s own predictions
+are recursively fed back as inputs to simulate multi-step beam
+expansion, exposing it to its prediction errors and improving
+robustness under inference-time rollout.
+To emphasize rank preservation, we adopt temperature-
+scaled knowledge distillation. Given teacher logitst and student
+logitss, softened distributions are defined as
+pi = exp(ti/τ)P|V|
+j=1 exp(tj/τ)
+, q i = exp(si/τ)P|V|
+j=1 exp(sj/τ)
+,(4)
+whereτ >1 controls distribution smoothing. The student model
+is optimized via
+Ldistill =τ 2·L CE(p,q) =−τ 2
+|V|X
+i=1
+pi logqi (5)
+where theτ 2 factor follows standard gradient rescaling in dis-
+tillation [18]. Higher temperature encourages better alignment
+of high-probability token rankings, which is critical for reliable
+beam construction.
+6637
+·  ·  ·
+·  ·  ··  ·  ·
+Beam Chunk Beam Chunk
+·  ·  ·
+Student Model·  ·  ·
+retained acoustic token sequence
+Chunk-wise Beam Expansion
+Teacher Model
+Search Evaluation
+top-K LM Filter
+Tree Decoding
+Acceptance Check
+original LM    token distribution
+acceptance
+threshold
+Final Chosen Beam
+·  ·  ·
+append
+Next Expansion Round
+B width
+L chunk length
+retain
+N nodes
+Figure 1:Decoding pipeline of SaVE-Beam.
+2.4.2. Chunk-wise Beam Expansion
+To balance efficiency and fidelity, we propose chunk-wise beam
+expansion, alternating student expansion and teacher evaluation.
+Due to error accumulation in long acoustic sequences, it would
+degrade quality to let the student construct the entire beam tree.
+Instead, SaVE-Beam limits student expansion to short chunks
+of length L, after which the teacher evaluates and selects the
+highest-scoring beam segment to update the prompt.
+Search Stage.The student model constructs beam tree
+within a local search chunk. To prevent temporal collapse dis-
+cussed in Section 2.2, we enforce hard repetition constraints:
+tokens within a recent windoww are masked, i.e., their probabil-
+ities are set to zero and the remaining mass is renormalized. We
+deliberately avoid soft penalties, e.g., probability suppression
+[9, 13], which remain vulnerable to collapse under the student’s
+weaker predictions. This constraint exploits speech token redun-
+dancy to robustly suppress degenerate loops without degrading
+synthesis quality. Finally, a dynamic pruning strategy retains
+only the top-N nodes ranked bys(·) in Eq. (3) to enhance effi-
+ciency.
+Evaluation Stage.The teacher model performs tree-
+structured decoding [19] on candidate beams to extract precise
+distributionspT . Then we introduce LM filter to prune branches
+falling outside the teacher’s top-K tokens at each position, i.e.,
+a tokenyt is rejected ifyt /∈TopK
+ 
+pT (·|x <t)
+
+. Inspired by
+speculative decoding [20, 21], we adopt a deterministic accep-
+tance check to verify student-proposed tokens with the teacher.
+LetpS denote the student’s predictive distribution, for each re-
+maining tokenyt, we compute
+rt = min
+
+1, pT (yt|x <t)
+pS(yt|x <t) +ϵ
+
+,(6)
+and accept yt iff rt ≥α , where ϵ is a small constant and
+α is a fixed threshold. For each candidate path b, let ℓb be
+the length of its longest accepted prefix and define Sb =Pℓb
+t=1 logpT (yb,t |x <t). We select the output path using
+lexicographic orderingb∗ = arg maxb(ℓb,Sb), i.e., maximize
+accepted length first and break ties by Sb. For the first re-
+jected position on the selected path, we fall back to the teacher
+model to emit the next token under hard repetition constraints:
+xnext = arg maxv∈V\RpT (v|x) , whereR contains tokens
+appearing in the most recent teacher window of sizew.
+Chunk decoding summary.For each chunk, SaVE-Beam
+proceeds deterministically as: (i) student model expands a beam
+tree forL steps with hard repetition masking and per-step top-
+N pruning; (ii) teacher model runs tree-structured decoding
+and applies top-K filtering; (iii) teacher model accepts tokens
+using Eq. (6) and selects b∗ by arg max(ℓb,Sb); (iv) teacher
+model emits one fallback token under the same hard repetition
+constraint and continues to the next chunk.
+Distinction from Speculative Decoding.While resembling
+the draft-verify paradigm of speculative decoding, SaVE-Beam
+differs fundamentally. Speculative decoding accelerates infer-
+ence by maximizing token acceptance rates, offering limited
+quality gains. Conversely, SaVE-Beam targets beam search la-
+tency while strictly preserving its goal of finding high-probability
+sequences. By decoupling search and evaluation with rigorous
+constraints, it accelerates generation without compromising the
+robustness of maximization-based decoding. Existing specula-
+tive decoding for TTS adopts Medusa-like architectures [22, 23],
+with no open-source implementation directly comparable to our
+chunk-wise student–teacher framework.
+3. Experiments
+3.1. Datasets & Baseline
+We use LibriTTS [ 24] and the premium subset of Wenet-
+Speech4TTS [ 25] for training. For evaluation, we use the
+SeedTTS-Eval benchmark [16]. CosyV oice 2 [26], a standard
+LM-based TTS architecture, serves as the foundation model
+for SaVE-Beam. We further reimplement TRAD-BS [ 13] on
+CosyV oice 2 using the recommended configuration (beam size
+B= 5 with temporal and beam-wise repetition penalties) to
+establish a fair baseline.
+3.2. Implementation Details
+Experiments are conducted on 8 NVIDIA H800 GPUs for train-
+ing and a single RTX 3090 for evaluation. We use CosyV oice2-
+0.5B variant with 1–2 hidden layers as the student model, with
+distillation temperatureτ= 2 . For chunk-wise beam expansion,
+we set chunk lengthL= 5 and beam widthB= 8 . Dynamic
+pruning retains top-N= 100 nodes. Hard repetition constraints
+use window sizes w= 10 (search) and w= 15 (evaluation).
+The LM filter keeps top-K= 5 candidates, with acceptance
+thresholdα= 0.5.
+3.3. Experimental Results
+3.3.1. Metrics
+We evaluate efficiency and synthesis quality separately. For
+efficiency, we report the decoding speed of the LM module
+measured in tokens per second (TPS), as well as the real-time
+factor (RTF) of the complete TTS system. For synthesis qual-
+ity, we assess the generated speech in terms of content consis-
+tency (Word Error Rate & Character Error Rate, W/CER; using
+Whisper-large-v3 [27] for English and Paraformer-zh [28] for
+Mandarin), Speaker Similarity (SS; measured by CAM++ [29]
+6638
+Table 2:Evaluation Results across test sets with different decod-
+ing methods. SR: Speed Ratio compared with TPS; SaVE-Beam-
+1h/2h: 1 or 2 hidden layers used in model specialization strategy.
+MOS is reported with 95% confidence interval.
+Set Model TPS↑SR↑W/CER↓SS↑MOS↑
+en
+ground truth – – 2.74 0.82 4.03 ± 0.09
+baseline 26.35 1.00 3.69 0.81 3.92 ± 0.13
++ TRAD-BS 5.63 0.21 5.51 0.81 4.25 ± 0.11
++ SaVE-Beam-1h 21.85 0.83 1.92 0.82 4.19 ± 0.12
++ SaVE-Beam-2h 22.21 0.841.83 0.82 4.28 ± 0.10
+zh
+ground truth – – 1.31 0.78 3.91 ± 0.13
+baseline 25.40 1.00 1.26 0.84 3.89 ± 0.12
++ TRAD-BS 5.22 0.21 0.91 0.84 3.95 ± 0.14
++ SaVE-Beam-1h 23.98 0.94 0.93 0.84 3.98 ± 0.16
++ SaVE-Beam-2h 23.92 0.940.84 0.84 4.03 ± 0.13
+hard
+baseline 25.15 1.00 7.860.82 3.88 ± 0.15
++ TRAD-BS 4.93 0.20 8.54 0.81 3.70 ± 0.14
++ SaVE-Beam-1h 24.39 0.977.320.80 3.86 ± 0.13
++ SaVE-Beam-2h 25.69 1.02 7.57 0.80 3.84 ± 0.14
+cosine similarity), and speech naturalness (Mean Opinion Score,
+MOS), where 13 Mandarin and 12 English native speakers rated
+40 utterances per method on a 1–5 integer scale.
+3.3.2. Comparison with Baseline
+As shown in Table 2, SaVE-Beam substantially improves speech
+quality over the original sampling-based decoding strategy from
+CosyV oice 2 on bothtest-enandtest-zh. W/CER are reduced
+by 50% and 33%, respectively, with additional gains in MOS.
+Meanwhile, the decoding speed remains comparable to the base-
+line. Regarding SS, perceptual differences are minimal when SS
+values are sufficiently high, for example above 0.7 [13].
+Compared with TRAD-BS, which follows a more conven-
+tional beam search paradigm, SaVE-Beam achieves more robust
+and efficient quality improvements. It significantly reduces the
+decoding latency of the LM module, achieving a speedup of
+3.9× to 5.1×. This headroom allows a larger beam, contribut-
+ing to the observed quality gains over full beam search. These
+results collectively indicate the effectiveness and robustness of
+SaVE-Beam when applying beam search to LM-based TTS.
+3.3.3. Detailed Analysis
+We further analyze thetest-zhsubset to examine computational
+redistribution between search and evaluation, as well as the over-
+all system RTF. As shown in Table 3, SaVE-Beam leads to a
+noticeable reduction in the time proportion of the search stage
+compared with TRAD-BS. This verifies that SaVE-Beam suc-
+cessfully decouples the two stages and reallocates their compu-
+tational responsibilities in a more efficient and balanced manner,
+which leads to a significant improvement in overall decoding
+efficiency. As a result, the system RTF approaches that of the
+baseline, greatly enhancing the practicality of beam search in
+LM-based TTS.
+The comparison between the 1-layer (1h) and 2-layer (2h)
+students further reveals a trade-off between model capacity and
+decoding efficiency. Although both variants generate a compara-
+ble number of effective tokens in the final decoding output, the
+1h student model, due to its limited fitting capacity, produces
+beam candidates that are more frequently rejected during evalua-
+tion. This leads to additional chunk expansions and thus more
+decoding steps overall. Consequently, the 1h variant does not
+exhibit clear speed advantages despite its smaller model size.
+3.3.4. Discussion on Bad Cases
+It is worth noting that on thetest-enandtest-harddatasets,
+TRAD-BS exhibits an abnormal increase in WER and CER
+Table 3:Detailed analysis of decoding efficiency
+Model LM Module RTF
+TPS↑S%↓E%↑Steps
+baseline 25.40 – – – 1.14
++ TRAD-BS 5.22 98 2 – 4.95
++ SaVE-Beam-1h 23.98 71 29 173,577 1.18
++ SaVE-Beam-2h 23.92 74 26 148,442 1.19
+Table 4:Ablation Study on hard repetition constraint (HRC).
+DPS represents dynamic pruning strategy used in chunk-wise
+beam expansion
+Model test-en test-hard
+TPS↑WER↓TPS↑CER↓
+baseline 26.35 3.69 25.15 7.86
++ TRAD-BS 5.63 5.51 4.93 8.54
++ TRAD-BS-HRC 5.71 1.90 6.04 8.86
++ SaVE-Beam-2h 22.21 1.83 25.69 7.57
++ SaVE-Beam-2h w/o HRC – – – –
++ SaVE-Beam-2h w/o DPS 20.841.7919.567.17
+compared with the baseline. The underlying causes differ across
+the two datasets.
+Fortest-en, further inspection reveals multiple failure cases
+of temporal collapse, characterized by prolonged silence or noise
+loops. We attribute this to the use of soft repetition penalties in
+TRAD-BS. As shown in Table 4, replacing them with the hard
+repetition constraint used in SaVE-Beam (w= 10 ) substantially
+reduces WER and mitigates collapse. Conversely, when SaVE-
+Beam adopts soft penalties, degeneration frequently occurs, par-
+ticularly due to the weaker student model in the search stage.
+These observations highlight the importance of hard repetition
+constraint in mitigating temporal collapse under maximization-
+based decoding.
+Fortest-hard, TRAD-BS does not exhibit additional tempo-
+ral collapse, and applying hard repetition constraint does not lead
+to recovery in performance. A plausible explanation is thattest-
+hardmore easily triggers hallucination in the LM module. Beam
+search, which favors locally optimal hypotheses, may exacerbate
+this issue, resulting in degraded performance of TRAD-BS on
+the hard dataset [30].
+Interestingly, SaVE-Beam does not suffer from similar
+degradation. We conjecture that using a weaker student model
+for beam construction introduces controlled stochasticity, which
+may help escape local optima. To validate this hypothesis, we
+remove dynamic pruning to increase randomness, which leads to
+a further improvement in CER ontest-hard(Table 4). This inter-
+play between stochasticity and determinism suggests a promising
+direction for mitigating hallucination in LM-based TTS.
+4. Conclusion
+In this work, we proposed SaVE-Beam, an efficient decoding
+framework addressing the latency and degeneration bottlenecks
+of beam search in LM-based TTS. By decoupling hypothesis
+expansion from sequence evaluation, we shifted the computa-
+tionally expensive search phase to a lightweight student model
+via chunk-wise expansion. Combined with hard repetition con-
+straints to prevent temporal collapse, SaVE-Beam achieves up to
+a 5.1× speedup over conventional beam search while matching
+the real-time factor of baseline systems. Crucially, it signifi-
+cantly reduces generation errors compared to standard sampling
+techniques without compromising speech naturalness. These
+findings establish efficient beam decoding as a practical a

@@ -1,0 +1,456 @@
+Progressive Weak Supervision for Speech Emotion Recognition
+Bao Thang Ta ID 1,2, Huynh Thi Thanh Binh ID 2, Van Hai Do ID 1,3,∗∗
+1 Viettel AI, Viettel Group, Vietnam
+2 Hanoi University of Science and Technology, Vietnam
+3 Thuyloi University, Vietnam
+tabaothang97@gmail.com, binhht@soict.hust.edu.vn, haidv@tlu.edu.vn
+Abstract
+Speech emotion recognition (SER) faces challenges due to
+label ambiguity and high model uncertainty during early train-
+ing. Standard training with hard one-hot targets ignores these is-
+sues, forcing models to commit to a single class before learning
+meaningful representations. We propose Progressive Weak Su-
+pervision (PWS), a strategy that relaxes supervision in the early
+stages and gradually tightens it as the model matures. During
+the initial epochs, a sample is considered correctly predicted if
+the true label is among the top-kpredictions, with a soft proba-
+bility distribution assigned across them. As training progresses,
+kdecays linearly to 1, thereby recovering standard supervision.
+We evaluate PWS using a WavLM-Base encoder on IEMOCAP
+(English, 4-class) and ViSEC (Vietnamese, 4-class). Withk=3,
+PWS achieves 78.08% unweighted accuracy on IEMOCAP and
+85.70% on ViSEC, surpassing several strong baseline methods.
+Code is available at https://github.com/skyemo47/PWS.
+Index Terms: speech emotion recognition, weak supervision,
+curriculum learning, self-supervised learning, WavLM
+1. Introduction
+Speech emotion recognition (SER) is a foundational task in af-
+fective computing, supporting applications ranging from men-
+tal health monitoring and dialogue systems to call-center an-
+alytics [1]. Despite steady progress driven by self-supervised
+representations [2, 3, 4], SER remains considerably more chal-
+lenging than most classification tasks for a structural rather than
+incidental reason: emotions are inherently continuous, overlap-
+ping, and subjectively perceived [5]. A single utterance may be
+plausibly annotated assadby one listener andneutralby an-
+other; both interpretations are acoustically defensible. Conven-
+tional training, however, encodes only one. The ground-truth
+label is therefore a compressed and partial representation of the
+true emotional signal, and forcing a model to treat it as absolute
+truth introduces a systematic mismatch between the training ob-
+jective and the underlying data distribution.
+A second challenge compounds the first. Although self-
+supervised encoders have become the de facto standard in SER,
+they are pre-trained primarily for automatic speech recognition
+(ASR) and are not designed with emotional representation in
+mind [6]. Their learned features capture phonetic and linguistic
+structure well, but the paralinguistic cues—such as pitch dy-
+namics, breathiness, and prosodic contour—that are central to
+emotion are less explicitly represented. As a result, early in
+training the model operates in a high-uncertainty regime [4]:
+predicted distributions are diffuse, class boundaries are poorly
+defined, and confidence is largely uncalibrated. The softmax
+**indicates the corresponding author.
+outputpis near-uniform in this regime, and the rank ordering
+of classes is highly volatile. Standard cross-entropy is blind to
+this dynamic. It applies the same hard supervision at epoch 1 as
+at the final epoch, demanding that the model commit fully to a
+single class before it has developed the representations needed
+to make such a commitment reliably.
+Prior work addresses only part of this problem. No existing
+method simultaneously accounts for the model’s current predic-
+tive state, the ambiguous nature of emotion labels, and the stage
+of training—the three factors that jointly determine how super-
+vision should be calibrated. Curriculum learning [7] reorders
+training examples by difficulty but does not adapt the supervi-
+sion signal itself. Label smoothing [8] replaces one-hot targets
+with a uniform mixture over all classes, softening supervision
+globally while ignoring the model’s current predictions and the
+training stage; it distributes equal relaxation to clearly incorrect
+and near-correct predictions alike.
+We argue that the appropriate solution is toadapt the super-
+vision signal to the model’s current state of knowledge. Early in
+training, when uncertainty is high and learned representations
+are immature, supervision should be permissive: partial credit
+should be awarded when the model identifies the true class as
+a plausible candidate. As training progresses and the model
+develops confidence and discriminability, supervision should
+progressively sharpen until it recovers full one-hot precision.
+This is the core principle behind Progressive Weak Supervision
+(PWS).
+Concretely, PWS defines a dynamic correctness criterion.
+At each epoch, a prediction is considered weakly correct if the
+true label appears among the model’s top-koutputs. When this
+condition holds, soft targets concentrate probability mass on
+the true class while distributing the residual mass over the re-
+maining top-kcandidates, acknowledging that these predictions
+may reflect genuine acoustic similarity rather than model error.
+When the true label is absent from the top-k, a hard corrective
+signal is applied unconditionally. The thresholdkis held con-
+stant during an initial warm-up phase and then decayed linearly
+to 1, at which point PWS reduces exactly to standard cross-
+entropy. The method requires no architectural changes and adds
+negligible computational overhead.
+Our contributions are as follows:
+• We propose PWS, a principled training strategy that aligns
+supervision strength with model maturity, directly addressing
+the compounded problem of label ambiguity and early-stage
+uncertainty in SER.
+• We provide a systematic ablation overk init∈1,2,3and the
+concentration parameterα, demonstrating consistent mono-
+tonic improvement with increasingkfor 4-class emotion
+recognition and confirming that the three-phase decay sched-
+ule is essential for peak performance.
+1192
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1587
+• We demonstrate the effectiveness of PWS on English (IEMO-
+CAP) [9] and Vietnamese (ViSEC) [10], establishing that
+PWS generalizes across language families.
+2. Method
+2.1. Problem Formulation
+Letx∈R T be a speech waveform with ground-truth emotion
+labely∈{1,...,C}, whereC= 4(neutral, happy, sad, an-
+gry). A modelf θ :R T →R C produces predicted class prob-
+abilitiesp=softmax(f θ(x)). Standard cross-entropy mini-
+mizes:
+LCE =−logp y.(1)
+This objective assigns full credit to the annotated class and none
+to the others. For inherently ambiguous emotion data and an
+uncertain early-stage model, this formulation is unnecessarily
+strict: it treats a rank-2 prediction of the true class identically
+to a prediction that places it last, issuing penalties whose mag-
+nitude is poorly calibrated to the actual quality of the model’s
+output.
+2.2. Progressive Weak Supervision
+2.2.1. Top-kSoft Targets
+LetT k ⊂ {1,...,C}denote thekclasses with the highest
+predicted probabilities in the current forward pass. We define a
+weak correctness indicator:
+Iweak =⊮[y∈T k].(2)
+WhenI weak = 1, the model has identified the true class as
+a plausible candidate. We then construct a soft target that con-
+centrates probability mass on the true class while distributing
+the residual probability over the remaining top-kclasses, ac-
+knowledging that these may reflect genuine acoustic overlap:
+˜pi =
+
+
+
+αifi=y,
+1−α
+|Tk|−1 ifi∈T k\{y},
+0otherwise,
+(3)
+whereα∈(0,1)is a concentration parameter controlling how
+sharply the target distribution peaks at the true class.
+Unlike label smoothing, this target ismodel-aware: it
+distributes credit specifically over the classes that the current
+model finds acoustically plausible, rather than uniformly across
+allCclasses. When the neutral–sad boundary is genuinely am-
+biguous, the residual(1−α)flows to the model’s next-best can-
+didates instead of being diluted equally across all four classes.
+WhenI weak = 0—that is, when the true label is absent
+from the top-k—a hard one-hot target is applied uncondition-
+ally. This asymmetry is intentional: a near-correct prediction
+warrants a gentle signal, whereas a completely incorrect pre-
+diction warrants a strong corrective gradient, regardless of the
+training epoch or the value ofk.
+The PWS training loss is defined as:
+LPWS =
+(
+DKL(˜p∥p)ifk>1andI weak = 1,
+LCE otherwise. (4)
+KL divergence is the natural objective for comparing two distri-
+butions; when ˜pbecomes one-hot, it reduces to cross-entropy,
+ensuring mathematical continuity ask→1.
+2.2.2. Concentration Parameterα
+We setα= 0.7, placing 70% of the soft-target mass on the true
+class and distributing the remaining 30% across the remaining
+k−1top-ranked classes. This choice is consistent with the label
+smoothing convention of retaining the majority of probability
+mass at the target class. To verify robustness, we examineα∈
+{0.6,0.7,0.8}fork init = 3on IEMOCAP (Section 3.6).
+2.2.3. Decay Schedule
+The parameterkfollows a three-phase schedule governed by
+the total number of training epochsE:
+k(e) =
+
+
+
+kinit e<0.1E,
+
+kinit− (kinit−1)(e−0.1E)
+0.65E
+
+0.1≤ e
+E <0.75,
+1e≥0.75E.
+(5)
+Phase 1 — Warm-up(first 10% of training):kis held fixed at
+kinit. This allows the model to form stable initial representations
+under relaxed supervision before tightening begins. Starting de-
+cay too early—before meaningful feature structure emerges—
+would undermine the intended progression.
+Phase 2 — Linear decay(10%–75% of training):kdecreases
+monotonically toward 1. The round operator ensures thatk
+remains an integer, resulting in a piecewise-constant schedule
+with discrete steps between successive integer values.
+Phase 3 — Standard supervision(75%–100% of training):
+k= 1throughout. PWS becomes identical to standard cross-
+entropy, driving the model toward precise and confident predic-
+tions in the final convergence phase.
+In our experimentsE= 200, so warm-up covers
+epochs 0–19, linear decay runs from epoch 20 to 149, and stan-
+dard supervision applies from epoch 150 onward. The con-
+straintk init≤C−1is principled: settingk=Cwould make
+every prediction trivially weakly correct, eliminating discrimi-
+native signal.
+2.3. Model Architecture
+2.3.1. WavLM Encoder
+We use WavLM-Base [4] as the acoustic encoder, mapping the
+raw waveformxto frame-level representationsH∈R L×768.
+WavLM’s joint masked prediction and denoising pre-training
+encourages the encoder to capture paralinguistic cues—such as
+pitch, breathiness, and speech rate—that are central to emo-
+tional expression, making it well suited for SER.
+2.3.2. Attention Pooling
+Frame-level representations are aggregated into a single utter-
+ance embedding via attention pooling:
+a=softmax(W 2 tanh(W1H⊤)
+
+,(6)
+h=H ⊤a,(7)
+whereW 1 ∈R 128×768 andW 2 ∈R 1×128. Emotion-
+ally salient frames—such as stressed syllables, expressive pitch
+bursts, and abrupt articulatory changes—are typically sparse
+within an utterance. Attention pooling selectively upweights
+these frames.
+1193
+2.3.3. Classification Head
+A two-layer MLP with hidden dimension 128, ReLU activa-
+tions, and dropout (p= 0.3) maps the utterance embeddingh
+toC= 4class logits.
+3. Experiments
+3.1. Datasets and Evaluation Protocol
+IEMOCAP[9] is the most widely used English SER bench-
+mark, comprising approximately 12 hours of scripted and im-
+provised dyadic interactions from 10 actors across 5 sessions.
+Following standard practice, we merge happy and excited into
+a single happy class, retain four emotion categories (neutral,
+happy, sad, angry) containing 5,531 utterances.
+ViSEC[10] is a Vietnamese SER corpus comprising 5,280 ut-
+terances from 147 speakers across four matched emotion cate-
+gories (neutral, happy, sad, angry). Vietnamese is a tonal lan-
+guage whose prosodic structure differs fundamentally from En-
+glish, making ViSEC a meaningful probe of cross-lingual gen-
+eralization.
+Cross-validation.We apply session-based 5-fold cross-
+validation on IEMOCAP—one session per fold—to prevent
+speaker leakage across train and test splits. For ViSEC we use
+speaker-stratified 5-fold cross-validation. All results are aver-
+ages over five folds.
+Metric.Following standard SER practice [11], we reportUn-
+weighted Accuracy (UA), the macro-average of per-class re-
+call:
+UA= 1
+C
+CX
+i=1
+Recalli.(8)
+3.2. Implementation Details
+We use WavLM-Base [4] as the acoustic encoder, initial-
+ized from publicly available pre-trained weights and fine-tuned
+end-to-end throughout all experiments. We optimize with
+AdamW [12] using a learning rate of10−4, weight decay10−2,
+and(β 1,β 2) = (0.9,0.999). Training runs forE= 200
+epochs with batch size 32 using mixed-precision (FP16) arith-
+metic. For all PWS experiments the concentration parameter
+is fixed atα= 0.7unless otherwise stated. All methods use
+identical encoder, pooling, classification head, and optimizer
+settings.
+3.3. Baselines
+We compare PWS against the following methods:
+•Cross-Entropy (CE):Hard one-hot targets throughout all
+training epochs. This is the strongest na ¨ıve baseline and is
+equivalent to PWS withk init = 1.
+•Label Smoothing (LS) [8]:For a samplexwith ground-
+truth labely, the one-hot targetδ k,y is replaced by the
+smoothed distribution:
+q′(k|x) = (1−ε)δ k,y +εu(k),(9)
+with uniform residualu(k) = 1/Candε= 0.1. Unlike
+PWS, LS applies the same global relaxation at every epoch
+and distributes residual mass equally over allCclasses re-
+gardless of the model’s current predictions.
+•LS + Curriculum Learning (LS+CL):Label smoothing
+augmented with easy-to-hard example ordering [7], where
+difficulty is measured by inter-annotator disagreement. Be-
+cause ViSEC does not provide per-utterance annotator agree-
+ment scores, this baseline is evaluated on IEMOCAP only.
+Table 1:Unweighted Accuracy (%) on IEMOCAP and ViSEC.
+Gains are absolute percentage points over the CE baseline.†:
+result from the original paper under a comparable evaluation
+protocol.
+Method IEMOCAP Gain ViSEC Gain
+CE (baseline) 73.42 — 73.80 —
+Label Smoothing (ε= 0.1) 74.15 +0.73 75.30 +1.50
+LS + Curriculum Learning 74.89 +1.47 — —
+Emotion2vec† [14] 71.79 — — —
+Vesper† [13] 73.90 — — —
+EmoDim† [1] 76.98 — — —
+Wav2vec2+Pitch† [10] — — 72.02 —
+PWSk init = 2(ours) 76.58 +3.16 82.10 +8.30
+PWSk init = 3(ours)78.08 +4.66 85.70 +11.90
+•Recent Advanced SER work:We include results from re-
+cent methods fine-tuning WavLM-Base on IEMOCAP under
+comparable evaluation conditions: Vesper [13], EmoDim [1],
+and Emotion2vec [14]. These are reported from their respec-
+tive original papers (†).
+3.4. Main Results
+Table 1 reports UA on both datasets.
+PWS outperforms all baselines on both datasets.PWS
+(kinit=3) achieves 78.08% UA on IEMOCAP and 85.70% on
+ViSEC. Within the controlled comparison, it surpasses CE
+by 4.66 and 11.90 points, LS by 3.93 and 10.40 points, and
+LS+CL by 3.19 points (IEMOCAP only, as ViSEC results are
+unavailable). Against external results, it exceeds EmoDim—
+the strongest prior WavLM-Base method—by 1.10 points on
+IEMOCAP.
+Gains grow withk init.Increasingk init from 2 to 3 yields con-
+sistent further improvements on both datasets (+1.50 on IEMO-
+CAP, +3.60 on ViSEC). This can be explained as follows. For
+a 4-class problem,k init = 3covers nearly the full label space.
+During early training, this provides the richest constructive sig-
+nal: the model receives credit whenever the true class appears
+among any of its three strongest predictions. Because emotions
+such asneutral/sadandhappy/angryare frequently confused
+due to acoustic overlap, rank-2 or rank-3 predictions often re-
+flect genuine perceptual ambiguity rather than model failure.
+PWS converts these near-misses into a useful learning signal
+rather than issuing a destabilizing penalty.
+Gains are amplified on the lower-resource corpus.The im-
+provement on ViSEC (+11.90 over CE) is more than twice that
+on IEMOCAP (+4.66). ViSEC combines limited per-speaker
+data with a tonal language that is prosodically unfamiliar to a
+model pre-trained on English ASR, both of which prolong the
+resolution of model uncertainty. This makes the relaxed early
+supervision of PWS especially effective, and confirms that PWS
+scales to more challenging recognition conditions.
+3.5. Per-Class Recall Analysis
+Table 2 decomposes UA into per-class recall on IEMOCAP,
+showing where PWS gains are concentrated and why.
+PWS improves recall across all four classes, but the distri-
+bution of gains is not uniform and reflects two mechanisms. The
+largest gains fall onhappy(+8.2) andneutral(+5.1)—the two
+classes most prone to mutual confusion due to acoustic over-
+1194
+Table 2:Per-class recall (%) on IEMOCAP for CE vs. PWS
+(kinit = 3). Absolute gains in parentheses.
+Method Neutral Happy Sad Angry
+CE (baseline) 69.4 67.3 76.8 80.2
+PWSk= 374.5 (+5.1) 75.5 (+8.2) 80.1 (+3.3) 82.3 (+2.1)
+lap [9]. For these classes, rank-2 or rank-3 predictions dur-
+ing early training often reflect genuine perceptual ambiguity
+rather than model error; standard CE issues a full penalty in
+both cases, whereas PWS redistributes the residual mass to the
+model’s current top-kcandidates and converts near-correct pre-
+dictions into constructive gradient signals. The smallest gain is
+onangry(+2.1), the most acoustically distinctive class, where
+early-training predictions are already more reliable and the cost
+of hard supervision during early training is correspondingly
+lower.
+3.6. Ablation Studies
+We isolate the contribution of each PWS design choice on
+IEMOCAP withk init=3, varying one factor at a time while
+holding all others at their defaults (α=0.7, warm-up fraction
+= 0.10, KL divergence loss).
+3.6.1. Concentration Parameterα
+αcontrols the trade-off between the signal strength assigned to
+the true class and the residual credit distributed to the other top-
+kcandidates. Table 3 shows that performance peaks atα=0.7
+and degrades in both directions. Values that are too small spread
+excessive probability mass over non-target candidates, weaken-
+ing the discriminative signal for the true class and pushing the
+target distribution closer to uniform. Conversely, values above
+0.8concentrate the probability mass so sharply that the soft
+target approaches a one-hot distribution, thereby forfeiting the
+benefit of top-kredistribution.
+Table 3:Sensitivity to concentration parameterαfor PWS
+(kinit = 3) on IEMOCAP UA (%).
+α0.60.70.8
+UA (%) 74.8878.0876.06
+3.6.2. Warm-Up Duration
+The warm-up phase delays the onset ofk-decay, allowing the
+encoder to establish stable initial representations before su-
+pervision tightens. Table 4 ablates warm-up fractionsw∈
+{0%,10%,20%};w=0%corresponds to a two-phase sched-
+ule with no plateau (i.e., decay begins at epoch 1). Removing
+the warm-up (w=0%) reduces UA by 0.40 points, confirming
+that decayingkbefore the encoder has formed meaningful fea-
+tures is mildly harmful. Extending the warm-up tow=20%
+reduces UA by 1.24 points: once representations are already
+sufficiently mature, further delay wastes training capacity that
+could be spent on progressive tightening. The 10% boundary
+(≈20 epochs) is the sweet spot, providing enough stability for
+the WavLM encoder to begin producing discriminative frame-
+level features while leaving 65% of training for decay.
+Table 4:Effect of warm-up fraction on IEMOCAP UA (%) for
+PWS (kinit = 3). Default setting is 10% (bold).
+Warm-up fraction 0%10%20%
+UA (%) 77.6878.0876.84
+3.6.3. Loss Function: KL Divergence vs. Cross-Entropy
+henI weak=1andk>1, PWS minimizesD KL(˜p∥p). An alter-
+native is to treat ˜pas a soft label and optimize standard cross-
+entropy. Since
+CE(˜p,p) =D KL(˜p∥p) +H( ˜p),
+the two objectives produce identical gradients when ˜pis fixed.
+In PWS, however, ˜pismodel-awareand dynamically con-
+structed from the model’s current top-kpredictions, so the tar-
+get distribution evolves with the model during training. We
+adopt the KL formulation because it naturally interprets the ob-
+jective as matching the predicted distributionpto the adaptive
+target ˜p. Table 5 shows a small empirical improvement (+0.70
+UA) when using KL divergence.
+Table 5:Effect of loss function on IEMOCAP UA (%) for PWS
+(kinit = 3,α= 0.7, warm-up 10%).
+Loss formulation CE KL
+UA (%) 77.3878.08
+3.7. PWS vs. Label Smoothing
+The results collectively support a consistent interpretation. The
+central advantage of PWS over label smoothing—its clos-
+est conceptual relative—lies in two properties that LS lacks:
+model-awarenessandtemporal adaptation. LS distributes a
+fixed residual uniformly to allCclasses at every epoch, includ-
+ing classes the model already ranks last and at the final epoch
+when the model is fully converged. PWS directs residual mass
+only to the model’s current top-kcandidates, so credit flows to
+acoustically similar classes rather than to unrelated ones, elim-
+inating this relaxation entirely once representations have con-
+verged. Together, these two properties account for the 3.93-
+point UA gap between LS and PWS (k init=3) on IEMOCAP,
+despite using the same encoder and training data.
+4. Conclusion
+We introducedProgressive Weak Supervision(PWS), a training
+strategy that adapts supervision strength to the model’s learn-
+ing stage. Instead of enforcing strict one-hot targets throughout
+training, PWS temporarily relaxes the correctness criterion by
+allowing the true label to appear among the model’s top-kpre-
+dictions and assigning a soft target distribution over these can-
+didates. The tolerance parameterkthen decays during training,
+gradually recovering standard cross-entropy supervision.
+Experiments with a WavLM-Base encoder on IEMOCAP
+and VISEC demonstrate consistent improvements over cross-
+entropy and label smoothing baselines, with particularly strong
+gains in the lower-resource setting. Per-class analysis confirms
+that PWS disproportionately improves recall on acoustically
+confusable classes.
+1195
+5. Acknowledgements
+Bao Thang Ta was funded by the PhD Scholarship Programme
+of Vingroup Innovation Foundation (VINIF), VinUniversity,
+code VINIF.2025.TS65.
+6. Use of Generative AI Disclosure
+The authors used Claude (Anthropic) for language polishing.
+All scientific content and conclusions are solely the work of the
+authors.

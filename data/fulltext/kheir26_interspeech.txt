@@ -1,0 +1,524 @@
+DeepFense: A Unified, Modular, and Extensible Framework for Robust
+Deepfake Audio Detection
+Yassine El Kheir1,∗∗, Arnab Das1,∗, Yixuan Xiao2,∗, Xin Wang3,∗, Feidi Kallel1, Enes Erdem
+Erdogan1, Ngoc Thang Vu2, Tim Polzehl1, Sebastian M¨oller4
+1 German Research Center for Artificial Intelligence (DFKI), Germany
+2 University of Stuttgart, Germany
+3 National Institute of Informatics, Japan
+4 Technical University of Berlin, Germany
+yassine.el kheir@dfki.de
+Abstract
+Speech deepfake detection is a well-established research
+field with different models, datasets, and training strategies.
+However, the lack of standardized implementations and evalu-
+ation protocols limits reproducibility, benchmarking, and com-
+parison across studies. In this work, we present DeepFense,
+a comprehensive, open-source PyTorch toolkit integrating the
+latest architectures, loss functions, and augmentation pipelines,
+alongside over 100 recipes. Using DeepFense, we conducted
+a large-scale evaluation of more than 400 models. Our find-
+ings reveal that while carefully curated training data improves
+cross-domain generalization, the choice of pre-trained front-
+end feature extractor dominates overall performance variance.
+Crucially, we show severe biases in high-performing models
+regarding audio quality, speaker gender, and language. Deep-
+Fense is expected to facilitate real-world deployment with the
+necessary tools to address equitable training data selection and
+front-end fine-tuning.
+Index Terms: speech deepfake detection, deep learning, open-
+sourced toolkit
+1. Introduction
+While speech synthesis technologies are essential in speech-
+based human-human and human-machine interaction, they are
+also being misused to forge speech deepfakes that threaten voice
+biometric systems [1] as well as human listeners [2]. The re-
+search community has increasingly devoted itself to the robust
+detection of speech deepfakes (and synthetic speech in gen-
+eral) over the last decade, creating numerous detector archi-
+tectures [3], [4], [5], [6], databases [7], [8], [9], and train-
+ing techniques [10], [11]. Despite the numerous open-source
+projects that have implemented some of these research out-
+comes, many researchers, including ourselves, are seeking a
+full-fledged toolkit that covers many of the latest state-of-the-
+art models, provides recipes for diverse databases, and remains
+easy to use for implementing new research ideas and conducting
+large-scale experimental comparisons.
+In this paper, we present theDeepFense 1 toolkit to answer
+this call. Targeting the research community, we are specifically
+motivated to improve the following aspects:
+• Fragmented implementations: Many building blocks, includ-
+ing feature extraction front-ends (e.g., Wav2Vec 2.0 [12]),
+*These authors contributed equally.
+**indicates the corresponding author.
+1deepfense.github.io
+classification back-ends (e.g., AASIST [4]), and augmen-
+tations (e.g., RawBoost [10]), are implemented in differ-
+ent code repositories. We need extra time to glue these
+blocks together by adding wrappers around the models. Fur-
+thermore, we must manually download datasets distributed
+across various sources and re-invent the data IO tailored for
+each dataset.
+• Hidden ingredients in recipes: When assembling blocks, we
+may inadvertently inherit recipes with varied “hidden” con-
+figurations: different padding and batching strategies, varied
+learning schedules, and diverse codebases (e.g., fairseq [13]
+vs. Hugging Face [14]) 2. Some leaderboards, such as
+Speech-DF-arena [15], allow anyone to submit a system and
+evaluate it on a selected set of test sets. However, not all
+entries are open-sourced.
+• Programming barrier: While there is a recently released
+toolkit calledWeDefense[16] dedicated to solving the two
+points above3, it mixes Python and numerous Bash scripts,
+which complicates the debugging and extension procedures,
+with limited recipes and available models. While a pure-
+Python toolkit such as SpeechBrain [17] can mitigate this is-
+sue, its general-purpose design introduces abstractions and
+functions that may unexpectedly increase the cost of learning
+and customization4.
+The first two issues make it difficult to isolate the con-
+tribution of algorithmic innovations from implementation arti-
+facts. DeepFense aims to address this by consolidating state-of-
+the-art architectures, recipes for major deepfake datasets, and
+a unified training-evaluation pipeline in a centralized reposi-
+tory. This differentiates DeepFense from tools that focus on
+either a single group of models (e.g., post-trained models in
+AntiDeepfake [18]) or challenge baselines with recipes on spe-
+cific datasets [8], [9]. With a pure Python/PyTorch framework,
+DeepFense is expected to be more friendly to the research com-
+munity.
+In short, the key contributions of DeepFense are as follows:
+• It is a pure-Python/PyTorch toolkit dedicated to deepfake de-
+2For example, Hugging Face uses a separate
+FeatureExtractorto normalize the waveform before feed-
+ing it to Wav2Vec2, which may be missed by users who use Fairseq
+(https://github.com/huggingface/transformers/
+issues/28726).
+3DeepFense is developed independently and in parallel with WeDe-
+fense, without prior coordination or influence.
+4A good example is the AntiDeepfake project [18], which had to tai-
+lor the SpeechBrain core methodfit()to add intra-epoch validation.
+3081
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1366
+# example YAML
+exp_name : "W2V_AASIST"
+output_dir: "./outputs/"
+seed: 1234
+# specify the training, 
+# validation, testing data
+data:
+  train:
+    augment_transform: ...   
+# model specification
+model:
+  frontend: 
+    type: "wavlm" ...
+  backend: 
+    type: "Nes2Net" ...
+  loss: ...
+# training configuration
+training: ...
+Config Orchestrator
+Data Foundry
+Construct
+Figure 1:System architecture of the DeepFense framework, illustrating the configuration-driven data pipeline, modular model engine
+(front-end, back-end, loss), unified training loop, and evaluation components, with built-in logging and experiment tracking.
+tection. With an Apache 2.0 license, the toolkit is suitable for
+a wide range of users.
+• It providesmore than 100 recipes and 400 pre-trained models
+for different datasets and model architectures, which is the
+largest scale currently available.
+• It facilitates our large-scale experimental comparison (§ 4)
+that covers around100 systems, six training sets, and 13 test
+sets, including speech and non-speech datasets.
+Through this large-scale experiment, we showcase how Deep-
+Fense can be utilized to accelerate research progress by quickly
+conducting cross-dataset studies and building baselines. In the
+rest of the paper, we describe the high-level design and func-
+tions provided by DeepFense (§ 2). Through the experiment
+(§ 3, § 4), we highlight our findings on domain overfitting,
+which is observed on the most well-known training sets in the
+field. We also discuss the impacts of front- and back-ends on
+detection performance. Based on the findings, we discuss fu-
+ture work and draw our conclusion (§ 7).
+2. DeepFense Framework
+2.1. Design principle
+As Figure 1 illustrates, DeepFense implements a modular ar-
+chitecture that separates experimental specification, data pro-
+cessing, model training, execution, and evaluation. The com-
+plete training-evaluation setup is specified in asinglehuman-
+readable file. These loosely coupled and highly modular com-
+ponents make the toolkit reusable while simplifying experiment
+execution and sharing among researchers.
+• Configuration Orchestrator : It coordinates all framework
+components through Y AML specifications, hence referred to
+as “orchestrator”. A single Y AML file specifies the complete
+experiment: dataset paths, data preprocessing, model archi-
+tecture (front-end, back-end, loss), training parameters, and
+evaluation protocols. An example is shown to the left of Fig-
+ure 1. The orchestrator parses Y AML specifications and in-
+stantiates components via a registry system (§ 2.3).
+• Data Foundry : it manages the data pipeline via four stages:
+– Construct:Loads dataset metadata from Parquet files con-
+taining audio paths, labels, and optional metadata. This
+format enables efficient operations on large datasets.
+– Transform:Applies base preprocessing such as padding
+or cropping, resampling, and optional normalization.
+– Augment:Applies stochastic transformations to the data
+during training. DeepFense supports both sequential aug-
+mentation (transformations applied in order) and parallel
+augmentation (randomly selecting one from a set). Each
+augmentation has a configurable probability.
+– Dataset:Constructs PyTorch DataLoaders with config-
+ured batch size, shuffling, and parallel loading. The Data
+Foundry outputs batched tensors of shape [batch, samples]
+that flow into the DeepFense Engine.
+• DeepFense Engine : It implements the detection model
+as a composition of three components:Front-end→
+Back-end→Loss. The components available are listed
+in § 2.2.
+• Trainer : The training loop iterates: (1) load batch from Data
+Foundry, (2) forward pass via DeepFense Engine, (3) back-
+ward pass and optimization, (4) log metrics, (5) evaluate on
+validation set periodically, (6) save checkpoints.
+• Logging and experiment tracking : DeepFense integrates
+with Weights & Biases and TensorBoard for experiment
+tracking. All experiments generate structured output directo-
+ries that contain model checkpoints, configuration files, train-
+ing logs, evaluation results, and optional visualizations. This
+organization makes it easier to manage the experiments.
+2.2. Supported models components & losses
+DeepFense integrates many SSL front-ends including
+Wav2Vec 2.0[12],WavLM[19],HuBERT[20],EAT[21],
+MERT[22], all loaded via Hugging Face 5, Fairseq 6,
+and Unilm 7 and other Speech/Audio models such as
+Whisper[23],BEATs[24],Wav2Vec2-BERT[25].
+Front-ends can be used frozen, fine-tuned, or with
+learnable weighted-sum or attentive aggregation across
+layers. Seven back-ends are supported (AASIST[4],
+ECAPA-TDNN[26],RawNet2[3],Nes2Net[27],TCM[28],
+Multi-layer perceptron (MLP)[29],Pool(Pool-
+ing),BiCrossMamba-ST[6]), alongside four loss functions
+5https://huggingface.co/
+6https://github.com/facebookresearch/fairseq
+7https://github.com/microsoft/unilm
+3082
+(Cross-Entropy, OC-Softmax [11], AM-Softmax [30],
+A-Softmax [31]) and ten augmentation strategies including
+RawBoost [10], room impulse response, and codec simulation.
+2.3. Modular extensibility
+DeepFense uses a registry-based plugin architecture. Adding a
+new component (e.g., front-end, back-end, loss, augmentation)
+requires implementing a Python class inherited from the base
+interface and registering it with a decorator, as follows:
+@BACKEND_REGISTRY.register()
+class CustomBackend(BaseBackend):
+def forward(self, x):
+return embeddings
+Once registered, the component is available through configura-
+tion without modifying the core code.
+This configuration-driven approach provides several advan-
+tages for reproducibility and accessibility. Complete experi-
+ments are specified in a single human-readable file; hyperpa-
+rameter searches involve only configuration changes without
+code modification; published results can be exactly reproduced
+from the configuration file; and systematic comparisons across
+methods become straightforward.
+2.4. Available recipes & pre-trained models
+Research in speech deepfake detection relies on several bench-
+mark datasets that have evolved from controlled laboratory en-
+vironments to “in-the-wild” scenarios. The ASVspoof series re-
+mains popular, with ASVspoof 2019 and 2021 (Logical Access
+and Deepfake tracks) providing a mix of synthetic speech and
+telephony-distorted speech utterances [9]. The Audio Deep-
+fake Detection (ADD) challenges (2022, 2023) introduced more
+complex tasks, such as detecting partially manipulated seg-
+ments and low-quality fakes [8]. For broader generalization,
+researchers utilize the In-the-Wild dataset [32], which consists
+of real-world clips from celebrities and politicians. Most re-
+cently, large-scale multilingual sets like MLAAD [33] have ex-
+panded the task to over 50 languages, ensuring that models are
+robust against diverse linguistic and generative variations. A
+more recent dataset called CodeFake [34] covers various dif-
+fusion and LLM-based synthetic speech. Additionally, we have
+added datasets used in the research community, such as HABLA
+[35], PartialSpoof [36], ODSS [37], ReplayDF [38])
+Given the plethora of dataset choices, DeepFense ships152
+unique YAML recipesand456 trained checkpoints(3 seeds
+each) publicly released on HuggingFace8. This covers all front-
+end×back-end×training-dataset combinations across speech
+and non-speech tasks, and to our knowledge is the largest such
+collection for audio deepfake detection. Dataset Parquet files
+and download scripts for all supported benchmarks are also pro-
+vided for one-command reproducibility.
+3. Replicating SOTA Results
+To validate the correctness and reliability of the DeepFense
+framework, we assess its ability to replicate SOTA results from
+the literature. Specifically, we re-implement and evaluate sev-
+eral published systems under controlled conditions using Deep-
+Fense’s unified pipeline, ensuring identical preprocessing, opti-
+mizer configurations, and evaluation protocols.
+8https://huggingface.co/DeepFense
+Table 1:EER (%) forWav2V ec2systems trained onASV19,
+evaluated on out-of-domain test sets before and after applying
+DeepFense. Best result per back-end inbold.
+ITW ASV5 CodecFake Average
+Back-End Orig. Ours Orig. Ours Orig. Ours Orig. Ours
+AASIST 10.467.1819.2418.9438.7934.3622.8320.16
+MLP 8.137.5718.7615.4335.7634.4420.8819.15
+Nes2Net 7.06 7.73 22.06 24.19 39.3436.2122.8222.71
+TCM 7.796.9818.85 19.40 36.0034.7720.8820.39
+Table 2:EER (%) forWav2V ec2systems trained onASV5, eval-
+uated on the ASV5 test set.
+Back-End Orig. Ours
+AASIST 7.126.64
+Nes2Net 6.135.53
+BiCrossMamba-ST 6.01 6.34
+Table 1 reports the EER (%) forWav2Vec2-based systems
+trained on ASVspoof 2019 (ASV19) and evaluated on three out-
+of-domain test sets: In-the-Wild (ITW), ASVspoof 5 (ASV5),
+and CodecFake. Across all four back-end classifiers (AASIST,
+MLP,Nes2Net,TCM), DeepFense consistently matches or out-
+performs the originally reported results, whether from the orig-
+inal paper, replicated, or from Speech-DF-Arena.
+For instance, AASIST achieves an average EER reduction
+from 22.83% to 20.16%, and MLP improves from 20.88% to
+19.15%, demonstrating that the framework does not introduce
+any degradation stemming from re-implementation. Table 2 fur-
+ther confirms these findings for systems trained in ASV5, where
+DeepFense reproduces competitive results for AASIST (7.12%
+→6.64%) and Nes2Net (6.13%→5.53%), achieving on-par
+or better performance compared to the baselines originally pub-
+lished.
+Beyond speech-domain tasks, Table 3 validates DeepFense
+on the non-speech CodecFake-A3 [34] test set usingEATfront-
+end models trained on EnvSDD [39]. The reproduced re-
+sults closely match the original numbers across all back-ends,
+withBiCrossMamba-ST[6] achieving an improved EER of
+0.44% compared to the originally reported 0.75%. In short, the
+results demonstrate that DeepFense can achieve on-par or better
+performance across diverse tasks, datasets, and architectures.
+4. Large-scale Comparison
+Prior studies typically evaluate a single model or a small set
+of architectures on one or two datasets, making it difficult to
+disentangle the contributions of the front-end, back-end, and
+training data from implementation-specific choices [4], [5].
+A key motivation behind DeepFense is to enable system-
+Table 3:EER (%) forEATtrained on EnvSDD and evaluated
+onCodecF ake-A3test set.
+Back-End Orig. Ours
+Nes2Net 0.49 0.55
+AASIST 1.030.77
+MLP 0.950.91
+TCM 0.34 0.40
+BiCrossMamba-ST 0.750.44
+3083
+ASV19 LA21 DF21 ITW ODSS HABLA ADD22
+1
+ADD22
+2
+ADD23
+1
+ADD23
+2
+Codec
+Fake
+MLAAD Replay
+DF
+0
+20
+40
+60
+80EER (%)
+ASV19 ADD23 CodecFake
+Figure 2:Boxplots of detection systems based on their EERs on the test set (x-axis). Each box groups 16 systems using the same front-
+end (from left to right: Wav2Vec2, WavLM, HuBERT, and EAT) but varied training data and back-ends. The three lines correspond to
+mean EERs of systems using either the ASV19 (blue), ADD23 (red), or CodecFake (green) training sets.
+ASV19 LA21 DF21 ITW ODSS HABLA ADD22-1 ADD22-2 ADD23-1 ADD23-2CodecFake MLAAD ReplayDF
+Wav2Vec2.0
+WavLM
+HuBERT
+EAT
+14.0 20.4 15.6 17.4 29.1 13.5 37.6 18.6 28.8 34.7 32.9 26.8 41.6
+19.4 25.7 21.4 29.8 36.1 18.3 44.8 30.3 36.7 40.4 35.3 36.5 45.8
+20.1 26.7 21.0 31.8 39.6 22.0 44.7 31.4 38.5 40.7 38.2 35.1 47.5
+20.9 29.5 29.9 34.3 26.1 25.4 42.7 25.7 33.9 40.5 25.8 28.7 44.3
+15
+25
+35
+45
+EER (%)
+Figure 3:Mean EER (%) per front-end and evaluation benchmark, averaged over all back-ends and training sets.
+atic, large-scale comparisons that are otherwise infeasible with-
+out a unified framework. DeepFense makes this feasible by
+providing a single controlled pipeline where all configurations
+share identical preprocessing, optimizer settings, and evaluation
+protocols, ensuring that observed differences are attributable to
+modeling choices rather than experimental artifacts. Here, we
+utilize DeepFense to conduct a systematic, large-scale compar-
+ison exploring how the front-end, back-end, and training data
+affect the detection performance.
+4.1. Setup
+We evaluate4front-ends×4back-ends×6training sets=
+96systems, each trained with seeds{2, 42, 240}(EER av-
+eraged over seeds). The front-ends includeEAT,HuBERT,
+Wav2Vec2, andWavLM, and the back-ends includeAASIST,
+MLP,Nes2Net, andTCM. The training sets are ASV19,
+ASV5, ADD23 (Chinese), CodecFake, HABLA (Spanish),
+PartialSpoof. All systems are trained with cross-entropy loss,
+the Adam optimiser (lr=10 −6), inputs padded or cropped to
+4 s at 16 kHz, early stopping on validation loss, and repeated
+3 times with different seeds. The average EER across 3 seed
+experiments is reported per system. Our evaluation covers
+13 test sets across four linguistic groups: English (ASV19,
+ASVspoof21 LA (LA21), ASVspoof21 DF DF21 [9], ITW,
+CodecFake, ReplayDF), Multilingual (MLAAD, ODSS), Chi-
+nese (ADD22-1/2, ADD23-1/2), and Spanish (HABLA). The
+motivation is to provide diverse and cross-lingual assessments.
+Note that we also include test sets that are not covered by the
+Speech-DF-arena [15].
+4.2. Impact of front-end
+The results reveal that the choice of front-end is the most influ-
+ential factor across all experimental dimensions. As shown in
+Figure 3 and Table 4,Wav2Vec2achieves the lowest macro-
+average EER of25.5%, outperforming the second best front-
+end (EAT,31.4%), and is the best-performing front-end on
+11 out of 13 evaluation datasets.HuBERTconsistently ranks
+last with a macro-average EER of33.6%, suggesting that de-
+spite its strong performance on other tasks, its representations
+are less discriminative for deepfake artifacts under our evalu-
+ation conditions.EATandWavLMfall in the middle range
+(31.4%and32.4%, respectively), withEATnotably outper-
+formingWav2Vec2on the ODSS and CodecFake benchmarks.
+These findings are also visible if the results are pooled over the
+evaluation sets, as shown in Figure 4a.
+The advantage ofWav2Vec2is most pronounced on the
+ITW dataset, where it achieves an EER of17.4%compared
+to34.3%forEATand31.8%forHuBERT. The gap between
+Wav2Vec2andEATis16.9%, the largest observed across
+any single evaluation dataset. This indicates that representa-
+tions learned byWav2Vec2are particularly robust to the di-
+verse acoustic conditions present in real-world speech record-
+ings. In contrast, on the Chinese ADD benchmarks, the absolute
+EER values for all front-ends are considerably higher (ranging
+from37.6%to44.8%on ADD22-1), and the relative differ-
+ences between front-ends are compressed. ReplayDF is uni-
+versally the most difficult evaluation set, with EERs between
+41.6%(Wav2Vec2) and47.5%(HuBERT), reflecting the more
+challenging scenario of replay effects on top of synthesis-based
+deepfake attacks.
+4.3. Impact of back-end
+In contrast to the front-end, the choice of back-end has a
+comparatively minor effect on detection performance. As
+shown in Table 4, aggregated across all front-ends and training
+3084
+ADD23 ASV19 ASV5CodecFake HABLAPartialSpoof
+Training Dataset
+20
+30
+40
+50
+60Mean EER (%)
+46.2
+20.4
+23.4
+18.0
+20.0
+24.8
+55.5
+28.2 26.5
+19.3
+26.1
+38.5
+57.0
+30.9 29.5
+22.7
+28.7
+33.0
+44.3
+33.1
+28.0 29.4
+25.8 27.6
+Front-End
+Wav2Vec2.0 WavLM HuBERT EAT
+(a)Mean EER per training dataset and front-end, averaged over all back-
+ends and 13 evaluation benchmarks.
+AASIST MLP Nes2Net TCM
+Back-End
+20
+30
+40
+50
+60Mean EER (%)
+49.4
+53.1
+48.4
+52.2
+31.1 31.0 31.5 30.4
+28.0 27.6 28.9 28.127.1 27.1 26.6 26.7
+24.5 25.3 26.3 24.5
+21.5 22.3 22.7 22.8
+Training Set
+ADD23 PartialSpoof ASV19 ASV5 HABLA CodecFake
+(b)Mean EER for each back-end and training dataset combination, aver-
+aged over all front-ends and 13 evaluation benchmarks.
+Figure 4:Mean EER analysis across training datasets, front-ends, and back-ends. (a) Front-end perspective. (b) Back-end perspective.
+Table 4:Mean EER (%) for each front-end (averaged over all
+back-ends & training sets) and each back-end (averaged over
+all front-ends & training sets).↓
+Front-End Mean EER (%) Back-End Mean EER (%)
+Wav2Vec2 25.5 AASIST 30.3
+EAT 31.4 Nes2Net 30.7
+WavLM 32.4 TCM 30.8
+Hubert 33.6 MLP 31.1
+Table 5:Macro-average EER across all 13 evaluation datasets,
+per training set (mean±std over all front-end×back-end).
+Training Data Mean EER Std
+CodecFake22.30.047
+HABLA 25.2 0.034
+ASV5 26.9 0.029
+ASV19 28.2 0.052
+PartialSpoof 31.0 0.056
+ADD23 50.8 0.063
+datasets, the macro-average EER ranges from30.3%(AASIST)
+to31.1%(MLP), a difference of only0.8%. This result aligns
+with recent observations in the literature suggesting that the
+quality of the input representation dominates over the back-end
+architecture when strong SSL features are available [40].
+AlthoughAASISTandNes2Netexhibit slight advan-
+tages, their improvements are not consistently maintained
+across different front-end configurations and training setups.
+Overall, the observed performance differences between back-
+end architectures remain relatively small compared to the vari-
+ability introduced by front-end selection and training condi-
+tions, indicating that back-end effectiveness is strongly depen-
+dent on the overall system design.
+4.4. Impact of training dataset
+The training dataset has a dramatic effect on generalization. Ta-
+ble 5 summarizes the macro-average EER per training dataset,
+aggregated over all front-ends and back-ends. Figure 4b shows
+a more detailed results for each back-end.
+CodecFake as the most transferable training set.Training on
+CodecFake yields the best macro-average EER (22.3%) and the
+lowest variance (±4.7%) across all systems. This is particularly
+striking because CodecFake achieves strong generalization not
+only on its in-domain test set, where it dramatically outperforms
+ASV19-trained systems (8.6%vs.44.9%EER on CodecFake
+eval), but also on entirely out-of-domain benchmarks including
+ITW (12.8%, the best of any training set) and ODSS (16.8%).
+We hypothesize that codec-based artifacts introduce a broad and
+pervasive distortion signature that generalizes across synthesis
+pipelines, making it a powerful training condition even for non-
+codec deepfake systems.
+HABLA: surprising cross-lingual transfer.Despite being
+recorded entirely in Spanish, HABLA-trained models achieve
+the second-lowest macro-average EER (25.2%) and show
+strong generalization to the English and multilingual evaluation
+sets (24.6%). The effective cross-lingual transfer suggests that
+the deepfake artifacts captured in HABLA are not language-
+specific but reflect more fundamental synthesis artifacts shared
+across languages.
+ADD23: a cautionary finding.Models trained on the Chi-
+nese ADD23 dataset catastrophically fail to generalize, yielding
+a macro-average EER of50.8%equi

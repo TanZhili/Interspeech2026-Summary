@@ -1,0 +1,451 @@
+Attentive Mamba: Channel-wise Local Attention for Speech Recognition
+Jen-Tzung Chien ID 1, Fan-Che Feng1, Ching-Hsien Lee2
+1 Inst. of Electrical and Computer Engineering, National Yang Ming Chiao Tung University, Taiwan
+2 Information and Communications Research Labs, Industrial Technology Research Institute, Taiwan
+{jtchien,fanchefeng.ee12}@nycu.edu.tw, C.H.Lee@itri.org.tw
+Abstract
+State space models (SSMs) have emerged as a powerful alter-
+native to transformers for speech recognition, but the perfor-
+mance is constrained due to static local aggregation. This pa-
+per presents an attentive SSM that integrates a causal convolu-
+tional attention where the static convolution is upgraded with a
+channel-wise local attention. The proposed module first con-
+textualizes queries, keys, and values via causal depth-wise con-
+volutions before applying cross-channel attention over a tem-
+porally local window. This architecture is motivated by the
+inherent structure of speech spectrograms, where distinct fre-
+quency channels contain temporally coherent patterns that can
+benefit the channel-specific modeling prior to their integration.
+This design facilitates dynamic parameterization of the state
+transition matrices, leading to the expressive acoustic features.
+Experimental results confirm the merit of integrating dynamic
+channel-wise attention into SSM for speech recognition.
+Index Terms: state space model, channel-wise attention, causal
+convolution, speech recognition
+1. Introduction
+End-to-end automatic speech recognition (ASR) systems,
+driven by neural networks, have achieved substantial advance-
+ments [1, 2]. The architectures based on self-attention, partic-
+ularly in the transformers [3–5], have become a de facto stan-
+dard, celebrated for their proficiency in capturing long-range
+dependencies. Nevertheless, transformers are constrained due
+to their quadratic computational complexity for self-attention
+[6, 7], which poses a bottleneck for processing long sequences.
+The unconstrained attention may result in unstable alignments
+[8]. This weakness has motivated the exploration of alterna-
+tive architecture. Concurrently, state space models (SSMs) have
+emerged as an efficient alternative to sequence modeling [9,10].
+Modern selective SSMs, like Mamba [11–13], has shown linear-
+time complexity and excelled at modeling long-range context
+by dynamically parameterizing their state transitions based on
+input content. This allows SSMs to selectively propagate or for-
+get information over sequences, making them highly effective
+for ASR. However, each of these dominant architectures has
+its own trade-offs. While transformers excel at content-based
+global interactions, they can be less efficient at extracting fine-
+grained local patterns. Conversely, while Mamba’s SSM core is
+adept at efficiently capturing global context, its selection mech-
+anism relies on a static depth-wise convolution to process local
+information. This fixed-kernel approach, though efficient, lacks
+the dynamic, content-aware adaptability that attention mecha-
+nism provides for local feature aggregation.
+This paper presents an approach to combine the strengths of
+transformer and SSM. We hypothesize that a model’s expressive
+power can be significantly enhanced by synergizing the global
+context modeling of SSM with the dynamic local features ex-
+tracted by self-attention. We accordingly propose the atten-
+tive Mamba, a novel block that replaces the static convolutional
+projection in Mamba architecture with a lightweight, efficient
+channel-wise local attention. Our approach aims to achieve the
+best of both paradigms, namely the linear complexity and long-
+range dependency modeling using SSM, augmented by the fine-
+grained, adaptive modeling of local correlations using atten-
+tion. The experiments on read and spontaneous speech recog-
+nition show that the proposed attentive Mamba achieves signif-
+icant performance improvements over strong baseline models
+on ASR benchmarks. These results validate that dynamically
+weighing local information via attention provides a beneficial
+solution to parameterize the SSM’s global state transitions.
+2. Transformer versus State Space Model
+Transformer architecture, driven by the self-attention mecha-
+nism [3, 14], has become a dominant paradigm in sequence
+modeling [15, 16]. By computing pairwise scores between in-
+dividual input tokens, self-attention enables a model to dynam-
+ically adjust the importance of tokens when constructing the
+representation for each single token. This capacity for content-
+based global interaction allows a powerful modeling of com-
+plex, long-range dependencies. This comprehensive modeling
+capability, however, is accompanied by a quadratic computa-
+tional and memory complexityO(T 2)with respect to sequence
+lengthT. This complexity poses a significant bottleneck when
+involving the applications with long sequences. Significant ef-
+forts have been devoted to mitigating this computational cost.
+One line of researches focuses on optimizing the execution of
+the exact attention computation, e.g. the hardware-aware algo-
+rithm like FlashAttention [17, 18] that accelerated the training
+and inference without altering the output. An alternative archi-
+tectural strategy involves constraining the attention’s receptive
+field. Local attention in [19, 20] restricted each token to attend
+only a window of fixed sizew, wherew < T, for neighboring
+tokens. While sacrificing the global receptive field, this modi-
+fication reduced the complexity toO(Tw)and offered an effi-
+ciency for modeling local interactions.
+Recently, SSMs have emerged as a compelling alternative,
+offering a robust model for sequence data grounded by the
+continuous-time dynamical system. These models characterize
+the evolution of latent stateh(t)given an input signalu(t)at
+timetthrough a linear ordinary differential equation
+dh(t)
+dt =Ah(t) +Bu(t),y(t) =Ch(t) +Du(t)(1)
+whereA,B,C,Ddenote the system matrices governing the dy-
+namics. For discrete-time sequences, this system is discretized
+7195
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1708
+with a time-step∆for updateh t−1→h t, yielding a standard
+recurrent formulation [21]
+ht =Ah t−1 +Bu t,y t =Ch t +Du t.(2)
+The early model using SSMs was pioneered by the HiPPO
+framework [9]. Building on this foundation, the structured
+state space model [10] rendered SSM to be practical for long-
+sequence modeling by imposing specific structures onAmatrix,
+which enabled an efficient convolutional representation. Subse-
+quent advancements [22–24] refined these models by introduc-
+ing the simplified matrix structures and efficient parallel com-
+putation schemes, solidifying their strengths in modeling long-
+range dependencies with sub-quadratic complexity.
+A pivotal shift in developing SSMs occurred with Mamba
+[11, 25], which introduced a selection mechanism by render-
+ing the SSM parameters to be input-dependent. This innovation
+allows Mamba to selectively propagate or forget information
+based on inputu t, transforming the discrete-time state-space
+update into a dynamic systemf ssm(A,B,C,u)written as
+ht =A(u t)ht−1 +B(u t)ut,y t =C(u t)ht. (3)
+This input-dependency inA,B,C, however, breaks the time-
+invariance required for conventional convolutional represen-
+tations. To overcome this challenge, Mamba employed a
+hardware-aware parallel scan algorithm. This design enabled
+linear-time scaling and established Mamba and its successors,
+such as Mamba2 [12, 26], as the architectures with high ef-
+ficiency and performance that presented a useful solution to
+quadratic complexity challenges inherent in the transformer.
+3. Attentive State Space Model
+This paper introduces the attentive Mamba block to enrich stan-
+dard Mamba architecture. The core modification lies in sub-
+stituting its static local feature aggregation by a depth-wise
+convolution with a dynamic, content-aware channel-wise lo-
+cal feature attention. The motivation for this architectural shift
+originates from an analysis of inherent trade-offs betweencon-
+volutionandattention. While convolution excels at efficient
+and localized pattern detection through the fixed kernels, it
+lacks the dynamic adaptability that self-attention [27, 28] af-
+fords for content-specific feature aggregation [29, 30]. This pa-
+per presents the theoretical rationale for this substitution, fol-
+lowed by a detailed description of the module’s implementation.
+Figure 1:Attentive Mamba (right) replaces the convolution
+layer of Mamba2 (left) by a channel-wise self-attention layer.
+3.1. From Convolution to Attention
+The selective mechanism in Mamba architecture predicates
+upon generating the state-space parametersA,B,Cdynami-
+Figure 2:Generating queriesq, keyskand valuesvby using
+(a) time-wise attention, which employs a linear projection in-
+dependently on each input token vector at each timet, and (b)
+channel-wise attention, which utilizes independent causal con-
+volutions for each channel or dimension, embedding local tem-
+poral patterns into channel-wise scannedq,kandv. Notation
+Cin Figure 1 denotes a SSM parameter whileCin Figure 2
+denotes the number of channels.
+cally from static inputu t given by time samplex t. In the stan-
+dard Mamba2 block (Figure 1, left), this is achieved by first
+processing the input sequence with a causal depth-wise con-
+volution to produce a local context summary. This summary
+is passed through a linear projection to derive SSM parame-
+ters. While the parameters of this projection, along with the
+other learnable components like input, residual and output pro-
+jections (collectively denoted asϕ), are adapted during train-
+ing, the core convolutional aggregator itself remains inherently
+content-agnostic. Its fixed kernel runs a transformation to lo-
+cal patterns irrespective of their broader contextual significance,
+providing a static, translation-equivariant summary of the local
+history of sequence data [31, 32].
+This paper hypothesizes that the model’s expressiveness
+can be enhanced by rendering the content-aware local aggre-
+gation. Accordingly, the static convolutional aggregation in
+Mamba2 is replaced with a channel-wise self-attention, as il-
+lustrated in Figure 1 (right). While both convolution and at-
+tention operate on a constrained receptive field, their core in-
+ductive biases diverge considerably. Convolution employs a set
+of static and learnable weights as the kernel for feature aggrega-
+tion, whereas self-attention computes the dynamic and instance-
+specific weights based on the token-wise similarities within lo-
+cal window. This replacement facilitates an adaptive parame-
+terization of SSM’s state transitions, allowing the proposed at-
+tentive Mamba block to dynamically adjust the importance of
+local features. This leads to reliable text generation from the
+expressive and powerful acoustic representations.
+3.2. Causal Convolutional Channel-Wise Self-Attention
+The proposed attention mechanism is architecturally designed
+to performdynamicfeature aggregation through a synergis-
+tic interplay between two distinct operations. The first oper-
+ation involves a contextualized projection stage, which con-
+stitutes a significant difference from time-wise self-attention
+that utilizes simple linear projections. As illustrated in Fig-
+ure 2(b), we employ individual causal channel-wise convolu-
+tions to generate the row-wise queriesq c, keysk c, and val-
+uesv c. This process is governed by a set of learnable parame-
+ters,θ={W q,W k,W v}, where eachW∈R C×w represents
+7196
+a convolutional kernel with window sizewunderCchannels
+or dimensions. This design ensures that the resulting columns
+q,k, andvattare contextualized by a local temporal win-
+dow, rather than being obtained from a single tokenx t. The
+causal convolution using input matrixX={x t,c}consisting
+of columnsx t or equivalently rowsx c is then calculated by
+st,c =
+w−1X
+i=0
+W s
+c,ixt−i,c fors∈{q,k,v}(4)
+which acquires the channel-wise rowss c usingW s ={w s
+c}
+wheres∈{q,k,v}. Subsequently, across-channelattention is
+operated to characterize the interactions across overall feature
+dimensions. This operation contrasts with standard time-wise
+self-attention without causality in transformer, as shown in Fig-
+ure 2(a), where attention is computed independently within the
+partitioned channel-wise subspaces. Here, the query at time
+steptattends exclusively to keys within a recent causal win-
+dow of widthw. The dot product between full-dimensionalq t
+andk j produces a single scalar attention score. This score fa-
+cilitates the computation of a normalized weight for each value
+vectorv j, yielding the attended causal context vectoru t∈R C
+ut =
+tX
+j=t−w+1
+exp
+ 
+qt·k j/
+√
+C
+
+tX
+j′=t−w+1
+exp
+ 
+qt·k j′/
+√
+C
+
+vj.(5)
+The synergy due to this composite design arises from the in-
+terplay between two operations. The initial channel-wise con-
+volution captures the specialized temporal features within each
+channel, while the subsequent cross-channel attention integrates
+them into a systematic and content-aware representation. This
+adaptive contextual matrixU={u t,c}from input matrixX
+with columnsx t or rowsx c is then leveraged to parameterize
+the element-wise SSM recurrence for timetand channelcas
+ht,c =A(u t,c)ht−1,c +B(u t,c)ut,c, yt,c =C(u t,c)ht,c.
+(6)
+The attentive Mamba is fully differentiable for end-to-end train-
+ing. The parameters comprise those of channel-wise attention
+θ={W q,W k,W v}and Mamba projectionϕ. These pa-
+rameters are jointly optimized via backpropagation along two
+parallel decoding pathways where the nonautoregressive way
+based on connectionist temporal classification (CTC) lossL ctc
+as well as the autoregressive way based on traditional cross-
+entropy lossL aed via attention-based encoder-decoder (AED)
+[4] for high-fidelity text generation are minimized with respect
+to attention and Mamba parameters{θ,ϕ}under Eqs. (4)(5)(6).
+The trained model allows the attention aggregators and the SSM
+components to co-adapt for an effective interplay betweendy-
+namic local feature extractionandglobal state modeling.
+4. Experiments
+4.1. Experimental Settings
+In the experiments, the attentive Mamba (attMamba) was aug-
+mented with channel-wise attention layer to form an encoder,
+which was combined with CTC [33, 34] for an end-to-end
+ASR. The resulting attMamba-CTC was compared with the
+conformer-CTC where the encoder was replaced by a strong
+baseline conformer [35]. Mamba2 [12] with convolution layer
+was also compared. All models were trained on the 960-hour
+read speech in LibriSpeech [36, 37] corpus and evaluated on
+Table 1:Summary of configurations and hyperparameters.
+Small Model (S) Large Model (L)
+Hyperparameter conformer attMamba conformer attMamba
+Enc. Layers 18 18 18 18
+Model Hidden Dim 256 256 512 512
+Expansion Factor 4 2 4 2
+Attn. Heads 4 N/A 8 N/A
+Conv. Kernel Size 31 N/A 31 N/A
+SSM Dim (N) N/A 64 N/A 64
+Attn. Window (w) N/A 4 N/A 4
+Dropout 0.1 0.1 0.1 0.1
+the dev-clean, dev-other, test-clean, and test-other. In addition,
+TED-LIUM v3 dataset [38] of spontaneous speech was used to
+train on its 450-hour set and evaluate on its dev and test splits.
+The input audio was sampled at 16 kHz. The 80-dimensional
+log-Mel filterbank features were extracted with a 25 ms window
+and a 10 ms frame shift. A 2-layer 2D convolutional network
+with a stride 2 in each layer was used for initial subsampling
+of feature sequence. Performance was evaluated by using word
+error rate (WER). Parameter size in millions was compared. By
+referring the prior works [39–41], the proposed attMamba was
+implemented with a bidirectional architecture to leverage the
+full temporal context. To ensure a fair comparison, both mod-
+els were configured to have comparable model size, with the
+configurations of small and large models as shown in Table 1.
+Table 2:WERs (%) on LibriSpeech using different encoders.
+Best results are shown in bold.
+Configuration #Params Dev Set Test Set
+(M) clean other clean other
+conformer-CTC (S) 30.0 6.51 12.38 6.59 12.57
+attMamba-CTC (S)21.2 6.12 12.17 6.24 12.31
+Table 3:WERs (%) on TED-LIUM using different encoders
+with/without external LM in CTC or CTC+AED.
+Configuration #Params (M) Dev Set Test Set
+conformer-CTC (S) 30.0 9.42 9.81
+attMamba-CTC (S)21.28.53 8.73
+attMamba+lm-CTC+AED (S) 23.46.03 6.23
+conformer-CTC (L) 78.9 7.90 8.22
+attMamba-CTC (L)61.36.76 6.88
+attMamba+lm-CTC+AED (L) 65.14.80 4.98
+4.2. Experimental Results
+The results on two tasks, in Tables 2 and 3, indicate that at-
+tentive Mamba offers a competitive alternative to the strong
+conformer. WERs of Mamba and attMamba are consistently
+lower than those of conformer. Such a finding is similar to that
+in [39, 42]. Notably, on the LibriSpeech task, the attMamba
+demonstrates a consistent advantage on clean subsets, while
+maintaining comparable performance on the more acoustically
+challenging other subsets. The model’s strengths are also under-
+scored on TED-LIUM v3 dataset, fitted to evaluate long-form
+ASR, where attMamba outperforms conformer across all eval-
+uation metrics, confirming its robust generalization to different
+speech domains. Number of parameters is even substantially
+decreased by using attMamba. The evaluation on large model
+(L) significantly decreases WER while attMamba performs bet-
+ter than conformer. These findings illustrate that integrating a
+7197
+dynamic channel-wise local attention within SSM is an effec-
+tive approach, yielding a powerful and compact architecture.
+Table 4:Ablation study on various components in attMamba.
+Configuration #Params Dev Set Test Set
+(M) clean other clean other
+Mamba2 (Baseline)18.79.73 22.37 9.85 22.89
++ Bidirectional 18.7 6.35 15.92 6.53 15.69
++ Chann. Att. (attMamba) 21.26.12 12.17 6.24 12.31
+The ablation study presented in Table 4 demonstrates that
+the performance of attMamba originates from the contributions
+due to its key components. Notably, the introduction of a
+bidirectional architecture in attMamba relative to unidirectional
+Mamba2 yields a significant improvement in WER, confirming
+the critical role of leveraging full temporal context for ASR.
+Building upon this, the subsequent replacement of the static
+convolutional kernel with our dynamic channel-wise attention
+provides a further consistent enhancement across all test con-
+ditions. This second step validates that content-aware feature
+aggregation offers a dynamic, contextual and expressive repre-
+sentation than its static counterpart. These findings illustrate
+that both bidirectionality and convolutional channel-wise atten-
+tion are crucial complementary components, leading to superior
+performance of using attMamba.
+Table 5:Comparison and ablation on LibriSpeech using dif-
+ferent encoders in an advanced setting where the external LM
+rescoring is combined with the joint decoding via CTC+AED.
+Configuration #Params Test Set
+(M) clean other
+wav2vec 95 6.13 13.34
+wav2vec+lm 110 3.44 8.03
+HuBERT 95 6.26 13.17
+HuBERT+lm 110 3.40 8.14
+WavLM 95 5.78 12.04
+WavLM+lm 110 3.36 7.73
+conformer 100 5.15 10.92
+conformer+lm 118 3.03 7.15
+Mamba2 95 7.32 14.73
++ Bidirectional 95 5.93 12.36
++ Chann. Att. (attMamba) 95 4.02 10.01
++ LM Rs. (attMamba+lm) 1002.73 6.02
+The results in previous tables are carried out under a pure
+CTC decoding with lossL ctc to evaluate the WER perfor-
+mance caused by different encoders. Table 5 further con-
+ducts the comparison and ablation under an advanced setting
+for test-clean and test-other on LibriSpeech with two-stage de-
+coding where an AED [4] is merged to implement CTC+AED
+by combining the autoregressive attention lossL aed with CTC
+lossL ctc [43] and an external language model (LM) rescoring
+based on 4-grams is performed by adding the LM lossL lm due
+to the generated sequence throughN-best rescoring scheme
+withN= 50. The hybrid loss is empirically combined as
+0.3Lctc + 0.5Laed + 0.2Llm for optimization in model training.
+For comparative study, the results of encoders using wav2vec-
+base [44], HuBERT-base [45] and WavLM-base [46] with and
+without LM rescoring are included. Some findings are summa-
+rized under CTC+AED with base model. First, post-decoding
+via 4-gram rescording (+lm) significantly reduce WERs for var-
+ious encoders with the increased model size. Second, although
+conformer potentially reduces WERs relative to wav2vec, Hu-
+BERT and WavLM, the lowest WERs of test-clean and test-
+other are achieved as 2.73% and 6.02% by using the proposed
+attMamba+lm, respectively, where the model size is relatively
+reduced. The improvements due to channel-wise attention in
+attMamba are clear as shown in ablation study. The reduction
+of WER due to the incorporation of CTC+AED with LM rescor-
+ing via 4-gram is also observed in the evaluation of long-form
+ASR by using TED-LIUM 3 as shown in Table 3.
+Figure 3:Visualization of feature maps of input (left), output af-
+ter Mamba2 (center), and output after attMamba (right) where
+channel-wise attention produces more uniformity along hori-
+zontal time axis for individual vertical channels.
+Figure 3 visually contrasts the effect of using Mamba2 and
+attMamba on an input feature map. The input displays consider-
+able variance across both time and feature horizons. The output
+of channel-wise attention demonstrates substantially increased
+uniformity along time for each channel. This indicates that lo-
+cal attention does uniformly capture temporal statistics to re-
+calibrate the entire channel, thereby contextually emphasizing
+channel-wise properties over temporal variations. Conversely,
+the convolution layer, while operating on a local temporal re-
+ceptive field, simply applies a static and shared kernelwith-
+outself-attention. This comparison underscores their distinct
+roles, namely channel-wise local attention performs dynamic
+and content-dependentchannel modulation, whereas convolu-
+tion only executes static and translation-equivariantfeature ex-
+traction. AttMamba potentially captures richer sequence infor-
+mation than Mamba2.
+Overall, the proposed attMamba is not a simple integra-
+tion of existing modules, but a targeted solution to an under-
+explored bottleneck in time-mixing machine based on Mamba,
+suffering from the weakness of content-agnostic nature in a
+static convolutional aggregation. We deal with this weakness
+through a specialized channel-wise local attention mechanism
+where the queries, keys and values are contextualized via the
+causal depth-wise convolutions. This design is tailored to cap-
+ture the channel-wise coherent patterns in speech spectrograms.
+Our ablation study confirms that this specific architecture treat-
+ment does improve the performance, due to specialized solution
+to combine dynamic local attention and global state modeling.
+5. Conclusions
+This paper presented the attentive state-space model as a two-
+way encoding architecture where the channel-wise and locally
+self-attended features were extracted to capture dynamic, con-
+textual, consistent and channel-aware inputs to feed in state-
+space model, which acted as the time-mixing machine for
+global representation. The resulting Mamba with channel-wise
+local attention was proposed as a strong encoder block relative
+to the conformer based on transformer block and the Mamba2
+driven by a simple convolutional block. The experiments on
+LibriSpeech and TED-LIUM consistently validates that atten-
+tive Mamba substantially obtains lower WERs than conformer
+and convolutional Mamba even with a smaller model size.
+7198
+6. Generative AI Use Disclosure
+We use generative AI tools to assist with language editing (e.g.
+polishing phrasing, improving clarity, and correcting grammar)
+during manuscript preparation. All technical content, experi-
+mental design, results, and conclusions are produced by the au-
+thors, who take full responsibility for the paper. No generative
+AI tool is listed as an author, and the tool is not used to generate
+a portion of the manuscript.

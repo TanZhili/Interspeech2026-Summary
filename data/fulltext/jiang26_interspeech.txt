@@ -1,0 +1,506 @@
+DiffRhythm 2: Efficient and High Fidelity Song Generation via Block Flow
+Matching
+Yuepeng Jiang1,∗, Huakang Chen1,∗, Ziqian Ning1, Jixun Yao1, Zerui Han2, Di Wu2, Meng Meng2,
+Jian Luan2, Zhonghua Fu1, Lei Xie1,∗∗
+1 ASLP Lab
+2 MiLM Plus, Xiaomi Inc., China
+jiangyp@mail.nwpu.edu.cn, huakang@mail.nwpu.edu.cn, lxie@nwpu.edu.cn
+Abstract
+Generating full-length, high-quality songs requires
+lyric–music consistency and coherent musical structure. Exist-
+ing non-autoregressive (NAR) methods are efficient but often
+struggle with temporal alignment between lyrics and singing
+vocals. Meanwhile, reinforcement learning from human
+feedback across multiple preferences often relies on merging
+separately optimized models, causing performance degrada-
+tion. We introduce DiffRhythm 2, an end-to-end framework
+for controllable song generation. It uses semi-autoregressive
+block flow matching to achieve faithful lyric–vocal alignment
+without duration labels or explicit constraints, while preserving
+NAR quality and efficiency. A 5 Hz music variational au-
+toencoder enables long-sequence modeling with high-fidelity
+reconstruction. For multi-preference optimization, we propose
+cross-pair preference optimization, which jointly learns prefer-
+ence pairs across reward dimensions in one model and avoids
+merging-induced degradation. We further introduce stochastic
+block representation alignment loss to improve musicality and
+structural coherence. DiffRhythm 2 generates songs up to 210
+seconds, outperforms open-source models in subjective and ob-
+jective evaluations, and remains efficient. Code and weights are
+availble at: https://github.com/xiaomi-research/diffrhythm2.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Music serves as an abstract expression of human emotion and
+culture. Songs represent a unique art form, combining music
+and language to convey emotions and stories through melody
+and lyrics. With the rapid development of deep learning, mu-
+sic generation has progressed beyond symbolic music gener-
+ation [1, 2] and singing voice synthesis [3, 4, 5], moving to-
+wards more challenging tasks such as instrumental music gener-
+ation [6, 7, 8] and song generation. Unlike singing voice synthe-
+sis, which produces vocals with predefined melodies, or instru-
+mental music generation, which only models melody and instru-
+mentation, song generation requires joint modeling of lyrics,
+structure, singing vocal and accompaniment. This is further
+complicated by the typical length of songs, which often exceeds
+three minutes, making lyric alignment and stable style modeling
+particularly challenging.
+Early approaches, such as Jukebox [9] and SongCre-
+ator [10], generate songs by predicting the acoustic tokens of
+vocals and accompaniment mixed into a single track. However,
+*These authors contributed equally.
+**indicates the corresponding author.
+the limited information density of these tokens hampers high-
+quality song generation. Yue [11] improves generation quality
+by modeling the vocals and accompaniment on separate tracks,
+while SongGen [12] further enhances quality by introducing in-
+terleaved dual-track prediction. Despite these improvements,
+Yue and SongGen predict the tracks independently, which of-
+ten leads to inconsistencies between the vocals and accompani-
+ment. LeV o [13] addresses this issue by first generating a mixed
+track and using it to guide the separate prediction of vocals and
+accompaniment, thereby reducing mismatches. However, the
+overall quality is still limited by the information compression in
+the mixed track tokenization, and it is difficult to generate com-
+plex and rich accompaniment. Most of these methods are based
+on autoregressive frameworks, which result in slow generation
+speeds. This hinders real-time applications and user interactiv-
+ity.
+Unlike the aforementioned approaches, DiffRhythm [14]
+takes a bold approach within a non-autoregressive (NAR)
+framework. By leveraging the generation ability of diffusion
+models and continuous representations, it achieves high-quality
+mixed-track generation of vocals and accompaniment at over 50
+times faster than autoregressive methods. However, NAR mod-
+els struggle with lyric alignment in long sequences. DiffRhythm
+addresses this issue by conditioning on sentence-level times-
+tamps. However, this solution significantly reduces creativ-
+ity and diversity, and also imposes higher requirements on the
+training data. ACE-Step [15] solved the alignment problem
+without timestamps by introducing representation alignment
+(REPA) [16] loss with mHuBERT [17] as semantic constraints.
+However, the addition of these constraints significantly reduced
+musicality, creating a delicate trade-off between lyric alignment
+and generation quality.
+In addition, pretrained models often fail to align with hu-
+man preferences due to the gap between training objectives and
+desired song quality. Therefore, a typical method is to intro-
+duce reinforcement learning from human feedback (RLHF) in
+the post-training process to refine generation preferences across
+various musical dimensions. DiffRhythm+ [18] demonstrated
+the feasibility of improving overall musicality with Direct Pref-
+erence Optimization (DPO) [19]. LeV o extended this approach
+by applying DPO to different dimensions separately and inter-
+polating model weights to enhance overall performance. While
+this strategy improved balance across dimensions, it inevitably
+limited the upper bound of each individual capability due to the
+averaging effect.
+To address these challenges, we present DiffRhythm 2, a
+semi-autoregressive end-to-end framework for song generation
+based on block flow matching. This framework partitions la-
+tent representations into fixed-length blocks and generates each
+4034
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-128
+block non-autoregressively using flow matching, while main-
+taining autoregressive dependencies between blocks. This de-
+sign enables faithful lyric alignment without requiring addi-
+tional labels or constraints. The semi-autoregressive structure
+provides rich bidirectional context within blocks, ensuring long-
+sequence consistency, and supports fast inference for songs up
+to 210 seconds long. To accommodate block flow matching
+during training, we introduce stochastic block REPA loss that
+ensures efficient training and provides accurate representation
+guidance for the current block. We group similar preferences
+and perform pairwise optimization across groups to improve
+the performance of multi-preference alignment. Finally, as the
+block flow matching training strategy significantly increases the
+sequence length, we implement a high-compression music vari-
+ational autoencoder (V AE), achieving high compression while
+still enabling high-quality audio reconstruction. To encourage
+reproducibility and further exploration, we will release the in-
+ference code and model checkpoints. The main contributions of
+this paper are summarized below:
+• We propose DiffRhythm 2, a novel semi-autoregressive song
+generation framework based on block flow matching, which
+is capable of producing high-quality songs with faithful lyric
+alignment and excellent accompaniment performance.
+• We introduce stochastic block REPA loss to enable represen-
+tation alignment in block flow matching, thereby enhancing
+structural modeling and achieving remarkable coherence and
+hierarchical structure in long-form song generation.
+• We propose a cross-pair preference optimization strategy
+to efficiently handle multi-preference alignment, which en-
+hances final performance while reducing the number of opti-
+mized models through a group-based optimization approach.
+• We design a music V AE with low-frame-rate compression at
+5 Hz that preserves reconstruction quality while reducing se-
+quence length, which not only accelerates inference but also
+makes long-sequence modeling in DiffRhythm 2 both feasi-
+ble and effective.
+2. Related Works
+2.1. Flow Matching and Autoregressive Diffusion Model
+Flow matching (FM) [20] trains continuous normalizing flows
+(CNFs) without simulation by directly regressing a time-
+dependent vector fieldvt(x)that transports samples from a sim-
+ple priorp 0 to a target distributionp1 along pathspt. This yields
+simpler objectives, faster convergence, and more stable train-
+ing than score matching. Conditional flow matching (CFM)
+further conditions the vector field on external information, en-
+abling guided generation. CFM is widely used in the field of
+image generation and has also been applied to TTS tasks in re-
+cent years.
+Autoregressive diffusion models aim to combine the
+strengths of both autoregressive and non-autoregressive
+paradigms, achieving complementary advantages. These
+approaches can generally be categorized into two groups:
+diffusion-backbone and language-model-backbone designs. For
+diffusion-based backbones, the SSD series [21, 22] introduced
+this idea and applied it to text generation tasks, with Block Dif-
+fusion further optimizing the framework. ARDiT [23] extended
+this line of work to text-to-speech (TTS). On the other hand,
+language-model-based backbones include DiTAR [24], which
+integrates diffusion mechanisms into autoregressive language
+models.
+2.2. Song Generation
+Song generation aims to produce coherent vocals and accom-
+paniment given lyrics and style specifications, requiring joint
+modeling of melody, harmony, and lyric alignment. Early
+methods adopted sequential pipelines: Melodist [25] and
+MelodyLM [26] first generated vocals from lyrics, then syn-
+thesized accompaniment. However, since vocals and accompa-
+niment are inherently interdependent, this sequential approach
+often produces suboptimal results. To address these limitations,
+parallel generation methods emerged. SongCreator [10] and
+Yue [11] generate vocals and accompaniment independently in
+parallel, while SongGen [12] introduces interleaved prediction
+across tracks to improve quality. Despite these advances, weak
+coupling between vocal and instrumental tracks often leads to
+harmonic inconsistencies. LeV o [13] mitigates this by first gen-
+erating a mixed track, then using it to guide separate vocal and
+accompaniment synthesis, achieving better harmony at the cost
+of reduced accompaniment complexity. Recent work has ex-
+plored alternative architectures to improve both quality and ef-
+ficiency. MusicCoT [27] and Songbloom [28] leverage Chain-
+of-Thought reasoning [29] to enhance vocal-accompaniment
+coordination and overall generation quality. However, these
+language-model-based approaches suffer from computational
+overhead and struggle with style consistency across long se-
+quences due to their autoregressive nature. Non-autoregressive
+approaches offer promising alternatives. DiffRhythm [14] and
+ACE-Step [15] employ diffusion models to achieve superior
+long-sequence consistency and vocal-accompaniment harmony
+while maintaining faster inference. However, both methods face
+challenges in lyric alignment for extended sequences. While
+each proposes specific solutions, these fixes come at the cost of
+reduced creativity or musicality. Specifically, DiffRhythm relies
+on timestamp conditioning while ACE-Step employs represen-
+tation alignment, highlighting the need for more sophisticated
+alignment strategies.
+3. Method
+3.1. Overview
+The overall architecture of DiffRhythm 2, illustrated in Fig-
+ure 1, comprises of a Music V AE and a Diffusion Transformer
+enhanced with block flow matching. The Diffusion Transformer
+is conditioned on lyricsLtogether with either text style prompt
+St or audio style promptS a, and generates V AE latents block
+by block. These latents are then passed to the Music V AE de-
+coder to reconstruct the waveform. For training, in addition
+to the block flow matching loss, we introduce the stochastic
+block REPA loss combined with MuQ [30] representations to
+enhance the model’s musicality and structural modeling. More-
+over, to address the degraded average performance caused by
+multi-preference optimization, we introduce a cross-pair pref-
+erence optimization strategy. The following subsections will
+provide detailed descriptions of the DiffRhythm 2 modules and
+training procedure.
+3.2. Music V AE
+To address the challenge of training DiffRhythm 2 on extremely
+long sequences, we design a customized Music V AE with a
+frame rate as low as 5 Hz. The V AE processes 24 kHz input
+audio as input and reconstructs it at 48 kHz, achieving com-
+pression ratios of 4800× during encoding and 9600× during de-
+coding. The Music V AE consists of an encoder, a transformer
+4035
+Rock,
+Melancholic,
+Drums,
+Bass, Guitar
+S L
+Mulan
+Decoder
+Tokenizer Diffusion Transformer
+[start]
+[verse]
+It's only been a day
+But it's like I cant go on
+I just wanna say
+.....
+S
+L
+style prompt
+lyrics
+i-th noise block
+i-th clean block
+clean block with EOP
+Figure 1:Overview architecture of our proposed DiffRhythm 2. Either text description or audio can specify the style prompt.
+block, and a decoder. The encoder adopts the same architec-
+ture as Stable Audio 2 V AE 1[31]. A transformer block is in-
+serted before the decoder to alleviate reconstruction pressure.
+To maximize reconstruction quality, we employ BigVGAN [32]
+as the decoder. For the training loss, we combine the multi-
+scale mel loss from BigVGAN with the multi-scale STFT loss
+from Stable Audio 2 V AE to jointly optimize vocals and ac-
+companiment. In addition, we employ a set of discriminators,
+including the multi-period discriminator, multi-scale discrimi-
+nator, and CQT discriminator from BigVGAN.
+Unlike MIMI [33], we deliberately avoid adding a similar
+transformer block after the encoder for two reasons: (1) The
+limited future information introduced by convolution helps en-
+hance content continuity between consecutive blocks. (2) The
+global bidirectional receptive field of transformer introduces ex-
+cessive future information, substantially increasing the burden
+on the generative model.
+3.3. Block Flow Matching
+3.3.1. Definition
+We first establish the mathematical foundation of flow matching
+before extending it to the block-wise setting. Given the target
+latentZ, flow matching defines a linear probability path that
+transports Gaussian noiseZ 0∼N(0,I)to the target data dis-
+tributionZ. During training, the timesteptis sampled from
+U[0,1], and the noisy latentZ t is obtained by linear interpola-
+tion:
+Zt = (1−t)Z 0 +tZ.(1)
+The modelf θ conditions onZ t, style promptS, lyricsL, and
+timesteptto estimate the velocity fieldˆv. Since the path is
+linear, the ground truth velocity fieldvisZ−Z 0. The flow
+matching loss is therefore defined as
+Lfm =E[||ˆv−v||2
+2
+
+=E[||f θ(S,L,Z t,t)−(Z−Z 0)||2
+2].(2)
+In block flow matching, the core idea is that each block
+is generated with flow matching, while the dependency across
+blocks is handled autoregressively. Let the block size beb, and
+split the target latentZof lengthlintoZ={z 1,z 2,···z k},
+wherek=⌈l/b⌉denotes the total number of blocks. Since the
+generation of each block depends on all previously generated
+blocks, the velocity field for thei-th block is estimated as
+ˆvi =f θ(S,L,z <i,zi
+t,ti),(3)
+1https://github.com/Stability-AI/stable-audio-tools
+wherez <i represents all preceding blocks.z i
+tis the noisy la-
+tent for the current block obtained via linear interpolation, and
+ti ∼ U[0,1]is sampled independently for each block. The
+corresponding ground truth velocity for the i-th block isv i =
+zi−zi
+0, wherezi
+0∼N(0,I)is the standard Gaussian noise for
+this block. The overall block flow matching loss is then defined
+as
+Lbfm = 1
+k
+kX
+i=1
+E
+
+||ˆvi−vi||2
+2
+
+= 1
+k
+kX
+i=1
+E
+
+||fθ(S,L,z <i,zi
+t,ti)−(z i−zi
+0)||2
+2
+
+.
+(4)
+3.3.2. Details of Application
+From the definition, block flow matching requires access to
+clean block. While this is naturally available during inference,
+the training input sequence typically consists only of(S,L,Z t)
+without the clean blocks. To address this, we concatenate the
+clean sequence to the noisy sequence, forming(S,L,Z,Z t),
+and apply an attention mask to enforce autoregressive depen-
+dencies. Figure 2 illustrates our attention mask design: the
+style promptSand lyricsLcan be attended by any block; for
+the clean sequence, thei-th block can only attend to blocks1
+throughi; for the noisy sequence, thei-th block can only at-
+tend to clean blocks1throughi−1and its own noisy block.
+This design enforces autoregressive training but results in very
+long input sequences. To alleviate this, we employ a 5 Hz music
+V AE to substantially compress the training sequence length.
+The introduction of clean sequences requires a mechanism
+to distinguish them from noisy sequences to facilitate model
+training. In conventional autoregressive frameworks, this is typ-
+ically achieved by inserting special tokens as delimiters. How-
+ever, such an approach is not applicable here. Since the re-
+ceptive field is controlled by the attention mask, inserting de-
+limiters for each block is impractical and would also affect
+positional encoding. To address this in a simple yet effective
+way, we leverage the timesteptto differentiate between se-
+quences. Specifically, we set the style prompt and lyrics to a
+fixed timestep of−1, the clean sequence to1, and assign the
+noisy sequence a timestep sampled fromU[0,1]. To further
+enhance training stability, different blocks within the same se-
+quence are assigned independently sampled timesteps.
+4036
+Diffusion Transformer
+S L SSL
+Stochastic Block
+REPA Loss
+S
+L
+S L
+S
+L
+style prompt
+lyrics
+i-th clean block
+i-th noisy block
+i-th velocity field
+hidden state of i-th clean block
+hidden state of i-th noisy block
+ignore state
+SSL SSL representation
+Figure 2:The right panel shows the block-level latent sequence structure of the inputs and outputs, while the left panel shows the
+corresponding attention mask applied during training. Note that the block size here is 2.
+3.3.3. Variable Length Generation
+Unlike prior works that predetermine the total sequence length
+before generation, DiffRhythm 2 incorporates the End-of-
+Prediction (EOP) frame as part of the prediction target to enable
+variable length generation. Since generation proceeds block by
+block, we padnEOP frames at the end of the sequence rather
+than a single frame. Specifically,nis determined by the length
+of the final blocklk:
+n=l k modb.(5)
+Ifl k is shorter than the block sizeb, EOPs are padded to com-
+plete the block; ifl k equalsb, an additional full block of EOPs
+is padded. Formally,
+Z=concat(Z orig,repeat(EOP,n)).(6)
+To design the EOP frame, we experimented with several distri-
+butions. When the mean of the EOP distribution deviates sig-
+nificantly from that of the latent, such as inN(1,1), the model
+tends to generate strong noise near the end of the sequence.
+When the two distributions are numerically close, such as in
+N(0,2), prediction becomes unreliable since the model strug-
+gles to recognize the stopping position. Moreover, because no
+KL constraint is applied to the latent, enforcing a specific prob-
+abilistic form for EOP further increases the modeling difficulty.
+Overall, we find thatN(1,0), i.e., a constant vector of ones,
+provides the most effective EOP representation, as it ensures
+clear numerical separation from latent features while remaining
+easy for the model to learn.
+3.3.4. Training and Inference Procedures
+The training and inference procedures are described in Algo-
+rithms 1 and 2. It is worth noting that the incorporation of the
+autoregressive mechanism allows us to enable KV cache at the
+block level during inference, which substantially accelerates the
+generation speed.
+3.4. Stochastic Block REPA Loss
+As REPA loss is no longer required for lyric alignment con-
+straints, we repurpose it to improve the model’s musicality and
+Algorithm 1Block Flow Matching Training
+Require:forward noise processq t
+repeat
+tnoise←{t i∼U[0,1]|i= 1,...,k}
+Zt←q tnoise (Z)
+ˆv←fθ(S,L,Z,Z t,t noise)
+θ←θ−η∇ θLbfm(ˆv)
+untilconverged
+Algorithm 2Block Flow Matching Inference
+Require:max block numberN, sampling processSP, KV
+cacheKV, model with KV cachem θ
+Z←∅
+∅,KV←m θ(S,L,∅,−1,∅)
+fori= 1toNdo
+zi
+0∼N(0,I)
+zi←SP(m θ,zi
+0,KV)
+∅,KV i←m θ(∅,∅,z i,1,KV)
+KV←KV⊕KV i
+Z←Z⊕z i
+ifEOP∈z i then
+break
+end if
+end for
+returnZ
+structural modeling. For the target SSL representations, extract-
+ing them with the same block size as DiffRhythm 2 hinders the
+capture of larger-scale musical structures. Moreover, SSL rep-
+resentations are typically downsampled by multi-layer convo-
+lution, which often introduces several frame shifts. The mis-
+alignment betweenz i and SSL features caused by these shifts
+makes it unreliable to calculate REPA loss on target block di-
+rectly. A better solution is to compute the loss on the entire
+sequence, which leverages the contextual receptive field to miti-
+gate misalignment and enables the model to learn musical struc-
+tures more effectively.
+However, due to the block-wise training scheme, the hid-
+4037
+Table 1:Results of objective evaluations. The best results among commercial models are highlighted in bold, while the best results
+among open-source models are underlined.
+Model PER↓Mulan-T↑Mulan-A↑ Audio Aesthetics↑SongEval↑
+CE CU PC PQ CO MU ME CL NA
+SUNO V4.5 0.280.38-7.78 7.856.288.44 4.274.01 4.043.98 3.89
+Mureka-O1 0.09 0.37 - 7.65 7.816.318.35 4.144.06 4.073.93 3.85
+DiffRhythm+ 0.15 0.25 0.69 7.44 7.51 6.22 7.85 3.63 3.39 3.42 3.61 3.15
+ACE-Step 0.23 0.28 - 7.26 7.51 6.25 7.79 3.77 3.46 3.58 3.56 3.38
+LeV o 0.19 0.35 0.81 7.51 7.78 5.68 8.12 3.74 3.56 3.62 3.55 3.40
+DiffRhythm 2 0.13 0.40 0.75 7.48 7.59 6.12 7.91 4.09 3.93 4.01 3.89 3.78
+den statesh i−1
+t andh i
+t corresponding toz i−1
+t andz i
+t are not
+continuous, making it infeasible to directly compute REPA loss
+from the hidden stateH t ofZ t. Considering that training is
+performed with teacher forcing, the hidden statesh <i andh i
+t
+corresponding toz<i andz i
+t remain continuous. Thus, comput-
+ing REPA loss on their combination is more reasonable. Note
+that for anyt, the target is always the ground-truth SSL repre-
+sentation. Therefore,tis only used to distinguish between noisy
+and clean sequences.
+In practice, a noisy sequence typically contains dozens of
+blocks, so computing REPA loss for all of them is computa-
+tionally expensive. Therefore, we randomly sample 10 blocks
+per noisy sequence for loss computation. For clean sequences,
+some blocks may be used multiple times for loss calculation. In
+such cases, we assign weights such that the total weight of each
+block sums to 1.
+3.5. Cross-Pair Preference Optimization
+Previous studies [18, 13] have demonstrated the effectiveness
+and necessity of applying DPO for post-training in song gener-
+ation tasks. As song generation involves multiple preference di-
+mensions, multi-preference alignment optimization has become
+increasingly important. Existing approaches typically rely on
+merging separately optimized models. However, as the num-
+ber of preferences increases, model merging often significantly
+reduces the average performance across preferences, severely
+limiting the overall efficiency of DPO.
+We focus on four preference dimensions: musicality, style
+similarity, lyric alignment accuracy, and audio quality. Indepen-
+dent DPO experiments reveal complex interactions among these
+dimensions: improving lyric alignment often compromises mu-
+sicality; optimizing audio quality may enhance alignment but
+weaken style similarity; while reinforcing style similarity tends
+to benefit musicality. These observations indicate that prefer-
+ences can be either conflicting or synergistic.
+Motivated by these findings, we propose a cross-pair pref-
+erence optimization strategy. Preferences are grouped by simi-
+larity and paired across groups for pairwise optimization. Con-
+flicting preferences are paired to mitigate trade-offs, while syn-
+ergistic preferences are leveraged to enhance consistency across
+optimized models. This design not only reduces the num

@@ -1,0 +1,465 @@
+Grounding Whisper: Audio Anchor-Based Approach for Hallucination
+Mitigation and Throughput-Efficient ASR
+Prateek Agarwal1, Saurabh Kumar1, Priyanka Bhatt1
+1 Walmart Global Tech
+prateek.agarwal@walmart.com,saurabh.kumar1@walmart.com, priyanka.bhatt@walmart.com
+Abstract
+Whisper exhibits robust ASR performance but suffers from
+hallucinations on silence and non-speech audio, generating spu-
+rious transcriptions that undermine production reliability. We
+introduceanchor audio, a simple input-level technique that
+prepends a short audio phrase with near-zero domain occur-
+rence to the input, enabling hallucination detection without
+modifying or fine-tuning the model. Using this mechanism,
+we evaluate five inference approaches ranging from single-call
+augmentation to batch concatenation with automatic fallback,
+exploring accuracy–latency–throughput trade-offs. Our batch
+strategy leverages Whisper’s fixed 30-second window to con-
+catenate multiple short utterances while maintaining fidelity
+through anchor-based validation. This reduces overall WER
+from 32.18% to 13.23%, achieves 0.14% Hallucination Error
+Rate on non-speech audio, and preserves latency comparable to
+baseline V AD pipelines, demonstrating an effective, practical
+solution for hallucination mitigation.
+Index Terms: speech recognition, hallucination mitigation, an-
+chor audio, ASR, Whisper
+1. Introduction
+Whisper [1] achieves strong automatic speech recognition
+(ASR) performance across diverse domains due to large-scale
+training on 680k hours of speech data. While variants exist
+[2, 3, 4, 5], whisper-turbo-large-v3 offers optimal performance-
+latency trade-offs. Despite this robustness, Whisper exhibits
+a persistent failure mode: hallucinations [6] on silence and
+non-speech audio, where the model produces unwarranted, ran-
+dom transcriptions. These hallucinations degrade accuracy and
+hinder deployment in real-time systems. Previous strategies -
+V AD filtering, confidence thresholds, token suppression, or ar-
+chitectural changes - reduce but do not effectively mitigate these
+errors [7, 8, 9, 10, 11].
+In this work, we introduce a simple, input-level technique
+that enables systematic hallucination detection without modify-
+ing or fine-tuning Whisper. The key idea is to prepend a short,
+phonetically clearanchor audioto all inputs. The text of this
+audio acts as a lightweight ground-truth marker: when Whisper
+correctly recognizes it, subsequent transcription can be trusted
+to be correct.
+Beyond hallucination mitigation, anchor audio enables safe
+concatenation of multiple short utterances within Whisper’s
+fixed 30-second window. Short conversational turns underuti-
+lize this window, leading to compute wastage. By inserting an-
+chor phrases as delimiters between segments, we reliably split
+Whisper’s output back into individual transcripts, unlocking
+batching efficiency without sacrificing correctness. We evaluate
+multiple concatenation strategies under varied load conditions
+using a GPU inference framework.
+Our contributions are:(1) We introduce anchor audio as
+a light-weight, dual-purpose mechanism for both hallucination
+suppression and throughput optimization using anchors as de-
+limiters to safely concatenate multiple short utterances within
+Whisper’s 30-second window. (2) We analyze accuracy and la-
+tency under real-world workloads, showing that anchor audio
+mitigates hallucinations while maintaining low latency.
+2. Related Work
+2.1. Streaming ASR and Throughput Optimization
+Whisper excels in offline transcription, but its fixed 30-second
+chunk design conflicts with real-time requirements. Several
+streaming approaches have emerged [12, 13, 14], along with
+optimization strategies using CTranslate2 or TensorRT, quanti-
+zation and knowledge distillation [2].
+These methods reduce per-utterance latency but do not ad-
+dress the throughput loss caused by Whisper’s fixed window,
+which is underutilized in conversational ASR. Our work com-
+plements these efforts by enabling safe batch concatenation of
+multiple audio segments using anchor audio as a delimiter, im-
+proving throughput without modifying the underlying model.
+2.2. Hallucination in Large ASR Models
+Whisper is known to hallucinate text on silence and environ-
+mental noise, studied in multiple papers [15, 16, 17, 18, 19]. [7]
+characterised the patterns in Whisper, while [8] attributed it to
+Whisper’s training on weakly-labelled data. Careless-whisper
+[9] examined its technical and moral ramifications.
+Although prompting Whisper model has been explored for
+domain adaptation and improving performance [20, 21, 22, 23,
+24, 25], it has not been studied as a method of hallucination
+reduction. We perform an ablation study to quantify its impact.
+V oice Activity Detection [26, 27] serves as a fundamental
+pre-processing step in ASR pipelines, which is used in Whis-
+perx [10] to reduce hallucination. Other strategies apply post-
+processing error correction [28], but fail when Whisper assigns
+high confidence scores to hallucinated output. Calm Whis-
+per [11] proposed fine-tuning specific attention heads to reduce
+hallucinations, but requires model modification, making direct
+comparison without reproducing their procedure infeasible.
+Our technique complements rather than replaces V AD:
+V AD provides coarse filtering, while anchor audio enables fine-
+grained hallucination detection for segments that pass V AD
+screening.
+6103
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1314
+0 2,000 4,000
+Oh
+*crying*
+*whistling**BANG*
+*Burps**music*
+-Thank you.*crickets*
+you
+65
+85
+88
+92
+120
+140
+151
+188
+278
+3,900
+Occurrence Count
+Figure 1:Top 10 hallucinated outputs from Whisper turbo
+on Urban8k environmental audio. The model predominantly
+generates filler words (“you”, “Thank you”) and sound-event
+descriptions (“*crickets*”, “*music*”) when processing non-
+speech audio.
+3. Methodology
+3.1. Reference Architecture
+We illustrate a commonly used ASR processing pattern found
+in public literature (V AD→mel spectrograms→decoder→
+post-processing) as in Figure 2 and evaluate metrics on this
+pipeline:
+Figure 2:Schematic diagram of different stages in the ASR sys-
+tem.
+1.Pre-processing Stage: Performs V oice Activity Detection
+(V AD) to filter non-speech segments.
+2.Transcript Processing Stage: This stage computes mel
+spectrograms, prepends anchor audio when needed, manages
+batch concatenation, and performs hallucination detection.
+In this stage, we use an inference-optimized whisper turbo
+model at int8 precision.
+3.Post-processing Stage: Implements buffer management sim-
+ilar to [12] for transcript stability.
+3.2. Anchor Audio Generation and Design
+The choice of anchor phrase is critical for robust separation. We
+filtered candidates based on three criteria: (1)Acoustic Dis-
+tinctivenessfor clear recognition; (2)Domain Orthogonality
+(near-zero natural occurrence) to prevent false splitting; and (3)
+Token Efficiencyto minimize latency. We rejected common
+prompts (e.g., “Start”, “hello”) due to frequent collision with
+input audios.
+We compare two empirically selected candidates:
+•“Mongolia”: Chosen for phonetic robustness (strong nasals
+/m/, /n/ and plosive /g/) and token efficiency (1–2 tokens). As
+a proper noun semantically distant from our retail domain, it
+minimizes false positives.
+•“The present user said”: A multi-word phrase optimized
+for semantic uniqueness, acting as a highly specific delimiter
+despite a larger token footprint.
+Anchor audios were synthesized via TTS (male/female) and
+validated across three amplitude levels (1.0, 0.5, 0.25) to ensure
+the anchor is detected without overpowering the primary audio
+signal.
+• We fixed the silence delimiterδat 2.0 seconds, empirically
+determined to be sufficient for the model’s attention mecha-
+nism to reset between the anchor and the target speech with-
+out incurring excessive latency.
+• We exclusively employ prefix-based anchoring: by success-
+fully decoding the anchor, the autoregressive decoder is con-
+ditioned on producing faithful transcriptions before encoun-
+tering the target audio. Without an anchor, silence or noise
+at the input onset can trigger self-reinforcing hallucination
+loops; the anchor provides grounding tokens that constrain
+subsequent generation towards the actual acoustic content.
+3.3. Inference Approaches
+We describe five inference approaches for integrating anchor
+audio into the transcription pipeline, as shown in Figure 3.
+A1: Vanilla Whisper:Pre-V AD baseline; A2–A5 all use Silero
+V AD as a pre-processing step.
+A2: Only V AD:Uses V AD to filter non-speech segments before
+they reach Whisper, processing only the detected speech por-
+tions, a common production practice to reduce hallucinations.
+A3: V AD with Anchor.We define an acoustic anchorA(e.g.,
+“Mongolia”) and a silence bufferδ. For an input utteranceU,
+we construct the augmented inputX ′ = [A,δ,U]. The model
+generates a raw transcriptY. We attempt to decomposeYinto
+a prefixpand contentcsuch thatY=p+c, wherepmatches
+the anchor text. If the match succeeds, the final transcription is
+ˆT=c. If the anchor text is absent (match fails) - indicating
+potential speech overlap masking the anchor - we fallback to
+ˆT=Yto prevent data loss, accepting the risk of hallucination
+in favour of recall.
+A4: Naive Batching:To maximize throughput, we exploit
+Whisper’s capacity to process 30-second contexts by physically
+concatenating multiple discrete short inputs (U 1,...,U n) into
+a single audio buffer. A 2.0s silence (δ) follows each utterance;
+with the anchor, the inter-utterance delimiter is (δ+A+δ), giv-
+ingU batch = [A,δ,U 1,δ,A,δ,U 2,...]. Post-inference, we re-
+construct individual transcripts by splitting the output string us-
+ing the anchor text as a delimiter. This approach assumes a strict
+1:1 mapping where thek-th text segment corresponds to audio
+Uk. While highly efficient, it is “naive” because it lacks error
+recovery: if the model fails to transcribe an intermediate anchor
+(e.g., due to noise overlap), the delimiter count mismatches the
+input count (N out ̸=N in), causing transcript misalignment or
+merging.
+A5: Batching with Fallback:To address the alignment failures
+of Approach 4, we introduce a validation logic based on token
+cardinality. LetNbe the number of inputs in the constructed
+batch. We perform inference to obtainY batch and count the
+occurrences of the anchor text phrase to findk. Ifk=N,
+the mapping is unambiguous, and we assign the resulting split
+segmentss 1...s N to inputsU 1...U N . Ifk̸=N(indicat-
+ing a missing or hallucinated delimiter), the batch is flagged as
+invalid. In this failure case, the system discardsY batch and au-
+tomatically falls back to processing each constituent inputU i
+individually using Approach 3. This hybrid strategy maintains
+the high throughput of batching for the majority of cases while
+guaranteeing the robustness of single-call augmentation when
+complex audio compromises batch structural integrity.
+6104
+Figure 3:Schematic diagram of different approaches of anchor configuration. We take different audios from our dataset, and run them
+through the 5 approaches. We track the latency and WER for each of these approaches across different concurrency levels.
+4. Experimental Setup
+4.1. Data
+To ensure relevance to real-time conversational ASR use cases,
+we filter all datasets to include only segments with duration be-
+tween 1-5 seconds, resulting in 33k test audio samples.
+Primary Evaluation Dataset:A privately licensed retail
+customer-service speech corpus with anonymized data.
+Non-Speech Audio Source:We use UrbanSound8K [29]
+for non-speech evaluation, excluding the “children playing” cat-
+egory to avoid segments containing human vocalisations (6,614
+clips retained). Ground truth is set to empty; any non-empty
+output—including sound-event descriptions (e.g., “*music*”,
+“*crickets*”)—is counted as a hallucination. Figure 1 shows
+the most common hallucinated outputs on this data.
+Other Open-source Datasets:AMI meeting corpus and
+the LibriSpeech datasets [30] enable standardized baselines to
+assess the transcription accuracy of our approach.
+4.2. Metrics
+We evaluate accuracy, robustness to non-speech, and system ef-
+ficiency using(i)word error rate (WER),(ii)hallucination rate,
+and(iii)end-to-end p95 latency as in Figure 2.
+For anormalizedutteranceu, if ground truthg u has length
+Gu, and predictionsp u has lengthP u (post-anchor), with sub-
+stitutionsS u, deletionsD u, and insertionsI u, we compute
+WER per utterance and then average:
+WERu =
+
+
+
+Su +D u +I u
+Gu
+, G u >0,
+1[Pu >0], G u = 0,
+We use Hallucination Error Rate (HER) [11] over a set of
+audios as the fraction of cases where the cleaned transcription
+is non-empty for Urban8k:
+HER = N(Pu>0)
+Ntotal
+,(1)
+whereN (Pu>0) are predictions with non-zeroP u andN total is
+the total number of audios in the set.
+5. Results and Analysis
+5.1. Anchor Phrase Selection
+Table 1 presents the comparative evaluation of our two candi-
+date anchor phrases across varying acoustic conditions.
+Table 1:Anchor phrase evaluation on retail dataset (Approach
+3): WER (%) across acoustic conditions. Phrase A is ”the
+present user said”, while phrase B is ”Mongolia”. The Noise
+Types were calculated at 1x amplitude. The Amplitude was sub-
+sequently reduced and varied for the Environmental noise type.
+Phrase Voice Noise Type Amplitude
+Clear Static Env. 0.5 0.25
+A Male 27.50 26.32 26.13 25.83 25.27
+Female 24.46 24.11 24.03 23.95 21.86
+B Male 19.23 18.61 18.3 18.06 17.82
+Female17.88 17.32 16.98 16.62 16.10
+Anchor “Mongolia” consistently outperforms the multi-
+word phrase “the present user said” across all test conditions.
+We identified that the female variant with environmental noise
+gave the best results, at 0.25 amplitude (relative to utterance au-
+dio). All subsequent experimentations use this audio.
+5.2. Approach Comparison
+Tables 2 and 3 present comprehensive experimental results
+across audio types and concurrency levels.
+6105
+Table 2:WER, HER and Failure Metrics for Concurrency 32 Across Datasets. Librispeech datasets (LSclean and LS other) see a drop
+with anchor audio. We also publish numbers for an ablation study (Ab1, Ab2) by passing a prompt to Whisper.
+Approach HER % WER % Failure %
+Urban8k Retail Urban8k LS clean LS other AMI Overall
+A1: Only Whisper 72.2 16.40 95.16 2.877.09 21.6632.18 0
+A2: Only V AD 18.19 16.52 16.582.787.13 22.11 16.67 0
+A3: V AD with Anchor 0.12 16.10 0.383.03 7.86 21.8613.21 0
+A4: Naive Batching 0.27 18.65 2.56 25.9 37.7 33.65 19.17 8.45
+A5: Batch + Fallback 0.14 16.12 0.382.97 7.87 21.9113.23 0
+Ab1: Prompting only Whisper 3.51 17.40 13.29 5.97 8.07 23.94 17.00 0
+Ab2: Prompting with V AD 1.84 17.80 7.83 5.94 8.21 24.23 16.16 0
+Total Samples 6,614 18,178 6,614 1,093 1,419 5,929 33,233 33,233
+A1 (Only Whisper):Vanilla Whisper suffers catastrophic
+hallucinations (72.2% HER on Urban8k), demonstrating the ne-
+cessity of mitigation. Performance on genuine speech datasets
+(Retail: 16.4%, AMI: 21.66%) acts as our baseline.
+A2 (Only V AD):V AD reduces overall WER to 16.67%,
+driven by hallucination mitigation on Urban8k (18.19% HER
+from 72.2%). Performance on speech datasets degrades slightly
+(Retail: 16.52%, AMI: 22.1%), probably because of classifying
+speech segments as silent, leaving residual errors.
+A3 (V AD with Anchor):Prepending anchor audio to every
+segment provides a decisive breakthrough. Hallucinations on
+Urban8k are virtually eliminated (0.12% HER). Surprisingly,
+speech performance also improves WER (Retail: 16.1%, AMI:
+21.86%). Latency (P95: 579ms) remains comparable to the
+V AD baseline (571ms), indicating no computational penalty.
+A4 (Naive Batching):Achieves latency reduction (P95:
+487ms) by processing multiple segments per call. However, it
+suffers a catastrophic failure rate of 8.45% when the expected
+anchor count is not found during transcript splitting, making it
+unusable in production (AMI WER: 33.65%).
+A5 (Batch with Fallback):Maintains the accuracy of A3
+(overall WER: 13.23%, Urban8k: 0.38%) with zero failures.
+Latency is comparable to A3 but higher than A4 due to fallback
+re-processing; however, the batching design enables higher
+throughput when validation succeeds. This graceful degrada-
+tion provides efficiency gains without sacrificing reliability.
+Ablation Study.To verify if text conditioning could mit-
+igate hallucinations, we evaluated a text-only baseline using a
+promptinitial prompt=”Transcript:” first only on vanilla
+Whisper, then using it in conjunction with V AD. While this re-
+duced hallucinations (Urban8k: 3.51% HER), it increased the
+WER for speech data (Retail: 17.40%). In contrast, our Au-
+dio Anchor approach achieved lower HER (Urban8k: 0.12%)
+along with better WER (Retail: 16.10%), demonstrating that
+acoustic grounding provides significantly stronger suppression
+than decoder-side text priming. For reference, Calm Whisper
+[11] reports 15.51% HER on Urban8k via fine-tuning, versus
+our 0.12% without model modification.1
+Table 3:P95 Latency (ms) Across Approaches
+Approach A1 A2 A3 A4 A5
+Concurrency 32 529 570 579 487566
+Concurrency 48 756 827 875 789851
+Concurrency 64 813 957 983 885971
+1Calm Whisper uses all 10 Urban8k categories; we exclude “chil-
+dren playing”, retaining 6,614 of 8,732 clips.
+Concurrency Scaling.anchor-audio approaches (A3, A5)
+produce consistent results across concurrency levels (32, 48,
+64). Latency increases with concurrency due to queueing, but
+relative approach rankings remain stable, validating scalability.
+LibriSpeech error analysis.On Retail data, Anchor Audio
+(A3) improves WER (16.4%→16.1%), suggesting the anchor
+conditions the decoder into a transcription-ready state that re-
+duces spurious outputs on noisy inputs.
+Conversely, on LibriSpeech, WER increases slightly
+(2.87%→3.03%). Manual inspection reveals that most addi-
+tional errors are spelling variants of proper nouns (e.g., “Brack-
+ton” vs. “Bracton”, “Mrs. Poycer” vs. “Mrs. Poyser”). Because
+the anchor alters the acoustic context seen by the encoder, the
+decoder’s spelling choices for ambiguous names shift. These
+are surface-level orthographic differences rather than semantic
+transcription failures, and represent an acceptable trade-off for
+the substantial hallucination reduction on environmental audio.
+6. Conclusion
+We demonstrated that anchor audio achieves systematic hallu-
+cination mitigation in Whisper. Vanilla Whisper suffers from
+95.16% WER on environmental audio (Urban8k), with V AD
+improving it to 16.58%. Our anchor audio approach virtually
+eliminates hallucinations to 0.38% with no latency overhead.
+While prepending audio adds a theoretical compute cost,
+the observed latency impact is negligible due to GPU paral-
+lelization efficiency. A3 (V AD with Anchor) suits latency-
+critical applications (13.21% WER, P95: 580ms); A5 (Batch
+with Fallback) suits throughput-critical services, maintaining
+accuracy (13.23% WER) while enabling batch processing when
+validation succeeds. The dual-purpose design provides both
+hallucination detection and safe concatenation through a single
+input-level technique requiring no model modification, making
+this a viable strategy for real-time systems.
+7. Limitations
+While anchor audio effectively mitigates hallucinations, several
+limitations apply. Anchor phrase selection requires domain-
+specific tuning; phrases optimal for retail may not generalise to
+other domains. Batch concatenation benefits depend on utter-
+ance length distribution, with diminishing returns for utterances
+exceeding 10 seconds. Although the technique operates purely
+at the input level and is applicable in principle to any encoder-
+decoder ASR model, our evaluation is limited to Whisper; vali-
+dating across architectures remains future work. Similarly, our
+evaluation focused on English; multilingual deployment may
+require additional validation.
+6106
+8. Generative AI Use Disclosure
+Generative AI tools were used solely for editing assistance, in-
+cluding grammar correction, paraphrasing for clarity, and La-
+TeX formatting suggestions. All research design, experimen-
+tation, analysis, and intellectual contributions are entirely the
+work of the authors. No substantive content was generated by
+AI tools.
+9. References
+[1] A. Radford, J. W. Kim, T. Xu, G. Brockman, C. McLeavey, and
+I. Sutskever, “Robust speech recognition via large-scale weak
+supervision,” inInternational conference on machine learning.
+PMLR, 2023, pp. 28 492–28 518.
+[2] S. Gandhi, P. V on Platen, and A. M. Rush, “Distil-whisper:
+Robust knowledge distillation via large-scale pseudo labelling,”
+arXiv preprint arXiv:2311.00430, 2023.
+[3] L. Wagner, B. Thallinger, and M. Zusag, “Crisperwhisper: Ac-
+curate timestamps on verbatim speech transcriptions,”arXiv
+preprint arXiv:2408.16589, 2024.
+[4] Y . Segal-Feldman, A. Shamsian, A. Navon, G. Hetz, and
+J. Keshet, “Whisper in medusa’s ear: Multi-head efficient decod-
+ing for transformer-based asr,”arXiv preprint arXiv:2409.15869,
+2024.
+[5] X. de Zuazo, E. Navas, I. Saratxaga, and I. Hern ´aez Rioja,
+“Whisper-lm: Improving asr models with language models for
+low-resource languages,”arXiv preprint arXiv:2503.23542, 2025.
+[6] H. Atwany, A. Waheed, R. Singh, M. Choudhury, and B. Raj,
+“Lost in transcription, found in distribution shift: Demystifying
+hallucination in speech foundation models,” inFindings of the
+Association for Computational Linguistics: ACL 2025, 2025.
+[Online]. Available: https://aclanthology.org/2025.findings-acl.
+1190.pdf
+[7] M. Bara ´nski, J. Jasi ´nski, J. Bartolewska, S. Kacprzak,
+M. Witkowski, and K. Kowalczyk, “Investigation of whisper
+ASR hallucinations induced by non-speech audio,”arXiv
+preprint arXiv:2501.11378, 2025. [Online]. Available: https:
+//arxiv.org/abs/2501.11378
+[8] R. Frieske and B. E. Shi, “Hallucinations in neural automatic
+speech recognition: Identifying errors and hallucinatory models,”
+arXiv preprint arXiv:2401.01572, 2024.
+[9] A. Koenecke, A. S. G. Choi, K. X. Mei, H. Schellmann,
+and M. Sloane, “Careless whisper: Speech-to-text hallucination
+harms,” inProceedings of the 2024 ACM Conference on Fairness,
+Accountability, and Transparency (FAccT ’24). Rio de Janeiro,
+Brazil: Association for Computing Machinery, Jun. 2024.
+[Online]. Available: https://doi.org/10.1145/3630106.3658996
+[10] M. Bain, J. Huh, T. Han, and A. Zisserman, “Whisperx: Time-
+accurate speech transcription of long-form audio,”arXiv preprint
+arXiv:2303.00747, 2023.
+[11] Y . Wang, A. Alhmoud, S. Alsahly, M. Alqurishi, and M. Ra-
+vanelli, “Calm-whisper: Reduce whisper hallucination on non-
+speech by calming crazy heads down,” inProc. Interspeech, Rot-
+terdam, The Netherlands, 2025. [Online]. Available: https://www.
+isca-archive.org/interspeech 2025/wang25b interspeech.pdf
+[12] D. Mach ´aˇcek, R. Dabre, and O. Bojar, “Turning whisper
+into real-time transcription system,” inProceedings of the
+13th International Joint Conference on Natural Language
+Processing and the 3rd Conference of the Asia-Pacific Chapter
+of the Association for Computational Linguistics: System
+Demonstrations, 2023, pp. 17–24. [Online]. Available: https:
+//aclanthology.org/2023.ijcnlp-demo.3/
+[13] T. Krichli, B. Raj, and J. Keshet, “Carelesswhisper: Turning
+whisper into a causal streaming model,”arXiv preprint
+arXiv:2508.12301, 2025. [Online]. Available: https://arxiv.org/
+abs/2508.12301
+[14] H. Zhou, X. Song, B. Fahy, Q. Song, B. Zhang, Z. Peng, A. Wad-
+hawan, D. Jiang, A. Verma, V . Ramesh, S. Prasad, and M. M.
+Franceschini, “Adapting whisper for streaming speech recognition
+via two-pass decoding,” inProc. Interspeech, 2025, pp. 4428–
+4432.
+[15] Y . Zhou, C. Cui, J. Yoon, L. Zhang, Z. Deng, C. Finn, M. Bansal,
+and H. Yao, “Analyzing and mitigating object hallucination in
+large vision-language models,” inInternational Conference on
+Learning Representations (ICLR), 2024.
+[16] Z. Ji, N. Lee, R. Frieskeet al., “Survey of hallucination in natural
+language generation,”ACM Computing Surveys, vol. 55, no. 12,
+pp. 1–38, 2023.
+[17] V . Raunak, A

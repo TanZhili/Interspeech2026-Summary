@@ -1,0 +1,483 @@
+Learning to Rescale: On-the-Fly Sequence Length Adaptation in
+Non-Autoregressive Speech Synthesis
+Jiawei Jin1,∗, Ren Wang1,∗, Zhiyu Cui2, Shun Lei1, Yixuan Zhou1, Zhiyong Wu1,∗∗
+1 Shenzhen International Graduate School, Tsinghua University, China
+2 Ant Group, China
+jjw23@mails.tsinghua.edu.cn,zywu@sz.tsinghua.edu.cn
+Abstract
+Non-autoregressive (NAR) text-to-speech (TTS) models excel
+in parallel inference and style consistency. However, their re-
+liance on accurate character-level or global duration predictions
+remains a critical bottleneck, limiting both synthesis fidelity and
+naturalness. This paper proposes ElasticDLM (Elastic-length
+Diffusion Language Model), a novel variable-length NAR TTS
+model that eliminates the strong dependency on accurate du-
+ration predictions. We introduce two functional tokens, along
+with a Differentiated Length-Scaling Training Scheme (DLTS)
+and a Hierarchical Confidence-Guided Inference (HCGI) strat-
+egy tailored for speech characteristics, enabling the model to
+learn length-scaling features and automatically adjust sequence
+length during inference. Experiments show that ElasticDLM
+produces high-fidelity, natural speech from arbitrary-length in-
+puts, demonstrating a more flexible and simplified approach to
+high-quality speech synthesis. Audio samples are available at
+https://thuhcsi.github.io/ElasticDLM/.
+Index Terms: Speech Synthesis, Non-Autoregressive Models,
+Variable-Length Synthesis
+1. Introduction
+Text-to-Speech (TTS) synthesis [1, 2, 3] aims to generate high-
+fidelity, natural speech for diverse applications like intelligent
+assistants [4], audiobooks [5], and assistive communication sys-
+tems [6]. The core challenge for TTS lies in learning the precise
+alignment between text and complex acoustics. By decompos-
+ing the complicated global mapping task into simple, local con-
+ditional predictions, autoregressive (AR) models [7, 8] effec-
+tively tackle the alignment challenge via their sequential, token-
+wise generation process. However, their token-by-token nature
+inherently leads to slow inference and exposure bias [9, 10, 11].
+To address these AR limitations, non-autoregressive (NAR)
+models [12, 13, 14] have emerged as a compelling alternative,
+prized for their parallel inference and superior global style con-
+sistency. However, the parallel generation paradigm of NAR
+models confronts the challenge of sequence alignment. Early
+strategies relied on character-level durations, typically derived
+from methods like teacher-forcing with alignments distilled
+from AR models [15, 16], monotonic alignment search (MAS)
+[17, 18] or targets from the Montreal Forced Aligner (MFA)
+[19]. These pre-extracted durations are often time-consuming
+and inaccurate, especially under noisy or in-the-wild speech
+conditions, severely compromising the training. Moreover, this
+reliance on a rigid and ‘fine-grained’ alignment hinders the
+models from achieving human-like naturalness and rich stylistic
+diversity.
+*These authors contributed equally.
+**indicates the corresponding author.
+To overcome the shortages of character-level duration mod-
+eling, emerging works such as E2-TTS [20], F5-TTS [21], and
+MaskGCT [22] have adopted masked generative modeling to
+adaptively distribute word or phoneme duration according to a
+total sequence length. Nonetheless, these fixed-length methods
+still rely on predicting the accurate global duration as an initial
+sequence length. This mechanism fundamentally restricts the
+flexibility and accuracy, leading to two major failures. Firstly,
+inaccurate duration predictions result in audible artifacts such
+as unnatural speaking rates and fragmented prosody. Secondly,
+this rigid duration paradigm prevents the model from adaptively
+adjusting the generated sequence length with different semantic
+information and acoustic characteristics. These flaws hinder the
+practical application [23] of the NAR-based TTS models.
+Recently, several studies in text generation [24], most no-
+tably DreamOn [25], have attempted to address the issue of
+variable-length sequence generation based on NAR models.
+Diffusion Language Models (DLMs) [26] are widely adopted,
+mainly leveraging its single-token-level insertion and deletion
+capability. However, it is non-trivial and challenging to directly
+apply this paradigm to the speech synthesis domain. Firstly,
+due to the high temporal resolution of speech, where a single
+phoneme often corresponds to multiple semantic tokens, and
+the inherent acoustic redundancy, discrete single-token opera-
+tions like merging or insertion fail to provide the discernible and
+robust gradient for learning complicated length manipulations.
+Secondly, the vast length of speech sequences clashes with the
+limited inference budget, making it a formidable challenge to
+reconcile the need for large-scale length variability with the
+demand for high-fidelity generation. To tackle all these prob-
+lems and overcome the fixed-length constraint in existing NAR
+speech synthesis frameworks, we propose ElasticDLM: a novel
+variable-length NAR speech synthesis approach. The main con-
+tributions of this work are as follows:
+(1) We propose a novel variable-length NAR speech synthesis
+model. To eliminate reliance on accurate duration predic-
+tions, it introduces two functional tokens for unified, learn-
+able length regulation, enhancing robustness and flexibility.
+(2) We develop a Differentiated Length-Scaling Training
+Scheme (DLTS) tailored to speech characteristics, which
+combines block-wise merging and insertion operations with
+an auxiliary length-scaling loss, providing the model with
+salient and learnable features for length regulation within
+information-sparse acoustic sequences.
+(3) We propose a Hierarchical Confidence-Guided Inference
+(HCGI) strategy adapted to the high dynamic range of speech
+sequences, enabling simultaneous length refinement and con-
+tent generation within a coarse-to-fine process to ensure both
+length flexibility and high fidelity.
+261
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1069
+(a) (b)
+ElasticSemanticDLM
+Phoneme
+Tokens
+Timbre-Prompt
+SemanticTokens
+Masked
+SemanticTokens
+Target
+SemanticTokens
+Masking
+ExpandProcess
+DeleteProcess
+!"#$!"#
+!"#$!
+"="+1Phoneme Token
+Mask Token
+Semantic Token
+Expand Token
+Delete Token
+Timbre-Prompt SemanticToken
+Deleted Token
+MaskingProcess
+LengthScaling
+Process
+Merging InsertingDelete
+Re-masking
+ElasticSemanticDLM Predicting
+&&
+ComputingLoss
+NoisingProcess
+TrainingProcess
+!!
+!"
+#
+!"
+$%&'(
+!"
+)*+&'
+!!
+$%&'(
+Figure 1:Overall architecture of the proposed method (a) and design details of the Differentiated Length-Scaling Training Scheme (b).
+2. Proposed Method
+2.1. System Overview
+Our proposed non-autoregressive TTS framework (Fig.1(a))
+employs a cascaded Diffusion Language Model (DLM) to pro-
+gressively refine text into speech via iterative mask prediction.
+The system is driven by our novel Elastic Semantic DLM,
+which first maps text to semantic tokens. These tokens are then
+converted into speech by a subsequent acoustic modeling stage
+(Acoustic DLM, Acoustic Decoder, and V ocoder) based on the
+MaskGCT [22] architecture.
+As depicted in the lower part of Fig.1(a), our Elastic Seman-
+tic DLM iteratively refines an initial mask sequence (derived
+from phonemes and a timbre prompt) into a semantic token se-
+quence. Uniquely, it incorporates[EXPAND]and[DELETE]
+functional tokens, which respectively trigger the insertion of
+new mask tokens or the removal of existing segments, allowing
+for dynamic length adjustment. This capability is supported by
+two key components: a Differentiated Length-Scaling Training
+Scheme (DLTS, Fig.1(b)) to enable the model to learn salient
+length-scaling features, and a Hierarchical Confidence-Guided
+Inference strategy (HCGI, Algorithm 1) to ensure both high
+length flexibility and synthesis fidelity during generation.
+2.2. Differentiated Length-Scaling Training Scheme
+As shown in Fig.1(b), the DLTS defines a speech-tailored nois-
+ing process operating on an initial token sequences 0 at a given
+diffusion stept. The process begins by applying standard
+content masking, yielding a partially masked sequences m
+t =
+Mask(s0,t). This is followed by differentiated length scaling,
+which employs two inverse noising operations to create distinct
+training targets. To overcome the inherent acoustic redundancy
+and extract explicit contraction signals from information-sparse
+speech sequences, we replace simple pairwise merging with a
+stochastic compression of larger blocks. Specifically, each non-
+overlapping block ofnconsecutive masked tokens is indepen-
+dently merged into a single representation with probabilityp,
+formally defined as:
+sscale
+t =Merge(sm
+t ,n,p)(1)
+Conversely, to teach the model to utilize[DELETE]to-
+kens for sequence reduction, the process explicitly appendsk
+[DELETE]tokens to the end of the sequence, defined as:
+sscale
+t =InsertDelete(s m
+t ,k)(2)
+Here, the number of inserted tokenskis sampled fromk∼
+Uniform(1,⌊α(t)·L⌋), whereLis the sequence length and
+α(t)is a time-dependent scaling factor. These two inverse
+processes are applied either separately or simultaneously dur-
+ing training and the differentiated construction prevents func-
+tional confusion between[EXPAND]and[DELETE]tokens.
+Furthermore, by coupling the operations with the diffusion
+timestept, our scheme aligns with the hierarchical nature of
+speech, encouraging major structural length adjustment early
+and fine-grained acoustic refinements later, enhancing both the
+robustness and interpretability. Finally, all[EXPAND]and
+[DELETE]tokens are remasked to[MASK]state ass final
+t =
+Re-mask(sscale
+t ).
+The model is trained to predict the clean scaled sequence
+sscale
+0 , given the final noised sequences final
+t and conditional in-
+formationCincluding phoneme tokens and the timbre-prompt
+semantic tokens, which is modeled as the conditional proba-
+bilityp θ(sscale
+0 |sfinal
+t ,C). The model’s parametersθare opti-
+mized by minimizing a composite loss function. Because ad-
+dressing speech sparsity necessitates these block-wise opera-
+tions, the cost of mispredicting functional tokens is heavily
+amplified. Therefore, we augment the standard negative log-
+likelihood (NLL) loss. This term enforces consistency between
+the predicted length change and the ground-truth change. The
+total lossLis formally defined as:
+L=E s0,t
+"
+−
+X
+i∈Mt
+logpθ
+
+(sscale
+0 )i|s final
+t ,C
+
++λ
+X
+i∈Mt
+|
+
+∆ˆLi
+
+−∆L|
+#
+(3)
+where the first term is the NLL loss over all masked posi-
+tionsM t. The second term is the length loss, weighted by
+a hyperparameterλ, which minimizes the absolute error be-
+tween the ground-truth length change∆Land the total expected
+length change predicted by the model. The expected change
+at each positioniis∆ ˆLi = (n−1)·p θ([EXPAND]i)−
+pθ([DELETE]i). This composite objective forces the model
+to learn not only the correct token identities but also the overall
+structural length modifications.
+2.3. Hierarchical Confidence-Guided Inference Strategy
+The sinusoidal scheduler in conventional DLM inference brings
+a fundamental challenge for variable-length speech synthesis. It
+stifles essential length adjustment in the early stages by pre-
+dicting too few tokens, while encouraging high-risk, large-
+scale corrections later when the iteration budget is nearly de-
+262
+Algorithm 1:One-Step Inference in HCGI
+Input:s m
+t−1,mt−1,t,L curr,τ,Model M,Expand numbern
+Output:s m
+t ,mt,L new
+L←M(s m
+t−1,mt−1,t);
+p←Softmax(L);
+forj←0tolength(p−1)do
+ifp exp[j]>τthen
+Ops[j]←EXPAND
+else ifp del[j]>τthen
+Ops[j]←DELETE
+Mask out tokens:L content =L[:,Exp & Del]←−∞;
+st←Top-k-Sample(L content);
+sm
+t ←Re-mask(st,N mask);
+forjin Opsdo
+ifOps[j] =DELETEthen
+Deletesm
+t [j]
+else ifOps[j] =EXPANDthen
+Replacesm
+t [j]with n×[MASK]
+Lnew,mt←UpdateLengthAndMask(sm
+t );
+returnsm
+t ,mt,L new;
+pleted. Such belated, disruptive changes corrupt delicate acous-
+tic structures and introduce audible artifacts, making it impos-
+sible to achieve both accurate duration and high-fidelity speech.
+To address this acoustic mismatch, we introduce the speech-
+tailored HCGI strategy to effectively balance dynamic length
+scaling with high-fidelity generation. Crucially, as a sampling-
+stage modification, HCGI introduces negligible latency over-
+head compared to the backbone’s forward pass.
+As shown in Algorithm 1, within each given denoising step
+t, our method performs a unified prediction to yield the logit dis-
+tributionL= M(s m
+t−1,mt−1,t), which is conditioned on the
+previous sequences m
+t−1 and maskm t−1. Next, the confidence
+scoresp exp for[EXPAND]andp del for[DELETE]tokens are
+extracted from the softmax ofL, any functional token whose
+confidence score exceeds a thresholdτis immediately sampled
+and retained for execution:
+sscale
+t =Ops={j|p exp[j]>τorp del[j]>τ} (4)
+This step facilitates the rapid sampling of high-confidence
+functional tokens, enabling effective length adjustment early in
+the denoising process. Simultaneously, top-k sampling is per-
+formed using the “content” logitsL content, which are created by
+masking out sampled tokens. Following this, theN mask tokens
+with the lowest confidence are re-masked, whereNmask is deter-
+mined by the scheduling functionN mask =⌊γ(t+ 1)·L curr⌋.
+Here,γis a sine scheduling function that determines the mask-
+ing ratio andL curr represents the current number of effective
+tokens. Finally (Fig.1(a)), each[EXPAND]is replaced byn
+[MASK]tokens, and[DELETE]s are removed. Given this
+altered dimension, UpdateLengthAndMask explicitly recalcu-
+lates the new lengthL new and maskmt for stept+ 1. This iter-
+ative refinement dynamically adapts length while progressively
+solidifying semantic content into high-fidelity output.
+3. Experiments
+3.1. Experiment Setup
+Our Elastic Semantic DLM is built upon the 16-layer Trans-
+former architecture (hidden size 1536, 16 attention heads) of
+MaskGCT’s Text-to-Semantic model and is initialized by load-
+ing the pre-trained weights of its Transformer component. The
+model is trained on 100k hours of data from the English and
+Chinese subsets of Emilia-large. The training incorporates our
+proposed noising strategy, where[EXPAND]and[DELETE]
+operations are applied independently with a 0.5 probability,
+with the[EXPAND]operation specifically merging blocks of
+sizen= 5. The entire training is conducted on 24 NVIDIA
+A100 (80GB) GPUs, optimized with AdamW using a 1e-4
+learning rate and 32K warmup steps. For inference, we use a
+default of 50 steps and a confidence thresholdτof 0.8. Sam-
+pling is performed using top-k (k= 20), where the temperature
+linearly anneals from 1.5 to 0 throughout the process.
+3.2. Experiment Results
+3.2.1. Main Results
+We conducted our evaluations on the seed-test-zh and seed-test-
+en benchmarks from Seed-TTS, using MaskGCT as our primary
+baseline. To isolate and highlight the benefits of eliminating
+accurate duration, we designed three distinct settings for the
+MaskGCT baseline. The first, termedNormal, represents the
+standard MaskGCT which relies on its built-in duration model.
+The second,Fix, simulates a poor duration estimate by initial-
+izing the sequence to a fixed length (4s for Chinese, 4.5s for En-
+glish). Finally, to serve as a performance upper bound, theGT
+setting provides MaskGCT with the ground-truth audio length.
+Our objective metrics include Word Error Rate (WER)
+for accuracy, L1-distance on sequence length (Len-L1) for
+variable-length capability, and WavLM-based cosine similar-
+ity for speaker similarity (Sim). For subjective evaluation, we
+conducted a Mean Opinion Score (N-MOS) test for naturalness
+(prosody and speech rate), where 15 professional listeners rated
+10 random samples per test set. All results are presented with
+95% confidence intervals.
+As shown in Table 1, our proposed model (Ours-Normal)
+exhibits strong performance. It achieves WER comparable to
+the standard MaskGCT and even its oracleGTsetting (slightly
+higher in Chinese, lower in English) with nearly identical Sim,
+indicating that our variable-length capability does not com-
+promise fundamental synthesis quality. More importantly, our
+model secures the best results across both testsets on the Len-
+L1 and N-MOS metrics. This demonstrates that our model can
+effectively correct for potentially biased initial length predic-
+tions, yielding an output sequence length closer to the ground
+truth. This improved length control directly translates to more
+natural prosody and speech rate, as reflected by the superior
+N-MOS scores. In contrast, the original MaskGCT lacks this
+corrective mechanism; once an inaccurate length is predicted, it
+often leads to global or local unnaturalness in the final output.
+Further evidence of our model’s superiority is found in the
+Fixscenario. Our model shows only a minor performance
+variation between theNormalandFixsettings across all
+key metrics (WER, Len-L1, N-MOS). Conversely, the baseline
+MaskGCT is highly sensitive to the initial length, showing a se-
+vere performance drop in theFixcase. This demonstrates that
+our model is independent on an accurate duration predictor and
+possesses a robust mechanism for dynamic length adjustment.
+3.2.2. Ablation Study
+We conducted ablation studies on the challengingFixset-
+ting to validate our key designs (Table 1). First, removing
+the Length-Loss significantly increased duration error (Len-L1
+from 0.8752s to 1.1129s on Chinese) and WER, confirming its
+crucial role in learning token semantics for prosody control.
+Second, disabling the HCGI strategy caused a severe perfor-
+mance collapse, with WER soaring to 4.005% (Chinese) and
+263
+Table 1:Main results on Seed-Eval test sets. WER and Len-L1 are ‘lower is better’ (↓). Sim and MOS are ‘higher is better’ (↑).
+seed-test-zh seed-test-en
+Model WER↓Len-L1↓N-MOS↑Sim↑WER↓Len-L1↓N-MOS↑Sim↑
+MaskGCT-GT2.286% - 4.23 ± 0.13 0.769 3.833% - 4.27 ± 0.14 0.716
+MaskGCT-Fix4.182% 1.6993s 3.72 ± 0.16 0.771 13.341% 1.0156s 3.58 ± 0.19 0.718
+MaskGCT-Normal2.330%0.8555s 3.84 ± 0.18 0.773 3.936% 0.5429s 3.96 ± 0.14 0.715
+Ours-Fix2.582% 0.8752s 4.17 ± 0.15 0.771 4.349% 0.6956s 4.29 ± 0.12 0.718
+Ours-Normal2.387%0.7091s 4.20 ± 0.130.7723.534% 0.5283s 4.44 ± 0.120.715
+- w/o Length-Loss-Fix2.798% 1.1129s 3.73 ± 0.15 0.763 4.530% 0.7231s 3.95 ± 0.12 0.714
+- w/o HCGI-Fix4.005% 1.5564s 3.47 ± 0.15 0.749 5.652% 0.7304s 3.05 ± 0.17 0.713
+Table 2:WER comparisons under different initial length.
+Model 1s 4s 7s 10s 13s 16s
+E2-TTS [20] 95.91% 3.441% 2.873% 3.215% 6.236% 23.631%
+F5-TTS [21] 73.82% 2.586% 1.804% 2.676% 5.991% 19.734%
+MaskGCT 94.13% 4.182% 2.983% 16.245% 53.26% 107.764%
+Ours3.477% 2.582% 2.576% 2.447% 2.613% 2.459%
+/uni00000015/uni00000016/uni00000017/uni00000018/uni00000019/uni0000001a/uni0000001b/uni0000001c
+/uni00000028/uni0000005b/uni00000053/uni00000044/uni00000051/uni00000056/uni0000004c/uni00000052/uni00000051/uni00000003/uni00000025/uni0000004f/uni00000052/uni00000046/uni0000004e/uni00000003/uni00000036/uni0000004c/uni0000005d/uni00000048/uni00000003/uni00000051
+/uni00000015/uni00000011/uni00000017
+/uni00000015/uni00000011/uni00000018
+/uni00000015/uni00000011/uni00000019/uni0000003a/uni00000028/uni00000035
+/uni00000015/uni00000011/uni00000018/uni0000001a/uni0000001c
+/uni00000015/uni00000011/uni00000018/uni00000015/uni00000019
+/uni00000015/uni00000011/uni00000017/uni00000017/uni00000014
+/uni00000015/uni00000011/uni00000016/uni0000001b/uni0000001a
+/uni00000015/uni00000011/uni00000018/uni00000014/uni00000017
+/uni00000015/uni00000011/uni00000018/uni00000017/uni0000001c/uni00000015/uni00000011/uni00000018/uni00000016/uni0000001a
+/uni00000015/uni00000011/uni00000018/uni0000001c/uni00000014
+Figure 2:The WER with Different Expansion Block Sizen
+5.652% (English). These findings demonstrate that both com-
+ponents are indispensable for achieving robust performance, es-
+pecially in a challenging predictor-free scenario.
+3.2.3. Analysis of Different Initial Length
+As shown in Table 2, experiments on theseed-test-zh
+benchmark with initial lengths ranging from 1s to 16s demon-
+strate the exceptional robustness of our proposed model. First,
+when compared to the primary baseline MaskGCT, our model
+maintains a consistently low WER across the entire spectrum,
+whereas MaskGCT demonstrates a heavy reliance on accurate
+duration prediction. Furthermore, we compare our approach
+with more powerful NAR models, specifically E2-TTS [20] and
+F5-TTS [21]. Although their continuous representation-based
+architectures and superior pre-trained foundations bring better
+overall performance and a certain degree of robustness, their
+synthesis quality still deteriorates rapidly as the input length
+varies. Ultimately, all baseline models fail completely at ex-
+treme lengths (1s, 16s). Experiments also conducted on English
+test set yield similar results. These findings confirm our model’s
+powerful dynamic length adjustment capability, proving reli-
+able under challenging duration-prediction-free conditions.
+3.2.4. Analysis of Expansion Block Sizen
+We performed an ablation study to determine the optimal Ex-
+pansion Block Size (n), a critical and sensitive hyperparameter
+controlling then-to-1merging (noising) and1-to-nexpansion
+(denoising). As shown in Fig.2, the WER onseed-test-zh
+exhibits a U-shaped curve asnvaries, indicating degradation
+whennis extreme. A smallnfails to provide a strong compres-
+sion signal, causing the model to treat expansion as noise, while
+a largenresults in rigid, inflexible expansions during inference.
+Consequently, we identifiedn= 5, a value approximating the
+average phoneme duration, as the optimal setting, as it best bal-
+ances accuracy and length-adjustment flexibility to achieve the
+minimum WER, with similar result on English data.
+3.2.5. Analysis of Application Flexibility
+Highly expressive speech exhibits extreme prosodic variations,
+making variable-length modeling flexibility urgently necessary.
+To evaluate this, we fine-tuned our model and the MaskGCT
+baseline on a highly expressive single-speaker dataset. An AB
+preference test was then conducted by 15 professional listeners,
+who evaluated synthesized held-out texts across four emotional
+styles: Fearful, Sad, Coquettish, and Excited.
+Results (Fig.3) reveal our model’s significant advantage in
+rendering rich emotions through dynamic speaking paces. Con-
+versely, MaskGCT, constrained by its external duration predic-
+tor, produced rigid paces, yielding prosody that mismatched
+emotional intents and degraded synthesis quality. These find-
+ings validate that our variable-length architecture endows the
+model with superior expressiveness and flexibility.
+/uni00000028/uni0000005b/uni00000046/uni0000004c/uni00000057/uni00000048/uni00000047
+/uni00000026/uni00000052/uni00000054/uni00000058/uni00000048/uni00000057/uni00000057/uni0000004c/uni00000056/uni0000004b
+/uni00000036/uni00000044/uni00000047
+/uni00000029/uni00000048/uni00000044/uni00000055/uni00000049/uni00000058/uni0000004f
+/uni00000018/uni00000015/uni00000011/uni00000016/uni00000008/uni00000014/uni00000015/uni00000011/uni00000016/uni00000008/uni00000016/uni00000018/uni00000011/uni00000017/uni00000008
+/uni00000018/uni00000019/uni00000011/uni0000001c/uni00000008/uni00000014/uni00000018/uni00000011/uni00000017/uni00000008/uni00000015/uni0000001a/uni00000011/uni0000001a/uni00000008
+/uni00000019/uni00000017/uni00000011/uni00000019/uni00000008/uni00000014/uni00000013/uni00000011/uni0000001b/uni00000008/uni00000015/uni00000017/uni00000011/uni00000019/uni00000008
+/uni00000019/uni00000016/uni00000011/uni00000014/uni00000008/uni00000015/uni00000013/uni00000011/uni00000013/uni00000008/uni00000014/uni00000019/uni00000011/uni0000001c/uni00000008
+/uni00000032/uni00000058/uni00000055/uni00000056/uni00000031/uni00000052/uni00000003/uni00000053/uni00000055/uni00000048/uni00000049/uni00000048/uni00000055/uni00000048/uni00000051/uni00000046/uni00000048/uni00000030/uni00000044/uni00000056/uni0000004e/uni0000002a/uni00000026/uni00000037
+Figure 3:AB-Test on Highly Expressive Single-speake

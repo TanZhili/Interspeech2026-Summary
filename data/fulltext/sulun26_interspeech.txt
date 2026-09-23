@@ -1,0 +1,209 @@
+Lightweight Emotion Recognition with Disjoint Modality Fusion
+Serkan Sulun ID
+INESC TEC, Porto, Portugal
+Faculty of Engineering, University of Porto, Portugal
+serkan.sulun@inesctec.pt
+Abstract
+Modern speech emotion recognition methods typically use large-
+scale models and multimodal fusion, often resulting in signifi-
+cant computational overhead that limits real-world deployment
+on consumer hardware. We propose Light-DMF, a lightweight
+model designed to classify emotions from audio and text both
+independently and through a fused pathway. Our disjoint archi-
+tecture supports mixed-modal data where audio or text can be
+present, absent, or contain conflicting emotional cues and labels.
+Our model has fewer than 65k trainable parameters and achieves
+a real-time factor below 1 in CPU-only inference. We provide
+open-source code and a demo to facilitate future research and
+offer a speech emotion recognition tool for the general public.1
+Index Terms: speech emotion recognition, multimodal fusion,
+low-latency speech processing
+1. Introduction
+Automatic speech emotion recognition (SER) enables inferring
+the emotions expressed in spoken communication, with wide-
+ranging applications in healthcare [1], multimedia analysis [2],
+and education [3]. A reliable SER system typically benefits from
+multimodal information: acoustic and prosodic cues such as
+pitch, energy, and speaking rate obtained from the raw audio
+signal, and the contextual information from the uttered text, both
+of which inform the conveyed emotion.
+Real-world emotional cues in tone (audio) and content (text)
+can diverge, as in the cases of sarcasm and irony. SER datasets
+can contain identical text spoken with varying emotional tones
+(audio-only), audio and text that agree in emotion, or audio and
+text with conflicting emotional labels [ 4]. Motivated by this
+diversity, we propose the Light-DMF (Disjoint Modality Fusion)
+model, which classifies audio and text both independently and
+through a fused pathway within a unified architecture, enabling
+robustness to conflicting multimodal cues. Our model’s flex-
+ibility allows for training on a mixture of datasets regardless
+of whether they contain or lack specific audio or text modal-
+ities, which further increases its robustness. We also ensure
+that our model remains lightweight by reusing automatic speech
+recognition (ASR) features and employing parameter sharing
+from the disjoint to the fused pathway. These optimizations
+enable the processing of input speech on CPU-only hardware at
+faster-than-real-time speed.
+2. Light-DMF model
+Our model architecture is shown in Figure 1. Standard SER
+datasets provide the uttered text alongside the audio. SER mod-
+1https://sulun.org/lightdmf
+Whisper ASR
+"The quick brown
+fox jumps over 
+the lazy dog"
+Text
+model
+Self-
+attention
++ average
+Text
+sentinel
+Fusion
+head
+Audio
+KV
+Text
+Q
+Text
+KV
+Self-
+attention
++ average
+Audio
+Qself
+Audio
+Qcross
+Text
+head
+Audio
+head
+Cross-
+attention
++ average
+Text
+prediction
+Fusion
+prediction
+Audio
+prediction
+Audio
+encoder
+Text
+decoder
+Text encoderAudio encoder
+Audio
+sentinel
+Figure 1:The Light-DMF architecture. Sentinels are four trained
+vectors indicating the presence or absence of audio and text
+features. Inputs to the fusion head are concatenated along the
+feature dimension. Q, K, and V represent query, key, and value,
+respectively.
+els often extract audio and text features using designated general-
+purpose encoders [ 4]. However, real-world scenarios do not
+explicitly provide the uttered text. To extract the text from the
+audio signal prior to feature extraction, an additional automatic
+speech recognition (ASR) model, such as Whisper [ 5], is re-
+quired. This introduces significant overhead and increases the
+overall latency.
+We address this problem by probing Whisper’s internal ac-
+tivations and extracting features after its audio encoder to feed
+as audio features to the trained classification modules. Though
+5912
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+
+Whisper’s primary function is ASR rather than general-purpose
+audio representation learning, we nonetheless extract features
+from its audio encoder and expect that the subsequent trainable
+layers can adapt these encodings for SER. This approach allows
+us to obtain both audio features and the uttered text from a single
+model, significantly reducing computational overhead. To re-
+duce the computation further, we choose a lightweight backbone
+consisting of Distil-Whisper-large-v3 [ 6] for audio encoding
+and all-MiniLM-L6-v2 [7] for text encoding. These frozen pre-
+trained models extract temporal feature sequences that are fed
+into the subsequent trained modules.
+We design our architecture to be flexible enough to han-
+dle mixed-modality data in which audio and text data can
+be missing or contain contrasting labels. This enables train-
+ing on a variety of emotion recognition datasets, increasing
+the robustness of our model. We use a mixture of SER
+datasets: IEMOCAP and MELD, which contain both audio
+and text, and CREMA-D, RA VDESS, and TESS, which con-
+sist of various emotional utterances of the same text and are
+therefore treated as audio-only datasets (see [ 4] for a com-
+prehensive survey). We also incorporate the text-emotion
+dataset GoEmotions to enhance our model’s text-processing
+modules [ 8]. We introduce four learned sentinel vectors to
+encode the presence or absence of each modality explicitly:
+audio-present, audio-absent, text-present, and
+text-absent. These vectors are prepended to the embedded
+sequences, while missing modalities are represented with zero-
+padded sequences, enabling the model to handle mixed-modality
+samples (audio-only, text-only, or multimodal) within a single
+minibatch. When a modality is missing, subsequent attention
+modules only process the sentinel vectors through masking.
+The text and audio encoders consist of single linear layers
+followed by layer normalization. These project the embeddings
+into a common, significantly lower dimensionality to minimize
+model size, as well as time and memory complexity. We subse-
+quently process these features using attention modules to exploit
+temporal information. Dedicated self-attention modules process
+text and audio independently, enabling modality-specific emo-
+tion prediction. We use a cross-attention module to fuse text
+and audio features and obtain a joint prediction. To maintain
+a lightweight architecture, we use unidirectional audio-to-text
+attention instead of bidirectional attention. We treat text as the
+primary modality and audio as auxiliary, as our preliminary ex-
+periments showed that using text alone outperforms using audio
+alone. To further reduce complexity, the encoded keys and val-
+ues of the text features are shared across modules. Separate
+audio queries for self- and cross-attention allow for selective, in-
+dividual attention to each modality. The outputs of the attention
+modules are fed into individual classification heads. Importantly,
+the text and audio classification modules are disjoint, receiv-
+ing information only from their respective branches to improve
+robustness when emotional cues conflict. A fusion head then
+processes the concatenation of all attention outputs to provide
+a more informed prediction when the audio and text emotions
+agree, as observed in the majority of SER datasets. As a result,
+our model outputs three predictions, corresponding to text-only,
+audio-only, and audio-text fusion.
+To enable mixed-dataset training, we normalize emotion
+labels by mapping synonymous labels to a unified set of cate-
+gories, yielding the classes: angry, excited, happy, neutral, and
+sad. We minimize cross-entropy loss for the text, audio, and
+fusion components, weighting each by 1/3 when the correspond-
+ing modality is available. We randomly drop one modality with
+a 0.1 probability to improve the sentinel training. To keep our
+model lightweight, we use a dimensionality of 32 and 4 attention
+heads, resulting in only 64k trainable parameters. We implement
+our model using PyTorch and train on a single NVIDIA A100
+80GB PCIe GPU.
+3. Inference demo
+We present an open-source demo on Google Colab for classi-
+fying emotions from microphone input or uploaded audio files.
+The pipeline produces disjoint and fused emotion predictions
+from audio and text, along with transcripts for each uttered sen-
+tence. To improve efficiency further, Whisper processes the
+entire audio in a single forward pass, generating both audio fea-
+tures and corresponding text with timestamps corresponding to
+sentence-level segments. Using these timestamps, we segment
+the audio features into sentence-level chunks and process them
+in parallel in the remainder of the network, enabling per-sentence
+predictions in a single pass. We also report runtime in a CPU-
+only setting using an Intel Core i7-5600U with 16 GB RAM. For
+one minute of input audio, the model requires 0.81 minutes of
+processing time, achieving faster-than-real-time performance.
+4. Conclusion
+Ultimately, Light-DMF demonstrates that multimodal SER is
+achievable without prohibitive computational costs. Our model
+achieves faster-than-real-time speed on CPU-only hardware us-
+ing fewer than 65k trainable parameters, while producing disjoint
+predictions that are robust to conflicting emotional cues in text
+and audio. Our demo serves as a real-time capable SER tool
+accessible to the general public without GPU resources, and our
+open-source code provides a baseline for future research.
+5. Generative AI Use Disclosure
+Generative AI tools were only used for manuscript editing.

@@ -1,0 +1,425 @@
+Decoding the Trade-off: A Large-Scale Analysis of Latency and Stability in
+LLM-based Speech Translation Cascades
+Shinyoung Sun1, Taehoon Kim1∗
+1 Graduate School of Virtual Convergence, Sogang University, Republic of Korea
+{steeles, taehoonkim}@sogang.ac.kr
+Abstract
+Real-time subtitling must balance low latency with sta-
+ble translations. In segment-level cloud cascades, ag-
+gressive endpointing increases request rate and can push
+utilization beyond service capacity, triggering a backlog
+avalanche in which queueing delay dominates and “fast”
+settings become slower in steady state. We present RST,
+a reproducible KO→EN subtitle pipeline that distinguishes
+time-to-first-text (latency first) and time-to-stable-text
+(latency stable). On the full FLEURS corpus, we show
+that aggressive endpointing drives cascades into a backlog
+regime (median RTF>1), where latency stable grows over
+time. Whisper prompt conditioning further degrades short-
+chunk streaming ASR by +14–17 pp CER and can leak instruc-
+tions. Sweeps reveal a clear stability boundary. We define an
+operational threshold as the most aggressive setting with me-
+dian RTF≤1, showing that throughput stability is essential for
+low-latency LLM-based cascades.
+Index Terms: speech translation, real-time subtitling, latency,
+stability, evaluation
+1. Introduction
+Real-time subtitling for cross-lingual meetings and lectures re-
+quires both low latency and stable, readable translations. In
+practice, production systems are cascades composed of audio
+capture, endpointing, ASR, and MT. These systems must de-
+cide when to emit text, and users typically observe two mo-
+ments: an early partial output and a later stabilized subtitle.
+However, most system-level evaluations report a single end-
+to-end latency, obscuring the distinction between perceived re-
+sponsiveness and final stability.
+Segmentation (endpointing) is a central but under-analyzed
+control knob. Beyond determining subtitle update frequency,
+it defines the unit of work sent to upstream cloud ASR and
+MT services. In segment-level (non token-streaming) cascades,
+shortening segments increases the request rate. When request
+arrival exceeds effective service capacity, queueing delay ac-
+cumulates and can dominate end-to-end latency—even if each
+individual request is fast. As a result, aggressive “fast” settings
+may become slower in steady state. Despite its practical impor-
+tance, this throughput–stability interaction is rarely quantified
+in realistic cloud-based pipelines.
+This interaction creates a trilemma between segmentation
+granularity (frequent updates), throughput stability, and con-
+textual completeness required for accurate translation. Under-
+standing this trade-off is essential for designing sustainable real-
+time subtitle systems.
+* Corresponding author.
+In this work, we study a controlled KO→EN subtitle cas-
+cade and systematically analyze how segmentation and model
+combinations shift the latency–quality frontier. We explic-
+itly distinguish two user-facing latency markers: time-to-first-
+text (ASR completion) and time-to-stable-text (final translation
+emission). Separating these allows us to determine whether
+a change improves perceived responsiveness or merely redis-
+tributes delay across stages.
+To enable reproducible and system-level analysis, we in-
+strument the running application with a logging wrapper that
+records segmentation boundaries and newline-delimited JSON
+events from both ASR and MT stages. This produces structured
+per-utterance records with raw timestamps and derived latency
+metrics. We evaluate latency distributions jointly with offline
+quality metrics under a controlled replay protocol that removes
+microphone and audio-device variance, ensuring that all config-
+urations observe identical input waveforms.
+Our contributions are as follows:
+• RST, a reproducible KO→EN subtitle pipeline with struc-
+tured per-utterance logging.
+• A formal distinction between two user-facing latency mark-
+ers,latency firstandlatency stable.
+• A throughput-stable operating threshold (median RTF≤1)
+identified via systematic endpointing sweeps over a2×2
+ASR–MT cascade.
+Our large-scale evaluation on the full FLEURS KO→EN
+corpus reveals aspeed paradox: when aggressive endpoint-
+ing increases request arrival beyond effective service capac-
+ity, segment-level cloud cascades enter a backlog regime (me-
+dian RTF>1) in which queueing delay dominates and
+latency stablegrows over time. Consequently, nominally
+“fast” settings become slower in steady state.
+We further observe a second instability under short-chunk
+streaming. Whisper prompt conditioning, commonly used to
+inject contextual information, degrades KO CER by +14–17 pp
+relative to prompt-free decoding and can leak instruction text
+into hypotheses, suggesting that context mechanisms designed
+for long-form transcription may behave unpredictably under
+endpointed segmentation.
+Finally, large-scale endpointing sweeps expose a clear sta-
+bility boundary around median RTF≈1. Below this boundary,
+latency remains bounded; above it, queueing delay accumulates
+over time. Selecting the most aggressive configuration that sat-
+isfies median RTF≤1yields the best latency–stability oper-
+ating point. Together, these findings demonstrate that through-
+put stability is a prerequisite for achieving low latency in LLM-
+based cascaded systems.
+4752
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1821
+2. Related Work
+2.1. Simultaneous ST and Evaluation Realism
+Simultaneous speech translation (SimulST) studies latency–
+quality trade-offs under a range of evaluation metrics, and prior
+work shows that conclusions can depend strongly on metric
+choice [1]. Recent critiques emphasize realistic end-to-end
+evaluation under streaming constraints, rather than assuming
+pre-segmentation or ignoring component runtimes [2, 3]. In
+contrast, we analyze segment-level cloud cascades and explic-
+itly distinguish perceived latency from stabilized latency.
+2.2. Segmentation and Endpointing
+Segmentation has long been used to balance latency and quality
+in cascaded streaming ST [4, 5, 6]. Prior work primarily frames
+segmentation as a latency–quality knob. We instead focus on its
+systems-level impact on request rate and throughput stability
+in cloud-based pipelines, where shorter segments can induce
+backlog even when per-request inference is fast.
+2.3. End-to-End Audio LLMs
+Recent multimodal LLMs perform transcription and translation
+end-to-end [7, 8]. However, cascaded pipelines remain com-
+mon in production due to modularity and controllability. Our
+work provides a reproducible protocol and a stability-focused
+analysis tailored to such cascaded systems.
+3. Method
+RST is a modular desktop real-time speech translation pipeline.
+Incoming audio is segmented via V AD-based endpointing, tran-
+scribed by a configurable STT engine, translated by a con-
+figurable MT engine, and rendered as subtitles. We focus
+on two user-facing latency markers,latency firstand
+latency stable, which separate perceived responsiveness
+from subtitle finalization.
+3.1. Segmentation and Cascade
+RST segments audio into utterances using WebRTC V AD with
+a small set of parameters (aggressiveness, minimum/maximum
+chunk duration, hangover time). Each utterance triggers a sin-
+gle ASR request followed by a single MT request. In the cur-
+rent implementation, both stages emit one final hypothesis per
+utterance (no token-level streaming). As a result, endpointing
+directly controls request arrival rate: shorter segments increase
+calls to upstream cloud services, making throughput and back-
+log effects first-order.
+3.2. Latency Definitions
+For each utteranceu, lett end(u)denote the segment boundary
+time. We define:
+•latency first(u):t ASR(u)−t end(u),
+•latency stable(u):t MT(u)−t end(u).
+The first captures time to any visible output; the second cap-
+tures time to finalized translation. We compute the real-time
+factor
+RTF(u) = latency stable(u)
+segment duration(u).
+When median RTF>1, the system cannot sustain steady-state
+processing and queueing delay accumulates.
+Table 1:Endpointing presets used throughout the paper.
+preset V AD min (ms) max (ms) hangover (ms)
+fast 3 240 2500 120
+stable 1 480 4000 240
+3.3. Reproducible Logging
+The backend emits newline-delimited JSON events for
+segmentation boundaries, ASR outputs, and MT outputs.
+A logging wrapper records this stream without modify-
+ing application logic and produces one JSONL record per
+utterance containing raw timestamps (first token ms,
+stable ms), derived latency metrics (latency first ms,
+latency stable ms, RTF), engine identifiers, and segmen-
+tation metadata. Offline quality metrics are attached to the same
+schema for joint latency–quality analysis.
+4. Experiments
+We evaluate how endpointing (segmentation) and model choice
+jointly affect user-facing latency, throughput stability, and
+KO→EN translation quality in a segment-level cascade.
+4.1. Language direction and model matrix
+We focus on KO→EN. We evaluate a2×2cas-
+cade with STT engines{whisper-1, GPT-4o Tran-
+scribe (gpt-4o-transcribe)}and MT engines
+{gpt-4.1-mini,grok-4-fast-non-reasoning}.
+Whisper [9] serves as an acoustic baseline, and GPT-4o
+Transcribe [10] represents an LLM-based ASR service.
+4.2. Segmentation regimes
+Endpointing determines utterance boundaries and therefore the
+request arrival rate in segment-level cascades. We compare two
+presets:
+fast: V AD=3, min=240 ms, max=2500 ms, hang-
+over=120 ms,
+stable: V AD=1, min=480 ms, max=4000 ms, hang-
+over=240 ms.
+Thefastpreset approximates rapid turn-taking timescales
+and is used as a stress-test regime [11]. Thestablepreset
+uses longer minimum duration and hangover to reduce request
+pressure.
+4.3. Latency–quality summary
+Table 2 reports medians for segment duration, user-facing
+latencies (latency first,latency stable), real-time
+factor (RTF), and offline quality metrics (KO CER, EN
+BLEU/chrF) across all cascade configurations under both end-
+pointing regimes.
+4.4. Whisper prompting ablation
+To test whether prompting helps under endpointed short-chunk
+streaming, we run a Whisper prompting ablation under the
+stablepreset on the full corpus. We compare three modes:
+(i)off(no prompt), (ii)rollingtranscript context (previous
+recognized text truncated to a fixed character budget), and (iii)
+staticinstruction prompting. Prompts reset at clip bound-
+aries. Translation is disabled to isolate ASR effects.
+4753
+Table 2:Latency–quality summary (median). Latencies are in seconds. CER is in % (can exceed 100%).
+config seg (s) first (s) stable (s) RTF CER (%) BLEU chrF
+fast: whisper-1 + gpt-4.1-mini 1.0 60.5 61.3 52.114 121.5 1.0 22.8
+fast: whisper-1 + grok-4-fast 1.0 60.9 62.5 52.406 122.1 0.7 22.7
+fast: gpt-4o-transcribe + gpt-4.1-mini 1.0 27.8 28.6 24.233 98.4 1.9 23.6
+fast: gpt-4o-transcribe + grok-4-fast 1.0 31.9 33.5 30.602 98.2 1.2 23.2
+stable: whisper-1 + grok-4-fast 3.8 2.9 4.5 1.508 57.4 9.0 47.8
+stable: gpt-4o-transcribe + grok-4-fast 3.8 1.0 2.2 0.942 36.3 11.6 50.4
+stable: gpt-4o-transcribe + gpt-4.1-mini 3.8 0.9 1.8 0.708 38.9 11.5 50.5
+stable: gpt-4o-transcribe + grok-4-fast-non-reasoning 3.8 1.7 3.0 1.205 45.8 10.6 48.4
+stable: whisper-1 + gpt-4.1-mini 3.8 1.1 1.9 0.622 35.5 11.4 53.5
+stable: whisper-1 + grok-4-fast-non-reasoning 3.8 1.2 2.2 0.685 40.0 10.6 52.3
+4.5. Endpointing sweep and stability threshold
+Beyond the two presets, we sweep endpointing aggressiveness
+by varying minimum segment duration and hangover time while
+keeping a maximum duration cap. This is used to map the
+boundary between throughput-stable and backlog regimes. We
+define an operational threshold as the most aggressive setting
+that maintains median RTF≤1on the evaluation corpus.
+4.6. Metrics and replay protocol
+We report KO CER, EN BLEU/chrF, and latency distributions
+forlatency firstandlatency stable. Latency is
+summarized by median and interquartile range (IQR). Real-
+time factor is computed as
+RTF= latency stable
+segment duration.
+For offline quality scoring, we concatenate per-utterance out-
+puts back into clip units and compare against line-aligned refer-
+ences.
+All experiments use a controlled replay protocol derived
+from FLEURS [12]. Each clip is decoded to mono PCM and
+fed directly into the same V AD endpointing path used for live
+audio, ensuring identical waveforms across configurations. Re-
+play runs in real time, with a 2 s silence gap between clips to
+reduce boundary merges. We evaluate the full KO→EN subset
+(2,851 clips;∼9.6 h total audio).
+5. Results
+We report a main latency–quality table across the four cas-
+cades under the two segmentation presets, and two backlog-
+focused diagnostics: (i) RTF vs.latency stable, and (ii)
+howlatency stableaccumulates over time under fast vs.
+stable endpointing.
+5.1. Stable endpointing dominates fast in this setting
+Table 2 shows that the fast preset produces shorter segments
+but can push the cascade into a backlog regime: the request
+rate rises, throughput becomes unstable (RTF>1), and queue-
+ing delay dominateslatency stable. In contrast, the sta-
+ble preset reduces request pressure and maintains a sustainable
+throughput, yielding consistently lowerlatency stable
+and higher translation quality. Figure 1 visualizes this effect:
+(a) RTF separates throughput-stable vs. backlog regimes, and
+(b)latency stablegrows over time under fast endpoint-
+ing.
+5.2. ASR choice and prompting effects
+ASR errors propagate to MT, so transcription quality is a key
+driver of downstream translation quality. However, a dedicated
+Whisper prompting ablation reveals that prompt conditioning,
+commonly used to add context, can be counterproductive under
+endpointed short chunks; Table 3 summarizes this effect and we
+analyze the failure modes in Section 6.2.
+Table 3:Whisper context prompting ablation under stable end-
+pointing (2,851 clips).
+mode CER (%)∆CER (pp) leakage (%)
+off 26.5 0.0 –
+rolling 43.7 +17.1 –
+static 40.8 +14.3 7.9
+5.3. Translation model trades modest quality for latency
+Across settings, the MT choice trades latency and translation
+quality. In our measurements, the best operating point depends
+on the ASR backbone and the endpointing regime; Table 2 sum-
+marizes the joint latency–quality outcomes under each cascade.
+5.4. Endpointing threshold from large-scale sweeps
+Sweeping endpointing aggressiveness reveals a stability
+boundary around median RTF≈1. Below this boundary,
+latency stableremains bounded and scales well with
+evaluation horizon; above it, queueing delay accumulates with
+time-on-task. This motivates a simple tuning criterion for cas-
+caded cloud systems: select the most aggressive endpointing
+setting that keeps median RTF≤1 on representative workload
+data.
+5.5. Recommended operating points
+Figure 1(a) summarizes the trade-offs. For latency-sensitive
+subtitling, we recommend operating in the throughput-stable
+regime (median RTF≤1) and using stable endpointing with a
+strong ASR backbone. In our KO→EN benchmark,stable +
+GPT-4o Transcribe (LLM-based ASR) + GPT-4.1 minipro-
+vides a robust latency–stability operating point.
+4754
+Figure 1:Backlog diagnostics from schema logs. The left panel relates medianlatency stableto real-time factor (RTF; log scale),
+and the right panel shows howlatency stableevolves over time under different endpointing presets.
+(a)Service-time stress test
+ (b)KO→EN context floor
+Figure 2:Two mechanisms shaping the latency–stability frontier. (a) Increasing per-segment service time shifts the tipping point to
+larger chunks and sharply increases queueing delay. (b) BLEU improves up to∼2–3 s and then saturates, indicating a KO→EN context
+requirement under segment-level cascades.
+6. Discussion
+6.1. Whyfastloses in segment-level cloud cascades
+In segment-level cascades, shorter segments increase the re-
+quest arrival rateλ. Whenλapproaches or exceeds the effective
+service rateµ, utilizationρ=λ/µreaches or surpasses 1, and
+the system enters a backlog regime wherelatency stable
+is dominated by queueing delay rather than per-request com-
+pute. Little’s Law (N=λW) [13] explains why delay can
+accumulate with time-on-task as in-flight requests grow. Fig-
+ure 2a supports this mechanism: increasing service time shifts
+the tipping point to larger chunks and steepens the queueing in-
+crease.
+6.2. Prompting instability under endpointed short chunks
+Under endpointed short chunks, Whisper prompt conditioning
+degrades ASR quality: CER increases to 43.7% (rolling) and
+40.8% (static) from 26.5% without prompts, and static prompt-
+ing leaks prompt text in 7.9% of hypotheses. This suggests that
+prompt mechanisms tuned for long-context transcription can be
+unstable when segmentation frequently resets context; prompt-
+free decoding is the more robust streaming baseline.
+6.3. A linguistic latency floor for KO→EN
+Korean (SOV) to English (SVO) translation requires a minimum
+context window. Figure 2b shows BLEU improving up to∼2–
+3 s and then saturating, indicating a KO→EN context threshold
+in segment-level cascades. Pushing endpointing below this win-
+dow can reduce translation quality even if throughput remains
+stable.
+7. Conclusion
+We presented RST, a reproducible KO→EN subtitle cascade, to
+evaluate latency–stability trade-offs under segment-level cloud
+processing. Our results show that throughput stability is a pre-
+requisite for low latency: aggressive endpointing can induce
+a backlog regime (RTF>1) in which queueing delay dom-
+inateslatency stableand degrades both responsiveness
+and translation quality. We also find that Whisper prompt con-
+ditioning is unreliable under endpointed short chunks, degrad-
+ing KO CER by +14–17 pp and introducing instruction leakage;
+prompt-free decoding is the more robust streaming baseline.
+4755
+8. Generative AI Use Disclosure
+During the preparation of this work, the authors used generative
+AI tools (including Google Gemini and an OpenAI GPT-based
+assistant) to assist with language editing, formatting, and draft-
+ing visualization scripts. After using these tools, the authors
+reviewed and edited the content as needed and take full respon-
+sibility for the content of the publication.
+9. Acknowledgements
+This research was supported by the Institute for Information
+& Communications Technology Planning & Evaluation (IITP)
+grant funded by the Ministry of Science and ICT (MSIT), Re-
+public of Korea, through the Graduate School of Metaverse
+Convergence Program (RS-2022-00156318); by the Ministry
+of Culture, Sports and Tourism (MCST), Republic of Korea,
+through the Korea Creative Content Agency (KOCCA) grant
+(RS-2023-00219237) under the Culture, Sports and Tourism
+R&D Program; and by the National Research Foundation of
+Korea (NRF) grant funded by the Ministry of Science and
+ICT (MSIT), Republic of Korea (RS-2026-25481217). This re-
+search was also supported by the Sogang University Research
+Grant of 2024 (202410033.01).
+10. References
+[1] E. Salesky, J. M ¨ader, and S. Klinger, “Assessing evaluation met-
+rics for speech-to-speech translation,” in2021 IEEE Automatic
+Speech Recognition and Understanding Workshop (ASRU), 2021.
+[Online]. Available: https://arxiv.org/abs/2110.13877
+[2] S. Papi, P. Pol ´ak, D. Mach ´aˇcek, and O. Bojar, “How
+“Real” is your real-time simultaneous speech-to-text translation
+system?”Transactions of the Association for Computational
+Linguistics, vol. 13, pp. 281–313, 2025. [Online]. Available:
+https://aclanthology.org/2025.tacl-1.14/
+[3] C. Huber, T. A. Dinh, C. Mullov, N.-Q. Pham, T. B. Nguyen,
+F. Retkowski, S. Constantin, E. Y . Ugan, D. Liu, Z. Li,
+S. Koneru, J. Niehues, and A. Waibel, “End-to-end evaluation
+for low-latency simultaneous speech translation,” inProceedings
+of the 2023 Conference on Empirical Methods in Natural
+Language Processing: System Demonstrations. Association for
+Computational Linguistics, 2023, pp. 12–20. [Online]. Available:
+https://aclanthology.org/2023.emnlp-demo.2/
+[4] V . K. R. Sridhar, J. Chen, S. Bangalore, A. Ljolje, and
+R. Chengalvarayan, “Segmentation strategies for streaming
+speech translation,” inProceedings of the 2013 Conference of the
+North American Chapter of the Association for Computational
+Linguistics: Human Language Technologies. Atlanta, Georgia:
+Association for Computational Linguistics, 2013, pp. 230–238.
+[Online]. Available: https://aclanthology.org/N13-1023/
+[5] H. Shavarani, M. Siahbani, R. Mehdizadeh Seraj, and A. Sarkar,
+“Learning segmentations that balance latency versus quality in
+spoken language translation,” inProceedings of the 12th Inter-
+national Workshop on Spoken Language Translation (IWSLT),
+Da Nang, Vietnam, 2015, pp. 217–224. [Online]. Available:
+https://aclanthology.org/2015.iwslt-papers.14/
+[6] J. Iranzo-S ´anchez, J. Jorge-Cano, P. Baquero-Arnal, J. A.
+Silvestre-Cerd`a, A. Gim´enez, J. Civera, A. Sanchis, and A. Juan,
+“Streaming cascade-based speech translation leveraged by a
+direct segmentation model,”Neural Networks, vol. 142, pp.
+303–315, 2021. [Online]. Available: https://pubmed.ncbi.nlm.
+nih.gov/34082286/
+[7] M. Reidet al., “Gemini 1.5: Unlocking multimodal
+understanding across millions of tokens of context,”
+arXiv preprint arXiv:2403.05530, 2024. [Online]. Available:
+https://arxiv.org/abs/2403.05530
+[8] Y . Chuet al., “Qwen-audio: Advancing universal audio
+understanding via unified large-scale audio-language models,”
+arXiv preprint arXiv:2311.07919, 2023. [Online]. Available:
+https://arxiv.org/abs/2311.07919
+[9] A. Radfordet al., “Robust speech recognition via large-scale
+weak supervision,”arXiv preprint arXiv:2212.04356, 2022.
+[Online]. Available: https://arxiv.org/abs/2212.04356
+[10] OpenAI, “GPT-4osystem card,” 2024. [Online]. Available:
+https://openai.com/index/gpt-4o-system-card/
+[11] T. Stivers, N. J. Enfield, P. Brown, C. Englert, M. Hayashi,
+T. Heinemann, G. Hoymann, F. Rossano, J. P. de Ruiter, K.-
+E. Yoon, and S. C. Levinson, “Universals and cultural varia-
+tion in turn-taking in conversation,”Proceedings of the National
+Academy of Sciences, vol. 106, no. 26, pp. 10 587–10 592, 2009.
+[12] A. Conneau, M. Ma, S. Khanuja, Y . Zhang, V . Axelrod,
+S. Dalmia, J. Riesa, C. Rivera, and A. Bapna, “Fleurs: Few-shot
+learning evaluation of universal representations of speech,” 2022.
+[Online]. Available: https://arxiv.org/abs/2205.12446
+[13] J. D. C. Little, “A proof for the queueing formula:n=λw,”
+Operations Research, vol. 9, no. 3, pp. 383–387, 1961.
+4756

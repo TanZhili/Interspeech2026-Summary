@@ -1,0 +1,501 @@
+UniSE: A Unified Framework for Decoder-Only Autoregressive LM-Based
+Speech Enhancement
+Haoyin Yan1,∗, Chengwei Liu1,∗, Shaofei Xue1,2,∗∗, Xiaotao Liang1, Yinghao Liu1, Yuxiang Kong2,
+Zheng Xue1
+1 Qwen Business Unit of Alibaba, China
+2 Tongyi AI Lab of Alibaba, China
+yanhaoyin.yhy@alibaba-inc.com, liuchengwei.lcw@alibaba-inc.com
+Abstract
+Neural audio codecs have largely promoted the application
+of language models (LMs) for speech applications. How-
+ever, the effectiveness of autoregressive LM-based models in
+unifying speech enhancement (SE) tasks remains underex-
+plored. In this work, we propose UniSE, a unified decoder-
+only LM-based framework to handle different SE tasks in-
+cluding speech restoration, target speaker extraction, and
+speech separation. Conditioned on input speech features,
+it autoregressively generates target discrete tokens, facilitat-
+ing compatibility between distinct learning patterns of mul-
+tiple tasks. To further optimize speech quality, we intro-
+duce a progressive reinforcement learning strategy with mul-
+tiple assessment criteria. Experiments on several bench-
+marks show that UniSE achieves competitive performance com-
+pared to discriminative and generative baselines, demonstrat-
+ing the capacity of LMs in unifying SE tasks. The code
+and demo is available at: https://github.com/alibaba/unified-
+audio/tree/main/QuarkAudio-UniSE.
+Index Terms: Speech enhancement, decoder-only autoregres-
+sive language models, unified framework
+1. Introduction
+Recently, speech enhancement (SE) has expanded beyond con-
+ventional denoising toward reconstructing clean target speech
+from degraded recordings [1,2]. In this context, SE can include
+many sub-tasks: speech restoration (SR) that aims to restore
+speech from the degraded recordings with various distortions;
+target speaker extraction (TSE) that extracts the target speech
+guided by an assistive clue, e.g., reference speech of the target
+speaker; speech separation (SS) that aims at separating all ex-
+isting speakers from the mixture. Deep neural networks achieve
+better performance in non-stationary scenarios than traditional
+algorithms and thus become the mainstream in this field [3, 4].
+Language models (LMs) have achieved remarkable success
+in generating text [5], images [6] and audio [7, 8]. Some works
+have explored applications of LMs to SE by typically predicting
+the discrete tokens of clean speech, which are extracted by pre-
+trained neural audio codecs (NACs). For instance, GenSE [9]
+is a two-stage approach based on autoregressive (AR) model-
+ing, where the first stage generates clean semantic tokens in
+noisy semantic conditions, and the outputs are utilized to pre-
+dict clean acoustic features in the second stage. In [10], a TSE
+model called LauraTSE extracts continuous features of mixture
+and reference speech, serving as prefixes to estimate the target
+*These authors contributed equally.
+**indicates the corresponding author.
+discrete tokens. Although these works have shown the poten-
+tial of LMs in SE, they are confined to single distortion or task,
+resulting in limited extensibility to diverse scenarios.
+Some studies consider more distortions or focus on the uni-
+fication of multiple tasks to expand the universality of SE sys-
+tems. MaskSR [11] handles additive noise, reverberation, clip-
+ping and bandwidth limitation via masked prediction [12] on
+multi-layer discrete tokens. LLaSE-G1 [13] employs a non-
+autoregressive (NAR) LM to map noisy WavLM [14] features
+to the clean discrete tokens, with a dual-channel input and out-
+put architecture to support multiple tasks. These works involve
+the paradigm of masked generation or direct mapping, and the
+effectiveness of AR modeling in multi-task SE frameworks re-
+mains to be further verified. Considering the flexible prefix for-
+mulations of the decoder-only model, it has potential to act as
+an elegant solution for the task unification.
+In the context of Large Language Models (LLMs), rein-
+forcement learning (RL) has been primarily employed to align
+model behavior with human preferences and task-specific ob-
+jectives [15]. Some works have verified the potential of RL
+in the domain of text-to-speech (TTS). For instance, the Di-
+rect Preference Optimization (DPO) [16] framework is utilized
+to improve the emotional consistency of synthesized speech
+in [17]. However, the application of RL in SE remains largely
+unexplored. While traditional SE systems rely on supervised
+learning with signal-level losses (e.g., SI-SNR), these metrics
+do not always correlate well with auditory perception. This
+gap motivates the exploration of RL-based alignment in SE: by
+leveraging perceptual rewards as feedback, the RL has potential
+to guide the SE model towards better perceptual alignment.
+In this work, we propose a decoder-only AR LM-based
+framework calledUniSEto unify multiple sub-tasks of SE, in-
+cluding SR, TSE and SS. Our contributions are fourfold: 1) We
+design a decoder-only SE framework, which utilizes continu-
+ous conditional features to generate discrete tokens of target
+speech. 2) We propose a task token to distinguish between dif-
+ferent operational modes, unifying multiple tasks by switching
+and combination of these modes. 3) We introduce a progressive
+reinforcement learning (PRL) strategy to fine-tune our model,
+where criteria (i.e., perceptual quality and similarity) are pro-
+gressively introduced across different stages to perform DPO
+optimization. 4) Our model achieves competitive performance
+on several benchmarks, revealing the potential of decoder-only
+AR LM in the unification of SE sub-tasks.
+2. METHODOLOGY
+Fig. 1 illustrates the UniSE framework, comprising: (1) a pre-
+trained WavLM model with a trainable adapter for continuous
+1784
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-192
+D G S
+BiCodecEncoder
+S E
+BiCodecDecoder
+Target Speech
+Target Speech
+Decoder-Only LM
+RT
+Reference Embedding
+Degradation Embedding
+Global Token
+Semantic Token
+TTask Indicate Token
+RReference Start Token
+DDegradation Start Token
+GGlobal Start Token
+SSemantic Start Token
+EEnd Token
+WavLM
+Adapter
+Reference Speech Degraded Speech
+Policy
+Model
+CriterionCondition generate
+Sample1
+Sample2
+Reference 
+Model
+Update
+Policy
+Model
+Winner
+LoserDPO 
+Fine-Tuni ng
+Figure 1:Overall architecture of UniSE, where the BiCodec Encoder is only utilized to generate label tokens during training and
+excluded during inference. The snowflake icon means that parameters are pre-trained and frozen, and the fire icon indicates that
+parameters are optimized during training.
+speech feature extraction; (2) a discrete speech codec for tok-
+enization and waveform reconstruction; (3) a decoder-only lan-
+guage model (LM) backbone for autoregressive (AR) condi-
+tional modeling; and (4) a DPO fine-tuning framework for per-
+ceptual quality enhancement.
+2.1. Conditional Feature Extractor
+To extract conditioning features from reference and degraded
+speech input, we adopt the pre-trained WavLM 1 as the feature
+extractor. We average the features from all transformer layers
+in WavLM to obtain sufficient acoustic and semantic informa-
+tion simultaneously. A trainable linear adapter maps the output
+from frozen WavLM into a representation space amenable to
+LM AR modeling, yielding featuresE r andE d for reference
+and degraded speech, respectively.
+2.2. Discrete Token Codec
+We utilize BiCodec [8] to convert the continuous regression
+problems of SE into discrete autoregressive modeling. During
+training, the BiCodec Encoder produces a fixed-length global
+featureE g (32 tokens, speaker characteristics) and a variable-
+length semantic featureE s (50 tokens/s, speech content), both
+with single-layer quantization for easy AR integration. During
+inference, the BiCodec decoder reconstructs the original speech
+by combiningE g andE s, leveraging this explicit disentangle-
+ment for high-fidelity restoration. which benefits from this ex-
+plicit disentanglement to achieve high fidelity.
+2.3. Unified Multi-Task Framework
+The proposed framework adopts the LLaMA architecture [18]
+as the backbone for AR modeling, aiming to estimate the con-
+ditional probability distribution of target speech discrete repre-
+sentations given optional reference and degraded speech inputs.
+To unify SR, TSE and SS tasks within a single framework, we
+define three operational modes: SR mode, TSE mode and re-
+verse TSE (rTSE) mode. Each mode corresponds to a learnable
+task-specific token:T SR,T TSE, andT rTSE. In SR mode, the
+target speech corresponds to the clean signal of the degraded
+input. The input sequence of AR LM is formatted as [T SR,D,
+1https://huggingface.co/microsoft/wavlm-base-plus
+Ed,G,E g,S,E s], whereDdenotes the start of degraded speech
+features,Gthe start of global features, andSthe start of seman-
+tic features, respectively. The output sequence is formulated as
+o= [E g,S,E s,E], withErepresenting the end-of-sequence
+token. The parametersθof the adapter and decoder-only LM
+are optimized by minimizing the negative log-likelihood of the
+predicted outputs:
+LSR =−
+LX
+t=1
+logP(o t|TSR,D,E d,o<t;θ),(1)
+whereLindicates the length of output sequence.
+For the TSE mode, the target speech corresponds to the
+timbre-matched speech component in the degraded input that
+aligns with the reference audio. The input sequence is format-
+ted as [TTSE,R,E r,D,E d,G,E g,S,E s], whereRdenotes the
+start of reference speech features. The associated loss function
+is defined as
+LTSE =−
+LX
+t=1
+logP(o t|TTSE,R,E r,D,E d,o<t;θ).(2)
+For the rTSE mode, the target speech corresponds to the timbre-
+mismatched component in the degraded input when compared
+with the reference audio. The input sequence format and loss
+functionL rTSE keep identical to that of the TSE mode.
+2.4. Progressive Reinforcement Learning (PRL)
+After the training stage of UniSE, we fine-tune it using
+DPO [16] framework to further improve the perceptual quality
+of the generated speech, as illustrated in Fig. 1. The pre-trained
+UniSE serves as the reference model and initializes the policy
+model. During fine-tuning, the policy model generates two can-
+didate results on-the-fly when given the conditioncof reference
+and degraded speech. After determining the winner sampley w
+and loser sampleyl using specific criterion, the DPO loss is cal-
+culated as
+LDPO =−Elogσ
+
+β
+
+logπθ(yw|c)
+πr(yw|c)−log πθ(yl|c)
+πr(yl|c)
+
+,(3)
+whereπ θ andπ r denote the sequence-level probabilities un-
+der the current policy model and reference model,β >0is a
+temperature hyperparameter controlling the strength of the pref-
+1785
+Table 1:Distortion categories and simulation configurations,
+where SNR denotes signal-to-noise ratio and SIR denotes
+signal-to-interference ratio.
+Distortion Probability Hyperparameters
+Noise 0.8 SNR∈[-5, 20]
+Reverberation 0.3 -
+Clipping 0.3 Min quantile∈[0.0, 0.1]
+Max quantile∈[0.9, 1.0]
+Bandwidth Limitation 0.3 Bandwidth∈{2, 4}kHz
+Packet Loss 0.3 Rate∈[0.05, 0.25]
+Interference Speaker 0.2 for SR SIR∈[2, 20] for SR
+1.0 for TSE/rTSE SIR∈[-5, 5] for TSE/rTSE
+erence signal, andσindicates the sigmoid function.
+To better align the model with human subjective perception,
+we divide the fine-tuning into two progressive stages. In stage 1
+(S1), we adopt DNSMOS [19] as the preference criterion, which
+predicts three sub-scores: SIG (signal fidelity), BAK (back-
+ground noise level), and OVRL (overall quality). The average
+of these three scores is used to determine the winner and loser
+samples, and the fine-tuning loss is formulated as
+LS1 =αL CE +L DNSMOS
+DPO ,(4)
+whereL CE denotes the cross-entropy loss used during pre-
+training,α≥0controls its contribution, andL DNSMOS
+DPO is the
+DPO loss with preference determined by DNSMOS. In stage
+2 (S2), we additionally introduce the similarity of the WavLM
+features as the criterion to optimize semantic and acoustic con-
+sistency. Specifically, the WavLM features of candidate sam-
+ples and the target speech are computed, and the Euclidean dis-
+tance is computed to determine the winner and loser samples,
+where smaller distance indicates higher similarity to the ground
+truth. The fine-tuning loss in this stage is defined as
+LS2 =αL CE + 0.5LDNSMOS
+DPO + 0.5LW avLM
+DPO ,(5)
+whereL W avLM
+DPO is the DPO loss with preference determined by
+the WavLM feature distance. Gradually increasing the com-
+plexity of preference signals allows the model to first establish
+a stable foundation of perceptual quality before refining details,
+thereby avoiding conflicting optimization objectives.
+2.5. Inference Strategies
+To alleviate computational overhead during inference, input
+speech is segmented into fixed-length chunks consistent with
+the training configuration, as described in MaskSR [11]. The
+SR mode is utilized for SR task, which restores clean speech
+from the degraded recording. When multiple speakers exist in
+the degraded speech, our model intends to output the louder
+speaker. The TSE mode processes the TSE task, which extracts
+timbre-matched speech from the mixture regardless of the rel-
+ative loudness. While for the SS task, we consider multiple
+inferences that involve all three modes. Specifically, for two-
+speaker SS (this work only considers the two-speaker case), we
+first employ the SR mode to extract the louder speaker. This ini-
+tial result then serves as the reference for the TSE mode to sepa-
+rate the first speaker, which ensures speaker consistency across
+different segments when relative loudness varies. Finally, the
+rTSE mode is applied to extract the remaining speaker, using
+the first speaker as a reference.
+Table 2:DNSMOS scores on DNS 2020 Challenge test sets,
+where “With Reverb” subset contains reverberation while “No
+Reverb” subset only involves noise.
+Model Para. (M) MACs (G/s) With Reverb No Reverb
+SIG BAK OVRL SIG BAK OVRL
+Noisy - - 1.76 1.50 1.39 3.39 2.62 2.48
+Discriminative Methods
+Conv-TasNet [3] 5.1 5.2 2.42 2.71 2.01 3.09 3.34 3.00
+FRCRN [32] 10.3 12.3 2.93 2.92 2.28 3.58 4.13 3.34
+TF-GridNet [33] 2.8 49.6 3.04 3.66 2.63 3.58 4.17 3.35
+Generative Methods
+SELM [34] - - 3.16 3.58 2.70 3.51 4.10 3.26
+MaskSR [11] - - 3.53 4.07 3.25 3.59 4.12 3.34
+AnyEnhance [35] 363.5 - 3.50 4.04 3.20 3.64 4.18 3.42
+GenSE [9] 667.6 99.0 3.49 3.73 3.19 3.65 4.18 3.43
+LLaSE-G1 [13] 1895.6 63.9 3.59 4.10 3.33 3.66 4.17 3.42
+UniSE 263.9 42.2 3.68 4.12 3.41 3.67 4.13 3.42
+UniSE-SR 263.9 42.2 3.66 4.08 3.38 3.66 4.14 3.42
+UniSE + S1 263.9 42.2 3.77 4.21 3.55 3.73 4.19 3.51
+UniSE + S2 263.9 42.2 3.78 4.23 3.57 3.74 4.20 3.53
+UniSE + PRL 263.9 42.23.83 4.26 3.64 3.76 4.23 3.57
+Table 3:SR results on URGENT 2025 Challenge blind test set.
+Team/Model Team Rank † OVRL NISQA UTMOS
+Bobbsun 1 2.88 3.22 2.09
+Xiaobin (TF-GridNet) 2 2.92 3.24 2.16
+subatomicseer 3 2.94 3.25 2.19
+wataru9871 13 3.10 3.74 2.53
+LLaSE-G1 [13] - 2.80 2.93 2.09
+UniSE - 3.17 3.68 2.85
+UniSE + PRL -3.34 3.83 2.95
+† The ranking takes into account both non-intrusive and intrusive metrics,
+where the latter are not friendly to generative models.
+3. EXPERIMENTS
+3.1. Experimental Setup
+Training Datasets:The clean speech data for training is
+sourced from the V oxBox dataset [8], an integrated and rig-
+orously cleaned compilation of multiple public datasets. This
+set comprises 760 hours of LibriSpeech [20] data, 1200 hours
+from the MLS English [21] subset, and 1800 hours of the
+Emilia ZH [22] subset. The noise corpus comprises approx-
+imately 460 hours of data from the DNS Challenge [23],
+FSD50K [24], WHAM! [25], DESED [26], DEMAND [27],
+MUSAN [28], DISCO [29], MUSDB18-HQ [30], and TUT
+Urban Acoustic Scenes [31]. Additionally, we include 60,000
+room impulse response (RIR) samples from SLR28 to simulate
+reverberation. A data augmentation pipeline simulates degraded
+speech, detailed in Table 1. We randomly select operational
+modes during training, and distortions are applied based on the
+given probability. All audio samples are sampled to 16 kHz.
+Implementation Details:The LLaMA-based decoder-only
+backbone consists of 12 layers, each with 8 attention heads and
+a hidden dimension of 512, resulting in 63M parameters. Our
+model is trained using AdamW optimizer with 30 epochs. The
+learning rate reaches a peak of 1e-3 after 4000 warm-up steps,
+then decays by a factor of 0.98 per epoch. For fine-tuning, the
+factorαis set to 0.4 and the model is updated for 5k steps with
+a batch size of 32 and a learning rate of 5e-5. During training
+and inference, the lengths of reference and degraded speech are
+clipped/padded to 5 seconds.
+Evaluation Configurations:We evaluate our model on several
+benchmarks, including test sets from DNS 2020 Challenge [23]
+and URGENT 2025 Challenge [41] for SR task, Libri2Mix
+clean test set for the TSE task, and Libri2Mix noisy test set with
+WSJ0-2mix test set for the SS task. We adopt DNSMOS [19],
+1786
+Table 4:TSE results on Libri2Mix clean test set.
+Model Type SIG BAK OVRL NISQA SIM
+Mixture - 3.38 3.10 2.65 2.45 0.85
+Spex+ [36] D 3.38 3.77 3.00 3.03 0.96
+WeSep [37] D 3.56 3.93 3.23 4.040.99
+TSELM-L [38] G 3.55 4.08 3.23 4.03 0.91
+AnyEnhance [35] G 3.64 4.07 3.35 4.28 0.91
+LLaSE-G1 [13] G 3.53 4.01 3.22 3.89 0.92
+LauraTSE [10] G 3.61 4.08 3.344.330.97
+UniSE G 3.62 4.06 3.33 4.01 0.95
+UniSE-TSE G 3.62 4.07 3.33 4.00 0.95
+UniSE + PRL G3.70 4.14 3.454.10 0.95
+BiCodec - 3.59 4.05 3.30 4.02 0.97
+Table 5:SS results on Libri2Mix and WSJ0-2mix test sets.
+Model Type Libri2Mix WSJ0-2mix
+SIG BAK OVRL SIG BAK OVRL
+Mixture - 2.33 1.66 1.64 3.42 3.20 2.76
+Sepformer [39] D 3.33 3.88 3.02 3.43 3.96 3.14
+Mossformer2 [40] D 3.44 3.94 3.11 3.50 4.05 3.23
+LLaSE-G1 [13] G 3.48 3.83 3.11 3.52 3.92 3.19
+UniSE G 3.62 4.09 3.34 3.63 4.09 3.36
+UniSE + PRL G3.76 4.20 3.55 3.71 4.19 3.49
+NISQA [42] and UTMOS [43] to measure the quality of the
+generated speech. Following [10], the speaker similarity (SIM)
+is calculated using WavLM-base2 for TSE.
+3.2. Performance Comparison on Multiple Tasks
+Table 2 compares UniSE with advanced baselines on the DNS
+2020 Challenge test set. Generative methods generally sur-
+pass discriminative counterpart, highlighting their potential for
+improving subjective listening quality. UniSE achieves state-
+of-the-art (SOTA) SR performance, and training exclusively in
+the SR mode (denoted as UniSE-SR) shows comparable per-
+formance with UniSE. Progressively introducing criteria out-
+performs optimization with single stage, indicating the coarse-
+to-fine strategy mitigates potential conflicts between heteroge-
+neous preference signals and can lead to more stable conver-
+gence. Table 3 evaluates our framework against URGENT
+Challenge submissions on a blind test set containing multiple
+distortions. UniSE achieves competitive performance even un-
+der unseen distortions (codec artifacts, wind noise), demonstrat-
+ing robust generalization ability.
+TSE results on the Libri2Mix clean test set are summarized
+in Table 4, showing that UniSE achieves performance compara-
+ble to SOTA baselines. UniSE supports a wider range of tasks
+than LauraTSE, an AR-based method with similar architecture
+and scale. The UniSE-TSE variant trained exclusively in TSE
+mode achieves performance comparable to UniSE, mirroring
+the relationship between UniSE and UniSE-SR in the SR set-
+ting. This indicates that multi-task learning does not degrade
+individual task performance within our framework. Fine-tuning
+with PRL strategy consistently enhances perceptual quality, as
+evidenced by improvements in DNSMOS and NISQA metrics.
+Results produced by directly processing target speech using Bi-
+Codec (the bottom row) reveal the performance limitations of
+codecs on SE frameworks, demonstrating the necessity of fur-
+ther improving low-bitrate NACs.
+Table 5 compares the SS performance of our model with
+baselines on Libri2Mix and WSJ0-2mix test sets. UniSE
+2https://huggingface.co/microsoft/wavlm-base-plus-sv
+Table 6:Ablation study on DNS 2020 Challenge test sets.
+Method With Reverb No Reverb
+SIG BAK OVRL SIG BAK OVRL
+UniSE3.68 4.12 3.41 3.674.13 3.42
+NAR 3.39 3.70 2.96 3.624.143.39
+Qwen2 3.67 4.10 3.403.674.133.43
+X-codec2 3.57 4.03 3.27 3.60 4.09 3.34
+0.0 0.2 0.4 0.6 0.8 1.0
+α
+3.4
+3.6
+3.8OVRL
+OVRL
+SIM
+0.80
+0.85
+0.90
+0.95
+SIM
+Figure 2:The OVRL and SIM scores in terms of differentα
+values in the TSE task on Libri2Mix clean test set.
+outperforms other discriminative and generative models with
+OVRL scores of 3.34 on Libri2Mix and 3.36 on WSJ0-2mix.
+The PRL fine-tuning further improves the score by 0.21 and
+0.13 respectively. This highlights the effectiveness of our multi-
+mode inference strategy and PRL fine-tuning.
+3.3. Ablation Studies
+We conduct ablation studies to evaluate the impact of modeling
+paradigms and architectures on the SE task. Framing SE task as
+a mapping from degraded to target speech,we utilize NAR mod-
+eling (“NAR”) for semantic token prediction. Enhanced speech
+is then reconstructed from these tokens and ground-truth global
+tokens via the BiCodec decoder. However, the performance de-
+grades notably, highlighting the advantage of AR modeling in
+capturing the underlying probability distribution of the data.
+Moreover, replacing the LM backbone with Qwen2 [5]
+yields comparable results, demonstrating our framework’s flex-
+ibility. Conversely, utilizing X-codec2 [44] leads to a clear per-
+formance decay, which can be attributed to its large codebook
+size that challenges the ability of LM. We also examine the
+weighting factorαvalues in (4) during S1 stage, as illustrated in
+Fig. 2. Whenαis too low, the optimization is dominated by the
+DPO loss, leading to very high OVRL but a severe degradation
+in SIM, which reflects a mode collapse. Therefore, we choose
+α= 0.4to balance perceptual quality and speaker similarity.
+4. CONCLUSION
+In this work, we proposed UniSE, a unified framework for SE
+that integrates SR, TSE, and SS tasks. UniSE leverages con-
+tinuous speech features as conditions to generate discrete tar-
+get tokens via AR modeling. The use of task-specific tokens
+enables seamless switching and combination of multiple oper-
+ational modes within a single model. We further introduced a
+PRL fine-tuning strategy for coarse-to-fine optimization, align-
+ing model generation with human perception. Extensive results
+show that our UniSE achieves competitive performance within
+each benchmark, verifying the effectiveness of decoder-only
+AR LM framework in unifying SE tasks. However, the pro-
+posed method faces limitations in strict streaming due to full-
+utterance conditioning and inferior decoding efficiency relative
+to NAR, posing worthy directions for future improvement.
+1787
+5. References
+[1] H. Liu, Q. Kong, Q. Tian, Y . Zhao, D. Wang,et al., “V oicefixer:
+Toward general speech restoration with neural vocoder,”arXiv
+preprint arXiv:2109.13731, 2021.
+[2] J. Serr `a, S. Pascual, J. Pons, R. O. Araz, and D. Scaini, “Universal
+speech enhancement with score-based diffusion,”arXiv preprint
+arXiv:2206.03065, 2022.
+[3] Y . Luo and N. Mesgarani, “Conv-TasNet: Surpassing ideal time-
+frequency magnitude masking for speech separation,”IEEE/ACM
+Trans. Audio, Speech, Lang. Process., vol. 27, no. 8, pp. 1256–
+1266, 2019.
+[4] S. Abdulatif, R.-Z. Cao, and B. Yang, “CMGAN: Conformer-
+based metric-gan for monaural speech enhancement,”IEEE/ACM
+Trans. Audio, Speech, Lang. Process., vol. 32, pp. 2477–2493,
+2024.
+[5] Q. Team, “Qwen2 technical report,”arXiv preprint
+arXiv:2407.10671, 2024.
+[6] K. Tian, Y . Jiang, Z. Yuan, B. Peng, and L. Wang,
+“Visual autoregressive modeling: Scalable image gen-
+eration via next-scale prediction,” inProc. NeurIPS,
+vol. 37, 2024, pp. 84 839–84 865. [Online]. Avail-
+able: https://proceedings.neurips.cc/paper files/paper/2024/file/
+9a24e284b187f662681440ba15c416fb-Paper-Conference.pdf
+[7] A. Vyas, B. Shi, M. Le, A. Tjandra, Y .-C. Wu,et al., “Audiobox:
+Unified audio generation with natural language prompts,”arXiv
+preprint arXiv:2312.15821, 2023.
+[8] X. Wang, M. Jiang, Z. Ma, Z. Zhang, S. Liu,et al., “Spark-TTS:
+An efficient llm-based text-to-speech model with single-stream
+decoupled speech tokens,”arXiv preprin

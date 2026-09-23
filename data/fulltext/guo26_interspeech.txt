@@ -1,0 +1,492 @@
+GLAD: Global-Local Aware Dynamic Mixture-of-Experts for Multi-Talker
+ASR
+Yujie Guo ID 1, Jiaming Zhou ID 1, Yuhang Jia ID 1, Shiwan Zhao ID 1, Yong Qin ID 1,2,∗∗
+1 TMCC, College of Computer Science, Nankai University, Tianjin, China
+2 Academy for Advanced Interdisciplinary Studies, Nankai University, Tianjin, China
+guoyujie02@mail.nankai.edu.cn, qinyong@nankai.edu.cn
+Abstract
+End-to-end multi-talker automatic speech recognition
+(MTASR) faces significant challenges in accurately tran-
+scribing overlapping speech. A critical bottleneck is that
+speaker-specific acoustic characteristics, which are essential
+for distinguishing overlapping speech, are often diluted in deep
+network layers. To address this, we propose the Global-Local
+Aware Dynamic Mixture-of-Experts (GLAD) architecture.
+GLAD introduces a novel routing mechanism that dynam-
+ically fuses speaker-aware global context with fine-grained
+local acoustic details to adaptively guide expert selection.
+Experiments on the LibriSpeechMix and CH109 datasets
+demonstrate that GLAD significantly outperforms existing
+Serialized Output Training (SOT)-based MTASR approaches,
+exhibiting exceptional robustness in challenging, high-overlap
+scenarios. To the best of our knowledge, this is the first work to
+apply a global-local fusion MoE strategy to MTASR.
+Index Terms: multi-talker ASR, mixture of experts, cocktail
+party problem, dynamic routing
+1. Introduction
+Multi-talker automatic speech recognition (MTASR) represents
+a critical challenge in speech processing, requiring models to
+simultaneously decode overlapping utterances from multiple
+speakers in complex acoustic environments. This capability
+is essential for practical applications including meeting tran-
+scription and multi-party dialogue analysis, where speakers fre-
+quently interrupt or talk simultaneously.
+Current approaches to MTASR can be broadly catego-
+rized into two paradigms. Single-input multiple-output (SIMO)
+methods [1, 2, 3] explicitly separate mixed speech into speaker-
+specific branches before transcription, typically employing per-
+mutation invariant training (PIT) [4, 5], which incurs additional
+computational cost. To improve efficiency, heuristic error as-
+signment training (HEAT) [6, 7] applies the Hungarian algo-
+rithm for optimal permutation assignment. However, SIMO
+methods assume a fixed number of speakers and require explicit
+separation, limiting their applicability in real-world scenarios
+with unknown or variable speaker counts.
+Alternatively, single-input single-output (SISO) models [8,
+9, 10, 11, 12] adopt serialized output training (SOT) to im-
+plicitly handle speaker separation via attention, producing uni-
+fied transcription sequences with speaker-delimiter tokens. This
+paradigm offers greater flexibility than SIMO, as it does not re-
+quire predefined speaker counts and can naturally handle vary-
+ing numbers of speakers. Recent works have significantly ad-
+vanced SOT-based MTASR: MT-LLM [13] integrates large lan-
+**indicates the corresponding author.
+guage models to understand multi-talker speech; SACTC [14]
+and SD-CTC [15] employ enhanced Connectionist Temporal
+Classification for explicit speech separation within the encoder;
+and CSE [16] incorporates SIMO principles by employing a
+dual-branch encoder for explicit feature disentanglement.
+To further enhance performance in complex overlapping
+scenarios, explicit speaker modeling has proven essential [17,
+18]. For example, Self-Speaker Adaptation (SSA) [18] lever-
+ages speaker activity signals obtained from an auxiliary diariza-
+tion model [19] to inject speaker-specific kernels into the en-
+coder. However, its reliance on an external diarization system
+for speaker activity estimation, together with its multi-instance
+inference design, where one model instance is deployed per
+speaker, introduces additional computational overhead and lim-
+its overall efficiency.
+In parallel, the Mixture-of-Experts (MoE) paradigm [20,
+21] offers a promising direction for handling input variability
+via conditional computation. MoE has shown strong perfor-
+mance in ASR [22, 23, 24, 25]. Ideally, MoE is well-suited
+for MTASR as it enables the dynamic allocation of specialized
+experts to handle varying numbers of speakers and different de-
+grees of overlap. However, the application of MoE to MTASR
+remains largely unexplored, and a direct application faces a crit-
+ical challenge: standard MoE routers typically rely on local
+layer inputs. In deep network layers, speaker-specific acoustic
+characteristics, which are essential for distinguishing speaker
+identity, are often diluted. This dilution makes it difficult for
+local routers to assign experts based on the speaker.
+To bridge this gap, we proposeGlobal-LocalAware
+Dynamic Mixture-of-Experts (GLAD). Motivated by the fact
+that shallow acoustic features inherently preserve rich speaker
+cues, we introduce the global routers that processes these shal-
+low representations to capture speaker-aware context. Simulta-
+neously, local routers model layer-specific information derived
+from intermediate encoder layers. A dynamic fusion module
+then adaptively combines these signals per frame, guiding ex-
+pert selection with both global speaker cues and local acoustic
+details. We apply GLAD to the SOT paradigm, resulting in
+GLAD-SOT. To facilitate future research, our code and data are
+publicly available1. Our main contributions are as follows:
+• To the best of our knowledge, this work represents the first
+application of MoE architectures in MTASR. Extensive ex-
+periments on LibriSpeechMix and CH109 demonstrate that
+our method outperforms strong SOT-based baselines, espe-
+cially in challenging MTASR scenarios.
+• We propose GLAD, a novel mechanism that dynamically
+fuses speaker-aware global context from shallow acoustic
+features with fine-grained local features. This dual-path rout-
+1https://github.com/NKU-HLT/GLAD
+306
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1022
+Dynamic Fusion
+𝑿𝒊𝒏
+𝜷 (B,T,2)
+Linear
+P (B,T,N)
+𝑷𝒈𝒍𝒐𝒃𝒂𝒍 (B,T,N)
+
+𝑷𝒍𝒐𝒄𝒂𝒍(B,T,N)
+
++
+(a) (b) (c)
+Global
+Encoder
+X𝒈𝒍𝒐𝒃𝒂𝒍(B,T,D)
+Feed Forward
+Multi-Head
+Self Attention
++
+Feed Forward
+𝑿S
++
++
+Layer Norm
+L × Conformer 
+Blocks
+Convolution 
+Module
++
+Convolution Frontend
+𝑺𝒑𝒆𝒆𝒄𝒉
+Local Gating
+Router
+P (B,T,N)
+𝑷𝒍𝒐𝒄𝒂𝒍(B,T,N)
+𝑿𝒊𝒏
+𝑨𝟏
+𝑩𝟏
+𝑨𝟐
+𝑩𝟐
+𝑨𝑵
+𝑩𝑵
+……
+Low-rank Experts
+Shared
+Linear
+Dynamic 
+Fusion
+X𝒈𝒍𝒐𝒃𝒂𝒍 (B,T,D)
++
+×
+𝒀𝒐𝒖𝒕
+× ×
+𝑷𝒈𝒍𝒐𝒃𝒂𝒍 (B,T,N)
+Global Gating
+Router
+Figure 1:Overview of the proposed GLAD-SOT architecture. (a) A global linear encoder transforms features from the convolution
+frontend into a shared global representation, which is broadcast to each MoLE layer. (b) Each MoLE layer derives global weights from
+the shared global representation and integrates them with local signals to coordinate low-rank experts. (c) The global-local aware
+dynamic fusion module adaptively fuses weights to guide expert selection.
+ing strategy guides experts to disentangle overlapping speech
+by leveraging both speaker identity cues and phonetic details.
+• We provide comprehensive ablation studies to validate the ef-
+ficacy of our design. Our analysis reveals that incorporating
+global acoustic features is critical for speaker-aware expert
+routing, particularly in high-overlap scenarios where distin-
+guishing speaker identity is most challenging.
+2. Our Method
+2.1. Serialized Output Training for Multi-talker ASR
+Serialized Output Training (SOT) [8] offers a scalable solution
+for MTASR by using a single decoder to handle varying speaker
+counts, contrasting with conventional approaches that require
+multiple output branches. For multi-talker utterances, the SOT
+model is trained to predict a unified sequence concatenating all
+speakers’ transcriptions, separated by a token< sc >, such as
+‘text1<sc>text2...’. In our experiments, the transcriptions
+follow the chronological order of speakers.
+2.2. Mixture of Low-rank Experts Integration in SOT
+The Mixture-of-Experts (MoE) paradigm has proven effective
+in scaling neural networks by distributing computation across
+specialized modules. Building upon this concept, the Mixture
+of Low-Rank Experts (MoLE) framework substitutes traditional
+dense expert layers with low-rank decomposition modules. This
+design leverages the parameter-efficient structure of LoRA [26]
+to enhance scalability while maintaining model capacity.
+In our approach, we integrate MoLE with SOT by replac-
+ing all linear layers in the Conformer encoder [27] with MoLE
+modules. Each layer containsNlow-rank experts operating
+in parallel with a shared linear transformation. Given an input
+X∈R din, the MoLE layer output is formulated as:
+Yout =W LX+ α
+r
+PN
+i=1PiBiAiX+b,(1)
+whereW L andbdenote the shared linear layer weight and
+bias. Each low-rank expert is parameterized by low-rank ma-
+tricesA i ∈R r×din andB i ∈R dout×r with rankr≪
+min(din,d out), scaled by a factorα. The expert weightP i is
+computed via a gating mechanism combining global and local
+routing (see Sections 2.3 and 2.4).
+2.3. Gating Router Design
+In MTASR, speaker-related information is critical for distin-
+guishing overlapping speech. As shallow acoustic features con-
+tain rich speaker characteristics, we propose a global encoder
+that operates on the speech featuresX S∈R T×d h extracted by
+the convolution frontend. Unlike local routers that rely on in-
+termediate representations, the global routers captures speaker-
+aware context from the shallow features.
+As shown in Fig. 1(a) and Fig. 1(b), we first employ a
+global linear encoder to mapX S into the global representation
+Xglobal =X SWenc. This representation is then broadcast to
+each MoLE layer to independently compute the layer-specific
+global expert distributionP global∈R T×N :
+Pglobal =softmax(KeepTopK(X globalWglobal,K)),(2)
+whereW enc andW global are weight matrices for the global
+encoder and router, respectively, andNis the expert count.
+The KeepTopK(·,K)function preserves only the topKval-
+ues while setting others to−∞. This enables the router to
+derive speaker-aware weights from shared features, providing
+guidance grounded in global context.
+While the global router leverages the global representation
+to capture speaker context, the local router focuses on fine-
+grained acoustic patterns. Specifically, it computes local expert
+probabilitiesP local∈R T×N from the intermediate inputX in:
+Plocal =softmax(KeepTopK(X inWlocal,K)),(3)
+whereW local∈R dh×N is the weight matrix of the local router.
+2.4. Global-Local Aware Dynamic Fusion
+To harness the complementary strengths of the speaker-aware
+global context and fine-grained local features, we introduce a
+Global-Local Aware Dynamic Fusion mechanism. It dynam-
+ically balances the routing signals from both streams at each
+frame, guiding expert activation with a fused perspective.
+As shown in Fig. 1(c), we employ a dynamic fusion module
+to generate gating weights based on the local inputX in:
+β=softmax(X inWf usion),(4)
+307
+whereW f usion ∈R dh×2 is a trainable fusion matrix. The
+outputβ∈R T×2 is decomposed intoβ g andβ l, representing
+the dynamic fusion weights for global and local distributions,
+respectively. The final probability for thei-th expert, denoted
+asP i, is then computed via weighted summation:
+Pi =β g⊙P global,i +β l⊙P local,i,(5)
+where⊙denotes element-wise multiplication. This dynamic
+fusion allows each expert to adaptively leverage global speaker
+cues and local acoustic details for more effective routing.
+2.5. Training Loss
+To prevent routing collapse and ensure expert specialization,
+we incorporate the auxiliary load-balancing loss as proposed in
+Switch Transformer [28]:
+Lbal =γN
+NX
+i=1
+fiPi,(6)
+wheref i denotes the fraction of tokens routed to expertivia
+the top-kmechanism, and Pi represents the mean routing prob-
+ability for that expert across the batch. In our experiments, the
+balancing weightγis set to 0.01.
+The total training loss is then formulated as the sum of the
+ASR loss and the load-balancing term:
+L=L ASR +L bal (7)
+3. Experimental Setup
+3.1. Dataset
+We conduct experiments on LibriSpeechMix (LSM) [8], a stan-
+dard MTASR benchmark derived from LibriSpeech [29] via
+simulated overlapping speech. Following prior work [8, 16, 14],
+two-speaker mixtures are created by randomly pairing train-
+ing utterances with random temporal offsets. The final train-
+ing set combines randomly sampled subsets of the two-speaker
+mixtures and original single-speaker utterances, totaling 1.35k
+hours (0.69k hours 1-speaker and 0.66k hours 2-speaker). For
+evaluation, we follow [16, 14] and group test samples by over-
+lap ratio (overlap duration over total length) into low(0,0.2],
+medium(0.2,0.5], and high(0.5,1.0]categories, enabling sys-
+tematic robustness analysis under varying overlap conditions.
+For evaluation on real-world data, we use CH109, a two-
+speaker subset comprising 109 sessions from the 120-session
+Callhome American English Speech (CHAES) corpus 2. To fa-
+cilitate model adaptation to real-world acoustic and conversa-
+tional conditions, we construct the CH11-mix dataset using the
+remaining 11 CHAES sessions.
+3.2. Model Settings
+We implement our Conformer-based models using ESP-
+net2 [30]. The base architecture comprises a Conformer en-
+coder and a 6-block Transformer decoder, both utilizing 4-head
+self-attention with 256 hidden units. The Macaron-style en-
+coder blocks have an FFN dimension of 1024, while the decoder
+uses 2048. In our 12-block GLAD-SOT, all encoder linear lay-
+ers are replaced by MoLE modules containing 3 experts (r=
+8,α= 8). To ensure fair evaluation under comparable parame-
+ter constraints, we reproduce several strong Conformer-based
+2https://catalog.ldc.upenn.edu/LDC97S42
+baselines using their original optimal hyperparameters: SOT
+(14 encoder blocks), CSE-SOT (12 blocks), and SOT+SACTC
+(12- and 13-block variants).
+3.3. Training Settings and Metrics
+Training Setup: All models are trained for 50 epochs in bfloat16
+mixed precision on 8 NVIDIA GeForce RTX 3090 GPUs using
+the Adam optimizer (lr= 5e −4, 25k warm-up steps). The final
+models are obtained by averaging the top-10 checkpoints se-
+lected based on validation performance on dev-clean-2mix set.
+Evaluation Metrics: We report standard Word Error Rate
+(WER) for single-talker tasks. For multi-talker scenarios, we
+adopt Permutation-Invariant WER (PI-WER) [8]. However,
+given the uneven distribution of overlap levels in the test set,
+PI-WER may not fully reflect robustness. Therefore, follow-
+ing [16, 14], we utilize Overlap-Aware WER (OA-WER) to pro-
+vide a balanced evaluation across varying overlap conditions.
+Experimental Design: In our primary experiments, models
+are trained on single- and two-speaker data. We evaluate them
+on LSM-1/2mix and assess generalization on LSM-3mix.
+4. Results and Discussion
+4.1. Performance of GLAD-SOT
+In Table 1 (S1–S5), we compare GLAD-SOT with several
+strong SOT-based baselines. GLAD-SOT achieves the best
+overall performance across all evaluated scenarios.
+In the LSM-2mix setting, CSE-SOT (S2) achieves competi-
+tive performance due to its dual-branch architecture that explic-
+itly separates speakers. However, its two-branch design limits
+scalability, leading to performance degradation in LSM-3mix-
+mid/high scenarios. In contrast, GLAD-SOT (S5) not only
+further improves performance in two-speaker settings but also
+maintains strong results in three-speaker scenarios. This sug-
+gests that leveraging global contextual information to guide dy-
+namic expert routing provides greater flexibility than explicit
+branch separation.
+In LSM-3mix evaluations, SOT+SACTC (S3, S4) demon-
+strates improved generalization by encouraging the encoder to
+disentangle overlapping speech into single-speaker represen-
+tations. Nevertheless, GLAD-SOT consistently outperforms
+these methods, particularly under high-overlap conditions. Its
+superior performance on LSM-3mix indicates that the proposed
+GLAD framework effectively enhances robustness and general-
+ization in complex MTASR scenarios.
+4.2. Ablation Study
+Impact of global information: To investigate the role of global
+routing, we compare S5 and S6. In S6, we ablate the global
+encoder and remove the global context from the MoLE mod-
+ules, relying solely on local information. As shown in Table 1,
+S5 significantly outperforms S6, confirming the necessity of
+the global context. This improvement stems from the global
+router’s ability to capture speaker-aware characteristics from the
+speech signal and direct experts to focus on distinct speakers.
+Effect of Global-Local Aware Dynamic Fusion: To eval-
+uate the necessity of the dynamic fusion module, we compare
+configurations S5 and S7. In S7, the final expert probabilities
+are computed through an unweighted static summation of the
+global and local weights (P=P local +P global). This fixed
+combination yields inferior performance, particularly on the
+LSM-2/3mix-low set, due to its inability to adaptively balance
+308
+Table 1:WER(%) Results on Librispeech, LibrispeechMix-2mix and LibrispeechMix-3mix. All models are trained on single-talker and
+two-talker data. The best results are highlighted in bold and the second-best results are indicated with an underline.
+System Method Parm.(M)
+Librispeech LibrispeechMix-2mix LibrispeechMix-3mix (Generalization)
+Dev Test Overall Test(Conditional) Overall Test(Conditional)
+Dev Test low mid high OA-WER Dev Test low mid high OA-WER
+S1 SOT [8] 36.07 5.3 6.2 7.9 8.1 8.0 7.2 10.7 8.6 23.9 23.5 23.6 21.9 26.9 24.1
+S2 CSE-SOT [16] 38.90 4.3 4.5 7.5 7.3 6.3 7.3 10.6 8.1 23.8 24.2 18.223.6 31.5 24.4
+S3 SOT+SACTC-12 [14] 34.18 4.1 4.4 8.0 7.8 6.6 7.6 11.6 8.6 22.8 22.6 18.7 21.9 28.2 22.9
+S4 SOT+SACTC-13 [14] 35.77 4.1 4.3 7.8 7.7 6.7 7.6 10.5 8.3 21.9 22.2 19.1 21.0 27.8 22.6
+S5 GLAD-SOT 35.31 3.7 4.1 7.2 6.8 5.7 6.9 9.7 7.4 21.7 21.1 18.2 20.0 26.3 21.5
+S6 w/o global router 35.09 4.1 4.5 8.3 8.7 8.4 7.8 11.6 9.3 24.6 24.5 21.8 23.6 29.1 24.8
+S7 w/o dynamic fusion 35.23 3.9 4.3 7.27.5 6.8 7.1 10.3 8.1 21.722.0 19.7 21.1 26.4 22.4
+S8 w GLAD in FFN 34.63 4.3 4.6 8.5 10.0 9.1 9.1 14.9 11.0 23.1 24.5 23.5 23.8 27.1 24.8
+S9 w GLAD in Att 33.65 4.2 4.5 9.6 11.2 12.6 9.6 11.1 11.1 24.4 24.2 21.4 23.3 28.9 24.5
+Table 2:WER (%) results on the CH109. The symbol∗indi-
+cates that the model is fine-tuned on the CH11-mix dataset for
+5 epochs. The best results are highlighted in bold.
+Method CH109
+1-speaker 2-speaker Total Average
+SOT∗ [8] 40.8 52.7 45.4 46.8
+CSE-SOT∗ [16] 36.9 50.8 40.0 43.9
+SOT+SACTC-13∗ [14] 33.0 50.7 37.4 41.9
+GLAD-SOT∗ 32.5 48.9 36.6 40.7
+the two information streams. Specifically, while fine-grained lo-
+cal acoustic details are crucial for low-overlap scenarios, global
+speaker context becomes more critical as the overlap ratio in-
+creases. In contrast, the dynamic fusion mechanism in S5 adap-
+tively adjusts the routing weights based on both streams, achiev-
+ing robust performance across diverse overlap conditions.
+Impact of GLAD placement: We compare S5, S8, and
+S9 to study where GLAD is most effective. S8 and S9 apply
+GLAD to FFN and attention modules, respectively, while S5
+applies it to both. As Table 1 shows, S8 outperforms S9 in
+LSM-2mix-low/mid scenarios, indicating the FFN’s strength in
+feature transformation. Conversely, S9 performs better in LSM-
+2mix-high and LSM-3mix-low/mid, underscoring the role of
+attention in disentangling overlapping speech. However, S9’s
+advantage diminishes in the challenging zero-shot 3-mix-high
+scenario, suggesting that attention alone is insufficient under
+extreme acoustic complexity. Finally, S5 achieves the lowest
+WER, confirming that the synergy between attention-driven dis-
+entanglement and FFN-based transformation provides the most
+robust and complementary improvements.
+4.3. Performance in Real World
+To assess the model’s performance in real-world scenarios, we
+fine-tune the SOT [8], CSE-SOT [16], SACTC-13 [14], and our
+GLAD-SOT models (from Table 1) on the CH11-mix dataset
+for 5 epochs and evaluate them on the CH109 set.
+As shown in Table 2, GLAD-SOT achieves the best perfor-
+mance in both 1-speaker and 2-speaker scenarios. Notably, in
+the challenging 2-speaker overlapping condition, GLAD-SOT
+significantly outperforms all baseline models, demonstrating its
+strong robustness and great potential for practical deployment.
+4.4. Visual Analysis
+To investigate the respective contributions of global and local
+information in expert selection, we visualize the global fusion
+weight (β g) from Eq. 5 at encoder layers 1, 8, and 12 un-
+Low Mid High0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+Global Weight ( g)
+0.12
+0.20
+0.29
+0.02
+0.05
+0.12
+0.07
+0.09
+0.13
+Layer 1
+Layer 8
+Layer 12
+(a)LSM-test-2mix
+Low Mid High0.0
+0.1
+0.2
+0.3
+Global Weight ( g)
+0.14
+0.22
+0.31
+0.02
+0.05
+0.12
+0.05
+0.07 0.10
+Layer 1
+Layer 8
+Layer 12 (b)LSM-test-3mix
+Figure 2:Visualization of the average global fusion weight (βg)
+at different encoder layers across varying overlap scenarios.
+der varying overlap conditions on LSM-test-2mix and 3mix.
+Specifically, we analyze theβ g values from the MoLE mod-
+ules substituted for the attention output projection layers (WO),
+as 4.2 shows that attention mechanism is crucial for separate
+overlap speech. To obtain a representative metric, we average
+the frame-levelβ g values across the test sets using mean pool-
+ing. Given the constraint thatβ g +β l = 1, we focus our discus-
+sion onβ g to characterize the dynamic balance between global
+and local streams.
+Fig. 2 demonstrates consistent trends across both LSM-
+2mix and LSM-3mix. First,β g increases with the overlap ra-
+tio, supporting our hypothesis that global speaker-specific fea-
+tures are critical for distinguishing identities in highly mixed
+audio. Second, the layer-wise distribution ofβ g reveals a nu-
+anced pattern of information utilization. At Layer 1,β g reaches
+its highest value, indicating that shallow layers rely heavily on
+global speaker cues to initiate separation from fully mixed sig-
+nals. At the intermediate Layer 8,β g decreases, suggesting that
+partial disentanglement by earlier layers reduces the immediate
+reliance on global anchors. Interestingly, at Layer 12,β g in-
+creases again compared to Layer 8. This rebound implies that
+speaker-specific information may become attenuated in deeper
+layers, requiring renewed global context to preserve speaker
+identity and stabilize expert routing.
+5. Conclusions
+In this paper, we propose GLAD, a novel approach that lever-
+ages Mixture of low-rank Experts to address the multi-talker
+ASR task by dynamically integrating global and local informa-
+tion. Extensive experiments on LibriSpeechMix and CH109
+demonstrate that our GLAD mechanism significantly outper-
+forms existing SOT-based MTASR methods, especially in chal-
+lenging multi-talker scenarios.
+309
+6. Acknowledgments
+This work was supported by the National Natural Science Foun-
+dation of China (62271270).
+7. Generative AI Use Disclosure
+Generative AI was used only for language editing and readabil-
+ity improvement. All generated content was reviewed by the
+authors, who take full responsibility for the work.

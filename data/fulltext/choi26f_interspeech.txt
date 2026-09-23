@@ -1,0 +1,470 @@
+IPA-Guided Dual Transcription for Data-Centric Speech Corpus Refinement
+Jeong-Ju Choi1,∗, Young-Ik Kim1,†,∗, Jin NamGoong 1, Jaeyeon Jang1,2,∗∗
+1 AI Lab, DenComm, Seoul, Republic of Korea
+2 Department of Data Science, The Catholic University of Korea, Bucheon, Republic of Korea
+jeongju.choi@dencomm.ai, youngik.kim@llsollu.com, jini.namgoong@dencomm.ai,
+jaeyeon.jang@catholic.ac.kr
+Abstract
+High-quality speech corpora require consistent alignment
+between spoken and written text, yet the many-to-many map-
+ping between them introduces ambiguity, leading to transcrip-
+tion inconsistencies that ultimately degrade performance on
+downstream tasks. To mitigate this inherent ambiguity, we pro-
+pose a data-centric framework that leverages IPA-guided dual
+transcription to achieve consistent spoken–written alignment.
+The framework combines (1) a phoneme intermediate condi-
+tional speech-to-text model that outputs both IPA and ortho-
+graphic text, and (2) a fine-tuned large language model that gen-
+erates consistent spoken–written pairs from orthographic and
+phonetic inputs. By grounding normalization in phonetic real-
+izations rather than text alone, the framework enables iterative
+refinement of noisy or domain-specific corpora. Experiments
+show that IPA-guided dual transcription yields substantial per-
+formance improvements in text normalization and domain ASR
+through corpus refinement.
+Index Terms: speech recognition, phoneme intermediate con-
+ditioning, dual text transcription, large language model
+1. Introduction
+The development of robust speech recognition and synthesis
+systems depends on high-quality speech corpora with consistent
+alignment between what is spoken and what is written. Con-
+structing such corpora is difficult because speech and text are
+linked by a complex many-to-many mapping: the same written
+form can be realized in multiple spoken ways, and the same pro-
+nunciation can be written in multiple ways. This spoken–written
+ambiguity degrades both transcription quality and downstream
+model performance, and complicates the curation and refine-
+ment of large-scale speech data. We therefore frame the central
+problem as data-centric speech corpus refinement: obtaining re-
+liable spoken and written text pairs so that corpora can be im-
+proved for recognition and synthesis.
+Speech data require two complementary representations:
+(1) spoken text, which captures the actual phonetic realization
+(e.g., using the International Phonetic Alphabet, IPA), and (2)
+written text, the standard orthographic form used for human
+reading and system I/O. For instance, the written form “01/05”
+may be spoken as “January fifth”, “zero one slash zero five”,
+or “the fifth of January” depending on context; conversely, the
+pronunciation/pli:z/may be written as “please”, “pls.”, or “plz.”
+Resolving this ambiguity is essential not only for text normal-
+*These authors contributed equally.
+**indicates the corresponding author.
+†Young-Ik Kim is now with LLSOLLU, Seoul, Republic of Korea;
+this work was performed while at DenComm.
+ization (TN) but also for building and refining speech corpora
+in a consistent, repeatable way.
+Prior work has addressed this problem in different ways.
+Modern end-to-end ASR uses hierarchical encoders from
+speech through phoneme-level to word-level representations
+[1], and intermediate conditioning with subword or phoneme
+targets has been shown to improve ASR performance [2, 3, 4].
+TN has been tackled with rule-based weighted finite-state trans-
+ducers (WFSTs), WFST+LM scoring [5], and more recently
+with large language models (LLMs) [6], which improve over
+text-only TN but still operate without direct access to how the
+input was actually pronounced. Ihoriet al.[7] proposed an
+speech-to-text (STT) model that outputs both spoken and writ-
+ten text via joint training and dual-text fine-tuning, demonstrat-
+ing gains over cascaded systems; however, that pipeline does
+not feedphoneticoutput from the recognizer into a downstream
+model for disambiguation. A key distinction of our work is
+that we use IPA produced by the STT system as direct input
+to an LLM for spoken–written mapping. That is, the recog-
+nizer’s phonetic stream is not only an auxiliary output but the
+primary conditioning signal for the LLM, enabling disambigua-
+tion that text-only TN cannot achieve and supporting a repeat-
+able pipeline for corpus refinement.
+In this paper we present a data-centric framework for
+speech corpus refinement that resolves spoken–written ambi-
+guity through IPA-guided dual transcription. The goal is high-
+quality, consistent spoken–written pairs for corpus construction
+and iterative data–model improvement; ASR, TN, and the LLM
+are components that serve this goal. We combine (1) a phoneme
+intermediate conditional (PIC) STT model that outputs both IPA
+and orthographic text from audio, and (2) an LLM fine-tuned on
+orthographic and phonetic inputs to produce consistent spoken–
+written pairs. By grounding normalization in actual phonetic
+realizations from the recognizer rather than in text alone, the
+framework supports iterative refinement of noisy or domain-
+specific corpora.
+Our main contributions are:
+• We design an STT model that generates both IPA and written
+text from a single audio input via an intermediate phoneme-
+level connectionist temporal classification (CTC) head. This
+provides aligned phonetic and orthographic streams in one
+forward pass, which the downstream LLM uses for disam-
+biguation.
+• We fine-tune a LLM on orthographic and IPA inputs to pro-
+duce spoken–written pairs. Conditioning the LLM on STT-
+derived IPA (rather than text only) is the key differentiator
+and enables context-aware normalization and consistent dual
+representations for corpus curation.
+• We validate the framework in two settings: English TN (digit
+3502
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2221
+Multi-head
+attention
+Add & Norm
+Feed-forward
+Add & Norm
+layer N
+...
+layer K
+...
+layer 1
+Encoder layer stack
+PIC Audio Encoder
+Audio input
+Subword
+CTC
+Phoneme
+CTC
+Text
+I just bought an
+RTX 4090
+Phoneme (IPA)
+aI dZ2st bO:t æn
+A:r ti: Eks fO:r nInti
+CTC Decoder Outputs
+Gemma-3-27B
+LORA Adapter
+LLM
+SFT:
+raw text + IPA
+→outputs
+GRPO:
+reward-guided
+refinement
+training time update
+User prompt:
+- Use IPA to generate spoken form.
+- Normalize English written text.
+- Keep other words unchanged.
+I just bought an
+(RTX 4090)/
+(R T X forty ninety)
+Dual Text
+Output
+raw text
+IPA
+Figure 1:Proposed dual transcription system integrating a phoneme intermediate conditional audio encoder and a large language
+model.
+error reduction on Google TN dataset) and Korean domain-
+specific corpus construction from YouTube. Results show
+that resolving spoken–written ambiguity through IPA-guided
+dual transcription yields large gains in domain test sets and
+supports improvement of speech data quality.
+2. Methods
+2.1. Phoneme Intermediate Conditional Audio Encoder
+This section presents our proposed PIC-audio encoder (AE),
+which enables simultaneous learning of both IPA phoneme se-
+quences and written text from a single audio input. Figure 1
+illustrates the architecture.
+We build on a standard Transformer-based AE withNlay-
+ers (self-attention and feed-forward). For the i-th layer, the out-
+put representationX (i) is computed as follows:
+˜X(i) =X (i−1) +SelfAttention(X (i−1))(1)
+X(i) = ˜X(i) +FeedForward( ˜X(i)).(2)
+And the final representationX (N) is aligned to a target se-
+quence via CTC loss [8]:
+LCTC(Y|X (N) ) =−logP CTC(Y|X (N) ).(3)
+The PIC-AE adds anintermediateCTC head at layerk
+(1< k < N), trained to predict IPA phoneme sequences. And
+the phoneme posteriorA (k) =Softmax(Linear( ˜X(k)))is pro-
+jected and injected into the representation at layerk, which then
+feeds the remaining layers:
+˜˜X(k) = ˜X(k) +FeedForward( ˜X(k))(4)
+X(k) = ˜˜X(k) +Linear(A (k)).(5)
+The encoder thus jointly learns (i) phoneme-level output at the
+intermediate stage and (ii) subword-level (orthographic) output
+at the final layer. The training objective combines both CTC
+losses with equal weight:
+Ltotal =L phn
+CTC(Yphn|X (k)) +L swd
+CTC(Yswd|X (N) ),(6)
+whereY phn andY swd denote IPA phoneme and subword target
+sequences, respectively.
+Our AE is based on a Conformer architecture [9]. Subword
+targets are obtained from written text via SentencePiece [10];
+IPA targets are obtained from spoken text via the Phonemizer
+[11]. The model thus produces aligned IPA and orthographic
+streams from one forward pass, which the downstream LLM
+uses for dual transcription.
+2.2. Dual Text Generation with LLM
+The second stage of our framework leverages a LLM to gen-
+erate dual textual representations—a spoken-normalized tran-
+scription and an inverse-normalized transcription —using the
+orthographic and phonetic outputs from the PIC-AE. Whereas
+traditional TN focuses solely on written-to-spoken mapping,
+our approach extends this paradigm to a bidirectional frame-
+work. Such duality is essential for constructing large-scale cor-
+pora, ensuring consistent alignment between spoken and written
+text for both ASR training and clean corpus curation.
+Given a raw orthographic sequenceXraw and its aligned IPA
+sequenceX IPA, the objective of the LLM is to generate a nor-
+malized output sequenceY:
+ˆY= arg max
+Y
+P(Y|X raw,X IPA;θ).(7)
+Conditioned on the task instruction, the model outputs a
+dual text representationYthat always contains both the writ-
+ten and spoken forms, denoted as (Written)/(Spoken). In this
+paper, we primarily evaluate the Written→Spoken direction,
+while the same framework can also be prompted for the in-
+verse Spoken→Written task using the same dual-text format.
+We adopt Gemma-3 27B [12, 13] as the backbone model and
+fine-tune it with the Unsloth framework [14], which supports
+efficient LoRA adaptation [15] under 4-bit quantization. While
+prompting-only approaches often fail on ambiguous cases (e.g.,
+dates, numbers) and produce unstable outputs, our two-stage
+fine-tuning strategy mitigates this: supervised fine-tuning (SFT)
+aligns the model with paired raw-text/IPA examples, while
+group relative policy optimization (GRPO) [16] improves ro-
+bustness through reward signals for format and content consis-
+tency. This combination yields more stable and deterministic
+behavior across numerically rich and context-sensitive expres-
+sions.
+A natural alternative is to apply an LLM as a text-only
+post-processor, e.g., by generative error correction or by con-
+text biasing with a domain lexicon to better handle numbers
+3503
+and proper nouns. Such approaches infer the intended (Writ-
+ten/Spoken) form primarily fromtextualevidence (surround-
+ing words, prompts, or bias terms) and therefore remain un-
+derdetermined when the same written token admits multiple
+spoken realizations (e.g., dates, digit groupings, acronyms) or
+when multiple spellings share similar context. Our approach is
+complementary: by conditioning the LLM on an IPA sequence
+predicted from the speech signal, we provide phonetic ground-
+ing that serves as an additional constraint on generation, al-
+lowing the model to use contextual reasoning while being an-
+chored to how the utterance was actually realized. In practice,
+IPA grounding can be combined with context biasing (e.g., pro-
+viding a domain term list) when both phonetic evidence and
+domain priors are beneficial.
+Each prompt explicitly conditions on both orthographic
+and phonetic inputs, ensuring unchanged tokens remain in-
+tact while IPA provides grounding for disambiguation. A rep-
+resentative prompt is illustrated in Figure 1. We enforce a
+fixed output schema and validate LLM generations with de-
+terministic parsing; unparseable outputs are conservatively dis-
+carded (or reverted) during corpus construction. This stage
+complements decoding-level robustness methods by performing
+context-aware spoken–written normalization anchored by IPA.
+Although our experiments emphasize Written→Spo-
+ken normalization, the same model can perform inverse TN.
+For instance, the spoken input “one four three zero” maps
+to the canonical written form “1430.” A representative am-
+biguous case is date interpretation:Input:“The meeting is on
+12/08.”Output:(12/08)/(December eighth) or (12/08)/(twelve
+oh eight). Similar cases include digits, currency, and acronyms.
+At training time, IPA sequences are obtained from phonem-
+izers; at inference time, they are generated by the PIC-AE (Sec-
+tion 2.1). This integration provides phonetic grounding without
+raw audio input. While our main experiments are in English, we
+further demonstrate multilingual applicability with Korean dual
+transcription in Section 3.2.
+3. Experiments
+3.1. English Text Normalization
+In this experiment, we compare our proposed dual transcrip-
+tion approach based on PIC-AEs for TN with existing state-
+of-the-art methods for converting written text to spoken text.
+The comparing methods include: (a) WFST: Traditional rule-
+based WFST approach [17], (b) WFST+LM: Enhanced WFST
+method with LM-based scoring [5], and (c) Duplex: A neural
+model for TN developed by NVIDIA [18]. For the experiments
+of these baseline models we used the NVIDIA NeMo open-
+source framework [19].
+Our proposed TN method employs the following experi-
+mental setup: STT Model Training: The STT model was trained
+on the LibriSpeech corpus [20] train dataset, with vocabulary
+sizes of subword units and IPA units are 8k and 125 respec-
+tively. The AE architecture consists of 2048 hidden units with
+an output dimension of 512. The model employs a total of
+N=12 Conformer layers, where the intermediate layer k=9 is
+trained to predict IPA sequences using CTC loss, while the fi-
+nal layer N=12 is trained to predict subword sequences using
+the same CTC loss formulation. LLM Fine-tuning: For SFT of
+the LLM, we utilized 10k randomly sampled instances from
+the GoogleTN train dataset [21]. LLM fine-tuning uses only
+text/IPA pairs (IPA from a phonemizer) and does not use any
+TTS-generated audio.
+For the test, we randomly extracted 1,000 samples from
+the GoogleTN test set. Since our method requires an acoustic
+realization to extract IPA, we synthesize evaluation speech us-
+ing a multi-speaker TTS system [22] with a VITS model [23]
+trained on VCTK [24]. Crucially, the TTS input is therefer-
+ence spoken formprovided by the dataset (ground-truth spo-
+ken normalization), not the ambiguous written input. We ran-
+domly sample one of 110 speakers per utterance to avoid single-
+speaker artifacts. We then obtain the IPA context by applying
+our STT model to these synthesized waveforms, yielding a pho-
+netic stream aligned with the (known) spoken realization.
+This protocol is intended as a controlled diagnostic eval-
+uation of whether phonetic grounding (via IPA) helps re-
+cover the correct normalization given an actual spoken real-
+ization; it is not meant to model real-world ASR variabil-
+ity. This approach was necessitated by the scarcity of pub-
+licly available TN datasets that include paired natural speech
+and their corresponding ground-truth spoken-written transcrip-
+tions. We will evaluate the same framework on naturally spo-
+ken TN data in future work. We employed four primary eval-
+uation metrics: (1) sentence-level accuracy (SA), measuring
+exact sentence-level recognition accuracy; (2) word error rate
+(WER), quantifying word-level recognition errors; (3) F1 score,
+evaluated at the token level, which measures the harmonic
+mean of precision and recall between generated and refer-
+ence text tokens. This balances the proportion of correctly
+generated tokens (precision) against the proportion of refer-
+ence tokens successfully captured (recall); and (4) digit error
+rate (DER), specifically measuring error rates for numerical
+expressions (digit category), which represent the most error-
+prone category in TN evaluation. For DER calculation, we clas-
+sified vocabulary items from the GoogleTN dataset contain-
+ing the following 9 semantic tags as numerical expressions:
+{”DATE”, ”CARDINAL”,”DECIMAL”, ”MONEY”, ”ORDI-
+NAL”, ”TIME”, ”DIGIT”, ”TELEPHONE”, ”FRACTION”}.
+Table 1:Experimental results of English text normalization on
+GoogleTN dataset.
+Method SA (↑) WER (↓) F1 (↑) DER (↓)
+(a) WFST 80.8 5.47 0.963 18.7
+(b) WFST+LM 79.6 6.12 0.959 19.6
+(c) Duplex 81.9 4.82 0.971 10.2
+(d) Proposed 88.7 2.73 0.981 4.7
+The experimental results presented in Table 1 demonstrate
+that our proposed TN method consistently outperforms all base-
+line approaches across all four evaluation metrics, including
+the best-performing baseline method (Duplex). Notably, com-
+pared to the Duplex method, our approach achieves a substan-
+tial 53.9% error reduction rate in the digit category, which ex-
+hibits the highest variation and complexity in TN tasks. This
+significant performance improvement can be attributed to the
+IPA information extracted from speech signals, which effec-
+tively resolves the inherent ambiguity in mapping written text to
+spoken text representations. By leveraging phonetic information
+directly derived from acoustic signals, our dual transcription ap-
+proach provides crucial disambiguation cues that are absent in
+text-only normalization methods.
+3504
+3.2. Korean Speech Corpus Construction for Dental Do-
+main Speech Recognition
+Speech recognition models typically exhibit degraded perfor-
+mance when applied to specialized domains that were not in-
+cluded in their pre-training data. To address this limitation, do-
+main adaptation through the construction of specialized speech
+corpora and subsequent fine-tuning of pre-trained models has
+proven to be an effective approach for performance improve-
+ment. To explore this, we focus on the dental domain, where
+publicly available speech data are extremely limited. In this
+work, we construct a domain-specific corpus to support adap-
+tation and evaluate the effectiveness of our proposed dual tran-
+scription method.
+The Korean Dental Speech Corpus (KDSC) is a 100-hour
+collection of dental domain speech data sourced from YouTube
+videos, constructed using semi-automatic transcription meth-
+ods. This corpus contains numerous transcription errors, includ-
+ing orthographic inconsistencies and domain-specific terminol-
+ogy misalignments. We apply our dual transcription pipeline to
+construct an improved KDSC V2 and compare fine-tuning on
+KDSC vs. KDSC V2 using the same PIC-STT model. For ex-
+ample, the original KDSC transcription recorded:
+신경치료용어설명해드릴게요, Canal Filing
+약어로는씨에프라고합니다.
+whereas our dual transcription method produces:
+신경치료용어설명해드릴게요, (Canal
+Filling)/(캐널필링)약어로는(CF)/(씨에프)라고
+합니다.
+In the following experiment we compare four speech recog-
+nition methods. (a) Baseline Model: A Conformer-based STT
+model with N=12 layers of AE, trained on the public Korean
+speech dataset of KSponSpeech [25]. (b) PIC Model: The model
+trained under the same conditions as Experiment 1, using the
+KSponSpeech training data with PIC. (c) PIC + KDSC Fine-
+tuned Model: The PIC model fine-tuned on the original KDSC
+dataset. (d) PIC + KDSC V2 Fine-tuned Model: The PIC model
+fine-tuned on the improved KDSC V2 dataset which is gener-
+ated using our proposed dual transcription method. Here, the
+written form is directly used as text, while the spoken form is
+converted into phoneme sequences during training. For the test
+sets,KSponis a public evaluation set from the Ksponspeech-
+eval-other corpus,KDentis a Korean dental domain dataset col-
+lected from YouTube, andKDigitis a dataset containing Korean
+digit speech. We evaluate onKSponwith character error rate
+(CER), and onKDentandKDigitwith word error rate (WER).
+And experiments with all STT models were conducted using
+the open-source WeNet 2.0 [26] codebase, and the implementa-
+tion of the PIC model was developed based on the ESPnet2 [27]
+example code.
+Table 2:Comparison of Korean speech recognition results.
+KSpon and KDent are evaluated using character error rates,
+while KDigit is evaluated using WER.
+Method KSpon (↓) KDent (↓) KDigit (↓)
+(a) Baseline STT 8.87 16.9 14.9
+(b) PIC STT 8.75 16.7 10.1
+(c) PIC+KDSC 7.71 30.3 89.2
+(d) PIC+KDSC V2 7.65 5.1 12.2
+The experimental results in Table 2 demonstrate that model
+(b) trained with PIC shows modest but consistent performance
+improvements compared to the baseline STT model (a), which
+aligns with the findings reported by Lee [2] and Higuchi [4] re-
+garding their proposed intermediate conditional AE approach.
+Model (c), which represents the PIC-trained model fine-tuned
+on the original KDSC dataset, exhibits performance improve-
+ments on the general domain KSpon evaluation set. However, it
+shows significant performance degradation on both KDent and
+KDigit evaluation sets, which can be attributed to the transcrip-
+tion errors present in the original KDSC dataset. And model
+(d) fine-tuned with the proposed dual transcription-generated
+KDSC V2 dataset shows substantial improvements over the
+baseline model achieving error reduction rates of 69.8% and
+18.1% in the dental domain evaluation set (KDent) and the nu-
+merical expression evaluation set (KDigit), respectively. These
+results demonstrate the practical effectiveness of our dual tran-
+scription approach for domain-specific speech corpus construc-
+tion and the importance of high-quality phonetic information in
+the adaptation of a specialized domain.
+Building on the performance gain from (c) to (d), our
+framework naturally supports iterative refinement. Specifically,
+the adapted model (d) (PIC+KDSC V2) can be used to re-
+process additional in-domain audio and generate updated dual
+(written/spoken) pairs, forming a further refined corpus KDSC
+V3; this refined corpus can then be used to obtain a subse-
+quent model (PIC+KDSC V3). Repeating this refinement-and-
+adaptation loop can progressively improve both corpus quality
+and domain robustness, and we leave a systematic multi-round
+analysis to future work.
+4. Conclusion
+This paper presented an IPA-guided dual transcription frame-
+work for data-centric speech corpus refinement that resolves
+spoken–written ambiguity. Our dual transcription system ad-
+dresses the fundamental challenge of mapping between spoken
+and written text representations by leveraging IPA information
+as an intermediate representation in speech recognition mod-
+els. The integration of phonetic information through intermedi-
+ate conditioning provides crucial disambiguation cues that are
+absent in text-only normalization methods. Our approach en-
+ables continuous quality improvement through iterative model
+retraining, which makes it suitable for constructing high-quality
+speech corpora for various applications and domains.
+However, a key limitation is that our English TN evalua-
+tion uses TTS-synthesized speech rather than public natural-
+speech corpora, owing to the scarcity of datasets that pair nat-
+ural speech with ground-truth spoken–written transcriptions;
+this provides a controlled diagnostic but does not capture real-
+world acoustic variability. Future work will therefore validate
+the framework on naturally spoken data, and will extend the
+approach to multiple languages and domains while optimiz-
+ing computational efficiency. Additionally, we plan to investi-
+gate the application of our dual transcription method to other
+speech processing tasks such as speech synthesis and multilin-
+gual speech recognition systems.
+5. Generative AI Use Disclosure
+Generative AI tools were used solely to assist with editing and
+polishing the authors’ own writing, such as improving grammar,
+wording, and readability. They were not used to generate tech-
+nical content, experimental results, or analyses. All (co-)authors
+take full responsibility and accountability for the content of the
+paper.
+3505

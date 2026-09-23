@@ -1,0 +1,495 @@
+Refining Emphasis Control in Flow-Matching TTS via Preference Alignment
+and Reinforcement Learning
+Jiangnan Ye1,∗, Jiawei Jin 1,∗, Pengfei Tan2, Chao Yan2, Xuerui Yang2, Zhiyong Wu1,∗∗
+1 Shenzhen International Graduate School, Tsinghua University, China
+2 StepFun, China
+yjn23@mails.tsinghua.edu.cn, zywu@sz.tsinghua.edu.cn
+Abstract
+Achieving fine-grained emphasis control in speech synthesis re-
+mains challenging due to data scarcity and the inherent com-
+plexity of prosody. To address this issue, we extend F5-TTS
+with an additional Emphasis Encoder and propose a three-stage
+optimization framework that progressively enhances emphasis
+controllability. The framework begins with Supervised Fine-
+Tuning on manually annotated data, followed by Direct Pref-
+erence Optimization, where preference pairs are constructed
+by ranking SFT-generated samples using the Wavelet Prosody
+Toolkit (WPT). In the final stage, we adapt Flow-CPS to per-
+form online reinforcement learning (RL) for flow-matching
+models. Using WPT as a reward model, this stage refines
+the flow trajectories through the estimation of the relative ad-
+vantage of the group. Experimental results demonstrate that
+the proposed pipeline substantially improves emphasis inten-
+sity and controllability while preserving natural prosody. Audio
+samples are available athttps://thuhcsi.github.io/
+interspeech2026-F5Emphasis
+Index Terms: emphasis control, flow matching, preference
+alignment, reinforcement learning
+1. Introduction
+The rapid advancement of neural speech synthesis has enabled
+highly intelligible and natural-sounding speech [1], yet fine-
+grained emphasis control remains challenging for truly expres-
+sive human-computer interaction. As a key prosodic element,
+emphasis conveys semantic focus and maintains discourse flow.
+Without it, generated speech often suffers from prosodic flat-
+ness, increasing cognitive load and risking semantic ambiguity.
+Enhancing emphasis control is therefore crucial for bridging the
+gap between machine-generated audio and human-like expres-
+siveness, ensuring synthesized speech delivers intended promi-
+nence in real-world applications.
+The lack of high-quality, accurately annotated data re-
+mains a fundamental barrier to the development of robust em-
+phasis control in speech synthesis. To address this scarcity,
+SpeechCraft [2] leverages FastSpeech2 [3] to generate a cor-
+pus of annotated speech by manipulating acoustic features
+such as pitch and energy. Similarly, the WhiStress [4] frame-
+work utilizes the Google Text-to-Speech API to create the
+TINYSTRESS-15K dataset, where emphasis is placed through
+adjustments of pitch, energy and duration. However, both ap-
+proaches struggle to match the nuance of natural human expres-
+sion. These parametric adjustment methods often produce an
+“unnatural” or “robotic” auditory experience because they rely
+*These authors contributed equally.
+**indicates the corresponding author.
+on linear, rule-based changes that do not align with the com-
+plex, non-linear prosodic variations perceived by the human ear.
+Other works [5, 6, 7] show that leveraging language priors, such
+as phrase and word boundaries, intonation units, and syntactic
+features can improve sentence stress prediction. While such ap-
+proaches offer a relatively objective framework for word-level
+assessment, they often fail to encapsulate the intricate prosodic
+nuances perceived by human listeners. Consequently, these
+automated tools lack the precision required to generate high-
+quality labeled data for training robust models. EmphAssess
+[8] introduced EmphaClass, an emphasis detection model pri-
+marily fine-tuned on English data; however, its performance is
+constrained by a limited number of speakers and a relatively
+small training corpus.
+CosyV oice [9, 10, 11] employs an instruction fine-tuning
+approach for emphasis control, where specific tags (e.g.,
+<strong>) are embedded within the input text to guide the
+language model. By training on instruction-following data,
+the model learns to generate speech tokens with emphasized
+prosody corresponding to these textual cues without explicit
+acoustic feature manipulation. However, the training of LLM-
+based TTS models is inherently data-hungry [12]. Empha-
+sis control in these systems is often suboptimal, primarily due
+to the scarcity of accurately annotated data within fine-tuning
+sets. Acquiring high-quality emphasis labels is both labor-
+intensive and time-consuming, making controllable synthesis
+under low-resource conditions a critical challenge. Current Au-
+dio LLMs [13, 14, 15] also exhibit limited proficiency in ex-
+tracting precise, fine-grained emphasis annotations. Address-
+ing data scarcity calls for more data-efficient architectures and
+training strategies. Non-autoregressive (NAR) models have
+demonstrated strong performance while requiring substantially
+less fine-tuning data [16, 17]. Motivated by these insights,
+we leverage F5-TTS [18], a state-of-the-art non-autoregressive
+model, to achieve precise emphasis control with limited re-
+sources. Our approach establishes a comprehensive multi-stage
+training pipeline—progressing from Supervised Fine-Tuning
+(SFT) to Direct Preference Optimization (DPO) [19] and Group
+Relative Policy Optimization (GRPO) [20], applied within a
+flow-matching framework [21, 22, 23, 24]—while addition-
+ally incorporating an explicit emphasis encoder to better model
+prosodic prominence, which together significantly enhance the
+controllability of emphasis. This framework not only provides
+a novel method for controllable synthesis but also offers an ef-
+ficient pipeline for generating high-quality labeled data. The
+main contributions of our work are as follows:
+(1) We propose an emphasis-controllable F5-TTS framework
+that integrates a flexible prosodic modulation module into the
+flow-matching backbone.
+(2) We introduce an emphasis embedding module optimized via
+112
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2284
+Training Data Timestep
+DiT Block
+Final Modulation
+Linear
+<s> gēn běn </s> yuán yīn 。 <F> <F> <F>
+Emphasis
+Encoder
+emphasis emb Masked
+ConvNeXt V2
+Blocks
+Masked
+MaskedPredicted Flow
+gradient
+N  x
+Emphasis Modeling
+Noisy Speech
+Masked Speech 
+Audio Mel
+Text Input
+⊖
+Training Target
+(a)
+Extended F5 TTS  🔥
+<s> gēn běn </s> yuán yīn。
+reward function gēn běn： 1.56
+yuán yīn ： 0.88
+...
+Rewards
+...
+Advantages
+Policy Optimization (b)
+Figure 1:Overview of the framework. (a) F5-TTS where emphasis embeddings from the Emphasis Encoder are fused with text rep-
+resentations. (b) Flow-CPS training, a variant of FlowGRPO, using group-based relative advantages from WPT.<s>and</s>are
+shorthands for<strong>and</strong>.
+SFT on manually curated data, effectively mapping textual
+emphasis to acoustic features.
+(3) We propose a three-stage optimization framework for con-
+trollable speech synthesis, adapting DPO and GRPO within
+a flow-matching framework to the speech domain. By incor-
+porating a prominence-based reward, this approach signifi-
+cantly enhances both the controllability and acoustic inten-
+sity of synthesized emphasis.
+2. Method
+2.1. Overview
+The proposed model extends F5-TTS (Figure 1(a)) by incor-
+porating an additional Emphasis Encoder as a dedicated condi-
+tioning module. The input to the system is a text sequence anno-
+tated with emphasis tags (e.g.,<strong>and</strong>).
+The text tokens are first converted into token embeddings and
+then processed by the Emphasis Encoder to generate emphasis-
+aware representations with the same dimensionality as the orig-
+inal text embeddings. These emphasis representations are fused
+with the original F5-TTS conditioning embeddings and subse-
+quently fed into the DiT backbone. The output of the model
+is the flow prediction used by the flow-matching framework to
+generate the target speech waveform with controllable empha-
+sis.
+The training pipeline follows a three-stage optimization
+process. First, SFT is performed on a manually curated dataset
+to learn an initial mapping between text inputs and prosodic
+emphasis patterns. Next, DPO is applied to a preference data
+set automatically constructed by ranking synthesized samples
+according to prominence scores computed using the Wavelet
+Prosody Toolkit (WPT) [5], encouraging improved alignment
+with prominence-based preference signals. Finally, the model is
+refined using Flow-CPS [24], a variant of FlowGRPO [23] that
+employs WPT as a reward model to optimize flow-matching
+trajectories. By incorporating the Coefficients-Preserving Sam-
+pling (CPS) strategy, this stage is designed to further enhance
+the intensity and controllability of synthesized emphasis.
+2.2. Emphasis Encoder
+The Emphasis Encoder maps input text embeddings to
+emphasis-aware representations. Rotary positional embeddings
+are applied to retain sequential structure, followed by self-
+attention layers with residual connections to capture contextual
+dependencies. A feed-forward network with layer normaliza-
+tion further refines the features through non-linear transforma-
+tions.
+For tokens annotated with emphasis markers, the corre-
+sponding emphasis representations are selectively extracted and
+element-wise added to their original text embeddings, forming
+a fused conditioning representation. This fused representation
+is provided to the DiT backbone as an additional conditioning
+signal, enabling the flow-matching process to generate speech
+with targeted prosodic emphasis at specified positions.
+This design establishes an explicit conditioning pathway
+that bridges discrete emphasis annotations and continuous
+prosodic variations, thereby improving the controllability and
+precision of emphasis realization.
+2.3. Supervised Fine-Tuning
+The initial stage of our training pipeline focuses on SFT using
+a high-quality, manually annotated dataset. During this stage,
+both the Emphasis Encoder and the F5-TTS backbone are opti-
+mized jointly. The objective is to train the Emphasis Encoder
+together with the DiT backbone to associate textual empha-
+sis annotations with their corresponding prosodic variations in
+speech. The model learns the mapping between textual empha-
+sis annotations and corresponding prosodic variations.
+2.4. Direct Preference Optimization
+The model is initialized from the SFT checkpoint and all train-
+able parameters are further optimized using the DPO objective.
+Following the SFT stage, we employ DPO to further enhance
+the model’s ability to control emphasis in synthesized speech.
+For this purpose, the training data is generated by the SFT-tuned
+model, using text prompts that are annotated with emphasis in-
+formation by DeepSeek [25]. To obtain word-level boundaries
+in the synthesized audio, we first apply the Montreal Forced
+Aligner [26] to align the speech with the input text. Based
+on these boundaries, we leverage the Wavelet Prosody Toolkit
+(WPT), which provides objective acoustic measures such as
+pitch, energy, and duration to quantify the prominence of the
+targeted emphasis words. Based on these prominence scores,
+we construct a preference dataset by selecting samples with the
+highest and lowest scores, forming positive and negative pairs.
+The DPO training objective encourages the model to better cap-
+ture the relationship between annotated emphasis cues and the
+resulting acoustic prominence, thereby increasing the correla-
+tion between intended emphasis and the prominence scores of
+the synthesized speech while providing a stronger initialization
+113
+for the subsequent GRPO optimization stage. Training on these
+preference pairs also further strengthens the alignment between
+intended emphasis and the resulting prosody.
+Inspired by previous work [22, 27], we incorporate the fol-
+lowing DPO objective within the flow-matching framework,
+which aims to optimize the model’s generation toward higher
+emphasis intensity while maintaining the overall prosodic natu-
+ralness of the synthesized speech.
+Diffpolicy =||v θ(xwin
+t ,c,t)−v win
+t ||2
+2−||vθ(xlose
+t ,c,t)−v lose
+t ||2
+2 (1)
+Diffref =||v ref(xwin
+t ,c,t)−v win
+t ||2
+2−||v ref(xlose
+t ,c,t)−v lose
+t ||2
+2 (2)
+LDPO =−E c,(xwin
+0 ,xlose
+0 )∼D,t∼U(0,1) [logσ(β(Diff policy−Diff ref)] (3)
+Letcdenote the conditioning input required for flow matching.
+The terms Diff policy and Diffref represent the preference differ-
+ences computed by the policy model and the reference model,
+respectively.βis a scaling parameter, andσ(·)denotes the sig-
+moid function.
+2.5. Flow-CPS in Speech Generation
+In the final stage, the complete emphasis-controllable F5-TTS
+model initialized from the DPO checkpoint is further optimized
+using Flow-CPS. This stage employs the WPT-based promi-
+nence score as the reward signal to provide consistent quan-
+titative feedback on the prominence of synthesized segments.
+The resulting rewards are converted into advantage values by
+normalizing each sample’s score relative to the group mean and
+standard deviation:
+Ai
+t = R(xi
+0)−mean({R(x i
+0)}G
+i=1)
+std({R(xi
+0)}G
+i=1) (4)
+To enable RL exploration in Flow Matching, deterministic
+ODEs are typically converted into stochastic differential equa-
+tions (SDEs) [23]. However, SDE-based sampling can intro-
+duce excessive noise that degrades output quality [24]. Flow-
+CPS reformulates the sampling process to ensure that the noise
+level of latent variables remains consistent with the scheduler at
+every time step. Using the WPT-based reward signal, GRPO op-
+timizes the policy by comparing each sample’s reward relative
+to the group distribution. The update rule for the latent variable
+xt−∆t and the simplified log-probability used in GRPO are for-
+mulated as follows.
+xt−∆t = (1−(t−∆t)) ˆx0 + (t−∆t) cos
+ηπ
+2
+
+ˆx1 + (t−∆t) sin
+ηπ
+2
+
+ϵ (5)
+logpθ(xi
+t−∆t|xi
+t) =−||x t−∆t−µθ(xt,t)|| 2 (6)
+whereη∈[0,1]is the parameter controlling stochastic
+strength, andµ θ(xt,t)is formulated as(1−(t−∆t)) ˆx0 +
+(t−∆t) cos
+ ηπ
+2
+ ˆx1.
+To maintain training stability and prevent the policy from
+deviating excessively from the reference model, a KL diver-
+gence penalty is incorporated into the optimization objective.
+In the context of Flow-CPS, this penalty is defined by the dis-
+tance between the mean of the predicted trajectories:
+DKL(πθ||πref ) =||µ θ(xt,t)−µ ref (xt,t)|| 2 (7)
+Notably, following the CPS framework, we omit the traditional
+2σ2
+t denominator in the KL term introduced by FlowGRPO.
+This modification avoids numerical instability caused by divi-
+sion by near-zero values in the final diffusion steps and real-
+locates greater optimization weight to earlier timesteps, which
+exhibit higher diversity critical for effective RL.
+For each training sentence with emphasis labels from
+DeepSeek, the model generatesGsample trajectories. Promi-
+nence scores from the reward model are converted into advan-
+tage values by normalizing against the group mean and stan-
+dard deviation. This group-relative approach encourages tra-
+jectories with higher advantage values and allows the model
+to explore diverse prosodic variations. Optimizing the policy
+through these relative advantages improves the controllability
+of emphasis intensity while preserving natural prosody.
+3. Experiments
+3.1. Setup
+SFT.The model is built upon the F5-TTS v1 Base (DiT;
+dim=1024, depth=22, heads=16, ff mult=2) and initialized
+from pretrained weights. To handle emphasis, an emphasis en-
+coder is integrated, sharing the same hidden size and attention
+configuration as the base model and consisting of 4 Transformer
+layers. The training is conducted on 2.5 hours of manually
+annotated Chinese speech data with emphasis labels using the
+AdamW optimizer with a learning rate of1×10 −5. All exper-
+iments are performed on a cluster of 8 NVIDIA H800 (80GB)
+GPUs for a total of 21,500 steps.
+DPO.The Flow-DPO stage employs the same architecture and
+emphasis encoder as in the SFT stage, initialized from the SFT
+checkpoint. We fine-tune the model on a Chinese preference
+dataset of 800 pairs generated by the SFT model. The training
+objective balances the supervised and preference-based losses
+with an SFT loss weight of 0.5 and a DPO loss weight of 1.0,
+using a DPO temperature (τ) of 0.5. Optimization is conducted
+using the AdamW optimizer with a learning rate of1×10−5 on
+a cluster of 8 NVIDIA H800 (80GB) GPUs for a total of 13,000
+steps.
+GRPO.The GRPO fine-tuning is conducted on 2,000 Chinese
+emphasis-annotated text samples, maintaining the SFT model
+configuration. Training involves GRPO-specific hyperparam-
+eters:β= 0.2, a0.1clipping range,6samples per prompt,
+0.1noise level, and a5.0adversarial clipping maximum. Us-
+ing 8 NVIDIA H800 (80GB) GPUs, the model is optimized via
+AdamW (LR= 1×10 −4) for 2,000 steps. Throughout train-
+ing, the reward increases steadily from 0.7887 to 0.9479.
+3.2. Compared Methods
+We evaluate our proposed framework against the vanilla F5-
+TTS base model and CosyV oice. We selected CosyV oice as the
+primary baseline because, in our preliminary evaluations, other
+instruction-following models (e.g., Cosyvoice2-3, MiMo [28],
+V oxInstruct [29]) and large-scale closed-source systems (e.g.,
+Doubao [30], GPT-4o mini, Google API) exhibited relatively
+weak emphasis modulation, failing to meet the intensity stan-
+dards required for distinct prosodic prominence. In contrast,
+CosyV oice demonstrates a more pronounced emphasis effect in
+Chinese synthesis, making it the most competitive baseline for
+this study. To demonstrate the progressive improvement of our
+framework, we compare three variants: F5-SFT, F5-DPO, and
+F5-GRPO, representing the model after each respective training
+stage.
+3.3. Objective Evaluation
+Table 1 presents the evaluation results, where the quality of syn-
+thesized speech is measured using WER and SIM metrics on
+the SEED test-zh dataset. The SIM score is computed using a
+114
+Table 1:Objective evaluation of emphasis synthesis.↑denotes
+higher is better , while↓denotes lower is better .
+Model Prominence↑WER↓SIM↑
+Cosyvoice 1.32 3.63% 0.72
+F5-TTS 0.861.56% 0.74
+F5-TTS-sft1.22 1.62% 0.72
+F5-TTS-dpo1.42 1.62% 0.72
+F5-TTS-grpo1.451.63% 0.71
+WavLM-based model, while prominence is quantified with the
+WPT on a dedicated test set comprising 200 text samples with
+emphasis annotations generated by DeepSeek. These metrics
+provide complementary perspectives: WER evaluates the intel-
+ligibility and correctness of the generated speech, SIM assesses
+speaker similarity, and WPT measures the model’s ability to
+produce controlled prosodic emphasis.
+As shown in Table 1, our proposed three-stage optimiza-
+tion framework leads to consistent improvements in emphasis
+controllability while maintaining high overall synthesis quality.
+Specifically, the baseline F5-TTS model achieves a prominence
+score of 0.86, which increases to 1.22 following SFT. This im-
+provement demonstrates that the incorporation of the emphasis
+encoder allows the model to explicitly map text-level emphasis
+annotations to acoustic features, enabling more precise modu-
+lation of prosodic characteristics.
+The subsequent preference-based and RL stages further en-
+hance the model’s ability to generate expressive prosody. With
+the addition of DPO, the prominence score rises to 1.42, in-
+dicating that the model can effectively prioritize more distinct
+prosodic variations from the sampling space defined by the SFT-
+trained model. Finally, the GRPO-optimized model reaches a
+peak prominence of 1.45, highlighting the effectiveness of us-
+ing the WPT as a reward model within a group-relative policy
+optimization framework.
+Importantly, these gains in emphasis control are achieved
+without compromising intelligibility or speaker identity. The
+WER remains remarkably stable, fluctuating only slightly be-
+tween 1.62% and 1.63% across the three training stages,
+whereas the Cosyvoice baseline exhibits a substantially higher
+WER of 3.63% despite achieving a prominence of 1.32. Simi-
+larly, the SIM score shows minimal variation, decreasing only
+marginally from 0.72 to 0.71 in the GRPO stage. These ob-
+servations indicate that our proposed architecture and multi-
+stage training strategy support stronger prosodic modulation
+while preserving intelligibility and speaker consistency. Over-
+all, the results demonstrate that the three-stage pipeline effec-
+tively balances emphasis intensity, intelligibility, and speaker
+consistency, enabling the model to produce expressive, control-
+lable, and high-quality speech.
+3.4. Subjective Evaluation
+To further evaluate the perceptual quality of the synthesized
+speech, we conducted a subjective listening test comparing our
+final model F5-TTS-grpo with the Cosyvoice baseline. The test
+involved 15 native Mandarin speakers who evaluated 10 speech
+samples from each model. Two subjective metrics were as-
+sessed: Emphasis MOS (E-MOS) and Naturalness MOS (N-
+MOS). For E-MOS, listeners rated the intensity of the desig-
+nated emphasis on a 3-point scale: 1 (no emphasis), 2 (notice-
+able emphasis), and 3 (strong emphasis). N-MOS measured the
+Table 2:Subjective evaluation of emphasis synthesis.↑denotes
+higher is better .
+Model E-MOS↑N-MOS↑
+Cosyvoice 2.16 ± 0.06 3.06 ± 0.09
+F5-TTS-grpo2.51 ± 0.05 3.47 ± 0.08
+Table 3:Evaluation of emphasis control on nouns.↑denotes
+higher is better .
+Model Acc↑Prominence↑
+Cosyvoice 22.00% 0.83
+F5-TTS-dpo37.00% 0.96
+F5-TTS-grpo63.00%1.28
+overall naturalness of the sentence, focusing on how well the
+prosody aligned with the intended semantic focus.
+The results show that F5-TTS-GRPO achieves higher
+scores than the baseline in both categories (Table 2). Listen-
+ers rated the speech generated by the final F5-TTS-GRPO sys-
+tem as having clearer emphasis and higher naturalness. These
+results indicate that the overall proposed approach is preferred
+over the baseline and are consistent with the objective evalua-
+tion metrics.
+3.5. Emphasis on Noun
+Emphasis control depends on the coverage of words in the SFT
+and DPO training data, as uneven distributions can hinder gen-
+eralization. To evaluate GRPO’s effectiveness on underrepre-
+sented words, we conducted experiments on nouns using a test
+set of 100 Chinese sentences with manually annotated noun em-
+phasis, which are particularly challenging due to their low pro-
+portion in the training data.
+As shown in Table 3, our model achieves higher control
+accuracy (ACC) and prominence values on nouns compared
+to Cosyvoice and F5-TTS-DPO. While the baseline and DPO-
+tuned models show basic controllability, they struggle with the
+linguistic diversity of nouns, resulting in inconsistent empha-
+sis. By leveraging our proposed architecture and multi-stage
+training strategy—including GRPO—the model better general-
+izes to underrepresented words, producing more consistent and
+accurate emphasis across diverse noun instances.
+4. Conclusion
+In this paper, we proposed a three-stage optimization frame-
+work—progressing from SFT to DPO and online RL via Flow-
+CPS—to significantly enhance the emphasis controllability of
+the F5-TTS model. By integrating a dedicated emphasis en-
+coder that fuses prosodic embeddings with text representations
+and utilizing the WPT as a reward model, our pipeline achieves
+superior prominence levels while maintaining a stable word er-
+ror rate and high speaker similarity. This approach effectively
+improves generalization across linguistically diverse categories
+such as nouns, providing a robust and efficient solution for high-
+quality, expressive speech synthesis under low-resource condi-
+tions.
+115
+5. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools exclusively for the purpose of language editing
+and manuscript polishing to improve readability. These tools
+were not used to generate any core scientific ideas, experimen-
+tal data, or technical contributions. All authors have thoroughly
+reviewed and approved the final version of the manuscript, and
+assume full responsibility for the integrity and entirety of its
+content.
+6. Acknowledgement
+This work was supported by Nati

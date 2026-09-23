@@ -1,0 +1,486 @@
+Temporal Ensembling Threshold and Neighbor-Aware Label Mixup for
+Speaker Verification with Open-Set Noisy Labels
+Zhihua Fang ID 1,4, Shumei Tao ID 1, Liang He ID 1,2,3,∗∗
+1 School of Computer Science and Technology, Xinjiang University, Urumqi, China
+2 School of Intelligence Science and Technology, Xinjiang University, Urumqi, China
+3 Department of Electronic Engineering, Tsinghua University, Beijing, China
+4 Central R&D Department, AGIBOT, Shanghai, China
+{fangzhihua,taoshumei}@stu.xju.edu.cn, heliang@mail.tsinghua.edu.cn
+Abstract
+During large-scale speaker dataset collection, noisy labels are
+unavoidable and seriously affect model training. Existing meth-
+ods mainly alleviate noisy label effects via sample selection or
+label correction, but for open-set noisy samples, corrected la-
+bels remain inaccurate. This paper proposes a Temporal En-
+sembling Threshold and Neighbor-Aware Label Mixup (TET-
+LM) method. This method models the embedding similarity
+with a two-component GMM in each epoch and calculates the
+ensemble threshold using exponential moving average to distin-
+guish clean labels from noisy labels. In addition, we generate
+mixed labels through the neighbor-aware mechanism to effec-
+tively mitigate the correction bias of open-set noisy samples.
+We further design a multi-stage training strategy. Experiments
+on V oxCeleb show TET-LM improves system robustness under
+various noisy label conditions, with EER and minDCF reduced
+by 54% and 42% over standard methods (52% and 40% vs. the
+best baseline).
+Index Terms: Speaker Verification, Noisy Labels, Embedding
+Similarity, Label Correction
+1. Introduction
+Speaker verification (SV), as one of the core tasks in speech pro-
+cessing, aims to determine whether two speech segments belong
+to the same speaker [1]. With the development of deep learning,
+speaker verification methods based on deep neural networks
+have achieved significant performance improvements [2, 3, 4].
+The core of speaker verification lies in extracting discrimina-
+tive speaker features, which relies on training speaker classifi-
+cation models with large amounts of high-quality labeled data.
+In practice, the collection and annotation of online speech data
+inevitably introduce noisy labels [5, 6], making the identifica-
+tion and correction of such noisy labels a critical problem in the
+field of speaker verification [7].
+Speaker representation learning with noisy labels has been
+extensively studied [8, 9, 10, 11], and existing approaches can
+be broadly categorized into sample selection, label correction,
+and selection-then-correction. Sample selection is a straight-
+forward and efficient approach, which trains models using only
+clean samples to avoid the influence of noisy labels. INLD [9]
+and ES-GMM [12] measure sample cleanliness using the cosine
+similarity between embeddings and speaker centroids, where
+the former applies a fixed threshold to filter noisy labels, while
+the latter adopts a two-component GMM to obtain a dynamic
+threshold. OR-Gate [13] employs a top-k ranking mechanism
+**indicates the corresponding author.
+to select high-confidence samples as clean samples. CEC [14]
+detects noisy labels by counting the number of mismatches be-
+tween predictions and labels across different training epochs
+and gradually increases the difficulty of selecting clean sam-
+ples through a curriculum learning strategy. Label correction
+methods automatically adjust incorrect labels during training.
+LNCL [8] incorporates a correction loss into the objective func-
+tion and dynamically adjusts the weights between original and
+corrected labels using a threshold-based scheme. Selection-
+then-correction combines the advantages of both approaches.
+LESS [15] iteratively selects clean samples and corrects noisy
+labels, thereby integrating learning, selection, and correction,
+which improves the robustness of SV systems.
+However, in real-world scenarios, noisy labels are not re-
+stricted to the closed-set case. Open-set noisy labels are of-
+ten mixed into the training data [16, 17, 18], corresponding
+to speech samples from unknown speakers whose true identi-
+ties lie outside the label setY. For label correction-based SV
+methods, since the identities of open-set noisy samples cannot
+be recognized, the corrected labels may still negatively affect
+the speaker model. Therefore, investigating robust correction
+strategies specifically tailored for open-set noisy labels is of
+practical importance.
+In this paper, we propose aTemporalEnsembling
+Threshold and Neighbor-AwareLabelMixup (TET-LM)
+method to identify and correct noisy labels. In each epoch,
+we compute cosine similarity between sample embeddings and
+speaker centers, and use a two-component GMM to derive a
+separation threshold, which is temporally ensembled via expo-
+nential moving average to distinguish clean and noisy labels.
+For noisy samples, we select theKclosest speaker prototypes
+as neighbors and re-weight their mixed labels using the mean-
+teacher model’s outputs for loss computation. The main contri-
+butions are:
+• We propose a temporal ensembling threshold method, which
+separates clean labels and noisy labels using the ensemble
+threshold to avoid the fluctuation problem of a single two-
+component GMM threshold.
+• We propose a neighbor-aware label mixup method, which
+adapts to the distribution of open-set noisy samples by re-
+weighting the mixed labels ofKneighbors.
+• We design a multi-stage training method to adapt to different
+noisy label scenarios, and conduct extensive experiments to
+demonstrate the effectiveness of the proposed method.
+4561
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-11
+Temporal Ensembling 
+Threshold
+Encoder FC 
+Mean-Teacher Model
+Training Model
+EMA
+Clean 
+Data
+Noisy
+Data
+All 
+Data
+Neighbor-Aware 
+Label Mixup
+Encoder FC 
+(b) Temporal Ensembling Threshold
+(c) Neighbor-Aware Label Mixup
+Calculate Similarity
+0 1Cosine Similarity
+Density
+GMM Modeling
+CleanNoisy
+Sample Selection
+Embeddings with the Same Label
+clean (correctly predicted) noisyclean (incorrectly predicted) 
+ prototype 
+(a) Training Framework
+Mean-Teacher Model Output Value
+class
+Mean-Teacher Model Output Value
+class
+Select top-K
+Neighbors
+Weight
+Normalization
+Figure 1:The overall framework of our proposed TET-LM. (a) The overall training process. (b) The proposed temporal ensembling
+threshold for sample selection. (c) The proposed neighbor-aware label mixup for label correction.
+2. Methodology
+This section will introduce in detail the proposed TET-LM
+method, and the overall framework is shown in Fig. 1.
+2.1. Preliminaries
+Given a dataset withCspeakers andNutterancesD=
+(X,Y) = (x i,y i)N
+i=1, wherex i andy i denote the speech
+data and speaker label of thei-th sample, respectively, and
+yi may be incorrectly labeled. The speaker model consists of
+an embedding extractorf(·,Θ)and a classifierh(·,Ψ), where
+ei =f(x i,Θ),z i =h(e i,Ψ), andp i =softmax(z i)are the
+embedding, output, and probability distribution, respectively.
+The loss functionℓ(z i,y i)is typically additive margin (AM)
+softmax loss [19] or additive angular margin (AAM) softmax
+loss [20].
+2.2. Temporal Ensembling Threshold for Sample Selection
+Similarity Threshold.Compared with mislabeled samples,
+clean samples usually exhibit higher similarity between their
+embeddings and the corresponding class prototypes. Therefore,
+during training, we collect the normalized embeddings of each
+speaker’s correctly predicted samples to generate class proto-
+types:  Ec ={e i|y i =c,ˆy i =c},
+oc = 1
+|Ec|
+P
+ei∈Ec ei, (1)
+whereˆyi is the predicted label,e i = ei
+||ei|| denotes the nor-
+malized embedding, ando c represents the prototype of thec-th
+speaker. The cosine similarity between each sample embedding
+and the corresponding speaker center is then computed as the
+similarity score:
+si =e i·o yi.(2)
+Subsequently, a two-component GMM is fitted to the setS=
+{si}N
+i=1, and the intersection of the two GMMs is used as the
+thresholdτ t for thet-th epoch.
+Temporal Ensembling Threshold.Since the GMM modeling
+result of a single epoch is easily affected by training fluctua-
+tions, we introduce a temporal ensembling threshold, where the
+thresholds from previous training are aggregated using expo-
+nential moving average (EMA) to obtain a more robust thresh-
+old. Specifically, the temporal ensembling threshold at epocht,
+denoted as¯τt, is defined as:
+¯τt =α·¯τ t−1 + (1−α)·τ t, t≥1,(3)
+whereα∈[0,1)is a smoothing factor that balances the con-
+tributions of historical thresholds and the current threshold. Fi-
+nally, the dataset is divided into a clean setD clean
+t and a noisy
+setD noisy
+t based on¯τt:
+ Dclean
+t ={(x i,y i)|s i≥¯τt},
+Dnoisy
+t ={(x i,y i)|s i <¯τt}. (4)
+2.3. Neighbor-Aware Label Mixup for Label Correction
+Mean-Teacher Model.The mean-teacher model has demon-
+strated excellent performance in numerous studies on label
+correction [21]. Therefore, we employ it to generate reli-
+able pseudo-label distributions for label correction. Specifi-
+cally, given a momentum coefficientβ∈[0,1), the parameters
+[Θ′,Ψ′]of the mean-teacher model are updated at each epoch
+as follows:
+Θ′←βΘ′ + (1−β)Θ,Ψ ′←βΨ′ + (1−β)Ψ.(5)
+Then, the sample prediction distributionz′
+i is obtained based on
+the mean-teacher model.
+Neighbor-Aware Label Mixup.Label correction in speaker
+verification typically uses one-hot labels (hard labels) [22],
+while the true labels of open-set noisy samples lie outside the
+dataset label setY, which causes the corrected labels to still be
+incorrect. Some methods directly use the predicted probabil-
+ity distribution (soft labels) as supervision [16, 23], which may
+lead to insufficient learning. Inspired by mixup [24], we treat
+open-set noisy samples as a mixture of their neighbor samples.
+Therefore, we select theKcategories with the highest weights
+fromz′
+i as the neighbor label set ofx i:
+Ni ={c 1
+i,c 2
+i,...,c K
+i}, c k
+i =argsort(z′
+i)[k],(6)
+whereargsort(·)denotes a function that sorts indices in de-
+scending order of element values, andN i represents the mixed
+labels of samplex i. Since high-confidence samples are more
+likely to be closed-set noise (with true labels within the setY),
+to improve training efficiency, we select only one neighbor for
+4562
+label correction for samples containing high confidence.
+Ni =
+(
+{c1
+i},max(p i)≥µ,
+{c1
+i,c 2
+i,...,c K
+i},max(p i)<µ, (7)
+wheremax(·)is the function that returns the maximum element
+of avector andµis the threshold for selecting high-confidence
+samples. We then compute the normalized weights ofN i:
+wk
+i = exp
+ 
+z′
+i[ck
+i ]
+
+P|Ni|
+j=1 exp
+ 
+z′
+i[cj
+i]
+, k∈{1,...,|N i|}.(8)
+Finally, the label-mixing loss for noisy samples is computed
+using the normalized weights and neighbor labels:
+LLM = 1
+|Dnoisy|
+X
+xi∈Dnoisy
+|Ni|X
+k=1
+wk
+iℓ(zi,c k
+i ).(9)
+2.4. Training Process and Loss Functions
+Our training procedure is divided into three stages, with the
+stopping epochs set ast 1,t 2, andt 3, respectively.
+Stage 1: Warm-up.Leveraging the memorization effect of
+deep models, we first perform warm-up training on the entire
+dataset to enable the model to acquire basic speaker discrimi-
+nation ability. At the end of the warm-up stage, the temporal
+ensembling threshold¯τt1 and the mean-teacher model parame-
+ters[Θ′,Ψ′]are initialized asτ t1 and[Θ,Ψ], respectively.
+Stage 2: Learning from Clean Labels.In this stage, the
+temporal ensembling threshold is used to separate samples into
+clean and noisy sets. Only the clean setD clean is used for train-
+ing, further improving the model’s discriminative capability.
+The loss for clean samples is defined as:
+Lclean = 1
+|Dclean|
+X
+(xi,yi)∈Dclean
+ℓ(zi,y i).(10)
+Stage 3: Learning from Clean and Mixed Labels.After
+Stage 2 training, the model’s recognition capability is improved,
+and clean samples and noisy samples are well separated. In this
+stage, sample selection is stopped, and noisy samples are su-
+pervised using mixed labels computed from the mean-teacher
+model. The total loss for this stage is:
+L=L clean +L LM.(11)
+3. Experiments
+3.1. Datasets and Experiment Setup
+Datasets.We evaluated the performance of the proposed
+method in real-world scenarios on V oxCeleb1 [25] and V ox-
+Celeb2 [26]. V oxCeleb1 contains 1,211 speakers and 148,642
+utterances, while V oxCeleb2 contains 5,994 speakers and
+1,092,009 utterances. To assess performance under different
+noisy label conditions, we randomly selected 1,000 speakers
+from V oxCeleb1 and added symmetric and asymmetric noisy
+labels at different ratios (10%–50%). The labels of the remain-
+ing speakers were randomly flipped into the label set of these
+1,000 speakers. Similarly, 5,000 speakers were selected from
+V oxCeleb2 with the same procedure. The construction of sym-
+metric and asymmetric noisy labels is as follows:
+•Sym-30%: Each sample has a 30% probability of being ran-
+domly flipped to another speaker label.
+•Asym-20%: Each sample has a 20% probability of being
+flipped to the label of the next speaker (the last speaker is
+flipped to the first speaker label).
+To increase the difficulty of identifying noisy labels, the se-
+lected noisy samples were flipped only to speaker labels of the
+same gender. We used the clean versions of V ox1-O, V ox1-E,
+and V ox1-H as the evaluation sets1.
+Training details.For all experiments, the input features are
+80-dimensional log Mel filterbanks. The speaker embedding
+extractor is an ECAPA-TDNN [27] with 1024 channels, and
+the speaker embedding dimension is 192. The loss function is
+AM-Softmax [19] (hyperparametersm= 0.2,s= 30). The
+initial learning rate is 0.001, decayed by 0.97 every epoch, and
+the optimizer is Adam [28]. Training is conducted on a single
+GeForce RTX 3090 GPU with a batch size of 256. The hyper-
+parameters in our method are set as follows:α= 0.5,β= 0.9,
+µ= 0.4,K= 10. For V oxCeleb1:t 1 = 5,t 2 = 40,t 3 = 80;
+for V oxCeleb2:t1 = 5,t 2 = 60,t 3 = 100.
+Evaluation Metrics.We use the Equal Error Rate (EER) and
+the minimum Detection Cost Function (minDCF,Ptarget = 0.01)
+to evaluate SV model performance.
+Baselines.We compare TET-LM with the following noisy-
+label-robust SV methods: LNCL [8], OR-Gate [13], CEC [14],
+LESS [15], and ES-GMM [12], and directly training on the
+noisy-labeled dataset is also used as a simple baseline (denoted
+as Standard).
+3.2. Results and Analysis
+3.2.1. Ablation Study
+Table 1:EER (%) comparison of ablation experiments for each
+module in TET-LM on V oxCeleb1.
+Method Clean Sym-10% Sym-30% Sym-50% Asym-20% Asym-40%
+TET-LM2.98 3.56 3.63 4.04 3.70 4.26
+TET-LMw/o TET 3.13 3.59 3.65 4.11 3.72 4.32
+TET-LMw/o LM 3.21 3.65 4.02 4.56 3.71 4.91
+To verify the effectiveness of each module, we conducted
+ablation experiments on the V oxCeleb1 dataset, as shown in
+Table 1. The results show that the complete TET-LM method
+achieves the best performance under all noisy label scenarios.
+When the Temporal Ensembling Threshold (TET) is removed,
+the performance decreases under different noise ratios, indicat-
+ing that this module can effectively improve the reliability of
+sample selection; when the Neighbor-Aware Label Mixup (LM)
+is removed, the performance degradation is more significant, es-
+pecially in high-noise scenarios where the EER increases sub-
+stantially, which demonstrates that LM plays a key role in cor-
+recting noisy labels. Overall, TET and LM complement each
+other under different noise levels and jointly ensure the supe-
+rior performance of the TET-LM method under various noisy
+conditions.
+We conducted ablation studies on the number of neighbors
+Kand the confidence thresholdµusing the V oxCeleb1 dataset
+with 30% noisy labels, as shown in Fig. 2. In Fig. 2a,K= 1
+indicates that label mixup is not applied, whereasK=Ccor-
+responds to selecting all classes as neighbors. The results show
+that asKincreases, the model performance initially improves
+and then declines, with the lowest EER achieved atK= 10.
+This indicates that too few neighbors are insufficient to pro-
+vide reliable mixed labels, while too many neighbors introduce
+1https://www.robots.ox.ac.uk/˜vgg/data/
+voxceleb/vox1.html
+4563
+Table 2:Comparison of EER (%) and minDCF on V oxCeleb1 and V oxCeleb2 with noisy labels.
+Clean Sym-10% Sym-30% Sym-50% Asym-20% Asym-40% Average
+Method EER minDCF EER minDCF EER minDCF EER minDCF EER minDCF EER minDCF EER minDCF
+Training Data:VoxCeleb1, Evaluation List:Vox-O
+Standard 3.16 0.366 7.39 0.583 10.09 0.701 13.71 0.810 8.77 0.663 9.88 0.658 8.83 0.630
+LNCL[8] 3.28 0.380 5.41 0.475 5.39 0.468 7.64 0.615 6.31 0.545 7.98 0.622 6.00 0.517
+OR-Gate[13] 3.25 0.354 3.98 0.429 4.48 0.462 5.62 0.515 5.41 0.508 7.70 0.633 5.07 0.484
+CEC[14] 3.20 0.349 3.74 0.380 4.02 0.420 5.72 0.519 3.87 0.383 4.69 0.450 4.21 0.417
+LESS[15] 3.20 0.302 3.62 0.364 4.12 0.405 4.55 0.422 4.16 0.388 5.88 0.513 4.25 0.399
+ES-GMM[12] 3.21 0.332 3.70 0.372 4.10 0.403 4.66 0.448 4.00 0.387 4.97 0.456 4.11 0.399
+TET-LM (Ours) 2.98 0.280 3.56 0.370 3.63 0.360 4.04 0.376 3.77 0.354 4.26 0.420 3.71 0.360
+Training Data:VoxCeleb2, Evaluation List:Vox-O
+Standard 1.27 0.150 1.84 0.237 3.27 0.333 8.12 0.577 2.37 0.226 2.53 0.261 3.24 0.297
+LNCL[8] 1.22 0.128 1.58 0.200 2.51 0.261 3.84 0.391 2.01 0.222 2.70 0.281 2.31 0.247
+OR-Gate[13] 1.10 0.142 1.43 0.150 1.56 0.161 1.77 0.189 1.60 0.179 2.46 0.294 1.65 0.186
+CEC[14] 1.19 0.144 1.27 0.150 1.51 0.164 1.97 0.196 1.48 0.161 1.83 0.180 1.54 0.166
+LESS[15] 1.22 0.143 1.42 0.139 1.48 0.150 1.70 0.183 1.39 0.181 1.99 0.228 1.54 0.171
+ES-GMM[12] 1.19 0.155 1.25 0.147 1.47 0.163 1.73 0.181 1.29 0.158 1.78 0.189 1.45 0.165
+TET-LM (Ours) 1.15 0.134 1.25 0.141 1.37 0.155 1.61 0.172 1.29 0.143 1.59 0.171 1.38 0.152
+Training Data:VoxCeleb2, Evaluation List:Vox-E
+Standard 1.47 0.165 2.23 0.235 3.45 0.327 8.71 0.625 2.54 0.267 2.88 0.313 3.55 0.322
+LNCL[8] 1.44 0.165 2.09 0.221 2.75 0.282 4.00 0.421 2.32 0.254 2.92 0.312 2.59 0.276
+OR-Gate[13] 1.40 0.161 1.66 0.183 1.78 0.183 1.92 0.201 1.82 0.201 2.60 0.281 1.86 0.202
+CEC[14] 1.39 0.158 1.62 0.179 1.78 0.193 2.10 0.221 1.71 0.185 2.04 0.213 1.77 0.192
+LESS[15] 1.44 0.164 1.59 0.172 1.69 0.185 1.92 0.205 1.68 0.194 2.24 0.258 1.76 0.196
+ES-GMM[12] 1.44 0.168 1.60 0.180 1.74 0.184 1.93 0.207 1.61 0.181 2.00 0.213 1.720.189
+TET-LM (Ours) 1.42 0.163 1.56 0.174 1.66 0.186 1.90 0.210 1.68 0.186 1.87 0.219 1.680.190
+Training Data:VoxCeleb2, Evaluation List:Vox-H
+Standard 2.78 0.261 3.98 0.356 5.66 0.438 12.80 0.697 4.59 0.409 5.28 0.458 5.85 0.436
+LNCL[8] 2.72 0.263 3.76 0.330 4.65 0.391 6.72 0.553 4.26 0.378 5.37 0.446 4.58 0.393
+OR-Gate[13] 2.62 0.256 3.02 0.285 3.14 0.286 3.30 0.294 3.37 0.313 4.62 0.401 3.35 0.306
+CEC[14] 2.55 0.245 2.92 0.273 3.15 0.286 3.57 0.318 3.08 0.279 3.41 0.304 3.11 0.284
+LESS[15] 2.66 0.254 2.97 0.276 3.06 0.289 3.33 0.297 3.10 0.290 4.23 0.387 3.23 0.299
+ES-GMM[12] 2.69 0.256 2.86 0.271 2.99 0.272 3.42 0.300 2.91 0.276 3.44 0.310 3.05 0.281
+TET-LM (Ours) 2.64 0.243 2.84 0.264 3.02 0.277 3.32 0.301 2.95 0.273 3.48 0.323 3.04 0.280
+K = 1 K = 2 K = 3 K = 5 K = 10 K = 20 K = C
+3.6
+3.8
+4.0
+4.2
+4.4
+4.6EER (%)
+3.99
+3.86 3.86
+3.69 3.65
+3.79
+4.61
+(a)EER (%) results with different
+K.
+= 0.0
+ = 0.3
+ = 0.4
+ = 0.5
+ = 1.0
+3.5
+3.6
+3.7
+3.8
+3.9
+4.0
+4.1
+4.2EER (%)
+4.21
+3.93
+3.65
+3.82
+3.73
+(b)EER (%) results with different
+µ.
+Figure 2:Ablation study on hyperparametersKandµunder
+30% noisy labels on V oxCeleb1.
+excessive noise, leading to significant performance degrada-
+tion. Fig. 2b illustrates that the model achieves optimal per-
+formance atµ= 0.4. Here,µ= 0treats all samples as
+high-confidence and applies hard labels, which degrades per-
+formance; conversely, whenµis too high, some valuable high-
+confidence samples are not effectively utilized, also resulting in
+performance decline.
+3.2.2. Comparison with State-of-the-Art
+We further compared TET-LM with the current state-of-the-art
+methods, as shown in Table 2. On the V oxCeleb1 and V ox-
+Celeb2 datasets, TET-LM shows significant advantages under
+both symmetric and asymmetric noise scenarios. In particular,
+under high noise ratios (such as Sym-50% and Asym-40%), the
+EER and minDCF values of TET-LM are significantly lower
+than those of other methods, which indicates stronger robust-
+ness in handling extreme noise conditions. In addition, the per-
+formance of TET-LM in the clean scenario is also close to or
+better than other methods, showing that it not only performs
+well in noisy environments but also maintains stable perfor-
+mance on clean data. Overall, on average, compared to the
+standard methods, TET-LM achieves relative reductions of 54%
+and 42% in EER and minDCF, respectively, while the best base-
+line ES-GMM achieves relative reductions of 52% and 40%,
+demonstrating the superior overall performance of TET-LM.
+4. Conclusions
+To address the challenges posed by open-set noisy labels in
+speaker verification, this paper proposes a Temporal Ensem-
+bling Threshold and Neighbor-Aware Label Mixup method.
+The temporal ensembling threshold effectively separates clean
+and noisy labels. In addition, our experiments show that nei-
+ther hard labels (one-hot labels) nor soft labels (predicted prob-
+ability) provide an optimal solution for handling open-set noisy
+samples. We proposed neighbor-aware label mixup to effec-
+tively resolve the label correction problem for such samples.
+Furthermore, we design a multi-stage training strategy to en-
+hance the speaker model’s adaptability under different noisy la-
+bel scenarios. Extensive experiments on the V oxCeleb datasets
+demonstrate that TET-LM exhibits significant robustness across
+various noisy label conditions.
+4564
+5. Acknowledgments
+This work was supported by the National Natural Science Foun-
+dation of China under Grant No. 62366051.
+6. Generative AI Use Disclosure
+The authors used ChatGPT solely for language editing and
+manuscript polishing. No generative AI tools were used to gen-
+erate any substantive scientific content of this paper.

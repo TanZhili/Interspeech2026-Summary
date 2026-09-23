@@ -1,0 +1,493 @@
+Closing the Speech-Text Gap with Limited Audio for Effective Domain
+Adaptation in LLM-based ASR
+Thibault Ba˜neras-Roux ID 1,∗,∗∗, Sergio Burdisso ID 1,∗,∗∗, Esa´u Villatoro-Tello ID 1,∗,∗∗, Dairazalia
+S´anchez-Cort´es ID 1, Shiran Liu1, Severin Baroudi1,2, Shashi Kumar ID 1,3, Hasindri Watawana ID 1,3,
+Manjunath K E4, Kadri Hacioglu4, Petr Motlicek ID 1,5, Andreas Stolcke4
+1 Idiap Research Institute, Switzerland
+2 Laboratoire d’Informatique et des Syst`emes, France
+3EPFL, Switzerland
+4 Uniphore, USA & India
+5 Brno University of Technology, Czech Republic
+{thibault.roux, sergio.burdisso, esau.villatoro}@idiap.ch
+Abstract
+Conventional end-to-end automatic speech recognition (ASR)
+systems rely on paired speech–text data for domain adapta-
+tion. Recent LLM-based ASR architectures connect a speech
+encoder to a large language model via a projection module,
+enabling adaptation with text-only data. However, this intro-
+duces a modality gap, as the LLM is not exposed to the noisy
+representations produced by the speech projector. We investi-
+gate whether small amounts of speech can mitigate this mis-
+match. We compare three strategies: text-only adaptation,
+paired speech–text adaptation, and mixed batching (MB), which
+combines both. Experiments in in-domain and out-of-domain
+settings show that even limited speech consistently improves
+performance. Notably, MB using only 10% of the target-
+domain (less than 4 hours) speech achieves word error rates
+comparable to, or better than, conventional ASR fine-tuning
+with the full dataset, indicating that small amounts of speech
+provide a strong modality-alignment signal.
+Index Terms: speech recognition, domain adaptation, low-
+resource training.
+1. Introduction
+Large language models (LLMs) have transformed speech pro-
+cessing, enabling natural voice interactions. A common ap-
+proach is LLM-based automatic speech recognition (ASR),
+where a pretrained speech encoder is connected to a pretrained
+language model through a lightweight projection layer [1, 2,
+3, 4, 5, 6, 7]. In particular, SLAM-ASR achieves strong
+transcription performance without retraining the entire sys-
+tem [8, 9, 10, 11, 12].
+Rather than training from scratch, pretrained systems can be
+adapted to new domains through fine-tuning on domain-specific
+data, transferring learned representations [13, 14, 15]. However,
+adaptation to specialized domains such as healthcare or finance
+remains challenging because, although in-domain text is often
+abundant, labeled speech is expensive to collect.
+A standard adaptation strategy is to fine-tune the LLM us-
+ing in-domain transcripts only [16, 17]. However, this often
+creates a modality gap [18, 19, 10, 17, 20]: the model no
+longer receives representations similar to those produced by
+*These authors contributed equally.
+**indicates the corresponding author.
+the speech projector, weakening speech-text alignment. Exist-
+ing solutions, such as soft prompting, generally assume a text-
+only setting [19, 17, 20] and do not investigate whether limited
+target-domain speech can help preserve cross-modal alignment.
+In this work, we study adaptation across Banking, Insur-
+ance, Agriculture, and Musical Instruments domains, analyz-
+ing the effect of incorporating limited paired speech-text data
+through a mixed batching strategy. We compare in-domain and
+cross-domain adaptation settings to derive practical guidance
+for scenarios where target-domain text is plentiful, but speech
+resources are scarce.
+Our contributions are fourfold:(i)we analyze how the
+proportion of target-domain data in training batches affects
+the tradeoff between target-domain specialization and source-
+domain retention in LLM-based ASR;(ii)we propose a hy-
+brid adaptation method that incorporates limited paired speech-
+text data into a predominantly text-based setting, mitigating the
+modality gap introduced by text-only fine-tuning;(iii)we show
+that the proposed mixed batching strategy reduces catastrophic
+forgetting while improving target-domain recognition; and(iv)
+we release our source code for reproducibility.1
+2. Related Work
+LLM-Based ASR.Recent work in ASR has shifted toward
+modular architectures that couple pretrained self-supervised
+speech encoders such as wav2vec 2.0 [11], HuBERT [12], or
+WavLM [21], with LLMs such as LLaMA [22], or Vicuna [23]),
+through trainable projection layers that map continuous acoustic
+features into the LLM embedding space [1, 24, 25, 26]. In this
+work, we refer to this trainable projection module as thespeech
+projector, and to the overall architecture as anLLM-based ASR
+system. Recent studies demonstrate that such lightweight con-
+nectors, ranging from linear projections to Q-Former-style mod-
+ules, can yield competitive or state-of-the-art WER on bench-
+marks like LibriSpeech without retraining the entire LLM [1].
+Domain Adaptation in Low-Resource Scenarios.Adapting
+ASR systems to specialized domains such as healthcare, legal,
+and finance remains a practical necessity, as domain-specific
+terminology and discourse patterns often diverge significantly
+from general-purpose training corpora [9, 27]. In low-resource
+1https://github.com/idiap/
+llm-asr-text-only-adaptation
+6239
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3383
+scenarios, the primary bottleneck is the scarcity and cost of
+collecting in-domain speech data [28, 29], motivating research
+into text-only domain adaptation. Rather than retraining acous-
+tic models with new audio, these approaches adapt language
+models or decoding strategies using domain-specific documents
+such as reports, transcripts, or vocabulary lists. More recent
+work [10, 30] investigates zero-shot and semi-supervised adap-
+tation, where pretrained ASR models are specialized using tex-
+tual resources. Collectively, these approaches demonstrate that
+substantial domain-specific WER reductions can be achieved
+through efficient use of textual data, offering scalable solutions
+for low-resource deployment.
+However, fine-tuning LLMs on clean text degrades their
+ability to interpret “noisy” representations generated by up-
+stream speech projectors, leading to misalignment and degraded
+transcription quality [19]. To address this, prior work has ex-
+plored strategies such as soft prompting [10], where learned
+continuous tokens condition the LLM on speech features with-
+out rigid tokenization, and soft discretization techniques [4].
+3. Mixed Batching Strategy
+We consider a domain adaptation setting for LLM-based ASR.
+First, a base model is trained on source-domain paired speech-
+text data. This base system learns the initial speech–text align-
+ment and serves as the starting point for all experiments.
+We then adapt this pretrained model to a target domain
+using different fine-tuning strategies. Depending on the set-
+ting, the target-domain data may include text-only data, paired
+speech-text data, or a combination of both. The goal of adapta-
+tion is to improve recognition performance on the target domain
+while preserving performance on the original source domain.
+To mitigate the modality gap introduced by text-only adap-
+tation, we build upon the mixed batch composition strategy pro-
+posed in a previous study [19]. In that work, the authors inte-
+grate target-domain text-only data with source-domain auxiliary
+data during fine-tuning to preserve speech-text alignment and
+mitigate catastrophic forgetting while enabling adaptation with-
+out target-domain audio, by dividing each batch into a source
+portion (auxiliary data) and a target-domain portion
+In our experiments, we extend this strategy by integrating
+target-domain audio into the batch composition. More pre-
+cisely, similar to [19], the source data in the batch is composed
+of three segments:
+(1)Paired source speech-text(batch proportionσ a): the
+input to the model is a source-domain audio utterance, and the
+output is its corresponding transcript. This component allows
+the model to preserve the original audio-text alignment learned
+during base training.
+(2)Projector-induced noisy tokens(batch proportion
+σta): the input to the model is a discrete sequence obtained
+by mapping each speech projection to its nearest tokens in the
+LLM embedding space, and the output is the corresponding
+clean transcript. This helps the model to understand discrete
+text from projected speech representations.
+(3)Synthetically corrupted source transcripts(batch
+proportionσ t): the input to the model is a corrupted transcript
+generated through random character-level perturbations using
+nlpaug2 (with the same parameters as in the original paper),
+and the output is the original clean transcript. This discrete in-
+put sequence simulates the irregularities observed in projected
+2https://nlpaug.readthedocs.io/en/latest/
+augmenter/char/random.html
+speech-token representations without requiring audio.
+Following the paired speech-text and synthetically cor-
+rupted transcripts, the target portion of the batch consists of:
+(1)Paired target speech-text(batch proportionτ a): the in-
+put to the model is a target-domain audio utterance, and the out-
+put is its corresponding transcript. This component induces the
+adaptation in real target-domain acoustics and preserves speech-
+text alignment.
+(2)Corrupted target transcripts(batch proportionτ t):
+the input to the model is a corrupted target-domain transcript
+generated through the same character-level perturbations as in
+σt, and the output is the corresponding clean transcript. This
+component supports domain-specific adaptation using text-only
+supervision.
+Whileτ t controls domain-specific language modeling,τ a
+keeps the adaptation grounded in real target-domain speech and
+acoustics. From now on, we will refer the strategy described
+here as Mixed Batch (MB).
+4. Method
+4.1. LLM-based ASR Architecture
+In our experiments, the ASR system follows the SLAM-ASR
+framework [1]. The architecture consists of three main com-
+ponents: (i) a pretrained speech encoder, (ii) a trainable speech
+projector, and (iii) an LLM.
+Given a speech segmentX S, the speech encoder produces a
+sequence of acoustic representationsH S = [h S
+1,...,h S
+T ]over
+Ttime frames. To better match the token-level processing of
+the LLM, this sequence is temporally downsampled by a factor
+k, resulting inZ S = [z S
+1,...,z S
+N ]withN=T//k.
+The downsampled representations are then passed through
+a linear speech projector, which maps them into the LLM em-
+bedding space, producingE S. These projected embeddings are
+directly consumed by the LLM, together with a task-specific
+prompt that conditions the model for speech recognition. The
+LLM then autoregressively generates the output transcript.
+In our setup, we first train a base model using paired
+speech-text data from the source corpus (see Section 4.2). Dur-
+ing this stage, the speech encoder is kept frozen, while the
+speech projector is fine-tuned to learn the alignment between
+acoustic representations and the LLM embedding space. This
+results in a base ASR system adapted to the source domain.
+The base model is subsequently adapted to target do-
+mains using the various strategies described, by fine-tuning only
+LoRA adapters [31]. During adaptation, the speech encoder
+and the speech projector are frozen, and only the LoRA mod-
+ules inserted into the LLM are updated. This design enables
+parameter-efficient specialization to the target domain while
+preserving the previously learned speech–text alignment.
+For both base training and adaptation, models are
+trained for 5 epochs with a batch size of 10. The
+speech encoder isWavLM-Large[21], and the LLM is
+Llama-3.2-3B-Instruct[22].
+All experiments use a fixed instruction-style prompt.
+Specifically, the LLM input follows the template:
+<s>USER: Transcribe speech to text.
+Speech:{speech}
+ASSISTANT:{transcript}</s>
+where{speech}corresponds to the projected speech embed-
+dings. This prompt conditions the LLM to perform transcription
+in an instruction-following setup consistent with its pretraining.
+6240
+Table 1:Datasets used for training, validation, and testing in
+our experiments. From the DefinedAI corpus, we use Bank-
+ing (B), Insurance (I) and Healthcare (H) partitions. From
+the SlideSpeech corpus, we use Agriculture (Ag) and Musical
+Instruments (MI). We provide the total number of utterances
+(#Utts) and the duration (Hrs) of each partition.
+Dataset Domain Train Dev Test
+#Utts Hrs #Utts Hrs #Utts Hrs
+Source
+DefinedAI B/I/H 17,398 38h10 1,008 2h12 2,009 4h21
+Target
+DefinedAI B 26,704 36h20 1,625 2h08 3,111 4h16
+SlideSpeech Ag 30,498 29h20 1,679 1h43 3,470 3h26
+SlideSpeech MI 9,981 8h30 852 0h44 984 0h54
+4.2. Datasets and Domain Configuration
+Our experiments leverage two corpora, DefinedAI 3 and
+SlideSpeech [32]. The source-domain data comes from De-
+finedAI, encompassing Banking (B), Insurance (I), and Health-
+care (H) subsets. This dataset is used to pretrain the projector
+and serve as auxiliary data during LLM adaptation.
+The target-domain data consists of specific subsets from
+both corpora. From DefinedAI, we select the Banking parti-
+tion to train and evaluate in-domain adaptation. SlideSpeech
+contributes data from the Agriculture (Ag) and Musical Instru-
+ments (MI) domains, representing out-of-distribution scenarios
+with limited labeled audio. Table 1 summarizes the statistics for
+each dataset, including the number of utterances and total audio
+duration for training, development, and test splits.
+5. Results
+Before conducting the adaptation experiments, we first train a
+base ASR model exclusively on the source-domain data from
+the DefinedAI corpus, including the Banking, Insurance, and
+Healthcare partitions. This base model serves as the starting
+point for all subsequent experiments. We then perform domain
+adaptation on different target domains: (i) the in-domain De-
+finedAI Banking set, and (ii) out-of-distribution domains from
+the SlideSpeech corpus, namely Agriculture (Ag) and Musical
+Instruments (MI). All adaptation strategies described in the fol-
+lowing sections are applied to this same base model to ensure
+controlled comparisons across domains and training settings.
+5.1. Target Data Proportion in Text-Only Adaptation
+We investigate the effect of varying the proportion of target text
+data per batch (τt) in the text-only adaptation setting. No audio
+is included (τ a = 0); the remaining portion of a batch is split
+uniformly among the various types of source-domain text data.
+As shown in Figure 1, performance follows a clear tradeoff
+pattern. Increasingτ t initially improves recognition accuracy,
+reaching optimal performance aroundτ t = 50%. Beyond this
+point, performance degrades, reflecting a balance between: (1)
+Lowτ t: excessive reliance on auxiliary data, which may be re-
+peatedly sampled and lead to overfitting. (2) Highτ t: insuffi-
+cient exposure to auxiliary data, potentially causing underfitting
+and partial catastrophic forgetting.
+Based on these results, we adoptedτ=τ t +τ a = 50%
+in all experiments andσvalues being uniformly distributed, as
+3https://defined.ai/
+0 20 40 60 80
+t (%)
+6.50
+6.75
+7.00
+7.25
+7.50
+7.75
+8.00WER (%)
+Best ( t=50%)
+Quadratic fit
+Baseline (WER=8.02)
+Figure 1:Effect of different target text proportions (τ t) on
+mixed-batch adaptation on DefinedAI Banking.
+that seems to provide the best performance.
+5.2. Paired Speech-Text vs. Mixed-Batch Adaptation
+We now look at whether text-only adaptation combined with
+a small amount of audio can reduce the modality gap between
+text-only and paired speech-text training. Both in previous stud-
+ies [19, 8, 17] and in our current setup, we observe an important
+performance difference between the text-only adapted model
+and the speech-text adapted model. In particular, in our experi-
+ence, paired speech-text adaptation outperforms text-only adap-
+tation by 1.83% in absolute WER (≈29% relative improve-
+ment) on the Banking domain (4.55% vs. 6.38%), highlighting
+a substantial modality gap. We therefore investigate whether
+incorporating a small quantity of target-domain audio during
+adaptation can effectively bridge this gap, and if the system can
+get close to the best-case scenario where we have full audio.
+More specifically, we compare:
+•Speech-text adaptation, orstandard ASR adaptation, where
+the model is fine-tuned exclusively on various amount of la-
+beled speech with the associated transcript.
+•Mixed-batch adaptation, where text-based adaptation is
+complemented with a small quantity of audio speech with as-
+sociated transcript (i.e., text-only and paired speech-text to-
+gether comprise the full training set).
+We fine-tune the base model using different fractions of
+each corpus, including setups with very limited speech data.
+This allows us to study how the model adapts under low-
+resource conditions, where the available audio alone is insuffi-
+cient to achieve strong performance, as well as under scenarios
+with progressively more adaptation speech.
+Figure 2 shows that mixed-batch adaptation consistently
+outperforms paired speech-text training. Adding speech to a
+text-adapted model leads to larger gains than training on the
+same amount of paired speech-text. With only 10% of the adap-
+tation corpus containing speech (corresponding to 3h37, 2h55,
+and 50m for Banking, Agriculture, and Musical Instruments,
+respectively), we obtain performance comparable or better than
+using the full speech corpus. This suggests that text adaptation
+can improve an LLM’s domain-specific abilities, while addi-
+tional speech helps align audio representations with the embed-
+ding space of the LLM, thereby reducing the modality gap.
+6241
+0 20 40 60 80 100
+Target audio used (%)
+4
+5
+6
+7
+8WER (%)
+Standard ASR Adaptation
+Mixed Batch Adaptation
+Baseline (WER=8.02)
+100% audio (WER=4.55)
+(a)Banking
+0 20 40 60 80 100
+Target audio used (%)
+15
+20
+25
+30
+35
+40WER (%)
+Baseline: 41.05
+ Standard ASR Adaptation
+Mixed Batch Adaptation
+100% audio (WER=16.04) (b)Agriculture
+0 20 40 60 80 100
+Target audio used (%)
+16
+18
+20
+22
+24
+26
+28
+30
+32WER (%)
+Baseline: 31.18
+ Standard ASR Adaptation
+Mixed Batch Adaptation
+100% audio (WER=15.97) (c)Musical Instruments
+Figure 2:Performance of the base ASR and adapted models. The figure compares standard ASR adaptation using only paired
+speech–text data with mixed-batch adaptation combining paired speech–text and text-only samples. The x-axis indicates the pro-
+portion of speech in the adaptation data, ranging from 0% (text-only) to 100% (paired speech–text).
+Across all target domains, we observe that mixed-batch
+adaptation achieves its peak performance when approximately
+60% of the corpus consists of paired speech-text examples, after
+which the gains slightly decrease. We hypothesize that this be-
+havior arises from the presence of synthetically generated noisy
+transcripts in the batch, which introduce additional diversity in
+the inputs, which seems to help the model learn more robust
+mappings between speech and text representations. It seems
+that mixed batching not only leverages the benefits of target-
+domain text adaptation, but could improve generalization under
+low-resource conditions.
+However, as the amount of available speech increases, the
+performance difference between the two strategies gradually di-
+minishes. When sufficient speech data is available, both ap-
+proaches converge toward similar recognition accuracy (with
+respect to mixed-batch adaptation and paired speech-text adap-
+tation:4.19%vs.4.55%for Banking,15.91%vs.16.04%for
+Agriculture,16.97%vs.15.97%for Musical Instruments), in-
+dicating that audio supervision alone eventually becomes suffi-
+cient. For in-domain adaptation (Banking), mixed-batch adap-
+tation still shows a slight advantage, likely due to the contribu-
+tion of auxiliary data drawn from the same domain.
+5.3. Analysis of Catastrophic Forgetting
+To assess the impact of adaptation on previously learned knowl-
+edge, we evaluate all systems on both source-domain and target-
+domain test sets. In this analysis, the source domain corre-
+sponds to the DefinedAI (B/I/H) data used for base training,
+while the target domain is the DefinedAI Banking subset. This
+setup allows us to quantify potential catastrophic forgetting.
+As shown in Figure 3, the base model achieves a WER of
+12.8% on the source domain and 8.0% on the target domain.
+This indicates that, in our setup, the target test set is inherently
+easier than the source data for speech recognition. When adapt-
+ing using paired speech-text (with 20% of target audio), we ob-
+serve a clear degradation in the source domain, even though the
+adaptation remains in-domain. While recognition improves on
+the target domain, the substantial accuracy drop in the source
+domain is evidence of catastrophic forgetting. In contrast, text-
+only and mixed-batch adaptation result in an improvement in
+target-domain performance while limiting degradation on the
+source domain.
+Base Text-only MB Audio-text MB Std ASR FT
+Training Setting
+0.0
+2.5
+5.0
+7.5
+10.0
+12.5
+15.0
+17.5
+20.0WER (%)
+12.8
+11.5 11.3
+17.4
+8.0
+6.4
+4.5
+6.0
+ForgettingSource domain
+Target domain
+Base (source)
+Figure 3:Performances of base system and adapted model with
+text-only, paired speech-text and mixed-batch adaptation. For
+both audio-adaptation settings, the share of speech data is 20%.
+6. Conclusions
+we have investigated domain adaptation for LLM-based ASR
+in settings where target-domain speech is limited, while textual
+data is abundant. We identified the modality mismatch intro-
+duced by text-only fine-tuning as a key factor behind perfor-
+mance degradation and proposed a hybrid batching strategy that
+mixes speech-text pairs with text to address this issue.
+By integrating auxiliary source data with both corrupted tar-
+get text and a controlled proportion of target-domain audio, our
+approach preserves speech-text alignment while enabling effec-
+tive domain adaptation. Through systematic experiments, we
+showed that using our hybrid batch method, even with modest
+amounts of target-domain audio, substantially improves recog-
+nition accuracy and mitigates catastrophic forgetting. Notably,
+combining text data with a small fraction of audio can outper-
+form adaptation using the full audio dataset, highlighting the
+data efficiency of the proposed strategy.
+We also observed a clear tradeoff between adapting to the
+target domain and preserving performance on the source do-
+main, with respect to the batch composition. Our findings pro-
+vide practical modeling guidelines for real application scenar-
+ios.
+6242
+7. Acknowledgments
+This work was supported by an Idiap Research Institute and
+Uniphore collaboration project. Part of this work was also sup-
+ported by EU Horizon 2020 project ELOQUENCE.
+8. Generative AI Use Disclosure
+Generative AI was used to proofread the paper, fix orthographic
+and grammatical errors, and shorten the length of some sections.
+9. References
+[1] Z. Ma, G. Yang, Y . Yang, Z. Gao, J. Wang, Z. Du, F. Yu,
+Q. Chen, S. Zheng, S. Zhanget al., “An embarrassingly sim-
+ple approach for LLM with strong ASR capacity,”arXiv preprint
+arXiv:2402.08846, 2024.
+[2] M. Wang, W. Han, I. Shafran, Z. Wu, C.-C. Chiu, Y . Cao, N. Chen,
+Y . Zhang, H. Soltau, P. K. Rubensteinet al., “SLM: Bridge the
+thin gap between speech and text foundation models,” in2023
+IEEE Automatic Speech Recognition and Understanding Work-
+shop (ASRU). IEEE, 2023, pp. 1–8.
+[3] W. Yu, C. Tang, G. Sun, X. Chen, T. Tan, W. Li, L. Lu, Z. Ma, and
+C. Zhang, “Connecting speech encoder and large language model
+for asr,” inICASSP 2024-2024 IEEE International Conference on
+Acoustics, Speech and Signal Processing (ICASSP). IEEE, 2024,
+pp. 12 637–12 641.
+[4] M. Yang, S.-J. Chen, J. Xie, and H. L. John Hansen, “Bridg-
+ing the modality gap: Softly discretizing audio representation for
+LLM-based automatic speech recognition,” in2025 IEEE Auto-
+matic Speech Recognition and Understanding Workshop (ASRU),
+2025, pp. 1–7.
+[5] S. Kumar, I. Thorbecke, S. Burdisso, E. Villatoro-Tello, M. KE,
+K. Hacio ˘glu, P. Rangappa, P. Motlicek, A.

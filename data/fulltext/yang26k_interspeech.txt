@@ -1,0 +1,484 @@
+HARP: Harmonic-Aware Residual Partitioning for Neural Audio Codecs
+Qiaoyu Yang1, Lixing He2,3, Binyue Deng1, Weifeng Zhao3
+1 Georgia Institute of Technology, Atlanta, United States
+2 The Chinese University of Hong Kong, Hong Kong, China
+3 Tencent Music Entertainment, Shenzhen, China
+qyang312@gatech.edu
+Abstract
+Neural audio codecs with residual vector quantization (RVQ)
+normally treat all frequencies uniformly, so their codebooks be-
+come spectrally entangled. Truncating stages then removes an
+unpredictable mix of frequencies. Parallel band decomposition
+addresses this by splitting audio into independent bands, but
+fragments the latent space and loses cross-frequency coherence.
+We introduce HARP (Harmonic-Aware Residual Partitioning),
+a training strategy that partitions RVQ stages into frequency-
+ordered groups where each group refines its target band while
+the decoder retains access to all lower frequencies. Overtones
+are reconstructed in the context of their fundamentals, preserv-
+ing coherence that parallel methods lose. HARP requires no
+architectural changes; it only modifies the training loss, leav-
+ing inference identical to standard RVQ. On speech, music, and
+general audio, HARP outperforms both standard RVQ and par-
+allel decomposition. MUSHRA listening tests also show per-
+ceptual improvements.
+Index Terms: neural audio codec, residual vector quantization,
+perceptual audio coding
+1. Introduction
+Neural audio codecs [1, 2, 3] compress speech, music, or en-
+vironmental sound directly from data, matching or exceeding
+classical codecs at low bitrates. Beyond compression, they pro-
+duce discrete tokens that bridge continuous audio and language
+models, enabling speech synthesis [4], music generation [5, 6],
+and audio understanding.
+Most modern neural audio codecs rely on residual vector
+quantization (RVQ): each stage quantizes the residual left by
+earlier stages, progressively refining a single latent space. This
+provides flexible bitrate control (more stages, higher fidelity)
+and a token stream well suited to autoregressive modeling, all
+within a single encoder–decoder pair.
+RVQ, however, is frequency-agnostic. Each stage captures
+whatever content reduces residual error most, without regard
+for spectral structure. This becomes apparent when truncating a
+pretrained DAC model to fewer stages for low-bitrate operation:
+the resulting artifacts vary unpredictably, sometimes removing
+bass entirely, sometimes treble, with no consistency across in-
+puts. Computing spectral centroids for each of the nine code-
+book stages reveals that they all cluster in a narrow range with
+high variance. Stage 1 covers roughly the same frequency mix
+as stage 9. We refer to this asspectral entanglement. It ren-
+ders the representation difficult to interpret and, more practi-
+cally, makes bitrate scaling unpredictable.
+This is consequential because audio is far from spectrally
+flat. Bass (20–250 Hz) dominates signal energy; midrange
+(250 Hz–4 kHz) carries speech intelligibility and melody; treble
+(4–20 kHz) adds brightness and texture. A codec should prior-
+itize perceptually foundational content in early stages. Further-
+more, frequency bands are not independent: a violin at 440 Hz
+produces harmonics at 880, 1320, and 1760 Hz, all phase-
+locked. Disrupting that coherence yields hollow timbre. Speech
+exhibits the same property: vowel identity depends on the am-
+plitude relationship between a fundamental and its overtones.
+Parallel band decomposition [7] addresses spectral structure
+by splitting audio into frequency bands via filterbanks, encod-
+ing each with a separate network, and quantizing independently.
+This achieves band-level specialization but fragments the repre-
+sentation: multiple encoders, multiple token streams, and iso-
+lated decoders. When reconstructing midrange, the decoder has
+no access to the bass content. Harmonics that span bands must
+be recombined implicitly, with no guarantee of phase or ampli-
+tude coherence.
+We propose a third path. HARP (Harmonic-Aware
+ResidualPartitioning) trains RVQ stages to form a frequency
+hierarchywithinthe standard architecture: early stages cap-
+ture bass, middle stages add midrange, and later stages refine
+treble. The termharmonic-awarerefers to the preservation of
+cross-band phase and amplitude relationships through cumula-
+tive decoding, rather than an assumption of musically harmonic
+input; the mechanism applies equally to polyphonic music, in-
+harmonic sounds, and noise-like content, since energy concen-
+tration in low-to-mid bands is a property of natural audio in gen-
+eral. The core mechanism is straightforward: each stage group
+refines its target band while the decoder retains access to all
+lower-frequency content. When learning to produce midrange,
+the decoder receives the bass latent, so a 200 Hz fundamental is
+available to guide coherent reconstruction of its overtones. We
+term thiscumulative decoding.
+Two additional training-time mechanisms complement cu-
+mulative decoding. First, we supervise each group’scontribu-
+tion, the spectral improvement it adds over previous groups,
+rather than the cumulative output, keeping each group focused
+on its designated frequency region (subband contribution super-
+vision). Second, we apply learnable Gaussian weights over mel
+bins to softly steer each group toward its target band, avoiding
+the sharp cutoff boundaries that empirically produce edge arti-
+facts (soft band weighting).
+At inference, HARP is identical to standard RVQ: no ad-
+ditional parameters or forward passes, and the same unified to-
+ken stream. The hierarchical structure resides in the learned
+codebooks, not the architecture. Bitrate scaling becomes pre-
+dictable. Dropping later stages removes treble before bass, so
+quality degrades gracefully rather than erratically.
+Contributions.(1) We characterize spectral entanglement
+in standard RVQ and harmonic incoherence in parallel band
+decomposition as complementary failure modes. (2) We pro-
+2771
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1759
+Figure 1:Overview of the HARP pipeline. Nine RVQ stages are partitioned into four groups targeting progressively higher frequency
+bands. At each group boundary, the cumulative latent (ˆz≤k) is decoded and its mel-spectrogram contribution is supervised against a
+band-weighted reference (−1denotes subtraction of the previous group’s output). At inference, only a single encoder–decoder forward
+pass is needed, identical to standard RVQ.
+pose HARP, a training-only strategy that imposes frequency
+hierarchy on RVQ through cumulative decoding and soft sub-
+band supervision, requiring no architectural changes. (3) We
+demonstrate that HARP outperforms both standard RVQ and
+parallel decomposition across speech, music, and general audio,
+with gains confirmed by objective metrics and MUSHRA listen-
+ing tests at two bitrate conditions. Pre-trained models, training
+scripts, and audio samples are publicly available.1
+2. Related Work
+2.1. Neural Audio Codecs
+End-to-end neural audio compression pairs a learned encoder–
+decoder with a discrete bottleneck, trained jointly with recon-
+struction and adversarial losses. SoundStream [1] established
+the dominant recipe, a convolutional encoder–decoder with
+residual vector quantization (RVQ) and multi-scale discrimina-
+tors. Encodec [2] follows Soundstream with improved multi-
+objective loss balancing and DAC [3] with periodic Snake acti-
+vations [8] and stronger discriminators at 44.1 kHz.
+Several lines of work extend this foundation along differ-
+ent axes. On thequantizationside, HiFi-Codec [9] partitions
+the latent into groups with separate RVQ chains, and WavTok-
+enizer [10] replaces multi-stage RVQ with a single large code-
+book aligned with semantic information. On thetoken design
+side, SNAC [11] operates quantizers at different frame rates to
+capture multi-scale structure, FlexiCodec [12] dynamically al-
+locates frame rates based on content complexity, and SpeechTo-
+kenizer [13] distills semantic information from self-supervised
+1https://github.com/QiaoyuYang/HARP
+models into the first RVQ codebook, separating semantic con-
+tent from acoustic detail across stages. On thebackbone ar-
+chitectureside, FlowDec [14] replaces adversarial training with
+a conditional flow matching postfilter, matching GAN-based
+quality on 48 kHz general audio with improved harmonic re-
+construction, and Parker et al. [15] scale a transformer-based
+codec to 1B parameters with an FSQ bottleneck, achieving
+high-quality speech at 400–700 bps.
+Across all of these designs, RVQ stages or their equivalents
+remain spectrally unstructured. No stage is explicitly assigned
+to any frequency region.
+2.2. Quantization Strategies
+VQ-V AE [16] popularized discrete latent bottlenecks for gen-
+erative modeling. RVQ [1] decomposes quantization across
+a cascade of codebooks, each encoding the residual from the
+previous stage, yielding a coarse-to-fine representation and
+flexible bitrate control. Product quantization [17] partitions
+the latent vector into subvectors quantized independently, and
+group-residual VQ [9] extends this idea by assigning a sepa-
+rate RVQ chain to each group. SRCodec [18] further refines
+the split: it divides the latent into two equal-dimension parts
+via an attention-driven dual module, then quantizes the low-
+dimensional part and the residual between the two, improving
+coding efficiency at low bitrates.
+A recent line of work seeks to simplify or replace the VQ
+codebook entirely. Finite scalar quantization (FSQ) [19] quan-
+tizes each latent dimension independently to a small set of
+fixed values, forming an implicit codebook as the Cartesian
+product of per-dimension levels; this eliminates codebook col-
+2772
+lapse and the associated machinery of commitment losses, re-
+seeding, and entropy penalties. Binary spherical quantization
+(BSQ) [20] projects embeddings onto a hypersphere and ap-
+plies binary quantization, yielding parameter-free codebooks
+that scale to arbitrary token dimensions with high compression
+ratios. SimVQ [21] reparameterizes codebook vectors through
+a learnable linear transformation over a latent basis, ensuring all
+codes receive gradient updates and maintaining near-complete
+utilization even at codebook sizes exceeding 200k entries.
+These quantization strategies address codebook capacity,
+utilization, and scalability, but none impose spectral ordering
+on RVQ stages. HARP is orthogonal to the choice of quan-
+tizer variant and can in principle be applied atop any RVQ-based
+codec.
+2.3. Frequency-Aware Neural Audio Compression
+Several neural codecs depart from full-band processing by
+introducing explicit frequency structure into the encoding
+pipeline.
+Parallel band decomposition.BSCodec [7] partitions the
+input spectrogram into frequency bands via fixed binary masks,
+then passes each band through a dedicated encoder–decoder
+and quantizer, yielding parallel token streams. Reconstruction
+is performed independently per band, so harmonics that span
+band boundaries must be recombined without direct cross-band
+interaction, and the resulting multi-stream bitrate complicates
+autoregressive language modeling. SPCODEC [22] adopts a
+lighter design: the latent embedding is split along the channel
+dimension into low- and high-frequency components, with the
+low-frequency component supervised by a reconstruction loss
+and the high-frequency component decorrelated from it via an
+attention-based prediction module to reduce bitrate. A single
+shared decoder reconstructs from both components, preserving
+cross-band access, though two codebook streams are still pro-
+duced.
+Spectral-domain codecs.TF-Codec [23] operates on a
+complex STFT spectrogram and introduces a learnable scalar
+power-law compression on the amplitude, which shifts the en-
+coder’s effective attention between dominant and fine-grained
+spectral components as a function of bitrate, without partition-
+ing the spectrum into separate processing paths. APCodec [24]
+encodes amplitude and phase spectra through parallel branches
+for improved high-frequency reconstruction. Both approaches
+embed frequency sensitivity into the input representation rather
+than into the quantization structure.
+Frequency disentanglement.[25] trains a two-branch
+codec at 16 kHz and 32 kHz, where the second branch encodes
+the residual signal left by the first. Frequency hierarchy is im-
+posed through the branching architecture rather than through
+modifications to the training objective of a shared model.
+HARP differs from all of these in that frequency special-
+ization emerges within a single encoder, decoder, and token
+stream, with no architectural changes; only the training loss is
+modified. Cumulative decoding additionally ensures that each
+successive RVQ stage has access to lower-frequency recon-
+structions, preserving harmonic structure that band-partitioned
+designs sacrifice by construction.
+2.4. Perceptual Coding and Psychoacoustic Bit Allocation
+Classical audio codecs distribute coding capacity accord-
+ing to psychoacoustic models of human auditory perception.
+MP3 [26] and AAC exploit critical-band analysis, simultane-
+ous masking, and temporal masking to concentrate precision
+in perceptually salient regions and withhold bits from masked
+ones. Opus [27] pairs a linear-predictive coder (SILK) with an
+MDCT-based transform coder (CELT), selecting between them
+based on signal characteristics. Across these designs, a con-
+sistent empirical finding motivates the architecture: perceptual
+salience is strongly non-uniform across frequency, with low and
+mid frequencies dominating speech intelligibility and musical
+pitch, and high frequencies contributing timbral texture that tol-
+erates coarser quantization.
+End-to-end neural codecs have largely replaced explicit
+psychoacoustic models with learned perceptual surrogates—
+multi-resolution STFT losses, mel-spectrogram distances, and
+adversarial objectives. MUFFIN [28] departs from this trend by
+introducing Multi-Band Spectral RVQ (MBS-RVQ), which ap-
+plies an FFT to the encoder’s latent representation to isolate fre-
+quency bands, then allocates quantization capacity across bands
+according to psychoacoustic salience. Separate codebooks are
+used for content and speaker information. Unlike the band-
+split architectures, frequency partitioning in MUFFIN occurs
+entirely within the quantization bottleneck and operates on la-
+tent features rather than the input spectrogram, leaving the en-
+coder and decoder architecturally unmodified. Without such ex-
+plicit allocation, the distribution of information across standard
+RVQ stages is not constrained to reflect perceptual importance.
+HARP recovers frequency-prioritized allocation through
+supervision on the mel scale during training, without modifying
+codec architecture or hand-specifying psychoacoustic targets.
+3. Background
+3.1. Neural Audio Codec Architecture
+A neural audio codec comprises an encoderE, a quantizerQ,
+and a decoderG. Given a waveformx∈R T , the encoder pro-
+duces a continuous latent representationz=E(x)∈R D×T ′
+,
+whereT ′ =T/Sis determined by the cumulative strideSof
+the convolutional backbone (typicallyS∈{320,512}at 24–
+44.1 kHz). The decoder reconstructs a waveform from the quan-
+tized latent:ˆx=G(ˆz). Both encoder and decoder are built
+from residual convolutional blocks, with strided convolutions
+handling temporal downsampling and upsampling respectively.
+A standard choice of nonlinearity for audio generation is
+the Snake activation [8],
+Snakeα(x) =x+ sin2(αx)
+α ,(1)
+which is periodic and monotonic, with a learnable frequency
+parameterαthat controls the rate of the periodic modulation.
+Originally proposed for learning periodic functions in general
+regression settings, Snake was adopted for neural audio codecs
+by DAC [3], where the harmonic and quasi-periodic structure of
+audio makes a periodic inductive bias particularly well-suited.
+3.2. Residual Vector Quantization
+Vector quantization (VQ), as used in VQ-V AE [16], discretizes
+a continuous vector by mapping it to the nearest entry in a
+learned codebookC={c 1,...,c N}⊂R d:
+Q(z) = arg min
+c∈C
+∥z−c∥ 2.(2)
+A single codebook of practical size cannot represent the full
+range of audio latents at acceptable fidelity. Residual vector
+quantization (RVQ) [1] addresses this by applyingLVQ stages
+2773
+sequentially, each operating on the residual left by the previous
+stage:
+r(1) =z,(3)
+q(ℓ) =Q (ℓ)(r(ℓ)),(4)
+r(ℓ+1) =r (ℓ)−q (ℓ),(5)
+with the final quantized representationˆz= PL
+ℓ=1q(ℓ). At
+frame ratef, usingLstages withN-entry codebooks yields a
+bitrate ofL·log 2(N)·fbps. The sequential residual structure
+means that early stages capture coarse signal structure while
+later stages refine progressively finer detail—a property that
+HARP exploits through targeted supervision.
+3.3. Mel-Spectrograms
+The mel-spectrogram maps a power spectrum to a compact per-
+ceptual representation via a mel-scaled filterbank,
+M(x) = log (Wmel·|STFT(x)| 2 +ϵ
+
+,(6)
+whereW mel∈R M×F projectsFlinear frequency bins ontoM
+mel-scale bins. The mel scale allocates more bins to lower fre-
+quencies, approximating the non-uniform frequency resolution
+of the cochlea and broadly reflecting the perceptual importance
+of different spectral regions. We useM= 80mel bins span-
+ning 0–22 kHz. This perceptual frequency weighting is central
+to the supervision strategy of HARP, where losses are applied at
+mel scale to encourage RVQ stages to specialize by perceptual
+frequency band.
+3.4. Training Objectives
+Codec training combines reconstruction, adversarial, and quan-
+tization losses. Thereconstruction losspenalizes spectral dif-
+ferences at multiple resolutions,
+Lrec =
+X
+s
+(∥∆s∥1 +∥∆s∥2) +∥M(x)−M(ˆx)∥ 1,(7)
+where∆ s =
+|STFTs(x)|−|STFT s(ˆx)|
+ is the absolute
+magnitude difference at STFT scales[29], andM(·)denotes
+the mel-spectrogram defined in Section 3.3. Theadversarial
+lossfrom multi-period and multi-scale discriminators [30] en-
+courages perceptual realism beyond what reconstruction met-
+rics alone capture.
+Quantization introduces a non-differentiable argmin,
+through which gradients are passed via the straight-through es-
+timator [31]. Two auxiliary losses align the encoder and code-
+book. Thecommitment losstrains the encoder to stay close to
+its assigned codeword,
+Lcommit =
+LX
+ℓ=1
+r(ℓ)−sg
+h
+q(ℓ)
+i
+2
+2
+,(8)
+wheresg[·]is the stop-gradient operator, which prevents the loss
+from acting on the codebook. The complementarycodebook
+lossmoves codebook entries toward the encoder outputs,
+Lcb =
+LX
+ℓ=1
+sg
+h
+r(ℓ)
+i
+−q (ℓ)
+
+2
+2
+,(9)
+with the stop-gradient now on the encoder output so the loss
+acts only on the codebook. In practice, the codebook loss has
+a closed-form solution equivalent to assigning each entry to the
+mean of its assigned vectors; many codecs therefore replace it
+with exponential moving average updates [1, 2, 16], while oth-
+ers retain explicit gradient-based codebook learning [3].
+4. Method
+HARP modifies only the training objective. Architecture and
+inference are identical to standard RVQ, incurring no additional
+cost at deployment.
+4.1. Design Motivation
+We seek to partition RVQ stages by frequency while preserv-
+ing harmonic coherence across bands. A natural first attempt—
+applying bandpass filters directly to the supervision targets
+of each stage group—performs poorly: rectangular frequency
+splits (zero weight outside each target band) introduce discon-
+tinuities at band edges, and stages in adjacent groups have no
+incentive to coordinate. We identify three requirements for a
+viable solution.
+R1: Hierarchical specialization.Early stages should cap-
+ture bass and later stages treble, consistent with both energy
+distribution (low frequencies dominate) and perceptual priority
+(bass provides the harmonic foundation).
+R2: Harmonic context.Higher-frequency stages must
+have access to lower-frequency content during training. A
+midrange partial at 800 Hz should be reconstructed with knowl-
+edge that its 200 Hz fundamental is already represented.
+R3: Soft boundaries.Rectangular frequency splits—
+where the supervision weight is set to zero outside the tar-
+get band—produce band-edge artifacts and prevent stages from
+capturing cross-band transients; boundaries should emerge as
+learned preferences rather than rigid constraints.
+Standard RVQ satisfies R2 and trivially satisfies R3 (no
+boundaries exist), but does not exhibit R1. Parallel subband
+decomposition achieves R1 and can satisfy R3, but violates R2
+because each band’s decoder operates on an isolated represen-
+tation. HARP satisfies all three.
+4.2. Hierarchical Stage Groups
+We partitionLRVQ stages intoKordered groups, each target-
+ing a frequency band from low to high. LetSk denote the stage
+indices assigned to groupk. Table 1 shows the default config-
+uration forL=9,K=4with a 3-2-2-2 stage allocation. Three
+codebooks are allocated to bass to reflect its energy dominance
+and perceptual importance. These frequency ranges are approx-
+imate targets enforced through soft supervision, not rigid binary
+constraints.
+Table 1:Default stage group configuration (L=9,K=4).
+GroupkStagesS k Band Frequency
+0 1–3 Bass 0–1 kHz
+1 4–5 Low-mid 1–4 kHz
+2 6–7 High-mid 4–10 kHz
+3 8–9 Treble 10–22 kHz
+4.3. Cumulative Decoding
+To preserve harmonic context (R2), each group’s reconstruction
+is computed from thecumulativequantized latent rather than
+2774
+from that group’s contribution alone. LetGdenote the shared
+decoder andq (ℓ) the quantized output of theℓ-th RVQ stage.
+The cumulative latent through groupkis:
+ˆz≤k =
+kX
+j=0
+X
+ℓ∈Sj
+q(ℓ),(10)
+with corresponding waveformˆx≤k =G(ˆz≤k). We setˆz≤−1 =
+0andˆx ≤−1 = 0as base cases. BecauseGreceives all
+lower-frequency contributions when reconstructing groupk,
+each higher band is supervised in the presence of its harmonic
+context. This is the key distinction from parallel decomposition,
+where each band’s decoder operates on an isolated latent.
+4.4. Subband Supervision
+To encourage spectral specialization (R1), we supervise each
+group individually using a frequency-weighted mel reconstruc-
+tion loss applied to that group’s isolated waveform contribution.
+Let
+ˆzk =
+X
+ℓ∈Sk
+q(ℓ) (11)
+denote groupk’s latent increment, so thatˆz≤k = ˆz≤k−1 + ˆzk.
+Applying the band loss directly toˆx≤k =G(ˆz≤k)would
+create a gradient imbalance: sinceˆz≤k containsˆz≤k−1, gradi-
+ents fromL (k)
+band would propagate into all prior groups through
+the encoder, causing group 0 to accumulate encoder gradients
+from allKband losses while groupK−1receives gradients
+only from its own. To prevent this, we apply stop-gradient to
+ˆz≤k−1 inside the decoder call and subtract the stopped prior
+output, isolating gradients entirely to groupk’s latent increment
+ˆzk. Using the stop-gradient operatorsg[·]from Section 3.4, de-
+fine:
+ˆxk =G
+ 
+sg[ˆz≤k−1] + ˆzk
+
+−sg[ˆx≤k−1],(12)
+ˆxk is groupk’s waveform increment: the change in decoded
+output attributable solely to groupk. The two stop-gradients
+work in concert — the first blocks gradient flow throughˆz≤k−1
+inside the decoder, and the second ensures the subtracted prior
+waveformˆx≤k−1 contributes no gradient at all. SinceGis non-
+linear,ˆxk̸=G(ˆzk); the prior latent is retained as context for
+the decoder while being excluded from the gradient path. Note
+that codebook entries are updated via the commitment lossL vq
+using straight-through estimation and are not directly targeted
+byL (k)
+band. All groups are jointly updated by the standard recon-
+struction and adversarial losses computed on the final output
+ˆx≤K−1.
+4.5. Soft Band Weighting
+To encourage spectral specialization without imposing rectan-
+gular cutoff boundaries (R3), we weight the band loss for group
+ktoward its target frequency range using a normalized Gaussian
+over theMmel bins defined in Section 3.3:
+˜wk(m) =β+ (1−β) exp (−(m−µ k)2/2σ2
+k),(13)
+whereµ k is a learnable center frequency (in mel bins),σ k
+a learnable bandwidth, andβ∈(0,1)a fixed floor that re-
+tains weak supervision across the

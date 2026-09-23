@@ -1,0 +1,447 @@
+Audio-KWS-Gated Error Memory Retrieval for Incremental ASR
+Post-Correction
+Taira Ashikawa1, Daichi Hayakawa 1, Takehiko Kagoshima1, Tomoki Watanabe1
+1 Corporate Laboratory, Toshiba Corporation, Japan
+taira.ashikawa.f40@mail.toshiba, daichi.hayakawa.r26@mail.toshiba,
+takehiko.kagoshima.r78@mail.toshiba, tomoki.watanabe.r70@mail.toshiba
+Abstract
+ASR has improved, yet rare and domain-specific terms remain
+challenging. LLMs enable second-pass post-correction without
+retraining an ASR model. In long-running use, correction logs
+can be reused to fix recurring errors, but full-history prompting
+is limited by the LLM context window, and text-only selection
+is brittle when trigger terms are misrecognized. We propose an
+incremental post-correction framework with Audio-KWS-gated
+retrieval, where Audio-KWS detects keywords from audio to
+select relevant correction records within the context window.
+We proceed in three steps: (i) LLM-based error analysis extracts
+correction pairs to update a keyword inventory, (ii) Audio-KWS
+runs on audio to detect Top-N keywords and retrieve correction
+records (using phonetic readings as keywords for Japanese), and
+(iii) the LLM applies record-guided edits. On Earnings-21 and
+CSJ, our method achieves about 70% prompt reduction (Top-
+20 English; Top-10 Japanese) while improving WER/CER and
+Bias-F1.
+Index Terms: automatic speech recognition, post-transcription
+correction, large language models, keyword spotting, prompt
+compression
+1. Introduction
+End-to-end automatic speech recognition (ASR) has advanced
+rapidly through large-scale training on diverse audio, enabling
+robust generalization without dataset-specific fine-tuning [1, 2].
+Despite these advances, ASR systems still struggle with rare
+and domain-specific terms, such as technical terminology and
+named entities [3].
+A common remedy is domain adaptation, such as fine-
+tuning or lexicon augmentation, but these approaches incur op-
+erational costs and long iteration cycles, especially in dynamic
+domains (e.g., finance and news, where new entities emerge
+continuously) [4]. An alternative is inference-time contextu-
+alization, in which domain terms are provided as prompts or
+biasing lists to the ASR decoder to improve recall of rare words
+[5]. However, these approaches are limited by prompt-length
+constraints: as the domain vocabulary grows, many terms no
+longer fit in the prompt or bias list. Moreover, large biasing lists
+may also hurt accuracy, limiting scalable contextualization.
+Recent progress in large language models (LLMs) has mo-
+tivated ASR post-correction, where an LLM refines ASR hy-
+potheses in a second pass without modifying the underlying
+ASR system [6]. Complementary work has explored prompt-
+ing strategies such as task-activating prompting (instructions
+plus demonstrations), where few-shot in-context learning can
+outperform zero-shot prompting [7]. In practical deployments,
+incremental post-correction can reuse previously corrected con-
+text, allowing a correction history (“error memory”, e.g., cor-
+rection logs) to accumulate and support fixes for recurring er-
+rors [8, 9]. However, the growing history quickly runs into the
+LLM context window limit, making full-history prompting in-
+creasingly costly and sometimes infeasible. Consequently, the
+history must be filtered to records relevant to what was spoken
+in the current audio segment.
+In practice, selecting which correction records to reuse
+based only on noisy ASR hypotheses can be brittle: when
+the trigger term is misrecognized, text-driven retrieval may fail
+to retrieve the needed records [10, 11]. This motivates us-
+ing audio-grounded cues to select correction history, reducing
+missed retrievals when the trigger term is corrupted in the hy-
+pothesis.
+To address this LLM context window bottleneck, we use
+audio keyword spotting (Audio-KWS) as a retrieval cue, includ-
+ing only correction records that are likely relevant to the current
+utterance. By scoring a keyword inventory against the input au-
+dio, Audio-KWS enables selective retrieval without full-history
+prompting.
+Contributions.
+• We propose an incremental LLM-based ASR post-correction
+framework that scales under the LLM context window limit
+by using Audio-KWS-gated retrieval to select utterance-
+relevant correction records.
+• We derive a dynamically expanding keyword inventory from
+LLM-based error analysis, indexing both canonical forms
+and misrecognized variants; for Japanese, we index phonetic
+readings to support robust retrieval.
+• We evaluate on Earnings-21 (English) and CSJ (Japanese),
+showing substantial prompt-length reduction while preserv-
+ing or improving post-correction accuracy and bias-word re-
+covery.
+2. Related Work
+2.1. LLM-based Post-Correction
+ASR post-correction refines an ASR hypothesis in text space
+to improve readability and accuracy without modifying the un-
+derlying ASR model. LLMs can serve as practical second-pass
+correctors even when the ASR is only available as a black-box
+service (e.g., contact-center transcripts) [4].
+Prior work improves robustness by leveraging additional
+ASR outputs (e.g., N-best lists) and by constraining the edit-
+ing space, improving correction quality and controllability
+[12, 13]. Other studies examine prompting strategies (e.g., task-
+activating prompting) [7] and staged verification/validation to
+mitigate hallucinations and over-correction [14]. Multi-turn
+and incremental frameworks perform segment-wise correction
+while carrying forward previously corrected context [8, 9].
+4779
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-363
+Scalability challenge (prompt growth). Reusing correction
+history helps address recurring errors without retraining the
+ASR model, but prompting with the full history increases cost
+and can exceed the LLM context window limit in long-running
+deployments.
+Our position. Existing post-correction work improves quality
+and controllability, but has not explicitly addressed how to reuse
+an expanding correction history within the LLM context win-
+dow. We address this by retrieving an utterance-relevant subset,
+rather than prompting with the full history.
+2.2. LLM Prompt Compression for ASR Post-Correction
+Long-running LLM workflows often face prompt growth as
+rules, examples, and history accumulate, increasing cost and
+sometimes degrading behavior. Prompt compression and long-
+term memory management aim to mitigate these issues [15, 16,
+17, 18].
+ASR-specific limitation of text-centric retrieval. In ASR
+post-correction, deciding which correction-history records to
+reuse should reflect what was spoken, yet selection is often
+text-driven and relies on the noisy hypothesis. When the trig-
+ger term is misrecognized, text-only retrieval can miss the rel-
+evant correction-history records [11]. Phonetic and audio cues
+can also help correction, especially for rare or domain-specific
+terms [19].
+Our position. Thus, while prompt compression and memory
+methods are largely text-centric, we use audio-grounded cues
+to retrieve an utterance-relevant subset of the correction history.
+2.3. Audio-KWS and Contextual Biasing
+Audio keyword spotting (Audio-KWS) detects target terms in
+speech, and open-vocabulary variants support user-defined or
+rapidly changing keywords via cross-modal audio-text match-
+ing [20, 21, 22, 23].
+ASR contextual biasing with Audio-KWS. Audio-KWS is
+also related to contextual biasing in end-to-end ASR, where
+providing term lists (e.g., named entities) can improve recall of
+rare terms. For Whisper-style models, retrieval-based contex-
+tual biasing and dynamic-vocabulary contextualization without
+full retraining have been studied [5, 24, 25, 26, 27].
+Our position. Prior KWS and contextual-biasing work mainly
+targets first-pass decoding. In contrast, we select an utterance-
+relevant subset of correction-history records for second-pass
+LLM post-correction within the LLM context window limit,
+using open-vocabulary Audio-KWS to gate retrieval and avoid
+full-history prompting.
+3. Proposed Method
+We perform LLM-based ASR post-correction by using Audio-
+KWS to retrieve an utterance-relevant subset of a growing cor-
+rection history (error memory), keeping the prompt within the
+LLM context window.
+3.1. System Overview
+Figure 1 summarizes our ASR post-correction pipeline. When
+a human-corrected reference transcript becomes available for
+a past segment (utterance), we run an LLM-based error analy-
+sis on the ASR hypothesis and the reference transcript, append
+a structured correction record to the error memory H and up-
+date the keyword inventory V with an inverted index I that
+links keywords to memory records. For each audio segment
+ASRhypa/Referencerefa
+“..each touch” / “..eTouch” LLM Error Analysis
+Keyword InventoryV
+each touch, eTouch, . . .
+Error MemoryH
++ Inverted IndexI
+hypa→ refa, . . .
+audio t
+“..eTouch.. ”
+Audio-KWS
+on inventoryV
+Retrieve relevant
+memory rows
+ASR LLM Correct
+corrt
+“..eTouch.. ”
+Kt
+each touch
+˜Ht hypa→ refahypt
+“..each touch.. ”
+Figure 1: Overview of the proposed ASR post-correction
+pipeline with Audio-KWS-gated retrieval (gray: examples).
+Algorithm 1 Incremental post-correction with Audio-KWS re-
+trieval
+1: fort = 1, 2,... do
+2: if any corrected reference is newly available then
+3: updateH and (V,I) via LLM-based error analysis
+4: end if
+5: hypt← ASR(audiot)
+6: Kt← Audio-KWS(audiot,V)
+7: ˜Ht← Retrieve(H,I,Kt)
+8: ˜Ht← CapByRecency( ˜Ht,M )
+9: corrt← LLM-Correct(hypt, ˜Ht)
+10: end for
+t, open-vocabulary Audio-KWS runs on audiot withV to de-
+tect a small keyword set Kt. We then retrieve the associated
+subset ˜Ht⊆H viaI and cap it to at most M records (most
+recent first) to stay within the LLM context window. Finally,
+we provide ˜Ht together with the current hypothesis hypt to
+the LLM for constrained post-correction, producing corrt. Al-
+gorithm 1 describes our incremental post-correction loop, and
+Sections 3.2–3.4 describe each step in detail.
+3.2. Error Analysis and Memory Update
+We maintain an error memoryH as a collection of records pro-
+duced by an LLM-based error analysis step. Given an ASR
+hypothesis and a human-corrected reference, the LLM aligns
+the two texts at token granularity and extracts span-level phrase
+pairs (hyp span↔ ref phrase); the resulting record is appended
+toH.
+LLM prompt for error analysis. The LLM receives the hy-
+pothesis and the reference with strict formatting and language-
+specific instructions, and outputs a fixed-schema TSV after nor-
+malization (case- and punctuation-insensitive). For English,
+the alignment uses whitespace tokens; for Japanese, it uses
+morpheme-level units. In both cases, each reference-side phrase
+(primarily proper-noun phrases) is linked to the minimal con-
+tiguous aligned hypothesis-side span as phrase pairs. The TSV
+may also include lightweight error tags and token-level edit cues
+used as auxiliary signals in post-correction.
+What each memory record contains. Each record hi stores
+the original hypothesis and reference strings, and the extracted
+phrase pairs{(hyp span, ref phrase)} and auxiliary fields (error
+4780
+tags and token-level edit cues). For Japanese, we additionally
+store phonetic readings for the phrase pairs (estimated by the
+LLM) [28].
+Japanese phonetic readings as a retrieval key. Japanese sur-
+face forms often contain kanji, making audio-to-orthography
+matching difficult. We therefore attach LLM-estimated pho-
+netic readings to the aligned phrase pairs as retrieval keys.
+These phonetic readings become the keywords inV for Audio-
+KWS, while corrections are applied to the surface strings.
+Keyword inventory and inverted index. For English, we in-
+dex both reference-side phrases and their aligned hypothesis-
+side variants; for Japanese, we index only phonetic readings
+from both sides (reference and hypothesis). We build a key-
+word inventoryV from the extracted phrase pairs and maintain
+an inverted indexI that maps each keyword to its associated
+records inH.
+3.3. Audio-KWS-Gated Retrieval
+Open-vocabulary Audio-KWS and keyword selection. To
+decide which past memory records are relevant to the current
+segment, we use open-vocabulary Audio-KWS. We instanti-
+ate it with AdaKWS [22], which outputs a confidence score
+s(p)∈ [0, 1] for each keyword p∈V givenaudiot. We treat
+the keyword inventory as open by continuously expanding V
+during error analysis. We form the detected keyword setKt us-
+ing a two-stage policy: first, we retain keywords whose scores
+exceed a threshold τ; then, we select the Top-N keywords by
+score. We use a low threshold to avoid KWS misses (favoring
+recall) and Top-N to bound the retrieved history asV grows.
+Retrieving relevant error memory context. UsingKt, we re-
+trieve a filtered subset of the error memory by collecting, via
+the inverted indexI, the memory records associated with the
+detected keywords, yielding ˜Ht. If Kt is empty, we fall back
+to a bounded recent-history window and cap the context to at
+most M records from ˜Ht by recency (most recent first) to fit
+the LLM context window.
+3.4. LLM Post-Correction
+For each audio segmentt, the LLM receives the ASR hypothe-
+sishypt and a compact error-memory subset ˜Ht⊆H retrieved
+in Section 3.3. The goal is to rewritehypt into a corrected tran-
+scriptcorrt under strict constraints: minimize deletions, avoid
+paraphrasing or simplification, and preserve fillers.
+LLM prompt for error correction. The retrieved error-
+memory subset provides phrase-pair correspondences from past
+corrections,{(hyp span, ref phrase)}, which we present to the
+LLM as candidate replacements. We instruct the LLM to cor-
+rect hypt by following the retrieved past examples, applying
+these correspondences as record-grounded edit hints rather than
+performing unconstrained rewriting. We prioritize phrase-pair
+replacements for named entities and domain terms, and use aux-
+iliary signals from the analysis TSV only to support conserva-
+tive, record-guided edits. For Japanese, retrieval is keyed by
+phonetic readings, but edits are applied to surface strings.
+4. Experimental Setup
+4.1. Evaluation Data
+We evaluate on English Earnings-21 earnings-call transcripts
+[3] and Japanese CSJ lecture-style spontaneous speech [29, 30].
+On the subset of utterances containing at least one of the 20
+bias-words (417 English and 442 Japanese utterances), we re-
+port WER/CER and evaluate bias-word recovery. Bias-words
+are proper nouns or technical terms that appear in the reference
+transcripts but are frequently misrecognized by the ASR sys-
+tem. A bias-word is considered present if it matches under the
+same normalization used for evaluation (e.g., case-insensitive
+matching and whitespace normalization). For each language,
+we extract candidate terms that appear at least twice in the ref-
+erences, rank them by how often they are not correctly realized
+in the ASR output under the same matching criterion, and se-
+lect the top 20. For Japanese, we additionally remove obvious
+non-terms and canonicalize surface string variants.
+4.2. Systems and Settings
+We compare (i) No-KWS (w/o KWS), a capped recent-history
+baseline that includes the most recentM records, and (ii) KWS
+Top-N, which selects the Top-N keywords with scores above
+τ and retrieves the associated records. Across all systems, we
+cap the memory context included in the prompt to at most M
+records, selected by recency (most recent first), to fit within the
+LLM context window, withM = 200. We setτ = 10−4 to re-
+duce false negatives and control the filtering strength primarily
+via Top-N (N∈{ 1, 5, 10, 20, 30}).
+ASR hypotheses. For Earnings-21, we use the publicly re-
+leased ASR hypotheses provided with the dataset [31]. For CSJ,
+we generate ASR hypotheses using Whisper-large-v3 [1, 32].
+LLM setting. We use openai/gpt-oss-20b [33] for both error
+analysis (Section 3.2) and post-correction (Section 3.4). We de-
+code deterministically (temperature = 0.0) with a large gener-
+ation cap (max completion tokens = 27000) to prevent trunca-
+tion.
+AdaKWS Training Data. We implement AdaKWS [22] and
+train it as a binary classifier over (utterance audio, keyword
+string) pairs. We use a frozen Whisper-medium encoder as the
+audio front end [1, 34] , and train only the lightweight keyword-
+conditioning and classification modules. Training data consist
+of V oxPopuli (English) [35] and CSJ (Japanese) train dataset
+[29]. V oxPopuli keywords are whitespace-delimited tokens ex-
+tracted from normalized transcripts (len ≥ 4, count< 1000),
+whereas CSJ pseudo-keywords are created by randomly seg-
+menting each utterance’s phoneme sequence into 4–10-length
+chunks. In both cases, we sample one positive keyword per ut-
+terance and five random negatives from keywords not present in
+the utterance.
+4.3. Metrics
+We report WER (English) and CER (Japanese) on the bias-
+word utterance subset (Section 4.1). We compute these using
+fstalign [36] with default settings (case-insensitive match-
+ing). For bias-word recognition, we compute micro-averaged
+precision/recall/F1 over occurrences of the 20 bias-words.
+Prompt-length reduction definitions (micro/macro). Let
+Lbase
+i denote the prompt length of the No-KWS baseline (capped
+to at most M records), and let Lsel
+i denote the corresponding
+length under each retrieval policy (also capped at M records).
+We report two reduction measures
+Prompt-Redmicro = 1−
+Pn
+i=1Lsel
+iPn
+i=1Lbase
+i
+, (1)
+Prompt-Redmacro = 1
+n
+nX
+i=1
+
+1− Lsel
+i
+Lbase
+i
+
+, (2)
+wheren is the number of utterances. Prompt-Red micro reflects
+4781
+Table 1: Post-correction results on bias-word utterances: (a) Earnings-21 (English; 417) and (b) CSJ (Japanese; 442). Red. denotes
+Prompt-Red (prompt-length reduction) as mic/mac (micro/macro).
+(a) English (b) Japanese
+Method WER ↓ Bias-P↑ Bias-R↑ Bias-F1↑
+Red.↑
+(mic/mac) CER ↓ Bias-P↑ Bias-R↑ Bias-F1↑
+Red.↑
+(mic/mac)
+ASR (no post-correction) 31.24 1.000 0.278 0.435 – 16.02 1.000 0.377 0.548 –
+LLM post-correction
+w/o KWS (baseline) 29.06 0.952 0.745 0.836 – 14.86 1.000 0.479 0.648 –
+w/ KWS Top-1 30.40 0.990 0.475 0.642 93.2/89.7 15.62 1.000 0.428 0.599 84.6/79.6
+w/ KWS Top-5 29.51 0.954 0.740 0.834 86.9/81.3 15.34 1.000 0.423 0.595 77.3/72.1
+w/ KWS Top-10 29.15 0.946 0.790 0.861 81.0/75.2 14.62 1.000 0.507 0.673 71.7/66.7
+w/ KWS Top-20 28.92 0.945 0.782 0.856 70.9/65.1 14.09 1.000 0.552 0.711 63.3/59.0
+w/ KWS Top-30 28.82 0.937 0.821 0.875 66.3/61.8 13.98 1.000 0.572 0.728 64.1/59.6
+the total prompt-length reduction, while Prompt-Red macro aver-
+ages per-utterance reduction. Here, prompt length L is mea-
+sured as the number of characters in the concatenated LLM in-
+put (instructions + history + hypothesis).
+5. Results
+5.1. Main Results
+Table 1 shows that Audio-KWS-gated Top-N retrieval offers
+a controllable accuracy–prompt-length trade-off. This enables
+scalable use of a growing error memory within the LLM con-
+text window. With moderate filtering (around 70% prompt re-
+duction), Top-20 for English (70.9% micro) and Top-10 for
+Japanese (71.7% micro) substantially reduce prompt length
+while matching or improving WER/CER and Bias-F1 over the
+capped recent-history baseline (w/o KWS) in both languages.
+At Top-30, we obtain the best overall WER/CER and Bias-F1,
+at the cost of a smaller prompt reduction.
+Earnings-21 (English). As shown in Table 1(a), Top-20 im-
+proves over the baseline (WER 28.92 vs. 29.06; Bias-F1 0.856
+vs. 0.836) while reducing prompt length by 70.9%/65.1% (mi-
+cro/macro). Top-30 achieves the best overall accuracy (WER
+28.82) and Bias-F1 (0.875), with a smaller prompt reduction
+(66.3%/61.8%). More aggressive filtering (Top-1) yields larger
+reduction but degrades both WER and Bias-F1. Table 2 gives
+qualitative English examples. Figure 2 shows the per-utterance
+prompt length for English, highlighting how Top-N retrieval
+suppresses prompt growth compared to the baseline.
+CSJ (Japanese). Table 1(b) shows a controllable accuracy–
+prompt-reduction trade-off. Top-10 achieves about 70% prompt
+reduction (71.7%/66.7%, micro/macro) while improving both
+CER and Bias-F1 over the baseline (CER 14.62 vs. 14.86; Bias-
+F1 0.673 vs. 0.648). Top-30 achieves the best CER (13.98) and
+Bias-F1 (0.728), with a smaller yet still substantial prompt re-
+duction (64.1%/59.6%). These results indicate that spotting on
+phonetic readings while editing orthographic strings supports
+robust retrieval from the error memory and conservative correc-
+tions for Japanese.
+5.2. Ablation: reference-side-only on keyword inventory
+We ablate the keyword inventory construction by indexing only
+reference-side phrases ( ref only) instead of indexing both
+reference- and hypothesis-side variants ( ref hyp). Through-
+out, ∆ denotes ref only−ref hyp. In English, ref only
+Table 2: Example corrections (ref/hyp/corr).
+ref: . . . main drivers,eTouch.
+hyp: . . . main driverseach touch.
+corr: . . . main driverseTouch.
+ref: . . . ourEVP . . . acquisitions ofPall, IDT and Cytiva . . .
+hyp: . . . ourebp . . . acquisitions ofpaul ivt and sativa . . .
+corr: . . . ourEVP . . . acquisitions ofPall, IDT and Cytiva . . .
+Figure 2: Total prompt length per utterance on Earnings-21
+(English) for each retrieval policy.
+helps at small N (Top-5: ∆WER−0.21pp and ∆Bias-F1
++0.083), but degrades for largerN (Top-20: ∆WER +0.09pp
+and ∆Bias-F1−0.050). In Japanese, ref only consistently
+reduces Bias-F1 across Top-N settings (e.g., Top-20: ∆CER
++0.41pp and ∆Bias-F1−0.034); we therefore use ref hyp
+by default for Japanese.
+6. Conclusion
+We presented an Audio-KWS-gated retrieval framework for in-
+cremental LLM-based ASR post-correction that curbs prompt
+growth under the LLM context window limit (via anM-record
+cap). With moderate filtering (Top-20 for English; Top-10 for
+Japanese), we achieve about 70% prompt reduction while im-
+proving WER/CER and Bias-F1 over the capped recent-history
+baseline (w/o KWS); Top-30 yields the best overall accuracy
+with a smaller reduction. Future work will address KWS misses
+and improve end-to-end throughput by accelerating inference in
+the analysis and correction steps.
+4782
+7. Generative AI Use Disclosure
+We used generative AI tools to assist with English proofreading
+and minor wording edits. All technical content, experimental
+design, results, and conclusions were produced and verified by
+the authors.

@@ -1,0 +1,401 @@
+Confidence-Gated Mean-Teacher Consistency Regularization for
+Low-Resource Multilingual ASR with Shared–Private Fusion-LoRA
+Jie Liu1,2,3, Liang He1,2,3,4,∗∗, Longwei Li1,2,3, Qingyuan Ma1,2,3, Xuejian Zhao1,2,3
+1 School of Computer Science and Technology, Xinjiang University, Urumqi, China
+2 Xinjiang Multimodal Information Technology Engineering Research Center, Xinjiang University,
+Urumqi, China
+3 School of Intelligence Science and Technology, Xinjiang University, Urumqi, China
+4 Department of Electronic Engineering, Tsinghua University, Beijing, China
+liujie@stu.xju.edu.cn,heliang@mail.tsinghua.edu.cn,lilongwei al@stu.xju.edu.cn
+Abstract
+Low-resource multilingual ASR commonly relies on joint
+training, but excessive parameter sharing can cause negative
+transfer. Meanwhile, consistency learning as a remedy for lim-
+ited labels may amplify cross-view instability and confirmation
+bias when predictions are unreliable. To tackle this, we pro-
+pose a Whisper-based parameter-efficient framework. Archi-
+tecturally, it adopts a shared-private Fusion-LoRA design (SPF-
+LoRA): a shared branch learns cross-lingual commonality, a
+private branch captures language-specific traits, and a learnable
+fusion weight adaptively balances both to mitigate multilingual
+interference. In training, we introduce a Mean-Teacher consis-
+tency regularization strategy (MT-CR), where an EMA teacher
+provides more stable consistency targets and reliability filtering
+suppresses noisy consistency signals. On Kathbath, we reduce
+macro WER by 35.4% over Whisper-small+LoRA, outperform
+the reported Whisper-medium+LoRA baseline, and improve all
+five languages.
+Index Terms: Low-resource automatic speech recognition,
+Whisper, EMA teacher, SPF-LoRA
+1. Introduction
+In recent years, end-to-end speech recognition has achieved
+remarkable progress driven by deep learning and large-scale
+data [1, 2]. Sequence-to-sequence large models, which unify
+acoustic modeling and language generation, have demonstrated
+strong performance in complex speech scenarios [3]. However,
+their success heavily relies on massive, high-quality transcribed
+data, and thus recognition for low-resource languages remains
+fundamentally constrained by data scarcity [4, 5]. To mitigate
+the lack of annotations, low-resource automatic speech recogni-
+tion (ASR) commonly leverages cross-lingual transfer, multilin-
+gual joint training, and regularization strategies [6, 7, 8]. Large-
+scale multilingual pretrained models such as Whisper make it
+feasible to adapt models efficiently while keeping the backbone
+frozen [9], and parameter-efficient fine-tuning (PEFT) methods
+like low-rank adaptation (LoRA) have increasingly become a
+mainstream choice in low-resource settings [10, 11, 12].
+Existing studies improve low-resource ASR via multilin-
+gual joint training and parameter sharing [13], but in parameter-
+efficient fine-tuning methods such as LoRA this can lead to
+competition for adaptation capacity [14, 15]. After train-
+able parameters are compressed into low-rank updates, high-
+resource languages are more likely to dominate the optimization
+**indicates the corresponding author.
+of shared parameters [16], forcing low-resource languages to
+adapt to mismatched acoustic and textual distributions [6, 17].
+This results in gradient conflicts and negative transfer, and
+the degradation becomes more pronounced when annotations
+are scarcer [18]. Beyond such cross-lingual interference, low-
+resource ASR also suffers from weak supervision due to limited
+transcribed data. To better exploit scarce annotations and im-
+prove robustness under perturbations, consistency learning and
+self-training are often introduced as auxiliary training strate-
+gies. However, these strategies are also more fragile in low-
+resource settings: the output distribution is inherently unstable,
+and strong augmentations further amplify uncertainty [7, 19].
+If the model’s own predictions are directly used as supervision,
+it is easy to incur noisy alignment and confirmation bias, con-
+tinuously reinforcing errors [20, 21]. Therefore, the key is to
+construct reliable and trustworthy teacher signals [22, 23].
+To address these challenges, we propose a parameter-
+efficient learning framework for Whisper that improves low-
+resource multilingual training from both architectural and train-
+ing perspectives. Our method combines structural decoupling
+with temporal ensembling based on an exponential moving av-
+erage (EMA), following prior teacher–student and uncertainty-
+aware self-training studies [24, 25], to mitigate negative transfer
+and improve supervision reliability.
+On the architectural side, we introduce a shared–private de-
+coupled Fusion-LoRA design (SPF-LoRA): a cross-lingually
+shared branch learns universal representations, while a
+language-specific private branch models language characteris-
+tics [26]. An adaptive fusion mechanism balances sharing and
+specialization, thereby reducing multilingual interference. On
+the training side, we incorporate Mean-Teacher consistency reg-
+ularization (MT-CR), where an EMA teacher provides smoother
+and more reliable targets, enabling stable output constraints un-
+der augmented views and improving consistency learning in
+low-resource settings [24, 27].
+Our contributions are twofold: (1) we propose SPF-
+LoRA, which explicitly decomposes adaptation into shared and
+language-private branches to alleviate negative transfer in low-
+resource multilingual settings; (2) we integrate MT-CR into a
+PEFT framework, using an EMA teacher to provide smoother
+targets and thereby improve the stability of the consistency sig-
+nal.
+7262
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1183
+Whisper
+Backbone
+Trainable 
+SPF-LoRA
+Trainable 
+SPF-LoRA
+Whisper
+Backbone
+Supervised LossConfidence Gate
+& Mask(ct>τ)
+KL Consistency Loss Total Loss
+L=Lsup+λ(t)Lcr
+EMA
+Update
+ps(∙|x(1))pt(∙|x(2))
+Student ModelTeacher Model
+Mel-spectrogram x
+x(2) x(1)
+AugmentAugment
+Figure 1:Overall SPF-LoRA and MT-CR training pipeline. The Student is trained with a cross-entropy (CE) loss on the augmented
+viewx (1), and is additionally constrained by a confidence-gated Kullback–Leibler (KL) consistency loss against the EMA Teacher on
+viewx (2). The flame icon denotes trainable parameters, and the snowflake icon denotes frozen parameters.
+2. Proposed methodology
+2.1. Method overview
+We propose a parameter-efficient framework for Whisper, as
+shown in Figure 1. With the backbone frozen, our method
+improves both adaptation structure and training supervision:
+architecturally, we adopt SPF-LoRA to balance cross-lingual
+transfer and language-specific specialization; in training, we
+use confidence-gated MT-CR, where an EMA teacher provides
+more stable consistency targets, improving training stability in
+low-resource settings.
+2.2. Shared-Private Fusion-LoRA (SPF-LoRA)
+2.2.1. SPF-LoRA architecture
+In standard LoRA, each linear layer is adapted by a single low-
+rank update:
+∆W= α
+rBA,(1)
+whereA∈R r×din andB∈R dout×r. In multilingual low-
+resource settings, a fully shared LoRA update forces different
+languages to compete in the same limited parameter subspace,
+which can lead to negative transfer [13, 18, 26]. To address
+this, we explicitly decompose the LoRA update into a cross-
+lingual shared branch and a language-private branch, and fuse
+them with a learnable coefficient, as shown in the right half of
+Figure 1. For any linear layer injected with LoRA, the effective
+weight is defined as:
+W′ =W+ ∆W shared +β ℓ ∆Wℓ,(2)
+where
+∆Wshared = αs
+rs
+BsAs,∆W ℓ = αp
+rp
+BℓAℓ.(3)
+Here,∆W shared is shared across all languages and captures
+cross-lingual commonality;∆W ℓ is the private adaptation
+branch for languageℓ, capturing language-specific acoustic
+and textual distributional differences; andβ ℓ is a learnable
+language-level scalar that adjusts the relative contribution of the
+shared and private branches. During training, only the LoRA
+parameters andβ ℓ are optimized.
+The key effect of this design is to constrain language-
+specific gradients primarily within the private branch, thereby
+substantially reducing interference with the shared representa-
+tions while still preserving the benefits of cross-lingual transfer.
+2.2.2. Implementation of the fusion coefficientβ ℓ
+To achieve stable training, we parameterize a scalar gate for
+each language, denoted asγ ℓ, and by default map it to(0,1)
+with a sigmoid:
+βℓ =
+(
+σ(γℓ),with sigmoid gating,
+γℓ,without sigmoid gating. (4)
+During training,β ℓ adaptively balances the shared and private
+branches, trading off cross-lingual sharing and language spe-
+cialization, and reducing conflict on the shared parameters.
+7263
+2.3. Confidence-Gated Mean-Teacher consistency regular-
+ization (MT-CR)
+2.3.1. MT-CR
+To better exploit scarce labels while avoiding noisy self-targets,
+we adopt a Mean-Teacher scheme with reliability filtering. Let
+the student parameters beθ s and the teacher parameters beθ t.
+The teacher is updated from the student via EMA:
+θt←mθ t + (1−m)θ s,(5)
+wheremis the momentum coefficient. Since the Whisper back-
+bone is frozen, EMA is applied only to the trainable LoRA
+parameters and fusion coefficients, while the frozen backbone
+is shared by the student and teacher. This keeps the method
+parameter-efficient and avoids additional overhead from the
+frozen backbone.
+For the same speech samplex, we generate two augmented
+views,
+x(1) =a 1(x), x (2) =a 2(x),
+wherea 1(·)anda 2(·)denote two stochastic augmentations.
+The student predicts onx (1), while the EMA teacher predicts
+onx (2), under the same teacher-forcing condition.
+To suppress confirmation bias, we impose the consistency
+constraint only when the teacher prediction is sufficiently con-
+fident. Concretely, at decoding steptthe teacher confidence is
+defined asc t = max vpt(v), and we introduce a gating mask
+gt =I[c t > τ], whereτis the confidence threshold. The final
+consistency loss is defined as:
+Lcr =
+P
+tgt·KL(p t∥p s)P
+tgt +ε .(6)
+whereεis a small constant for numerical stability.
+2.3.2. Overall objective and training protocol
+The supervised loss is the standard cross-entropy:
+Lsup =−
+X
+t
+logp s
+ 
+yt|x (1),˜y<t
+
+.(7)
+The overall objective is:
+L=L sup +λ(t)L cr.(8)
+To improve optimization stability, we adopt a two-stage
+training protocol. In Stage A, we optimize onlyL sup to train
+SPF-LoRA (includingβ ℓ). In Stage B, we enable the EMA
+teacher and the consistency term, apply a ramp-up schedule to
+λ(t), and schedule the thresholdτfrom lenient to strict to pre-
+vent noisy early-stage consistency signals from harming con-
+vergence.
+3. Experimental settings
+3.1. Datasets
+Experiments are conducted on the Kathbath dataset [29]. Kath-
+bath provides read speech–text pairs for multiple Indian lan-
+guages, with transcripts sourced from public text resources such
+as Wikipedia and news articles, yielding diverse topics and
+vocabulary; it is also a key component of the IndicSUPERB
+benchmark. We focus on the ASR task and strictly follow the
+official train/validation/test splits to ensure comparability and
+reproducibility. We select five Indo-Aryan languages as our tar-
+gets: Gujarati (gu), Hindi (hi), Marathi (mr), Punjabi (pa), and
+Urdu (ur). These languages are representative in terms of writ-
+ing systems, phonetic characteristics, and morphological vari-
+ation, and they exhibit different data scales and difficulty lev-
+els under low-resource conditions, allowing us to capture both
+shared challenges and cross-lingual differences in low-resource
+multilingual ASR.
+3.2. Training details
+The base model is Whisper-small. All experiments were con-
+ducted on a Linux server equipped with a single NVIDIA
+GeForce RTX 4090 GPU using NVIDIA driver version
+570.169. Models are trained for 5 epochs with a per-GPU batch
+size of 8 and 2 gradient accumulation steps, resulting in an ef-
+fective batch size of 16. The learning rate is set to5×10−4 with
+2,000 warm-up steps. Logs are recorded every 50 steps, while
+validation and checkpointing are performed every 2,000 steps.
+SPF-LoRA is applied to theqkvofcmodules in the last 6 en-
+coder and decoder blocks, withr= 16,α= 32, and a dropout
+rate of 0.05. Here,q,k,v, andorefer to the attention projec-
+tionsW q,W k,W v, andW o, whilefcdenotes the two feed-
+forward network (FFN) linear layers. Mean-Teacher CR uses
+an adapter-only EMA teacher with momentumm= 0.9995.
+The consistency weightλis increased to 0.5 after a 1,000-step
+warm-up and a 5,000-step ramp, while the confidence threshold
+τrises from 0.6 to 0.8 over 5,000 steps. For two-view augmen-
+tation, additive noise is applied with probability 0.2 at 10–50 dB
+signal-to-noise ratio (SNR), speed perturbation with probability
+0.5 at rates of 0.9–1.1, and volume perturbation with probability
+0.5 using gains from−15to+15dB.
+4. Results and discussion
+4.1. Main results: overall performance and cross-lingual
+consistent gains
+Table 1 summarizes the main results on the five Kathbath lan-
+guages. Zero-shot Whisper-small yields a macro-average word
+error rate (WER) of 84.70%, showing that direct transfer from
+pretraining is insufficient for low-resource multilingual ASR.
+LoRA and MAS-LoRA reduce the macro WER to 30.73%
+and 29.47%, respectively, but multilingual interference remains.
+SPF-LoRA further lowers the macro WER to 23.93%, indicat-
+ing that the shared–private adaptation structure can better dis-
+tribute model capacity across languages and mitigate negative
+transfer. With MT-CR, the macro WER decreases to 19.85%,
+while Gujarati WER drops from 38.86% to 25.04%, suggesting
+that EMA-teacher consistency provides more stable supervision
+for the most challenging low-resource language. Despite using
+the smaller Whisper-small backbone, our method outperforms
+all reported small-model baselines and the Whisper-medium
+LoRA baseline in macro WER, with additional gains on Gu-
+jarati and Urdu.
+4.2. Structural ablation
+Table 2 reports the structural ablation of SPF-LoRA. Private-
+only performs the worst, indicating that relying solely on
+language-specific branches weakens the sharing of transferable
+knowledge. Shared-only achieves a better macro average but
+still suffers from a high worst-language WER, suggesting that
+purely shared parameters remain prone to cross-lingual interfer-
+ence. The fixed-sum Shared+Private variant leads to degrada-
+tion, implying that naive branch summation introduces uncon-
+trolled competition and noise accumulation. In contrast, SPF-
+7264
+Table 1:WER (%) on five languages and macro average.
+Method Gujarati Hindi Marathi Punjabi Urdu Macro Avg
+whisper-small [1] 113.01 53.08 105.93 115.43 36.03 84.70
+whisper-small+LoRA [11] 46.28 22.88 28.06 32.29 24.14 30.73
+whisper-medium [1] 110.37 38.85 98.07 107.02 26.29 76.12
+whisper-medium+LoRA [11] 34.9513.35 21.71 19.5222.81 22.46
+MAS-LoRA [28] 40.22 28.14 26.18 32.15 20.66 29.47
+whisper-small+SPF-LoRA (No MT-CR) 38.86 17.33 25.78 23.35 14.32 23.93
+whisper-small+SPF-LoRA+MT-CR (ours) 25.0415.13 24.09 20.8414.19 19.85
+LoRA best balances overall and worst-language performance,
+confirming that shared–private decoupling with a learnable fu-
+sion weight is crucial for suppressing negative transfer.
+Table 2:Ablation on structure variants (WER %). Here,
+Shared+Private denotes the fixed-sum variant withβ= 1, and
+SPF-LoRA denotes the shared–private variant with learnable
+β.
+Structure
+variant
+Macro Avg
+WER
+Worst-lang
+WER
+Shared-only23.7243.34
+Private-only 41.90 78.60
+Shared+Private 28.29 48.27
+SPF-LoRA 23.9338.86
+4.3. MT-CR ablation
+Table 3 presents the MT-CR ablation results with SPF-LoRA
+fixed. Self-consistency yields only a modest improvement,
+while MT-CR without gating provides no further benefit, likely
+because unreliable teacher targets introduce noise. By con-
+trast, token-level confidence gating leads to a clear improve-
+ment, reaching a macro-average WER of 19.85% and a worst-
+language WER of 25.04%. The similar results of fixed and
+scheduled thresholds indicate that the main improvement comes
+from confidence gating itself.
+Table 3:Ablation on MT-CR variants (WER %). Here, Self-
+consistency denotes same-model two-view consistency, and
+fixedτdenotes confidence gating with a fixed threshold (no
+scheduling).
+MT-CR
+variant
+Macro Avg
+WER
+Worst-lang
+WER
+No MT-CR 23.93 38.86
+Self-consistency 21.84 36.79
+MT-CR w/o gating 22.14 37.34
+MT-CR + conf. gating19.85 25.04
+MT-CR + fixedτ19.91 25.07
+4.4. Injection-Target ablation
+Table 4 shows that performance improves consistently as the
+injection scope expands from qv to qkvofc, with qkvofc achiev-
+ing the best results and yielding absolute reductions of 8.50%
+and 13.79% compared with qv, respectively. Within the cur-
+rent SPF setting, broader target coverage empirically yields bet-
+ter performance, and the combination of shared–private decou-
+pling and confidence-gated Mean-Teacher CR remains effective
+under wider injection. The gains are also observed across lan-
+guages, including tail languages, suggesting that wider injection
+is a practical choice for stronger adaptation.
+Table 4:Effect of LoRA target modules (WER %).
+Target
+Macro Avg
+WER
+Worst-lang
+WER
+qv 28.35 38.83
+qvo 25.06 33.66
+qkvo 24.36 33.15
+qkvofc19.85 25.04
+4.5. Negative transfer and tail languages
+Although WER is used for the main comparisons, we also re-
+port character error rate (CER) because it is less affected by
+word segmentation and better reflects cross-language interfer-
+ence. Figure 2 shows the per-language difference relative to
+LoRA:∆CER = CER ours−CER LoRA, where negative values
+indicate improvement. Our method reduces CER for all five lan-
+guages, with∆CERvalues of−13.82%,−4.25%,−1.22%,
+−6.40%, and−5.88%for gu, hi, mr, pa, and ur, respectively.
+The largest gain on gu shows that the proposed method is partic-
+ularly effective for the most challenging low-resource language.
+Figure 2:Per-language∆CER(%) relative to LoRA baseline
+5. Conclusion
+We propose a parameter-efficient Whisper framework for low-
+resource multilingual ASR. With the backbone frozen, it uses
+SPF-LoRA with per-language gating and MT-CR with an
+adapter-only EMA teacher plus token-level confidence gat-
+ing. Our method outperforms supervised fine-tuning and same-
+model two-view consistency, and our Whisper-small model sur-
+passes the Whisper-medium+LoRA baseline in macro WER.
+7265
+6. Acknowledgments
+This work was supported by National Natural Science Founda-
+tion of China (No. 62366051).
+7. Generative AI Use Disclosure
+We used generative AI tools (e.g., ChatGPT) to assist with lan-
+guage editing and polishing of the manuscript, including im-
+proving clarity and grammar. All technical content, experimen-
+tal design, results, and conclusions were produced and verified
+by the authors. No generative AI tool was used to generate a
+substantial portion of the manuscript, and no generative AI tool
+is listed as a co-author. All authors take full responsibility for
+the content and consent to the submission.

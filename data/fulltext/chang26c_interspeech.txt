@@ -1,0 +1,459 @@
+USAD 2.0: Scaling Representation Distillation
+for Universal Audio Understanding
+Heng-Jui Chang ID 1,→→, Alexander H. Liu 1, Saurabhchand Bhati2, Mrudula Athi2,
+Anton Ratnarajah2, Amit Chhetri2, James Glass1
+1MIT CSAIL, USA 2Amazon, USA
+hengjui@mit.edu
+Abstract
+Audio encoders are critical to modern audio applications as
+large language models (LLMs) increasingly rely on a single en-
+coder for diverse inputs. While self-supervised learning (SSL)
+has yielded strong domain-speciﬁc encoders like speech or mu-
+sic experts, multi-domain approaches like USAD and SPEAR
+remain limited in coverage and evaluation. Recent studies also
+suggest supervised encoders align better with audio LLMs. We
+present USAD 2.0, a universal encoder integrating knowledge
+from both SSL and supervised foundation models. USAD 2.0
+introduces domain-aware distillation to address teacher mis-
+match, extends coverage to the music domain, and adds second-
+stage supervised distillation for downstream use. We further
+scale the model to one billion parameters via depth scaling. Ex-
+periments show USAD 2.0 achieves strong or state-of-the-art
+performance across probing and LLM-based evaluations. 1
+Index Terms: audio representations, self-supervised learning,
+audio large language models
+1. Introduction
+Audio encoders have been extensively explored for applica-
+tions ranging from automatic speech recognition (ASR) to au-
+dio codecs [1, 2]. These encoders transform raw waveforms
+into compact representations, allowing downstream models to
+access information from audio signals. A widely adopted ap-
+proach is self-supervised learning (SSL) on large unlabeled
+datasets, which provides ﬁne-grained features and reduces the
+reliance on annotated data [3]. However, most SSL models are
+curated for single-domain usage. E.g., WavLM [4] excels at
+speech tasks but struggles with out-of-domain audio such as en-
+vironmental soundscapes. Similar limitations can be observed
+in general audio [5–9] and music [10–12] SSL models.
+With recent advances in audio large language mod-
+els (LLMs), there is a growing need for strong audio frontends
+that produce high-quality embeddings across domains, motivat-
+ing multi-domain audio SSL models. Universal Speech and Au-
+dio Distillation (USAD) [13] proposes layer-wise distillation to
+aggregate knowledge from speech and general-audio SSL en-
+coders. In parallel, Wei et al. distill knowledge from speech
+and music experts [14], and SPEech and Audio Representa-
+tions (SPEAR) distills from multi-codebook vector-quantized
+SSL models [15]. Nevertheless, these models are primarily
+evaluated via probing tasks and do not simultaneously cover
+speech, general audio, and music domains.
+Meanwhile, recent studies suggest that supervised audio en-
+coders can be particularly effective for audio LLMs, audio re-
+**indicates the corresponding author.
+1https://hf.co/collections/MIT-SLS/usad2
+USAD 
+2.0
+USAD 
+2.0+
+Initialize
+USAD 
+2.0
+XXL+
+Domain-aware Distillation with 
+Self-supervised Experts
+Domain-aware Distillation with 
+Supervised Experts
+WavLM ATST MuQ
+Whisper 
+Encoder
+AF3 
+Encoder
+Depth Scaling
+Figure 1: Proposed USAD 2.0. Domain-aware distillation from
+three SSL experts establishes a strong foundation. Next, super-
+vised experts are distilled to the ﬁrst stage-initialized encoder .
+Finally, depth scaling is applied to increase model capacity.
+trieval, and speech codecs [16–19]. E.g., the encoder in Au-
+dio Flamingo 3 [20] is initialized from Whisper Large [21] and
+then ﬁne-tuned with joint audio captioning and ASR objectives.
+With explicit alignment to target applications, such encoders are
+more likely to succeed as frontends for multimodal LLMs.
+In this paper, we build a universal audio encoder that
+extracts useful representations across multiple audio domains
+and tasks by distilling from both SSL and supervised audio
+foundation models. We propose USAD 2.0, which builds on
+USAD [13] to provide a practical, systematically evaluated
+framework for integrating domain-specialized audio encoders.
+As shown in Fig. 1, we ﬁrst introduce domain-aware distillation,
+which accounts for whether a teacher matches the input domain.
+We then incorporate a music teacher along with large-scale mu-
+sic datasets. Next, we propose USAD 2.0+ via second-stage
+distillation from supervised state-of-the-art teachers to align the
+encoder with audio LLM applications. Finally, we scale USAD
+2.0+ to one billion parameters by reducing temporal resolution
+and scaling depth with minimal cost. USAD 2.0 achieves supe-
+rior performance on both probing and LLM-based evaluations
+across diverse audio domains, demonstrating the effectiveness
+of the proposed framework as a universal audio encoder. Com-
+prehensive ablation experiments and visualization justify the ef-
+ﬁcacy of the proposed techniques.
+2. Methods
+2.1. Recap: USAD
+Universal Speech and Audio Distillation (USAD) distills
+knowledge from two SSL models, one specializing in speech
+and the other in general audio, into a single encoder for uni-
+versal audio understanding [13]. USAD uses layer-to-layer
+2224
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1296
+knowledge distillation, motivated by the observation that dif-
+ferent information types, such as speech content and environ-
+mental sounds, are encoded across the hidden layers of SSL
+models [22]. Although USAD used only two SSL teachers, we
+generalize the formulation to M teachers. The training loss is
+the average of per-teacher distillation losses Lm, each decom-
+posed into layer-wise terms Lm,k :
+LUSAD = 1
+M
+M∑
+m=1
+Lm = 1
+MK
+M∑
+m=1
+K∑
+k=1
+Lm,k , (1)
+where K is the number of layers from which the student dis-
+tills for each teacher model. Each Lm,k follows DistilHu-
+BERT [23] by maximizing the similarity between the student
+and teacher hidden representations. By directly learning the be-
+havior of SSL experts, USAD achieves balanced performance
+across multiple tasks and data domains. Building on this suc-
+cess, we propose USAD 2.0, which incorporates improved dis-
+tillation (Sec. 2.2) and scaling techniques (Sec. 2.3) to support
+a broader range of audio understanding applications.
+2.2. USAD 2.0
+2.2.1. Domain-aware Distillation
+This section introduces domain-aware distillation to improve
+USAD. Each SSL teacher specializes in a speciﬁc audio do-
+main, but USAD weights all teacher losses equally, regardless
+of the input. To encourage higher-quality representations, we
+upweight the loss when the input domain matches the corre-
+sponding teacher domain. Assuming the M teachers each spe-
+cialize in a unique domain, the loss for an instance from domain
+mdata is
+LUSAD 2.0 =
+M∑
+m=1
+wm(mdata)Lm, (2)
+where wm(mdata) scales the contribution of the mth teacher.
+We introduce a scaling factor ω> 1 to control the ra-
+tio between matched and mismatched domains. Enforcing∑M
+m=1 wm(mdata)=1 , we deﬁne
+wm(mdata)=
+{ ω
+ω+M →1 ,m = mdata
+1
+ω+M →1 ,m →= mdata
+(3)
+When ω =1 , the weights reduce to 1
+M for all teachers. If
+mdata is unknown, we also set wm = 1
+M . Unlike [14], which
+effectively takes ω ↑↓ , our soft weighting still allows dis-
+tillation from mismatched teachers. This is beneﬁcial when do-
+mains share structure. E.g., since speech often appears in mixed
+audio, distilling from a speech teacher can help the student ac-
+quire denoising capability. Thus, mismatched teachers remain
+active with smaller weights, allowing the student to retain cross-
+domain cues while still emphasizing the most relevant expert for
+each input domain.
+2.2.2. Music Domain Expert
+Empirically, USAD underperforms music SSL models on
+music-centric tasks such as genre and key classiﬁcation, likely
+due to the lack of music-domain supervision. Given the grow-
+ing importance of music-focused SSL methods and applica-
+tions [10–12,24], we introduce a music-domain expert and addi-
+tional music audio data for USAD 2.0 to distill from. Combined
+with domain-aware distillation, this gives USAD 2.0 a broader
+and more diverse skill set.
+2.3. Scaling USAD 2.0
+2.3.1. Second-stage Distillation with Supervised Experts
+Recent progress in audio LLMs has highlighted the effective-
+ness of audio encoders pre-trained with supervised objectives
+like ASR. In particular, many audio encoders are ﬁne-tuned
+from Whisper’s encoder [16, 20, 21, 24]. Hence, we propose
+USAD 2.0+ via second-stage distillation from state-of-the-art
+supervised audio encoders. We ﬁrst identify the strongest ex-
+perts using probing and LLM-based evaluations: the Whis-
+per Large encoder for multilingual speech [21] and the Audio
+Flamingo 3 encoder for general audio understanding [20]. We
+then initialize USAD 2.0+ from the SSL-distilled student and
+distill from the ﬁnal layers of both supervised teachers. This
+stage aligns USAD 2.0 with audio LLMs while preserving the
+ﬁne-grained representations characteristic of SSL pre-training.
+2.3.2. Efﬁcient Model Size Scaling
+Scaling the audio encoder can improve downstream perfor-
+mance by increasing model capacity, but incurs substantially
+higher computational cost. We therefore propose two simple
+approaches to scale USAD 2.0: temporal resolution reduction
+and depth scaling. First, since the sequence length processed
+by self-attention dominates training and inference cost, we re-
+duce the feature framerate from 50Hz to 25Hz with a 2 ↔ CNN
+feature extractor stride. Although the temporal resolution is re-
+duced, increasing the number of layers and hidden dimensions
+can still improve the encoder’s overall capacity and capability.
+Second, we reuse the weights of a pre-trained USAD 2.0 model,
+apply depth scaling, and train the expanded model for only a
+few more updates. Speciﬁcally, we scale our XLarge model
+from 32 to 48 layers with depth up-scaling [25] by copying and
+stacking the ﬁrst and last 24 layers. These methods avoid train-
+ing large models from scratch and enable scaling USAD 2.0 to
+1B parameters within an academic budget.
+3. Experiments
+3.1. Setup
+3.1.1. USAD 2.0 Training
+Following USAD [13], we create a multi-domain audio dataset
+by combining various multilingual speech (116K hours) [28–
+42], general audio (21K hours) [43–46], and music (13K
+hours) [47–52] corpora. The domain labels are assigned accord-
+ing to each dataset’s original purpose, and the domain-aware
+distillation scale ω is set to 10 for all models. USAD 2.0 follows
+the same architecture as USAD [13], except that the XLarge
+and XXLarge models use a 25Hz framerate for efﬁciency. For
+ﬁrst-stage training, USAD 2.0 distills from WavLM [4], A TST-
+Frame [8], and MuQ [12], respectively representing speech, au-
+dio, and music experts. Thus, this stage directly evaluates the
+extension from the two-teacher setting of USAD to three SSL
+teachers. Supervised distillation uses the Whisper Large-v3 en-
+coder [21] and Audio Flamingo 3 (AF3) AF-Whisper [20] as
+targets, distilling only the last layer of each expert due to their
+supervised nature. Because AF3 is multi-domain, the losses
+from all domains are treated equally. The ﬁrst and second stages
+are trained with 600K and 50K updates, respectively.
+3.1.2. Evaluation
+We include multiple protocols to evaluate the proposed mod-
+els, ranging from simple probing tasks to audio LLM evalua-
+2225
+Table 1: Results on HEAR [26], MARBLE [27], and XARES-
+LLM. All reported numbers are obtained by using only the au-
+dio encoder of each model. E.g., the decoder of each Whisper
+model is discarded. The best results are shown in bold, and the
+second- and third-best results are underlined .
+HEAR MARBLE XARES-LLM
+Encoder Params Avg Avg Track A Track B
+Single-encoder SOTA
+Base ↗90M 80.6 74.0 0.660 0.418
+SPEAR
+Base [15]
+MERT
+95M [10]
+SPEAR
+Base [15]
+Whisper
+Small [21]
+Large ↗300M 81.8 77.0 0.691 0.454
+SPEAR
+Large [15] MuQ [12] SPEAR
+Large [15]
+Whisper
+Medium [21]
+XLarge ↗600M 82.6 75.1 0.782 0.457
+SPEAR
+XLarge [15]
+SPEAR
+XLarge [15] AF3 [20] Whisper
+Large [21]
+Multi-expert Encoder (USAD 2.0 Teachers)
+Self-supervised 734M 82.0 76.1 0.645 0.462(WavLM + A TST + MuQ)
+Supervised 1274M 81.8 72.4 0.806 0.685(Whisper + AF3)
+USAD 2.0 (Self-supervised Teachers)
+Small 25M 81.0 72.9 0.604 0.357
+Base 97M 81.9 74.1 0.645 0.442
+Large 336M 82.9 75.8 0.667 0.473
+XLarge 695M 82.5 75.7 0.708 0.485
+USAD 2.0+ (Supervised Teachers)
+Large+ 336M 84.0 75.1 0.769 0.580
+XLarge+ 695M 84.4 75.0 0.772 0.611
+XXLarge+ 1036M 84.4 75.6 0.783 0.624
+tions. HEAR is a benchmark that probes frozen SSL model
+representations for various tasks, covering speech, sound, and
+music [26]. MARBLE is a music-focused probing bench-
+mark similar to HEAR [27]. Finally, we follow XARES-
+LLM (The Interspeech 2026 Audio Encoder Capability Chal-
+lenge for Large Audio Language Models) by training a mul-
+titask audio LLM using frozen representations of audio en-
+coders [53]. Track A (classiﬁcation tasks) covers keyword
+spotting, speaker/language identiﬁcation, spoof detection, in-
+tent/emotion/sound/genre/instrument classiﬁcation, and sound
+event detection. Track B (understanding tasks) includes En-
+glish/Mandarin ASR and audio/music captioning. To ensure
+controlled comparison of audio representations, all baselines
+are evaluated in an encoder-only setting, including prior uni-
+versal or multi-domain encoders [13, 15], domain-specialized
+SSL models [4, 8, 12], supervised audio LLM-oriented en-
+coders [20, 21, 24], and multi-expert teacher toplines.
+3.2. Main Results
+Tab. 1 reports average scores of each benchmark. On HEAR,
+the unsupervised USAD 2.0 models consistently outperform
+prior state-of-the-art models of comparable sizes. Although
+reducing the framerate to 25Hz slightly degrades the XLarge
+model performance, the score remains competitive with SPEAR
+XLarge [15]. Introducing the second-stage distillation with su-
+pervised teachers (USAD 2.0+) yields further improvements,
+pushing beyond the prior state-of-the-art model.
+For the music-centric evaluation on MARBLE, USAD 2.0
+demonstrates robust multi-domain coverage. The unsuper-
+vised Large model surpasses both the Base and XLarge base-
+lines, while still highly competitive with specialized, music-
+Figure 2: Domain-aware distillation scale vs. phoneme recog-
+nition, sound classiﬁcation, and pitch classiﬁcation, where ω =
+10 is most robust across domains.
+Table 2: Ablation studies on phoneme recognition (PR) [28,
+54], sound classiﬁcation (ESC-50) [55], and pitch classiﬁca-
+tion (NSynth) [50]. All models use the Small 25M-parameter
+backbone without ﬁne-tuning.
+PR ESC-50 NSynth
+Method PER ↘ Acc≃ Acc≃
+USAD [13] 8.8 80.3 55.1
+USAD 2.0 (proposed) 8.7 85.7 70.3
+w/o Domain-aware Distillation 13.3 83.4 69.1
+w/o Music Domain Teacher 8.5 85.2 49.1
+w/o Music Data 8.4 84.3 53.2
+only models like MuQ [12]. The supervised variants main-
+tain this strong performance, indicating that aligning with su-
+pervised experts preserves ﬁne-grained music understanding.
+On XARES-LLM, USAD 2.0 exhibits highly effective scal-
+ing. The supervised USAD 2.0+ variants match or surpass
+the top-performing XLarge single-encoder baselines, especially
+on Track B. The most signiﬁcant gains are observed in Track
+B (understanding). The results indicate the usefulness of distill-
+ing from supervised experts.
+To provide a performance topline, we include the “Multi-
+expert Encoder” results, which are obtained by concatenating
+the outputs of the teacher models. While these ensembles
+achieve high scores, they require signiﬁcantly more parameters
+than our distilled students. Notably, USAD 2.0 models often
+match or exceed these multi-expert teachers while maintaining
+a much smaller parameter footprint. By integrating the ﬁne-
+grained acoustic details of SSL experts with the high-level se-
+mantic alignment of supervised models, USAD 2.0 establishes a
+new state-of-the-art for efﬁcient, highly capable universal audio
+encoders across speech, sound, and music.
+3.3. Ablation Studies
+This section ablates and analyzes the proposed techniques for
+USAD 2.0 training and scaling. As shown in Fig. 2, the domain-
+aware distillation scale ω achieves the best performance across
+domain tasks when set to 10. When ω is too small, the stu-
+dent learns from weaker targets due to mismatches between the
+expert and the data domain in the USAD approach [13]. Mean-
+while, an overly large ω degrades performance, indicating that
+excessively strong supervision from matched-domain experts
+can reduce the cross-domain generalizability.
+2226
+Table 3: Ablation studies on the initialization approaches.
+XARES-LLM
+USAD 2.0+ Track A Track B
+XLarge+
+from scratch 0.731 0.574
+init with XLarge (proposed) 0.772 0.611
+XXLarge+ (init with depth-scaled XLarge)
+new top 16 layers 0.779 0.617
+uniform layer duplication 0.775 0.622
+depth up-scaling [25] 0.783 0.624
+Table 4: Inference efﬁciency of different model sizes. The met-
+rics are measured on an A5000 GPU and averaged over 50
+runs, with a 30-second audio input.
+USAD 2.0 Size Params Framerate RTF ↘
+Peak GPU
+Memory↘
+Large 336M 50Hz 0.0029 1.2GB
+XLarge (50Hz) 695M 50Hz 0.0051 2.2GB
+XLarge (25Hz, proposed) 695M 25Hz 0.0018 1.7GB
+XXLarge (50Hz) 1036M 50Hz 0.0077 3.0GB
+XXLarge (25Hz, proposed) 1036M 25Hz 0.0026 2.4GB
+We conduct ablation studies on the proposed methods in
+Tab. 2. USAD 2.0 surpasses USAD [13] under the same train-
+ing and data setup. Next, results without domain-aware dis-
+tillation further demonstrate the importance of this technique
+for balancing performance across domains. Without the music-
+domain teacher for distillation, the pitch classiﬁcation accuracy
+drops by 30% (relative). A similar phenomenon is observed
+when music data is removed, implying the necessity of both do-
+main experts and in-domain data for music.
+Furthermore, we evaluate the proposed initialization and
+depth-scaling approaches in Tab. 3. First, initializing the super-
+vised XLarge+ model from the SSL-pretrained XLarge back-
+bone yields substantial gains on the XARES-LLM benchmark
+compared to training from scratch, improving Track A from
+0.731 to 0.772 and Track B from 0.574 to 0.611. Next, we
+investigate three methods for scaling the 32-layer model to a
+48-layer XXLarge+ architecture. Speciﬁcally, “new top 16 lay-
+ers” appends randomly initialized transformer encoder layers
+on top of the original model; “uniform layer duplication” du-
+plicates every even-numbered layer for a 1.5 ↔ expansion; and
+“depth up-scaling” follows [25] by copying and stacking the
+ﬁrst 24 and last 24 layers. These depth-scaled models are
+trained via domain-aware distillation from supervised teachers.
+The increased capacity allows all depth-scaling variants to out-
+perform the XLarge+ baseline, with depth up-scaling achiev-
+ing the highest overall performance on both Tracks A and B.
+Collectively, these ablation studies conﬁrm the efﬁcacy of the
+proposed USAD 2.0 training and scaling strategies.
+3.4. Inference Efﬁciency
+We compare the inference efﬁciency of USAD 2.0 to assess its
+real-world applicability. We use the real-time factor (RTF), de-
+ﬁned as the ratio of inference time to input audio duration, to
+quantify inference speed. As shown in Tab. 4, the Large model
+has the lowest memory usage because of the model size. Fur-
+thermore, the proposed framerate reduction yields substantial
+computational beneﬁts. Speciﬁcally, the 25Hz XLarge model
+speeds up by more than 2.8 ↔ and reduces memory usage by
+Figure 3: t-SNE [56] visualization of USAD 2.0 XXLarge+
+hidden representations with speech [57], environmental
+sounds [55], musical instruments [50], and singing voices [58].
+20% compared with the 50Hz counterpart. The 25Hz XXLarge
+model, despite scaling to over one billion parameters, operates
+faster than the 336M-parameter Large model at 50Hz, while
+keeping peak memory usage at a manageable 2.4GB. Taken to-
+gether with Tab. 1 and Tab. 4, these results show that the efﬁ-
+cient scaling of USAD 2.0 yields continual improvements while
+maintaining fast inference performance.
+3.5. Representation Visualization
+This section visualizes the hidden representations of USAD
+2.0 XXLarge+ to understand how audio is encoded into high-
+dimensional embedding spaces. We visualize the 40 th-layer
+embeddings of USAD 2.0 XXLarge+, which achieves the best
+XARES-LLM performance. The embeddings are mean-pooled
+along the temporal dimension for each audio clip, except for
+speech, where each phoneme segment is pooled.
+As shown in Fig. 3, the embeddings form four distinct
+macro-clusters corresponding to the broad input domains:
+speech, environmental sound, singing voice, and musical in-
+strument. Within each domain, representations are further or-
+ganized into ﬁne-grained categories. In particular, environmen-
+tal sounds and musical instruments form tightly isolated sub-
+clusters, while speech phonemes exhibit a more continuous dis-
+tribution with slight overlap, reﬂecting the connected nature of
+spoken articulation. Moreover, singing voice representations
+also cluster by vocal techniques with some overlap. These ob-
+servations indicate the model effectively disentangles multiple
+input domains while preserving intra-domain categorical struc-
+ture, offering well-separated representations that allow down-
+stream models easy access to the required information.
+4. Conclusion
+This paper presents USAD 2.0, a scalable universal audio en-
+coder for audio LLMs, combining domain-aware distillation, a
+music expert, and supervised distillation to integrate strengths
+from self-supervised and supervised foundation models. Efﬁ-
+cient approaches scale the model to 1B parameters within an
+academic budget while maintaining fast inference. USAD 2.0
+delivers strong, balanced cross-domain performance, outper-
+forming prior universal and domain-speciﬁc encoders, making
+it a practical frontend for next-generation audio LLMs.
+2227
+5. Generative AI Use Disclosure
+Generative AI is used to polish the manuscript without signiﬁ-
+cant changes to the authors’ original draft.

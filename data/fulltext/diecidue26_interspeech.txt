@@ -1,0 +1,474 @@
+The silence of the weights: a structured pruning strategy for attention-based
+audio signal architectures with second-order metrics
+Andrea Diecidue ID 1, Carlo Alberto Barbano ID 2, Piero Fraternali1,
+Mathieu Fontaine ID 3, Enzo Tartaglione ID 3,∗∗
+1 Politecnico di Milano, Italy
+2 University of Turin, Italy
+3 LTCI, T´el´ecom Paris, Institut Polytechnique de Paris, Palaiseau, France
+enzo.tartaglione@telecom-paris.fr
+Abstract
+Transformer-based models have become the state of the art
+across multiple domains, from natural language processing to
+machine listening, enabled by the attention mechanisms. How-
+ever, the attention layers require a large number of parame-
+ters and high-end hardware for both training and inference.
+We propose a novel channel-pruning technique explicitly tar-
+geted at the attention mechanism, decoupling the pruning of
+each head and the four matrices in the attention block: query,
+key, value, and output projection matrices, employing a second-
+order metric to score the network’s parameters. We compare
+our technique against head-pruning strategies and magnitude-
+driven scoring metrics, investigating the effects of pruning on
+Audio Spectrogram Transformer (AST) and Whisper. Our re-
+sults show that even after pruning 50% of the parameters in the
+attention block, performance is largely preserved. The code is
+available on GitHub.
+Index Terms: Speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Transformer-based models [1] have set the state of the art across
+a wide range of domains, including computer vision [2], nat-
+ural language processing [3], and more recently, machine lis-
+tening [4]. In the audio field, transformer-based architectures
+are applied to tasks such as sound classification [5, 6] as well
+as source separation, with models like TF-GridNet [7] and TF-
+Locoformer [8], and machine transcription or translation like
+Whisper [9].
+Transformers are known to scale effectively with model and
+dataset size [10]. This led to the development of large architec-
+tures with up to a billion parameters [11, 12, 13]. However,
+the high number of parameters leads to longer training times,
+as well as increased memory and energy requirements for stor-
+age and execution, which limits the devices that can support the
+network. To address this challenge, pruning techniques were
+designed to remove redundant parameters without affecting the
+network performance.
+Pruning [14] is based on the idea that deep neural net-
+works (DNNs) are over-parametrized with respect to down-
+stream tasks. There are two main approaches to pruning: struc-
+tured and unstructured. In structured pruning, entire neurons,
+convolutional filters, attention heads [15, 16], or even layers, are
+removed. Unstructured pruning, on the other hand, focuses on
+each parameter independently. Although structured pruning is
+**indicates the corresponding author.
+less flexible in which parameters to prune, it can directly speed
+up the network forward pass by changing the network topol-
+ogy, without the need for special hardware, unlike unstructured
+pruning [17]. In the case of transformers, a third pruning tech-
+nique, called token pruning [18, 19, 20], consists of removing or
+merging tokens that become redundant at specific points in the
+network, thus reducing the number of inputs in the following
+layers.
+In machine listening, various strategies have been explored.
+PARP [21] applies unstructured weight pruning to speech mod-
+els but produces irregular sparsities that do not lead to any real
+speed-up. Consequently, structured pruning has gained atten-
+tion: for instance, Peng et al. [22] applied L0-based structured
+pruning to Wav2Vec 2.0, eliminating whole attention heads and
+feed-forward channels and achieving≈50%compute reduc-
+tion with negligible performance loss. Other works, such as
+Wang et al. [23], similarly introduced fine-grained attention
+head pruning to mitigate accuracy loss in structured compres-
+sion, achieving a 72% parameter reduction and a2×speedup
+with no significant performance drop. Additionally, token prun-
+ing has been extended to audio Transformers: dropping low-
+importance spectrogram tokens can reduce attention computa-
+tions by 30–40% with under 1% accuracy loss [24]. Dynamic
+pruning methods further adapt the model at inference: [25], for
+example, proposes context-driven gating that skips less criti-
+cal attention blocks on-the-fly, preserving performance while
+reducing latency by≈30%. However, structured pruning of
+attention modules in audio remains underexplored. Most prior
+works remove entire heads or tokens; few address finer-grained
+pruning (e.g., Q/K/V channels), a direction explored in NLP
+Transformers [26] but underexplored in audio.
+In this paper, we propose a channel-wise structured pruning
+strategy specifically targeting the attention block, and the use of
+Fisher information as a scoring metric for parameters. We com-
+pare against more standard head-wise pruning and magnitude-
+based scoring methods. We present the results of our method on
+two tasks: audio classification using the AST [5] architecture
+and audio transcription/translation using the Whisper architec-
+ture. Our results show that it is possible to reduce the number
+of parameters in the attention layers by 50% with only a very
+minor loss in performance.
+2. Proposed method
+Self-attention block descriptionThe attention block, as in
+Fig. 1, is composed of four weight matrices:W q ∈R dq ×d,
+Wk∈R dq ×d,W v∈R dv ×d,W o∈R d×dv representing the
+queries, keys, values, and output projection weights.
+7023
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2026
+X
+WqT
+WkT
+WvT
+n
+d
+dq
+dk=dq
+dv
+Weights
+Weights
+Weights
+Q
+K
+V
+QKT
+Attention
+matrix
+Softmax
+A
+Z
+Embedding
+size
+Number of
+tokens
+WoT O
+Weights Output
+Input
+Figure 1:Notation for the self-attention block.
+Although from the implementation perspective these are
+usually treated as 2D matrices, there are actually three parame-
+ters that control their shape: the embedded dimensiond, the
+number of headsn h, and the number of channelsn c, as in
+Fig. 2. Most attention implementations usen c =d/n h, mak-
+ing the matrix square and thus more computationally efficient.
+In the case of self-attention, usuallyd q =d v =n h·n c to also
+make the entire operation more efficient.
+Motivated by [27], the following observations and hypothe-
+ses are assumed. First, not all layers require the same num-
+ber of parameters. In fact, the number of heads and chan-
+nels can vary across layers. Second, the projection matrices
+Wq,W k,W v,W O do not need to be pruned in the same way.
+In fact, onlyQandKmust have one equal-length side to per-
+form the dot product. In the same way,W o in Fig. 1 processes
+Z∈R n×dv to produce the output ofO∈R n×d, so they share
+the same dimensiond v. This implies that, when pruning the
+parameters in the layer, we only have two constraints:W q and
+Wk must have the same output dimension, andWv’s output di-
+mension must matchW o’s input dimension. While each head
+may have a different number of channels, keeping the number
+of channels constant across the heads of a single layer is com-
+putationally more efficient.
+Pruning schemePruning along the head dimension (the en-
+tire head scheme, orEHfor brevity) is the preferred method in
+the literature [15, 16, 23] for two main reasons: first, most atten-
+tion implementations are optimized for the head dimension, so
+removing entire heads yields greater benefits in terms of infer-
+ence speed. Second, heads are independent subspaces, so prun-
+ing entire heads usually hinders performance less. Nonetheless,
+channel-wise pruning can be beneficial; it still improves infer-
+ence speed while achieving competitive performance. In this di-
+rection, we propose a novel pruning scheme that independently
+selects, for each head, the set of channels to prune, to preserve
+the most important dimension of each head. Fig. 2 shows the
+difference in pruning patterns between per-head pruning and
+head-wise pruning. We formulate per-head channel pruning
+(PH) as a budget allocation problem, aiming to select the num-
+ber of channels to achieve the desired sparsity while minimiz-
+ing the score of the pruned parameters. To solve the problem,
+we employ a greedy approach that, for each layer, defines a to-
+tal budget (the number of channels to remove in QK and VO),
+computes the importance score for each channel, and iteratively
+selects the channels to prune. At each step, the set of channels
+with the lowest cost that fits within the budget is selected, and
+Channel
+reduction
+Head
+reduction
+Number of
+heads
+Number of
+channels
+Embedded
+dimension
+Per Head
+Same Head
+Figure 2:Schemes of per-head and same-head pruning pat-
+terns, in order.
+the set of possible channels for that layer is updated.
+Scoring parameter metricIn addition to our pruning
+scheme, we also adopt a second-order metric to score the pa-
+rameters. Most structured pruning approaches use the raw pa-
+rameter magnitudes (MAG), typically computed as norms (L1
+or L2), to rank them. The parameters with the lowest scores
+are pruned because they are deemed less impactful on the net-
+work’s output. On the other hand, parameter magnitudes can
+vary substantially across layers; layers closer to the input tend
+to have smaller magnitudes than those in later layers, which
+favors pruning earlier layers. Fisher information (FI) is very
+attractive as a metric because not only is it less sensitive to the
+scaling problem, but it also minimizes the total loss of informa-
+tion in the network. Fisher information measures the amount
+of information each parameter in the network carries about the
+output. The lower the value is, the less impactful the parameter
+is. We can show this starting from the formulation of Fisher
+Information as:
+I(θ) =−E
+"
+∂2 logf(X;θ)
+∂θ 2 |θ
+#
+.(1)
+whereθis an unknown parameter,Xis an observable ran-
+dom variable, andf(X;θ)is a probability distribution function.
+Fisher information measures the variance of the score ofθwith
+respect toX. Low variance indicates low information. To esti-
+mate the importance of a single parameter of a neural network,
+we use a loss function that represents the log-likelihood in place
+oflogf(X;θ), whereXis a set of samples, andθis the param-
+eter. Thus, Fisher information ofθcan be computed by feeding
+a set of samplesXto a neural network as:
+I(θ) =−E
+"∂L(θ)
+∂θ
+2#
+.(2)
+Depending on the chosen parameter grouping, we can accu-
+mulate per-parameter values to estimate the Fisher information
+carried by the entire parameter group under examination. Other
+works have explored second-order information, such as the full
+Hessian matrix, but Fisher encodes nearly the same information
+at a much lower computational cost. Computing the full Hes-
+sian matrix is quadratic in the number of samples, while Fisher’s
+is only linear.
+ThresholdingFinally, we will explore two threshold strate-
+gies: global (G), which consolidates all channels or heads
+7024
+Layer 1Layer 2Layer 3Layer 4Layer 5Layer 6Layer 7Layer 8Layer 9Layer 10Layer 11Layer 12
+Attention Layer
+0
+20
+40
+60
+80
+Sparsity (%)
+Sparsity of the Attention blocks for each layer at 20% pruning
+Magnitude
+Fisher Information
+Figure 3:Sparsity in the attention blocks of each layer for the
+per-head pruning scheme approach on the SpeechCommands
+dataset. Layers are ordered from the input to the output of
+the network. Magnitude tends to favor earlier layers, whereas
+Fisher distributes the budget differently, yielding better models.
+across layers and decides which to prune based on their scores,
+and local (L), which treats each layer independently. With the
+first strategy, we can prune each layer by different amounts. In
+contrast, in the second case, each layer will be pruned by the
+same amount because all attention blocks at the beginning have
+the same number of heads, channels, and embedded dimension.
+3. Results
+Experimental setupWe test our pruning approach on two
+architectures: AST for audio classification tasks and Whisper
+for machine transcription and translation. For AST, we present
+results on AudioSet (the balanced version available on Hug-
+ging Face) and SpeechCommand 2. For Whisper, we use the
+”medium” model, with weights provided by OpenAI via Hug-
+ging Face and evaluate on both transcription and translation
+tasks. We test all combinations of pruning schemes, scoring
+metrics, and threshold approaches on both architectures. Prun-
+ing is applied iteratively for10steps; at each iteration, we prune
+10% of the parameters from the attention blocks. For AST, we
+fine-tune the model after each iteration using LoRA [28] for3
+epochs with a learning rate of10 −4 and the AdamW optimizer.
+For Whisper, we use a mix of LibriSpeech [29], MultiLingual
+LibriSpeech (MLS) [30], CommonV oice [31], V oxPopuli [32],
+FLEURS [33], and CoV oST [34], totaling 33k hours of audio
+for fine-tuning, with a learning rate of10 −4 and the SGD opti-
+mizer. We report the tables with the performance of all models
+in the GitHub repository.
+Importance scoreFig. 3 shows how Fisher information and
+magnitude select which layers to prune. Magnitude favors lay-
+ers closer to the input because they have a smaller scale than
+later layers. Fisher, on the other hand, selects both the later and
+earlier layers. We believe that pruning in earlier layers occurs
+because mel spectrograms are highly sparse images, making the
+features learned by those layers easier to condense.
+Main pruning resultsFigs. 4 and 5 report the results of
+the different pruning techniques applied to the AST architec-
+ture on AudioSet and SpeechCommands, respectively. As ex-
+pected, when we use Fisher information to score the parame-
+ters, the model performs better than when we prune by magni-
+tude. We also observe that the proposed method outperforms all
+0 20 40 60
+Sparsity (%)
+26
+28
+30
+32Evaluation mAP
+Evaluation mAP
+(Audioset)
+EH | G | MAG
+PH | G | FI
+PH | G | MAG
+EH | G | FI
+PH | L | MAG
+PH | L | FI
+EH | L | MAG
+EH | L | FI
+Figure 4:mAP of AST on AudioSet at different sparsity rates.
+0 20 40 60
+Sparsity (%)
+96.5
+97.0
+97.5
+98.0Eval Acc
+Eval Acc
+(Speechcommands)
+EH | G | MAG
+PH | G | FI
+PH | G | MAG
+EH | G | FI
+PH | L | MAG
+PH | L | FI
+EH | L | MAG
+EH | L | FI
+Figure 5:Accuracy of AST on SpeechCommands at different
+sparsity rates.
+0 20 40 60
+Sparsity (%)
+16
+18
+20Avg speed (ms)
+Avg speed (ms)
+(Audioset)
+EH | G | MAG
+PH | G | FI
+PH | G | MAG
+EH | G | FI
+PH | L | MAG
+PH | L | FI
+EH | L | MAG
+EH | L | FI
+Figure 6:Inference speed on a single sample from the AudioSet
+dataset at different pruning levels, averaged over 100 samples.
+7025
+0 10 20 30 40 50
+Sparsity (%)
+10 1
+100
+WER
+WER English
+PH | L | FI
+PH | L | MAG
+PH | G | MAG
+EH | L | MAG
+EH | L | FI
+EH | G | MAG
+PH | G | FI
+EH | G | FI
+Figure 7:WER on LibriSpeech English dataset at different
+pruning iterations, with logarithmic scale (lower is better).
+0 10 20 30 40 50
+Sparsity (%)
+10 1
+100
+WER
+WER Italian
+PH | L | FI
+PH | L | MAG
+PH | G | MAG
+EH | L | MAG
+EH | L | FI
+EH | G | MAG
+PH | G | FI
+EH | G | FI
+Figure 8:WER on CommonVoice Italian dataset at different
+pruning iterations, with logarithmic scale (lower is better).
+magnitude-based methods and is on par with head-wise pruning
+using Fisher information (at 60% sparsity, achieving 97.71%
+accuracy on SpeechCommands and 30.86% on AudioSet, com-
+pared with 97.51% and 31.10%). Unsurprisingly, magnitude-
+based pruning performs better with local thresholding (97.49%
+on SpeechCommands, 29.85% on AudioSet) than with global
+thresholding (96.54% on SpeechCommands, 25.90% on Au-
+dioSet), because local thresholding sidesteps scale differences
+across layers. Conversely, Fisher information is not subject to
+the scale problem and performs better with global thresholding.
+When it comes to inference speed (Fig. 6), we notice that head-
+wise pruning is 1-2 ms faster than per-head pruning. This is not
+surprising; head-wise pruning removes entire scaled dot product
+operations from the computation graph, while per-head pruning
+only reduces the computations for each scaled dot product.
+Similar observations can be made for Whisper. Figs. 7, 8,
+and 9 report the word error rate (WER) on LibriSpeech English
+and on the Italian and French subsets of CommonV oice. Our
+per-head pruning scheme is competitive with head-wise prun-
+ing in terms of performance, and is within 1% of the original
+model. When it comes to machine translation (Fig. 10), we
+observe a larger drop in performance. It is worth noting that al-
+though we train the model on these languages, the training set is
+0 10 20 30 40 50
+Sparsity (%)
+100
+WER
+WER French
+PH | L | FI
+PH | L | MAG
+PH | G | MAG
+EH | L | MAG
+EH | L | FI
+EH | G | MAG
+PH | G | FI
+EH | G | FI
+Figure 9:WER on CommonVoice French dataset at different
+pruning iterations, with logarithmic scale (lower is better).
+0 10 20 30 40 50
+Sparsity (%)
+0
+10
+20
+30BLEU
+BLEU CoVoST DE EN
+PH | L | FI
+PH | L | MAG
+PH | G | MAG
+EH | L | MAG
+EH | L | FI
+EH | G | MAG
+PH | G | FI
+EH | G | FI
+Figure 10:BLEU on CoVoST German to English dataset at dif-
+ferent pruning iterations (higher is better).
+fairly small (about 1500 samples per language for transcription
+and 1000 for translation), so we attribute the performance pri-
+marily to the scoring metric, which retains the most important
+parameters.
+4. Conclusions
+In this paper, we present a novel pruning pattern for the channel
+dimension in the Attention block, combined with Fisher Infor-
+mation to rank the parameters. In particular, we evaluate the
+effect of this type of pruning on AST and Whisper architec-
+tures, comparing it against more standard techniques, such as
+head-wise pruning and magnitude ranking. From the experi-
+mental results, it appears that careful channel-wise pruning can
+be on par with head-wise pruning, especially when combined
+with Fisher Information. Several future directions arise from
+this work, including exploring other fields, such as CV and NLP,
+and pruning simultaneously along both the head and channel di-
+mensions. In particular, we believe that relaxing the constraint
+of keeping the same number of channels across all heads could
+yield a better pruning pattern, although careful optimization of
+the scaled dot product is needed to avoid bottlenecks that would
+hinder inference speed.
+7026
+5. Acknowledgments
+This work was supported by the French National Re-
+search Agency (ANR) in the framework of the JCJC project
+”SAROUMANE” under the grant (ANR-22-CE23-0011), by
+Hi! PARIS and ANR/France 2030 program (ANR-23-IACL-
+0005).
+We acknowledge VSB – Technical University of Ostrava,
+IT4Innovations National Supercomputing Center, Czech Re-
+public, for awarding this project access to the LUMI super-
+computer, owned by the EuroHPC Joint Undertaking, hosted by
+CSC (Finland) and the LUMI consortium through the Ministry
+of Education, Youth and Sports of the Czech Republic through
+the e-INFRA CZ (grant ID: 90254).
+This work was supported by the Italian Ministry of Univer-
+sity and Research (MUR) under the National Recovery and Re-
+silience Plan (NRRP), and by the European Union (EU) under
+the NextGenerationEU project.

@@ -1,0 +1,422 @@
+I’ll Keep an Ear Out: Teaching AudioLLMs Proactive Audio Assistance
+Amit Kumar Singh Yadav1,∗, Ritvik Shrivastava1,∗, Xuan Zhang1, Seungwhan Moon1, Shashank
+Jain1, Pinar Donmez1, Babak Damavandi1
+1 Meta Reality Labs, USA
+{amit99, ritvik, xuanzhang216, shanemoon, shajain, pinared, babakd}@meta.com
+Abstract
+Audio large language models (AudioLLMs) operate reac-
+tively, responding only when queried. We introduce proac-
+tive audio assistance, where an AudioLLM monitors an audio
+stream and autonomously decides when to alert the user from a
+single natural-language intent, motivated by wearable applica-
+tions for Deaf and Hard of Hearing users. We propose Interrupt
+and Silent Modeling (ISM), a model-agnostic paradigm that
+embeds proactive decisions into LLM decoding via two special
+tokens:<interrupt>and<silent>, capturing four states:
+onset detection, sustained-relevance triggering, irrelevance sup-
+pression, and de-duplication. Applied to Qwen2-Audio-7B,
+ISM achieves 99.6% interrupt F1 and perfect de-duplication
+recall on ESC-50. On noisy Epic-Sounds kitchen audio, ISM
+achieves the highest interrupt F1 without domain-specific train-
+ing, the only method maintaining strong onset detection without
+over-triggering or over-suppression. Streaming evaluation con-
+firms real-time viability with 3.5-second average latency.
+Index Terms: Proactive Assistance, AudioLLM, Interrupt
+Modeling, Environmental Sound Classification, Assistive Tech
+1. Introduction
+Audio large language models (AudioLLMs) have advanced
+rapidly in understanding and reasoning about acoustic sig-
+nals [1, 2, 3]. These systems classify sounds, answer questions
+about audio, and generate natural language descriptions. How-
+ever, they share a fundamental limitation: they arepurely reac-
+tive. Each interaction requires the user to formulate a query,
+wait for a response, and repeat for every new event. This
+paradigm is inadequate for scenarios requiring continuous mon-
+itoring, such as alerting a Deaf or Hard of Hearing (DHH) indi-
+vidual when a specific sound occurs [4, 5].
+We envision proactive AudioLLMs that determine both
+whenandhowto assist without requiring a query before ev-
+ery response. We identify three categories of proactive triggers:
+(i)explicitrequests (e.g., “watch for someone knocking on my
+door”), (ii)implicitcues (e.g., detecting hesitation or confusion
+in user speech), and (iii)semantic-drivenassistance (e.g., rec-
+ognizing that a traveler at an airport gate could benefit from a
+boarding announcement alert). In this work, we focus on the
+explicit watch-out intent scenario as the foundational case.
+We introduceproactive audio assistance(Figure 1), in
+which the user specifies a single watch-out intent and the Audi-
+oLLM autonomously monitors an incoming audio stream, de-
+ciding at each moment whether tointerruptwith a notifica-
+tion or remainsilent. This addresses a critical gap in assistive
+technology: conventional sound classification systems for DHH
+*These authors contributed equally.
+Figure 1:Reactive vs. proactive audio assistance. Existing Au-
+dioLLMs (top) require a query for every event. Our proac-
+tive approach (bottom) takes a single watch-out intent and au-
+tonomously decides when to intervene.
+users [4, 5] monitor a fixed set of sound classes without mod-
+eling user intent or interaction history, leading to notification
+fatigue from repeated alerts for the same ongoing event. Our
+approach treats de-duplication as a first-class modeling objec-
+tive - the system maintains awareness of its notification history
+and suppresses redundant alerts for sustained sound events.
+Proactive audio assistance poses significant challenges be-
+yond standard classification. The model must perform tempo-
+ral reasoning over streaming audio to detect the onset of rele-
+vant events, distinguish first occurrences from continuations of
+already-reported events, handle noisy and overlapping acoustic
+scenes without false alarms, and make these decisions causally,
+using only past and present context, under real-time latency
+constraints.
+Our contributionsare as follows:
+• We formalize proactive audio assistance as a new task for Au-
+dioLLMs, defining four decision states: onset interruption,
+sustained-relevance interruption, irrelevance silence, and de-
+duplication silence.
+• We propose Interrupt and Silent Modeling (ISM), embedding
+proactive decisions directly into LLM decoding via two spe-
+cial tokens added to the vocabulary.
+• We define proactive evaluation metrics and a streaming pro-
+tocol for real-time assessment.
+• We demonstrate near-perfect proactive performance on ESC-
+50 [6] (99.6% interrupt F1, 100% de-duplication recall) and
+robust zero-shot interrupt transfer to Epic-Sounds [7] using
+3950
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2807
+Qwen2-Audio-7B [1] - showing that proactive behavior is
+achievable through ISM alone, without architectural changes,
+and that ISM is model-agnostic by design.
+2. Related work
+Audio understanding.Environmental sound classification has
+progressed from handcrafted spectral features to deep learn-
+ing. The Audio Spectrogram Transformer (AST) [8] achieves
+strong accuracy on ESC-50 [6] via large-scale pretraining on
+AudioSet [9]. Self-supervised methods such as BEATs [10] and
+HTS-AT [11] further push performance, with BEATs achieving
+98.1% on ESC-50. Epic-Sounds [7] extends evaluation to ego-
+centric kitchen audio with 44 temporally localized event classes
+recorded in noisy, real-world conditions.
+AudioLLMs.Recent AudioLLMs integrate audio encoders
+with LLMs for open-ended audio understanding [1, 2, 3].
+Qwen2-Audio [1] pairs Whisper-large-v3 [12] with a 7B lan-
+guage model, supporting both speech and non-speech audio
+tasks. GAMA [2] extends audio reasoning with complex chain-
+of-thought capabilities. These systems excel at query-driven
+tasks but lack mechanisms for autonomous, intent-aware moni-
+toring - each response requires an explicit user prompt.
+Sound awareness for DHH users.Wearable sound awareness
+systems for DHH individuals have been explored extensively [4,
+5]. Conventional approaches continuously monitor a fixed set
+of sound classes and generate alerts for every detected event.
+This leads to notification fatigue, as users cannot express intent
+(which sounds matter) or suppress repeated alerts for ongoing
+events. Our approach addresses both limitations through user-
+specified intents and history-aware de-duplication.
+Proactive and anticipatory AI.Proactive behavior has been
+explored in conversational agents [13] and video understanding
+[14]. VideoLLM-Online [15] proactively narrates key activi-
+ties in video streams, and Mirai [16] uses image sequences for
+timely behavioral nudges. No prior work addresses proactive
+assistance for AudioLLMs. We formalize proactive audio mon-
+itoring as a new task for AudioLLMs, define a four-state deci-
+sion framework, and introduce ISM as a model-agnostic train-
+ing paradigm to enable it.
+3. Method
+3.1. Task formulation
+Given a user-specified watch-out intentq(e.g., “alert me if a
+dog barks”) and a continuous audio stream, the model decides
+at each time step whether to interrupt or remain silent. We de-
+fine four decision states based on audio content and interaction
+history:
+Interrupt Type-1 (I1):The audio transitions from irrelevant
+to relevant content relative toq, modelingonset detection- the
+first moment a relevant sound appears after irrelevant audio.
+Interrupt Type-2 (I2):The entire observed audio window
+contains relevant content with no preceding irrelevant context,
+modelingsustained relevance. This addresses cases where the
+model missed the initial onset and must still trigger. Empiri-
+cally, adding I2 training improves I2 recall by∼10 percentage
+points (Section 4.6).
+Silent Type-1 (S1):The audio is unrelated toq; the model re-
+mains silent.
+Silent Type-2 (S2):The audio is relevant toq, but the model has
+already notified the user (recorded in conversation history). The
+model remains silent to avoid duplicate alerts (de-duplication).
+3.2. Architecture
+Our Proactive Audio Large Language Model (PALLM), shown
+in Figure 2a, is built on Qwen2-Audio-7B [1], comprising a
+Whisper-large-v3 audio encoder [12] and a 7B-parameter lan-
+guage model (∼8B total parameters). Audio is resampled to
+16 kHz and converted to 128-dimensional mel-spectrograms
+(25 ms window, 10 ms hop). A pooling layer with stride 2 yields
+∼40 ms temporal resolution per token. The user’s watch-out in-
+tent and interaction history are tokenized using Qwen2-Audio’s
+text tokenizer - no separate text encoder module is required.
+We deliberately use a standard AudioLLM backbone to
+demonstrate that proactive behavior is enabled by ISM, not by
+architectural novelty. ISM is model-agnostic: it requires only
+vocabulary extension and autoregressive decoding - properties
+shared by all current AudioLLMs, including GAMA [2] and
+MERaLiON [3]. No changes to the ISM paradigm itself are
+needed to apply it to a different backbone; the same two-token
+vocabulary extension, training data construction, and loss for-
+mulation transfer directly.
+3.3. Interrupt and Silent Modeling (ISM)
+ISM extends the LLM’s vocabulary with two special tokens:
+<interrupt>and<silent>. These enable proactive de-
+cisions within the standard autoregressive decoding framework
+(Figure 2b). Training proceeds in two stages: (1) reactive super-
+vised fine-tuning (SFT) for sound classification, and (2) proac-
+tive SFT for interrupt and silent modeling.
+Reactive SFT.We first fine-tune the model on sound classifi-
+cation using sequence-to-sequence learning with cross-entropy
+loss. Given audio input and a classification query, the model
+learns to generate the correct class label. This establishes the
+acoustic understanding required for proactive decisions.
+Proactive SFT - training data construction.For each au-
+dio sample with known event boundaries[t 1,t 2], we construct
+training instances for all four decision states. I1 instances pair
+irrelevant audio precedingt 1 with relevant audio aftert 1, sim-
+ulating an onset event during streaming. I2 instances contain
+only relevant audio within[t 1,t 2], with no preceding irrelevant
+context. S1 instances sample audio fully outside[t 1,t 2]; mul-
+tiple S1 instances per sample train the model to consistently
+remain silent for irrelevant input. S2 instances contain relevant
+audio but include a conversation history entry indicating a prior
+notification, training the model to suppress duplicate alerts.
+Proactive SFT - loss formulation.For interrupt instances, the
+target sequence is [<interrupt>, response tokens]; for silent
+instances, [<silent>]. The losses are:
+LI =−
+NX
+k=1
+log softmax(ok)·i k (1)
+LS =−log softmax(o 1)·s 1 (2)
+LP =
+NIX
+j=1
+L(j)
+I +
+NSX
+j=1
+L(j)
+S (3)
+whereo k is the logit vector at positionk,i k ands 1 are the
+corresponding one-hot target vectors,Nis the target sequence
+length, andL (j)
+I /L(j)
+S denote the loss for thej-th interrupt and
+silent instance.N I andN S are the total counts of interrupt
+(I1+I2) and silent (S1+S2) instances, respectively. We sub-
+sample silent instances to enforceN I =N S, maintaining bal-
+anced training without additional loss weighting. Fine-tuning
+uses LoRA [17] (rank 8,α=32) for parameter efficiency.
+3951
+(a)PALLM architecture.
+ (b)Interrupt and Silent Modeling (ISM).
+Figure 2:(a) PALLM takes a single watch-out intent and continuously encodes audio, decoding either<interrupt>or<silent>.
+(b) ISM training with four decision states. Conversation history enables de-duplication (S2).
+4. Experiments
+4.1. Datasets
+ESC-50[6] 1 contains 2,000 five-second clips spanning 50 envi-
+ronmental sound classes across five categories: animals, natu-
+ral soundscapes, human non-speech, interior/domestic, and ex-
+terior/urban sounds. These categories directly correspond to
+sounds relevant to DHH users’ daily awareness needs [4, 5].
+We use the standard 5-fold cross-validation protocol for reac-
+tive classification and construct proactive evaluation sets with
+balanced interrupt/silent samples across all four decision types.
+Epic-Sounds[7] 2 provides 44 audio event classes from egocen-
+tric kitchen recordings in the EPIC-KITCHENS dataset. Unlike
+ESC-50’s clean, isolated clips, Epic-Sounds features naturally
+occurring sounds with concurrent background noise from cook-
+ing activities, and ground truth labels include both the target
+event and the primary foreground activity - making it a chal-
+lenging test for robustness. We use Epic-Sounds exclusively for
+evaluation (no training), testing zero-shot transfer of ISM.
+4.2. Training details
+We fine-tune Qwen2-Audio-7B using LoRA [17] (rank 8,α=32,
+dropout 0.1) with AdamW (β 1=0.9,β 2=0.95,ϵ=1e-8), learn-
+ing rate 5e-4 with cosine schedule and 5% warmup, weight de-
+cay 0.1, for 10 epochs. Effective batch size is 384 (batch 24×
+16-step gradient accumulation). Maximum sequence length is
+2,048 tokens. Training is performed on 6 NVIDIA H100 GPUs.
+A fixed random seed ensures reproducibility.
+4.3. Evaluation metrics
+We define proactive-specific metrics to evaluate the model’s
+decision-making:interrupt precision(P I) measures correct-
+ness of interrupt decisions;silent precision(P S) measures cor-
+rectness of silent decisions;recallis measured per decision
+type -R I1 (onset interrupt),R I2 (sustained-relevance inter-
+rupt),R S1 (irrelevance silence), andR S2 (de-duplication si-
+lence). These metrics capture distinct capabilities:R I1 and
+RI2 measure sensitivity to relevant events,RS1 measures speci-
+ficity to irrelevant events, andR S2 measures history-aware de-
+duplication. We additionally reportinterrupt F1, computed as
+1https://github.com/karolpiczak/ESC-50
+2https://epic-kitchens.github.io/epic-sounds/
+FI = 2·P I·RI1/(PI +RI1 ), using onset recall (RI1) as the pri-
+mary interrupt recall since onset detection is the operationally
+critical capability in streaming - detecting the first appearance of
+a relevant event.R I2 is reported separately to assess sustained-
+relevance performance.
+All proactive metrics on ESC-50 are reported as averages
+over the standard 5-fold cross-validation splits. Epic-Sounds
+metrics are computed on a single evaluation set (no training is
+performed on this dataset).
+4.4. Proactive evaluation results
+Table 1 presents proactive evaluation on both ESC-50 and Epic-
+Sounds. We compare three configurations:Zero-Shot(base
+Qwen2-Audio-7B with proactive prompting),Reactive SFT
+(fine-tuned for classification only, without ISM), andPALLM
+(fine-tuned with ISM).
+ESC-50.The zero-shot baseline exhibits strong I1 recall
+(100.0%) but poor S1 recall (59.9%) and negligible S2 recall
+(0.2%), revealing a fundamental affirmative bias - it interrupts
+regardless of relevance or history, rendering it unusable for real-
+world monitoring. Reactive SFT improves silent recall but fails
+at de-duplication (S2: 10.1%), the very capability that prevents
+notification fatigue. PALLM with ISM resolves both failure
+modes, achieving 99.4% interrupt precision, 100.0% S2 recall,
+and 99.6% interrupt F1. The perfect de-duplication recall is
+particularly significant: it demonstrates that ISM learns history-
+aware suppression as an emergent behavior from the four-state
+training formulation, a capability absent from all baselines.
+For reactive classification, PALLM achieves 94.7% ac-
+curacy on ESC-50 (5-fold cross-validation), matching PANN
+(94.7%) [18] and approaching AST (95.7%) [8] - models
+purpose-built for classification alone. PALLM achieves this
+whilesimultaneouslysupporting proactive capabilities that
+these specialized models lack entirely.
+Epic-Sounds (zero-shot transfer).Without any training on
+Epic-Sounds, PALLM achieves the highest interrupt F1 (67.5),
+outperforming both Reactive SFT (65.2) and Zero-Shot (66.9).
+Although the F1 margin over Zero-Shot is narrow, the underly-
+ing behavior differs substantially: PALLM balances precision
+and recall (51.9%P I, 96.7%R I1), whereas Zero-Shot achieves
+comparable F1 through near-total over-triggering (50.8%P I,
+98.3%R I1, 3.9%R S1) - behavior that would cause severe
+notification fatigue in a real proactive system. Reactive SFT
+3952
+Data Method Precision F1 Recall
+PI PS FI RI1 RI2 RS1 RS2
+ESC-50
+Zero-Shot 58.8 99.6 74.1100.099.8 59.9 0.2
+Reactive SFT 67.2 90.1 79.8 98.1 89.9 98.1 10.1
+PALLM (ISM) 99.4 99.7 99.699.8100.0 99.4 100.0
+Epic-
+Sounds
+Zero-Shot 50.8 69.7 66.998.3 100.03.9 —
+Reactive SFT92.965.7 65.2 50.2 76.596.1—
+PALLM (ISM)51.971.9 67.596.7 41.2 10.1 —
+Table 1:Proactive evaluation results (%).P: precision,R:
+recall,F I: interrupt F1. I: interrupt, S: silent. Subscripts
+denote type. On Epic-Sounds, Reactive SFT’s highR S1 re-
+flects domain-mismatch conservatism (halvedR I1), not proac-
+tive competence. PALLM is the only method maintaining high
+RI1 while achieving the best F1. S2 is excluded on Epic-Sounds
+(no conversation history).
+takes the opposite extreme: high precision (92.9%P I) but only
+50.2%R I1, missing half of all relevant onsets. This illustrates a
+key insight about proactivity: classification accuracy alone does
+not produce usable proactive behavior. Reactive SFT’s high S1
+recall (96.1%) reflects domain-mismatch conservatism - it fails
+to recognize out-of-domain sounds and defaults to silence - not
+genuine proactive competence. PALLM is the only method that
+maintains strong onset detection (96.7%R I1) without collaps-
+ing into either over-triggering or over-suppression.
+These results reveal a principled decomposition of proac-
+tive transfer: ISM’s temporal-structure decisions (I1 onset de-
+tection, 96.7%) transfer robustly across domains, demonstrating
+that the four-state formulation captures domain-invariant deci-
+sion structure. Decisions that depend on acoustic clarity are
+more domain-sensitive: S1 recall is 10.1% and I2 recall drops
+to 41.2%, as the model - trained exclusively on clean, isolated
+ESC-50 clips - encounters overlapping kitchen sounds for the
+first time. Critically, this is not an ISM limitation but a training
+data one: the zero-shot baseline fares even worse on S1 (3.9%),
+and Reactive SFT’s high S1 (96.1%) comes only by sacrificing
+half its interrupt recall. Domain-diverse training data or cali-
+brated decision thresholds should close this gap while preserv-
+ing ISM’s strong interrupt transfer (Section 5). De-duplication
+(S2) is not evaluated on Epic-Sounds, as the protocol does not
+carry conversation history across samples.
+For reactive classification on all 44 Epic-Sounds classes,
+PALLM achieves 34.5% top-1 accuracy (state-of-the-art audio-
+only: 53.8% [7]). This gap is expected for an out-of-domain
+model, but it makes interrupt F1 results all the more notable:
+ISM’s proactive decision structure transfers where fine-grained
+classification does not, confirming that the four-state formula-
+tion captures a level of abstraction above per-class discrimina-
+tion.
+4.5. Streaming evaluation
+To evaluate interrupt latency and de-duplication under con-
+trolled conditions, we construct a streaming protocol using 400
+samples spanning all 50 ESC-50 classes (8 per class). Each
+15-second composite sample is constructed by concatenating a
+randomly selected irrelevant audio segment (seconds 0-5), the
+target relevant segment (seconds 5-10), and another irrelevant
+segment (seconds 10-15), with faded transitions between seg-
+ments to avoid temporal artifacts. During streaming, a 5-second
+rolling audio window is maintained, and the full conversation
+history is preserved and updated upon each interrupt event. The
+model makes token-by-token causal predictions - it cannot ob-
+serve future audio.
+Figure 3:Streaming evaluation on 400 samples across 50 sound
+classes. Each column represents a 1-second interval; Green re-
+gion (5-10s) marks when the relevant audio is present. PALLM
+triggers interrupts within 3.5s of event onset on average.
+PALLM achieves an average response latency of3.5 sec-
+ondsfrom onset of the relevant audio event, with nearly all in-
+terrupts occurring within the relevant time window (Figure 3).
+This protocol validates two essential properties for deployment:
+(1) causal inference produces timely interrupts under real-time
+constraints, and (2) conversation-history-based de-duplication
+suppresses redundant alerts across successive windows. Both
+are confirmed, establishing that ISM-based proactive monitor-
+ing is viable under real-time constraints suitable for wearable
+DHH applications [4, 5]. The fixed onset position provides
+a controlled setting for these measurements; future work will
+randomize onset time and duration and explore the latency-
+hallucination tradeoff from shorter training segments.
+4.6. Ablation: effect of Interrupt Type-2
+We ablate the contribution of I2 training by comparing models
+trained with I1-only versus I1+I2. Adding I2 improves I2 recall
+by∼10 percentage points on ESC-50. I1 alone only trains the
+model to interrupt when relevant audio follows irrelevant audio;
+if the model misses the initial onset and observes a window of
+entirely relevant audio, it has no training signal for this case. I2
+explicitly addresses this gap, ensuring robust triggering across
+both onset and sustained-relevance scenarios.
+5. Conclusion and future work
+We introduced proactive audio assistance, a new task for Au-
+dioLLMs in which the model monitors an audio stream and
+autonomously decides when to alert the user from a single
+watch-out intent. ISM embeds this capability into standard
+LLM decoding through two special tokens, requiring no archi-
+tectural changes. On ESC-50, ISM achieves 99.6% interrupt
+F1 with perfect de-duplication recall, resolving the notification
+fatigue problem in existing sound awareness systems. On Epic-
+Sounds - without any domain-specific training - ISM is the only
+method that maintains strong onset detection (96.7%RI1) with-
+out collapsing into over-triggering or over-suppression, achiev-
+ing the highest interrupt F1; the remaining silent-recall gap is
+attributable to training data, not the framework, and is directly
+addressable through domain-diverse training. Streaming evalu-
+ation confirms real-time viability with 3.5s average latency.
+Future work includes domain-diverse training to close the
+silent-recall gap, reducing latency while managing the halluci-
+nation tradeoff, extending to implicit and semantic user intents,
+and user studies with DHH participants [19]. Since ISM re-
+quires only vocabulary extension and autoregressive decoding,
+it can be applied to any current or future AudioLLM as-is, mak-
+ing proactive audio assistance a portable capability rather than
+a model-specific feature.
+3953
+6. Generative AI use disclosure
+Generative AI tools were used for editing and polishing the
+manuscript text. All experimental design, implementation, eval-
+uation, and scientific claims are the sole responsibility of the
+authors.

@@ -1,0 +1,546 @@
+Uncovering the Impact of G2P Precision on Korean TTS: A Large-Scale
+Statistical Validation via a Novel Morphological Engine
+Heejo You ID 1,∗∗, Sungwoo Moon ID 1
+1 Robotics Lab, Hyundai Motor Group, Republic of Korea
+hjyou@hyundai.com, sungwoo.moon@hyundai.com
+Abstract
+Grapheme-to-Phoneme (G2P) conversion is vital for TTS, yet the
+widely used Korean g2pk library suffers from high latency and
+inaccurate phonological modeling at word boundaries. Such in-
+accuracies act as "label noise," degrading TTS performance and
+training efficiency. To resolve this, we propose a novel rule-based
+G2P engine featuring an object-oriented data structure with
+syllable-morpheme connectivity and a recursive re-evaluation
+mechanism for sequential phonological rules.
+Rigorous benchmarking shows that the proposed engine sig-
+nificantly outperforms g2pk in both speed (3.14ms vs. 14.98ms,
+p <0.001 ) and accuracy ( 85.7 % vs. 27.2 %). Furthermore,
+large-scale statistical validation via 96 VITS models (32 per
+condition) demonstrates that our engine achieves statistically
+significant improvements in intelligibility. The results confirm
+that our approach enhances not only the final audio quality but
+also the overall training efficiency of TTS models by providing
+consistent phonetic representations.
+Index Terms: text-to-speech, grapheme-to-phoneme, Korean
+speech synthesis, statistic analysis
+1. Introduction
+Modern End-to-End (E2E) TTS models are designed to learn
+complex alignments between input text and output audio [1, 2, 3].
+In this process, using phonemes instead of graphemes as in-
+put has become a standard approach; this method reduces the
+model’s training burden by establishing a more transparent re-
+lationship between input and output [ 4, 5]. However, this ap-
+proach remains valid only when the Grapheme-to-Phoneme
+(G2P) converter-a critical preprocessing step-guarantees near-
+perfect accuracy. If the G2P converter generates inaccurate
+phoneme sequences, it acts as ’Label Noise’ by providing incor-
+rect ground truth to the model, serving as a critical factor that
+impedes training convergence and degrades synthesis quality.
+In the case of the Korean language, phonological rules are
+deeply intertwined with morphological boundaries, making G2P
+conversion significantly challenging [6]. The open-source library
+g2pk [7], currently used as a standard in many studies, possesses
+structural limitations that fail to sufficiently reflect these char-
+acteristics of Korean. First, its slow processing speed creates a
+bottleneck in real-time services or large-scale data preprocessing.
+Second, it utilizes morphological information only superficially,
+failing to accurately process liaison rules or irregular conjuga-
+tions at word boundaries. Such inaccuracy in g2pk induces the
+aforementioned label noise problem, consequently limiting the
+upper bound of Korean TTS model performance.
+**indicates the corresponding author.
+To address these issues, this paper proposes a novel rule-
+based Korean G2P engine that achieves deep morphological
+integration of analysis data and phonological rules. By providing
+a deterministic and highly interpretable baseline, this engine
+resolves the structural flaws of existing open-source tools like
+g2pk, which is essential for bootstrapping reliable training data
+for future neural models. The proposed engine is designed with
+an object-oriented structure that allows each syllable to directly
+access morphological information. Furthermore, it introduces
+a recursive rule re-evaluation mechanism to accurately model
+the cascading phonological changes unique to Korean. The key
+contributions of this study are as follows:
+• Architecture: A novel high-speed, high-precision G2P archi-
+tecture resolving existing g2pk bottlenecks.
+• Performance: Achieves 4.7 times faster processing than g2pk
+with over 85 % accuracy.
+• Statistical Validation: A large-scale validation via 96 VITS
+models empirically demonstrates that high-precision G2P sig-
+nificantly improves TTS training efficiency and intelligibility
+.
+2. Related Works
+Research on Korean G2P can be broadly categorized into rule-
+based approaches and data-driven neural network approaches.
+2.1. Rule-based G2P Systems
+Rule-based systems typically evolve based on how they incor-
+porate linguistic information. KoG2P is a representative early
+model that sequentially applies phonological rules defined in a
+rulebook. While it achieves high processing speeds by bypass-
+ing morphological analysis, it fails to guarantee the accuracy
+required for high-quality TTS, as it cannot resolve ambiguities
+tied to morphological boundaries.
+To address these limitations, g2pk introduced the mecab-ko
+morphological analyzer [ 7]. However, its architecture suffers
+from a "loose coupling" where morphological data is only super-
+ficially utilized, leading to significant bottlenecks in both speed
+and accuracy. Although various forks of g2pk have attempted to
+improve the system, they have primarily focused on bug fixes and
+compatibility issues rather than resolving the fundamental archi-
+tectural flaws. Consequently, these systems remain inadequate
+for processing the complex, cascading phonological phenomena
+of the Korean language.
+2.2. Neural G2P Approaches
+To circumvent the complexity of rule-based systems, neural
+network-based End-to-End G2P models have become a promi-
+nent trend. For instance, Transformer-based models like NN-
+2917
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-887
+KoG2P achieve high speed and accuracy [ 8]. While such ap-
+proaches are theoretically supported by connectionist views
+that regard language as a frequency-based statistical response
+rather than a set of rules [ 9, 10], they inherently treat G2P as
+a "black box" and explicitly ignore morphological information.
+This raises critical concerns for G2P systems. First, the lack of a
+linguistic foundation makes debugging difficult; neural models
+are prone to unpredictable and catastrophic errors in out-of-
+vocabulary (OOV) or rare combinations. In contrast, rule-based
+systems offer predictability and allow for immediate, targeted
+corrections by modifying specific rules. Second, the performance
+of neural models is bound by the quality of the training data.
+High-quality datasets often require manual labor by linguistic
+experts, and in many cases, are bootstrapped using rule-based en-
+gines before being refined. This implies that the performance of
+rule-based G2P is a prerequisite for the successful development
+of neural-based systems.
+Another recent trend involves utilizing Large Language Mod-
+els (LLMs) to resolve homograph ambiguities through contex-
+tual and semantic reasoning [ 11, 12]. Despite their powerful
+performance, these models suffer from the inherent limitations
+of LLMs, including hallucinations and extreme computational
+costs [13, 14]. As previously noted, employing an LLM—which
+can be thousands of times larger than the TTS model itself—as a
+pre-processor creates a significant "computational asymmetry,"
+making it impractical for real-time, efficient TTS deployment.
+3. Proposed Method
+To accurately model the irregular phonological variations of
+Korean, we propose a G2P engine featuring deep morphological
+integration and a priority-based iterative rule mechanism.
+3.1. Hierarchical Data Structure and Morphological Inte-
+gration
+Unlike existing methods (e.g., g2pk) that merely refer to mor-
+phological analysis results as simple text strings, the proposed
+engine features a Hierarchical Pointer Structure where Syllable
+objects directly point to their constituent Morpheme objects.
+3.1.1. Structure
+Using the Kiwi analyzer, input text is parsed into a hierarchy:
+Sentence → Eojeol → Syllable [15]. Each Syllable object main-
+tains a pointer to its constituent Morpheme and stores both its
+initial graphemes and current phonemes (see Figure 1).
+3.1.2. Instant Boundary Detection
+Since each Syllable links to its morphological information via
+pointers, the engine can determine whether two adjacent sylla-
+bles belong to the same morpheme (intra-morpheme) or lie on
+a boundary (inter-morpheme) with a time complexity of O(1).
+This capability serves as a critical foundation for accurately ap-
+plying phonological rules that depend on morphological bound-
+aries, as seen in the distinction between ’겉에’ (geot-e, ’surface’
++ locative particle ’on’; /k2.the/, liaison) and ’ 겉옷’ (geot-ot,
+’outer’ + ’clothes’;/k2.tot^/, implosion + liaison).
+3.2. Rule-specific Isolated Dictionaries
+To handle irregularities tied to etymological origins (e.g., Sino-
+Korean vs. Native Korean), we introduce Rule-specific Isolated
+Dictionaries.
+Sentence
+Eojeol Eojeol Symbol Eojeol Symbol ...
+Eojeol
+학교는 (school is)
+Syllables
+Syllable
+학
+Syllable
+교
+Syllable
+는
+Morphemes
+Morpheme
+학교(NNG, school)
+Morpheme
+는(JX, is)
+Figure 1:Illustration of the proposed hierarchical pointer struc-
+ture for deep morphological integration.
+Instead of a single global dictionary that might cause over-
+correction, we use isolated dictionaries dedicated to specific
+rules (e.g., ’n’-insertion, Sino-Korean tensification).
+For example, the engine refers to a Sino-Korean tensing
+dictionary only when the specific tensification rule is active.
+This allows ’발전’ (Sino-Korean, /pal.t
+| |
+C2n/) to be corrected
+while preserving ’ 불장난’ (Native, /pul.dýaN.nan/), ensuring
+the stepwise integrity of the phonological process.
+3.3. Priority-based Iterative Rule Engine
+Korean phonology involves "chain reactions" where one change
+triggers another. To simulate this, we implement a recursive
+re-evaluation mechanism following the Single Responsibility
+Principle (SRP).
+3.3.1. Mechanism
+The engine sequentially scans rules based on a predefined prior-
+ity hierarchy. The priority assignment logic is strictly governed
+by the Single Responsibility Principle (SRP), ensuring that foun-
+dational rules (e.g., simple consonant assimilation) precede and
+naturally trigger context-sensitive, downstream rules (e.g., com-
+plex tensification). If a specific rule is applied to a syllable and
+changes a phoneme, the engine immediately stops the scan and
+resets the cursor to the first syllable of the corresponding Eojeol.
+3.3.2. Handling Chain Reactions
+This re-evaluation process repeats until no further rules can be
+applied. For example, in the case of ’ 앞날’(/am.nal/), the im-
+plosion applies in the first pass to produce /ab.nal/, and after
+the reset, the nasalization applies in the second pass to finally
+converge to /am.nal/. This approach perfectly simulates simul-
+taneous phonological changes using a procedural algorithm.
+4. Experimental Setup
+To overcome the "best-case vs. worst-case" comparison fallacy
+caused by deep learning’s inherent randomness (e.g., initial
+weights, minibatch orders), we adopted a social science sta-
+tistical framework.
+4.1. Standalone G2P Benchmarking
+4.1.1. Latency
+Using 3,000 KSS sentences, we measured processing time 16
+times per pattern to eliminate OS background noise [ 16]. A
+2918
+paired t-test was used to verify the significance of speed gains.
+4.1.2. Accuracy
+To measure the model’s accuracy and PER, we established a
+ground truth dataset comprising 925 sentences. These sentences
+were carefully curated from the KSS corpus to ensure a diverse
+distribution of complex grapheme combinations and phonolog-
+ical edge cases. All ground-truth labels were then manually
+verified by three specialists in Korean literature and phonetics.
+4.2. Downstream TTS Validation
+To verify the impact of G2P quality, we trained a total of 96
+independent VITS models, treating each instance as a participant
+in a group-wise comparison.
+4.2.1. Training Groups
+Three groups (Grapheme, G2PK, Proposed; n= 32 each) were
+trained for 500k steps. To ensure variance, we avoided fixed
+seeds, allowing each model to have unique initial weights and
+batch sequences. Hyperparameters followed [17] but with a re-
+fined learning rate1.0e−4and batch size 48.
+4.2.2. Evaluation
+Intelligibility was measured via ASR (Whisper large-v3-turbo,
+beam search= 1) by comparing transcribed output with original
+scripts [18]. Audio quality was assessed via PESQ and WV-MOS
+[19, 20].
+4.2.3. Statistical Rigor
+To apply the Central Limit Theorem, representative scores were
+calculated per model [21]. Outliers outside the 95 % confidence
+interval (|z|>1.96 ) were removed to prevent training failures
+(e.g., attention collapse) from distorting the results. Finally, one-
+way ANOV A and Fisher’s LSD post-hoc tests were performed.
+5. Results and Analysis
+5.1. G2P Performance
+The proposed engine demonstrated overwhelming superiority
+over g2pk in both efficiency and precision.
+5.1.1. Inference Speed
+The proposed model achieved an average processing time of
+3.14ms, approximately 8.7 times faster than g2pk (14.98ms),
+with high statistical significance ( t(2999) = 778.117, p <
+0.001). Regression analysis showed that while our engine has
+a steeper slope due to its recursive nature ( O(n2)), its mini-
+mized initialization costs provide a significant lead for practical
+text lengths. The cross-over point is estimated at 158 characters.
+Based on our calculation of 118.6ms of audio per character, this
+equates to 18.7s of speech—well beyond the average conversa-
+tional utterance length of 7s (see Figure 2).
+5.1.2. Conversion Accuracy
+Evaluated on strict sentence-level accuracy—where a single
+phoneme error invalidates the entire sentence—the baseline
+G2PK achieved 27.2 %, whereas our model attained 85.7 %. In
+terms of CER, G2PK recorded 0.021 compared to our model’s
+0.002, demonstrating a reduction in error rate by more than ten-
+fold. Qualitative analysis revealed that the model successfully
+handles various phonological phenomena including liaison and
+gemination. Nevertheless, we also identified certain limitations,
+such as morphological parsing errors, which affected both accu-
+racy and CER metrics. Table 1 shows representative examples
+from the qualitative analysis.
+Table 1:Comparison of Korean G2P conversion examples. Un-
+derlined text denotes erroneous conversions.
+Rule Text GT G2PK Ours
+Liaison앞을예측한/a.p hWl je.tChW.khan/ /a.p hW Rje.tChW.khan/ /a.p hWl je.tChW.khan/
+Tensing성격이다/s2N.k
+| |
+j2.ki.ta/ /s2N.g j2.ki.ta/ /s2N.k
+| |
+j2.ki.ta/
+S Between할일을/hal Ri.RWl/ /haR i.RWl/ /hal Ri.RWl/
+Liaision(F)하는군요/ha.nWn.gu.njo/ /ha.nWn.gu.njo/ /ha.nWn.gun. jo/
+Tensing(F)물줄기/mul.t
+| |
+Cul.gi/ /mul.dý ul.gi/ /mul.dý ul.gi/
+5.1.3. Error Analysis
+The remaining 0.8 % error rate stems primarily from homograph
+ambiguities (e.g., ’밭이랑’ meaning ’furrow’ vs. ’farm and’).
+These errors represent the performance upper bound of the mor-
+phological analyzer’s context window rather than flaws in the
+rule engine itself.
+5.2. Impact on TTS
+ANOV A results across 96 models confirm that G2P precision is
+directly proportional to TTS performance.
+5.2.1. Intelligibility (CER)
+The ’Proposed’ group significantly outperformed all other groups
+(p <0.05 ). Fisher’s LSD post-hoc analysis revealed no signifi-
+cant difference between the ’G2PK’ and ’Grapheme’ conditions
+(p= 0.960 ), as shown in Figure 4. This suggests that inaccurate
+G2P provides no benefit over raw text and acts as ’Label Noise’
+that impedes early-stage convergence.
+5.2.2. Acoustic Quality & Trade-off
+No significant differences were found in PESQ (p= 0.265 ) and
+WV-MOS (p= 0.123 ). This finding is crucial; it proves that
+our engine achieves a 8-fold speedup and superior intelligibility
+without any trade-off in acoustic naturalness, resolving common
+concerns regarding rule-based complexity and prosodic loss (see
+Figure 5).
+6. Discussion
+6.1. Orthographic Depth and Training Dynamics
+Our results show that the ’Proposed’ group significantly out-
+performed others, while the ’G2PK’ group lagged even the
+’Grapheme’ group. This can be explained through the lens of
+10 15 20 25 30 35 40 45 50
+T ext Length
+0
+5
+10
+15Time
+y = 0.011x + 14.658
+y = 0.102x + -0.279
+Convert Time by T ext Length and Phonemizer (p <0.001)
+G2PK
+New
+Figure 2:Text conversion speed measurement results.
+2919
+G2PK New
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Accuracy27.243%
+85.730%(A)
+Accuracy
+G2PK New
+0.000
+0.005
+0.010
+0.015
+0.020CER
+0.021
+0.002
+(B)
+CER
+Figure 3:Conversion accuracy and CER measurement results.
+G2PK GRAPHEME NEW
+Pair
+0.00
+0.01
+0.02
+0.03
+0.04
+0.05
+0.06
+0.07
+0.08CER score
+0.048 0.047
+0.042
+(A) CER ( )    ANOVA p-value: 0.039
+G2PK GRAPHEME NEW
+G2PKGRAPHEMENEW
+0.937
+0.022 0.027
+(B) Pairwise Comparisons p-values
+100K 150K 200K 250K 300K 350K 400K 450K 500K
+Training Step
+0.04
+0.06
+0.08
+0.10
+0.12CER score
+0.116
+0.109
+0.087
+0.0550.054
+0.050
+0.0480.051
+0.043
+0.048 0.048
+0.045
+0.048
+0.047
+0.042
+(C) CER Flow ( )
+Mode
+GRAPHEME
+G2PK
+NEW
+p  0.05
+ p < 0.05
+Figure 4:ANOVA analysis on TTS CER (Character Error Rate).
+(A) CER by condition at 500k steps; (B) Post-hoc results based
+on Fisher’s LSD; (C) Changes in CER over training steps. From
+the initial 100k steps.
+orthographic depth [ 22]. Although Korean has complex mor-
+phophonemic rules, they are fundamentally deterministic. Given
+sufficient data, a TTS model can internally model these consis-
+tent rules. However, inaccurate phoneme sequences from g2pk
+introduce ’Label Noise’–information that contradicts the actual
+audio signals. This inconsistency actively misleads the encoder,
+causing attention instability and proving that a flawed G2P is
+functionally inferior to no G2P at all.
+6.2. Methodological Suggestions for Generative Models
+The conventional "single-seed" comparison often falls into the
+trap of accidental results, where the "best-case" of a new model
+is unfairly compared against the "worst-case" of a baseline. Such
+biases can mislead the entire direction of research in the field
+[23, 24]. By performing a large-scale ANOV A on 96 models, this
+study provides a robust framework that isolates the true effect of
+the algorithm from random initialization noise. We propose this
+statistical rigor as a new standard for enhancing reproducibility
+and reliability in generative model research.
+6.3. Extension to Multilingual TTS
+In Multilingual TTS, where multiple languages share a com-
+mon embedding space, the precision of each language’s G2P is
+paramount. Inaccurate mappings in one language do not merely
+degrade that language’s quality; they introduce interference that
+corrupts the representation quality of shared phoneme embed-
+dings [25]. This degrades the synthesis quality across the entire
+system. Thus, our high-precision G2P engine serves as a vital
+G2PK GRAPHEME NEW
+T ype
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4PESQ score
+1.115 1.118 1.119
+(A) PESQ ( )    ANOVA p-value: 0.265
+G2PK GRAPHEME NEW
+G2PKGRAPHEMENEW
+0.191
+0.152 0.834
+(B) Pairwise Comparisons p-values
+G2PK GRAPHEME NEW
+T ype
+0
+1
+2
+3
+4
+5WV-MOS
+4.041 4.038 4.025
+(C) WV-MOS ( )    ANOVA p-value: 0.123
+Base (4.227)
+G2PK GRAPHEME NEW
+G2PKGRAPHEMENEW
+0.684
+0.062 0.129
+(D) Pairwise Comparisons p-values
+p  0.05
+ p < 0.05p  0.05
+ p < 0.05
+Figure 5:ANOVA analysis on TTS PESQ and WV-MOS. (A)
+PESQ by condition at 500k steps; (B) Post-hoc results of PESQ
+based on Fisher’s LSD; (C) WV-MOS by condition at 500k steps;
+(D) Post-hoc of WV-MOS results based on Fisher’s LSD;
+module for ensuring the training stability and cross-lingual repre-
+sentation quality of multilingual systems incorporating Korean.
+7. Limitations and Future Work
+7.1. Structural and Semantic Constraints
+Our engine’s precision is intrinsically tied to the underlying mor-
+phological analyzer (Kiwi); parsing failures from neologisms
+or spacing errors can propagate into cascading rule misapplica-
+tions [15]. Furthermore, as a morpho-phonology-based system,
+it struggles with semantic homograph ambiguities (e.g., rival
+vs. silence) that require deep contextual reasoning beyond the
+morphological level.
+7.2. Future Directions
+Future research will focus on developing a hybrid architecture
+with lightweight contextual modules to resolve homographs. Fur-
+thermore, rather than treating rule-based and neural approaches
+as mutually exclusive, we plan to utilize our high-precision rule
+engine to bootstrap reliable training data and explicit morpho-
+logical features for future neural G2P models, mitigating their
+hallucination risks. Additionally, we plan to enhance system
+robustness by updating our lexical resources with contemporary
+corpora to better reflect modern linguistic trends.
+8. Conclusion
+This study identified structural inefficiencies in existing Korean
+G2P libraries and proposed a high-performance engine featuring
+a hierarchical object-oriented structure and a priority-based re-
+cursive rule mechanism. Experimental results showed an 8-fold
+speedup and significant accuracy gains (85.7 %) over the base-
+line. Moreover, a large-scale statistical validation across 96 TTS
+models empirically established that high-precision G2P is vital
+for enhancing both training efficiency and output fidelity. By
+demonstrating how G2P precision dictates TTS training dynam-
+ics, this work extends beyond a simple performance comparison.
+It provides both a practical, high-speed baseline tool for the
+speech processing community and a robust statistical framework
+for ensuring reproducibility in generative model research.
+2920
+9. Acknowledgements
+This work was supported by the Robotics Lab at Hyundai Motor
+Group, which provided the extensive computational resources
+and infrastructure necessary for the large-scale statistical val-
+idation. The authors also would like to express their sincere
+gratitude to the external linguistic experts for their rigorous vali-
+dation of the Korean phonetic ground truth dataset.
+10. Generative AI Disclosure
+To ensure the clarity of the English text, the authors used Gemini
+3.0 Pro for translating portions of the manuscript from Korean
+to English and for grammatical polishing. The authors reviewed
+the output to verify its accuracy and take full responsibility for
+the content of the paper.
+11. References
+[1] J. Shen, R. Pang, R. J. Weiss, M. Schuster, N. Jaitly, Z. Yang,
+Z. Chen, Y . Zhang, Y . Wang, R. Skerrv-Ryanet al., “Natural tts
+synthesis by conditioning wavenet on mel spectrogram predictions,”
+in2018 IEEE international conference on acoustics, speech and
+signal processing (ICASSP). IEEE, 2018, pp. 4779–4783.
+[2] Y . Ren, Y . Ruan, X. Tan, T. Qin, S. Zhao, Z. Zhao, and T.-Y . Liu,
+“Fastspeech: Fast, robust and controllable text to speech,”Advances
+in neural information processing systems, vol. 32, 2019.
+[3] Y . Ren, C. Hu, X. Tan, T. Qin, S. Zhao, Z. Zhao, and T.-Y . Liu,
+“Fastspeech 2: Fast and high-quality end-to-end text to speech,”
+arXiv preprint arXiv:2006.04558, 2020.
+[4] P. Taylor,Text-to-speech synthesis. Cambridge university press,
+2009.
+[5] S. Ö. Arık, M. Chrzanowski, A. Coates, G. Diamos, A. Gibiansky,
+Y . Kang, X. Li, J. Miller, A. Ng, J. Raimanet al., “Deep voice:
+Real-time neural text-to-speech,” inInternational conference on
+machine learning. PMLR, 2017, pp. 195–204.
+[6] Ministry of Culture, Sports and Tourism, “Standard language
+regulations,” Ministry of Culture, Sports and Tourism Notice No.
+2017-13, 2017, (in Korean). [Online]. Available: https://korean.go.
+kr/kornorms/regltn/regltnView.do?regltn_code=0002#a346
+[7] K. Park, “g2pk,” https://github.com/Kyubyong/g2pk, 2019.
+[8] H.-Y . Kim, J.-H. Kim, and J.-M. Kim, “Nn-kog2p: A novel
+grapheme-to-phoneme model for korean language,” inICASSP
+2021-2021 IEEE International Conference on Acoustics, Speech
+and Signal Processing (ICASSP). IEEE, 2021, pp. 7783–7787.
+[9] M. S. Seidenberg, “Language acquisition and use: Learning and
+applying probabilistic constraints,”Science, vol. 275, no. 5306, pp.
+1599–1603, 1997.
+[10] C. D. Manning, “Computational linguistics and deep learning,”
+Computational Linguistics, vol. 41, no. 4, pp. 701–707, 2015.
+[11] C. Li, “External knowledge augmented polyphone disambiguation
+using large language model,” in2024 IEEE International Con-
+ference on Acoustics, Speech, and Signal Processing Workshops
+(ICASSPW). IEEE, 2024, pp. 520–524.
+[12] Y .-C. Chen, Y .-C. Chang, Y .-C. Chang, and 

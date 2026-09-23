@@ -1,0 +1,462 @@
+Geometry-Informed Distributed Acoustic Scene Understanding
+Yiyuan Yang, Shitong Xu, Niki Trigoni, Andrew Markham
+Department of Computer Science, University of Oxford, United Kingdom
+{yiyuan.yang, shitong.xu, niki.trigoni, andrew.markham}@cs.ox.ac.uk
+Abstract
+Acoustic scene understanding in multi-room environments is a
+difficult task. Most existing systems use a single centralized
+microphone array, and they often fail because walls and doors
+block sound signals. To address this challenge, we propose
+a geometry-informed distributed acoustic scene understanding
+framework. Our system leverages distributed microphones and
+uses an audio spectrogram transformer and a topology-aware
+graph neural network to fuse spatio-temporal acoustic features.
+Then, these features are decoded into discrete semantic triplets.
+Finally, a frozen large language model combines these symbolic
+observations with the environmental geometry. This allows the
+system to perform spatial understanding, infer plausible missing
+transitions, and generate a physically consistent narrative of the
+scene. Experiments on a custom multi-room simulator demon-
+strate that our framework outperforms centralized baselines and
+improves spatial consistency under simulated occlusion.
+Index Terms: distributed acoustic sensing, multi-room scene
+understanding.
+1. Introduction
+Acoustic scene understanding aims to monitor, identify, and in-
+terpret environmental events through auditory signals [1]. Com-
+pared to vision-based systems, acoustic sensors better protect
+user privacy and operate effectively in complete darkness or
+obstructed environments, making them suitable for long-term
+monitoring and indoor security. For instance, in elderly care, an
+acoustic scene understanding system can alert family members
+to a fall or a medical emergency without intrusive constant vi-
+sual surveillance [2]. However, to be practically viable, such a
+system must go beyond isolated event detection and instead pro-
+vide a coherent description of ongoing events [3]. Rather than
+merely reporting fragmented acoustic tags, the system should
+construct a continuous narrative that captures the spatiotempo-
+ral evolution of a scene, as illustrated in Figure 1.
+However, realizing this goal in real-world environments is
+hindered by acoustic occlusion. A primary reason is that current
+acoustic scene understanding systems often assume a single lis-
+tening location or acoustic space [4, 5]. In a building with mul-
+tiple rooms, walls and doors act as physical barriers that block
+or muffle sound. This creates non-line-of-sight zones where a
+central acoustic sensor cannot accurately “hear” events happen-
+ing in other rooms [6]. For instance, if the system is in the living
+room, it might miss the resident preparing tea in the kitchen be-
+cause the wall significantly attenuates the sound. This results in
+a fragmented and incomplete understanding of the entire scene.
+To solve this, researchers have moved toward distributed
+microphone networks [7, 8, 9]. By deploying multiple micro-
+phones in different rooms, the system can achieve much better
+Living Room Corridor
+ Kitchen
+Person A walks from the Living Room, through the 
+Corridor, opens the door, and enters the Kitchen to 
+interact with Person B, who is preparing food.
+Figure 1:Illustration of the multi-room acoustic scene under-
+standing task. Distributed microphones capture fragmented
+acoustic observations, which are logically aggregated to gen-
+erate a coherent scene narrative.
+coverage. Current methods usually combine the audio data from
+all acoustic sensors to make a final decision [10, 11, 12]. How-
+ever, these methods often ignore the physical topology of the
+environment. They treat each detected sound as an isolated data
+point and fail to consider how sound “leaks” through a wall or
+how a person moves between different rooms. Without know-
+ing the geometry, these systems cannot effectively judge which
+sensor’s information is the most reliable when a sound is simul-
+taneously captured across multiple rooms.
+Furthermore, another critical challenge in distributed
+acoustic scene understanding is logical grounding. In a real
+physical environment, human events must follow spatial rules
+and constraints. For example, a person cannot move from a
+bedroom to a kitchen without first passing through a corridor.
+If the acoustic signal captured by the corridor microphone has
+a low Signal-to-Noise Ratio and misses footsteps, the system
+will output non-physical jumps in footstep prediction between
+rooms. To produce a trustworthy description, the system needs
+to be aware of the actual geometry so it can infer missing inter-
+mediate transitions. This necessitates a reasoning mechanism
+that utilizes spatial logic to integrate incomplete acoustic obser-
+vations into a physically plausible reconstruction [13, 14].
+In this study, we propose a framework for distributed acous-
+tic scene understanding. Our approach integrates physical ge-
+ometry into the perception process to ensure the narrative is log-
+ical and accurate. Specifically, our main contributions are:
+• We formalize the acoustic scene understanding task in
+multi-room environments using a structured semantic triplet
+⟨subject, relation, object⟩. This extends traditional event de-
+tection toward generating logically grounded narratives.
+3345
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-821
+• We propose a framework that features a topology-aware
+graph fusion for distributed acoustic sensing and a geometry-
+aware Large Language Model (LLM)-based reasoning mod-
+ule. By incorporating geometry constraints, the system can
+infer missing acoustic information and ensure the narrative
+adheres to real-world physical rules.
+• We demonstrate the efficacy of our approach using a multi-
+room acoustic simulator that models complex indoor prop-
+agation. The results show that our framework achieves
+good accuracy and improves logical consistency in simulated
+scenes with spatiotemporal discontinuities.
+2. Related Work
+2.1. Sound Event Localization and Detection
+Sound Event Localization and Detection (SELD) aims to rec-
+ognize sound categories while simultaneously estimating their
+spatial positions [6, 15]. Recently, Transformer-based ar-
+chitectures such as the Audio Spectrogram Transformer have
+been introduced to better capture long-range spectral dependen-
+cies [16]. At the same time, researchers have explored self-
+supervised learning frameworks to mitigate the scarcity of la-
+beled spatial acoustic signals. For instance, w2v-SELD pre-
+trains on unlabeled 3D audio to learn more robust spatial rep-
+resentations [17]. Multi-scale feature fusion modules have also
+been proposed to jointly model spectral and temporal variations,
+further improving performance [18]. Furthermore, recent work
+has started to move from professional microphone arrays toward
+consumer-level stereo audio [6]. Despite these advances, most
+SELD frameworks operate within single acoustic spaces and fo-
+cus on coordinate estimation rather than structured multi-room
+scene understanding.
+2.2. Distributed and Multi-Room Acoustic Sensing
+Traditional centralized microphone arrays often suffer from sig-
+nal attenuation in multi-room environments [11]. Physical bar-
+riers create non-line-of-sight regions, limiting the reliability of
+acoustic observations. To address this limitation, distributed mi-
+crophone networks deploy sensors across multiple rooms [9].
+This setup provides broader spatial coverage and reduces blind
+spots. At the same time, graph neural networks have been ap-
+plied to model the physical structure of indoor spaces [11]. In
+these formulations, microphones are represented as nodes, and
+edges encode room connectivity or spatial relationships [12].
+Graph-based fusion helps the system emphasize direct acous-
+tic propagation paths and suppress spurious noise leakage [12].
+Overall, distributed sensing frameworks offer a more complete
+representation of complex indoor acoustic scenes compared to
+centralized microphone systems.
+2.3. Geometry-Informed Audio-Language Reasoning
+Recent research has moved beyond isolated sound event tagging
+toward constructing structured and interpretable scene under-
+standing. One common approach converts acoustic data into
+symbolic formats such as semantic tokenizations [19]. This
+structured representation provides a foundation for higher-level
+reasoning. Large audio-language models further integrate au-
+dio encoders with pre-trained language models to enable more
+complex reasoning over acoustic scenes [13, 20]. For example,
+some systems can answer open-ended questions about spatial
+relationships between sound sources [4]. In multi-room envi-
+ronments, incorporating geometric information becomes partic-
+ularly important. Several recent studies have begun exploring
+geometry-aware reasoning in audio-language settings, although
+explicit floor-plan-constrained narrative reconstruction remains
+underexplored [5]. Some methods also employ tool-augmented
+reasoning, where external signal analysis modules are invoked
+to estimate acoustic parameters [14]. By combining perceptual
+modeling with structured reasoning, these systems move closer
+to reliable reconstruction of complex indoor events.
+3. Methodology
+In this section, we describe our framework. As shown in Fig-
+ure 2, the goal of distributed acoustic scene understanding is to
+convert raw multi-channel acoustic signals and geometric infor-
+mation into a textual description of the scene.
+3.1. Input Formalization via Geometry-Informed Graph
+We define the input to our framework asI={X,P,Ω},
+which describes the indoor acoustic environment. Specifically,
+the acoustic dataX∈R N×T×F consists of synchronized log-
+Mel spectrograms fromNmicrophone nodes. Each spectro-
+gram containsTtime frames andFfrequency bins. The set
+P={p 1,...,p N}means the three-dimensional coordinates
+pn = (xn,yn,zn)for each microphone. The environmental
+geometryΩdescribes the environmental layout and its acous-
+tic properties. We express it asΩ ={B,D,M}.Bgives the
+room boundaries and the room size.Drecords the positions
+and states of connections between rooms.Mcontains material
+properties such as the absorption coefficient.
+For simpler deployments,Ωmay be reduced to room mem-
+bership and adjacency. Coordinates and attenuation are used
+here for controlled simulation. Based on the above definition,
+we represent the multi-room environment as a topological graph
+Gtopo = (V,E). Each vertexv∈Vcorresponds to a physical
+microphone node. Edges inEare created between nodes lo-
+cated in the same room or in adjacent rooms connected by a por-
+tal. The edge weights further encode spatial distance and trans-
+mission properties. We calculate edge weightswij to model the
+acoustic propagation between nodeiand nodejas:
+wij =γ wall·exp(−λdij),(1)
+whered ij =||p i−pj||2 is the Euclidean distance andλis a
+distance-dependent decay constant. The value of the attenuation
+coefficientγwall is determined by the physical barriers between
+nodes as specified inΩ. Specifically,γ wall = 1if nodesiandj
+are located in the same room. If they are in adjacent rooms con-
+nected by a portal,γ wall is determined by the portal state and
+transmission properties. If separated by walls without a portal,
+γwall is assigned a value in(0,1)according to the material ab-
+sorption propertiesM. This weighting scheme allows the graph
+to represent non-line-of-sight characteristics and signal leakage
+across room boundaries.
+3.2. Spatial-Temporal Graph for Distributed Fusion
+Given the acoustic topology and input definitions, the following
+fusion module synthesizes the synchronized audio streamsX
+withG topo to extract a unified spatio-temporal representation.
+The architecture employs a hierarchical pipeline, progressing
+from localized node-level encoding to relational graph-based
+message passing.
+Acoustic Feature Extraction.Firstly, each microphone
+nodenprocesses a fixed-length log-Mel segment centered at
+3346
+Audio
+coordinate
+Initial edgesEnvironmental 
+geometry
+Position
+encoder
+AST
+Embedding
+Initial
+nodes
+Initialgraph
+Spatial 
+message passing
+Temporal
+dynamics modeling
+ST-embedded
+graph
+<subject,
+relation,
+object>Scene logic 
+decoder
+Geometry
+Scenedescription:
+PersonAwalksoutofthebathroom,crosses
+thecorridor,knocksonthemeetingroomdoor,
+andjoinsthemeetingafterthedooropens.Each 
+microphone
+Semantic triplets
+linearization
+Semantic 
+tokenization
+Figure 2:Workflow of the proposed distributed acoustic scene understanding framework. The pipeline converts raw audio signals and
+environmental geometry into a textual description by first extracting spatio-temporal features across distributed nodes. These features
+are translated into structured semantic triplets, which serve as a symbolic prompt for a frozen LLM to perform narrative synthesis.
+time indext, denoted asx n,t ∈R τ×F . Here,τis the local
+segment length, andtdenotes the segment index after tempo-
+ral segmentation of the full spectrogram. We employ the Au-
+dio Spectrogram Transformer (AST) [16] as the backbone for
+our shared encoderf θ. The latent embeddingh n,t ∈R D is
+extracted from the final block output (i.e., the hidden states be-
+fore the final classification head). Because the encoder weights
+θare the same across all nodes, the model learns a consistent
+representation of acoustic events across different rooms. We
+then concatenate each embeddingh n,t with an MLP-based po-
+sitional encoding derived from the node coordinatesp n∈P.
+This step integrates spatial information into the acoustic fea-
+tures to obtain the initial node states inGtopo.
+Spatial Message Passing.To model the acoustic cou-
+pling between rooms, we first apply a spatial graph neural net-
+work at each time step. The graph takes the latent embeddings
+Ht ={h 1,t,...,h N,t}as node inputs and the weightsw ij
+fromGtopo as edge attributes. For each noden, the hidden state
+zn,t is updated by aggregating information from its neighbors
+j∈N(n)through a graph convolution operation:
+zn,t =σ
+
+Wshn,t +
+X
+j∈N(n)
+wnjWnhj,t
+
+,(2)
+whereW s andW n are learnable weight matrices for self-
+representation and neighbor aggregation. The edge weightw nj
+explicitly scales the contribution of neighboring nodes based on
+the distance and wall properties defined inΩ. This allows the
+network to prioritize signals from nodes with direct paths.
+Temporal Dynamics Modeling.The spatially-fused vec-
+torsz n,t are then passed through a Gated Recurrent Unit
+(GRU) [21] to capture temporal dependencies across time. This
+stage captures the continuity of sound events and person move-
+ments across the multi-room environment. The output of this
+module is a sequence of spatio-temporal embeddingsZ=
+{zn,t}N,T
+n=1,t=1, which serves as the input for the subsequent se-
+mantic decoding stage.
+3.3. Semantic Tokenization via Dynamic Acoustic Scene
+Graph
+Following the generation of spatio-temporal embeddingsZ, the
+framework translates these latent features into a discrete sym-
+bolic format, i.e., the dynamic acoustic scene graph. It serves
+as a semantic bottleneck that extracts task-relevant events.
+At each time stept, the dynamic acoustic scene graph is in-
+stantiated as a set ofKsemantic tripletsT t ={⟨s,r,o⟩ k}K
+k=1.
+Each triplet consists of a subjects∈S(e.g.,Speaker), a spatial-
+acoustic relationr∈R(e.g.,entering), and an object or loca-
+tiono∈ O(e.g.,Meeting Room). The scene logic decoder
+Ψidentifies these triplets by treating the node states{z n,t}as
+input tokens. In detail, we implementΨusing a query-based
+multi-head attention decoder that attends to relevant acoustic
+regions across rooms and predicts the subject, relation, and lo-
+cation components with separate classifiers.
+We factorize the probability of a triplet sequence into a con-
+ditional chain to maintain semantic consistency. The joint dis-
+tribution is defined as:
+P(Tt|Z t) =
+KY
+k=1
+P(sk|Z t)P(r k|s k,Zt)P(ok|s k,rk,Zt),
+(3)
+where the prediction of the relationr k depends on the identi-
+fied subjects k, and the objecto k depends on both. This hier-
+archy prevents logically impossible pairings, such as a “door”
+performing a “speech” action. The geometryΩfurther con-
+strains the location setOto ensure the predicted movements
+align with the physical room settings. We supervise the tok-
+enization process using the ground-truth logs from our simula-
+tor. During training, the model minimizes a cross-entropy loss
+over the predicted triplet components and the simulator’s event
+stream. The resulting sequence of tripletsQ= [T 1,...,T T ]
+provides a structured and symbolic summary of the scene.
+3.4. Narrative Synthesis via LLM
+The final stage converts the symbolic sequenceQinto a natu-
+ral language narrativeY. Instead of fine-tuning the language
+model, we use a frozen pre-trained Meta Llama-3-8B-Instruct
+model1 to generate the scene description [22].
+Prompt Construction and Linearization.The input to
+the language model is a structured prompt that combines the
+environment and the detected events. First, the geometryΩ
+is converted into a textual description of the floor plan (e.g.,
+"Kitchen is adjacent to Meeting Room"). Sec-
+ond, the sequenceQ= [T 1,...,T T ]is linearized into a
+chronological log, where each triplet⟨s,r,o⟩is formatted as
+"[Timet] Subject: Relation: Object". The
+prompt also instructs the LLM to respect adjacency constraints
+when synthesizing a continuous story.
+Zero-Shot Temporal Reasoning via LLM.During infer-
+ence, the LLM acts as a reasoning engine that resolves spatial
+ambiguities. For instance, if the symbolic logQindicates a
+1Meta-Llama-3-8B-Instruct
+3347
+“vacuuming” sound in the Meeting Room followed by “foot-
+steps” in the Corridor, the LLM infers a transition even if the
+specific ”walking” event was partially occluded. This capabil-
+ity for gap-filling is expressed by the generation objective:
+Y∗ = arg max
+Y
+LY
+i=1
+PLLM(yi|y <i,Prompt(Q,Ω)),(4)
+where the LLM parameters remain fixed. This strategy ensures
+that the generated narrativeYis not a mere list of detected
+sounds, but a logically consistent and linguistically fluent de-
+scription of the complete indoor activities.
+4. Experiment
+4.1. Experimental Setup
+Simulator and Dataset: We evaluate our framework using
+a custom simulator based onpyroomacoustics[23], ex-
+tended to support JSON-format floor plans and heterogeneous
+microphone types. This is a controlled simulation-only study.
+We simulated multi-room layouts (2 to 4 rooms) with rever-
+beration times (RT60) between 0.2 seconds and 0.6 seconds.
+We sampled the acoustic events mainly from human speech
+fromLibriSpeech[24] and environmental sounds from
+ESC-50[25], all resampled to 16 kHz. Audio clips were ran-
+domly cropped or repeated to match event durations, with a
+maximum concurrencyKaligned with the number of decoder
+queries. A network ofN= 6distributed microphone nodes
+was deployed across each environment. Background noise lev-
+els varied between 20 and 40 dB SNR, and event trajectories
+were generated using room-constrained random waypoint sam-
+pling to test spatial tracking and reasoning.
+Evaluation Metrics: (1) Triplet F1-score (F 1) assesses
+acoustic event detection, requiring a match of the⟨s,r,o⟩
+tuple per one second. (2) Standard natural language gen-
+eration metrics include BLEU-4 [26], ROUGE-L [27], and
+BERTScore [28]. (3) Spatial Consistency Score (SCS). For con-
+secutive locationsˆot andˆot+1, a transition is valid if it forms an
+edge in the room adjacency graph defined byΩ. SCS measures
+final narrative consistency and complements TripletF 1.
+4.2. Comparative Evaluation of System Variants
+We conduct a comparative analysis across different sensing
+paradigms and architectural ablations to evaluate the system’s
+robustness against non-line-of-sight occlusions and its capabil-
+ity for geometry-informed description.
+The results shown in Table 1 reveal a substantial per-
+formance gap between centralized and distributed sensing
+paradigms. The Centralized-Single baseline, restricted by its re-
+liance on a single microphone array, achieves a TripletF1-score
+of only 0.51, primarily due to its inability to capture acous-
+tic evidence in non-line-of-sight regions. In contrast, our pro-
+posed framework achieves a 0.87 TripletF 1-score, demonstrat-
+ing that distributed spatial diversity is essential for comprehen-
+sive multi-room scene understanding. Even without geometry-
+aware graph construction and geometry-conditioned prompting,
+the Distributed Acoustic-Only baseline improves the detection
+accuracy to 0.74, yet it still struggles with spatial ambigui-
+ties. By integrating the topology-aware graph and geometry-
+informed LLM generation, the full framework effectively lever-
+ages spatial redundancy to overcome occlusions. This ensures
+high detection accuracy across complex layouts where single-
+point sensing typically fails to maintain signal continuity.
+Table 1:Main Performance Comparison across Different Sys-
+tem Variants. All metrics should be as high as possible.
+System variant TripletF 1 BLEU-4 ROUGE-L BERT SCS (%)
+Centralized-Single 0.51 0.15 0.22 0.45 35.0
+Distributed Acoustic-Only 0.74 0.41 0.47 0.65 61.8
+Template-Based 0.86 0.39 0.46 0.61 79.5
+Ours 0.87 0.55 0.62 0.77 88.2
+Table 2:Ablation Study on Architectural Components. All met-
+rics should be as high as possible.
+Configuration TripletF 1 BERT SCS (%)
+Our Full Framework 0.87 0.77 88.2
+– w/o Geometry Prior (Ω) 0.78 0.68 66.5
+– w/o ST-Graph Fusion 0.81 0.70 80.9
+4.3. Geometry-Informed Reasoning Analysis
+A key observation is the synergy between the symbolic scene
+graph and LLM-driven reasoning. The proposed framework
+yields a significant improvement in linguistic metrics, achiev-
+ing a BLEU-4 of 0.55 and a ROUGE-L of 0.62, which far ex-
+ceeds the Template-Based approach. This suggests that the fi-
+nal narrative benefits from both acoustic triplet evidence and
+topology-aware LLM priors. TripletF 1 and SCS should there-
+fore be interpreted together. In scenarios where acoustic sig-
+nals are intermittent or muffled, the LLM leverages room con-
+nectivity in the prompt to bridge fragmented detections. Fur-
+thermore, the SCS of 88.2% confirms that geometry informa-
+tion reduces physically impossible transitions in the generated
+narratives. This grounding mechanism helps the narrative re-
+main both linguistically fluent and physically plausible within
+the simulated setting.
+4.4. Ablation Study on Architectural Components
+The contribution of each architectural component is further dis-
+cussed in the ablation study presented in Table 2. Different from
+the Distributed Acoustic-Only baseline in Table 1, the w/o Ge-
+ometry Prior variant keeps the proposed framework but removes
+only the explicit geometric priorΩ. It leads to the most drastic
+decline in spatial logic, with the SCS falling to 66.5%, show-
+ing that acoustic evidence without explicit layout constraints
+is insufficient for reliable multi-room scene description. Be-
+sides, without spatial graph-based message passing, each mi-
+crophone works in isolation. This prevents the model from
+combining sound cues from different locations, leading to frag-
+mented graphs and reducing the TripletF1-score to 0.81. These
+results show that spatial-temporal graph fusion is essential for
+building a consistent global representation from scattered data.
+5. Conclusion
+In this paper, we introduced a distributed framework for un-
+derstanding acoustic scenes in multi-room settings. We miti-
+gate sound occlusion using distributed microphones and graph-
+based fusion, and use geometry-informed LLM reasoning to re-
+duce non-physical transitions in the final narrative. The results
+demonstrate the promise of distributed sensing for complex in-
+door environments under controlled simulation. Future work
+will validate the framework in real-world physical testbeds and
+optimize inference speed.
+3348
+6. Use of Generative AI Disclosure
+The authors used a generative AI tool solely for language edit-
+ing and polishing purposes. The AI tool 

@@ -1,0 +1,452 @@
+Beyond Two-stage Diffusion TTS: Joint Structure and Content Refinement via
+Jump Diffusion
+Jiabao Ai1, Minghui Zhao 1, Anton Ragni 1
+1 The University of Sheffield, United Kingdom
+jbai4514@gmail.com, mzhao39@sheffield.ac.uk, a.ragni@sheffield.ac.uk
+Abstract
+Diffusion and flow matching TTS faces a tension between
+discrete temporal structure and continuous spectral modeling.
+Two-stage models diffuse on fixed alignments, often collapsing
+to mean prosody; single-stage models avoid explicit durations
+but suffer alignment instability. We propose a jump-diffusion
+framework where discrete jumps model temporal structure and
+continuous diffusion refines spectral content within one pro-
+cess. Even in its one-shot degenerate form, our framework
+achieves 3.37% WER vs. 4.38% for Grad-TTS with improved
+UTMOSv2 on LJSpeech. The full iterative UDD variant fur-
+ther enables adaptive prosody, autonomously inserting natural
+pauses in out-of-distribution slow speech rather than stretch-
+ing uniformly. Audio samples are available at https://
+anonymousinterpseech.github.io/TTS_Demo/.
+Index Terms: Text-to-speech, jump diffusion, diffusion mod-
+els, flow matching, mean collapse, alignment, duration model-
+ing
+1. Introduction
+Speech is inherently dual-natured. It consists of a discrete tem-
+poral structure, namely the precise alignment and rhythmic tim-
+ing of linguistic units, and continuous spectral content that re-
+alizes the acoustic details.
+In diffusion and flow-matching[1] TTS models, alignment
+refers to the process of mapping input text phones or charac-
+ters to temporal frames in the output speech. Alignment strate-
+gies fall into two paradigms. The first relies on explicit frame-
+level phone alignment, obtained either via learned methods such
+as Monotonic Alignment Search (MAS) [2] or external forced
+alignment tools such as the Montreal Forced Aligner (MFA) [3].
+Models such as Grad-TTS [4], Matcha-TTS [5] and V oice-
+box [6] first predict phone durations, upsample the sequence,
+and then condition diffusion on this fixed structure. This offers
+stability but decouples temporal structure and spectral content
+modeling, often leading to mean prosody and resorting to uni-
+form mechanical stretching when adapting to total length con-
+straints [7].
+The second paradigm comprises single-stage models such
+as E3 TTS [8], E2 TTS [9], F5-TTS [10], and M3-TTS [11].
+These forgo explicit alignment and rely on attention mecha-
+nisms. While more flexible, they suffer from instability [10,
+12, 11].
+Although novel diffusion and flow-matching TTS mod-
+els continue to appear, this fundamental dichotomy remains
+unresolved. In this work, we argue that a joint generative
+process is essential. We introduce a jump diffusion frame-
+work [13] that unifies discrete jumps with continuous refine-
+ment within a single iterative process. This enables temporal
+structure and spectral content to co-evolve while still leveraging
+phone-level alignment. To reconcile variable-length jumps with
+standard fixed-dimensional diffusion networks, we propose an
+Upsample–Diffuse–Downsample (UDD) strategy.
+Our main contributions are threefold: (1) a jump-diffusion
+framework that flexibly unifies discrete temporal structure and
+continuous spectral modeling—even when degraded to a one-
+shot variant it outperforms the regression-based Grad-TTS
+baseline, while the full iterative form enables adaptive prosody;
+(2) the UDD mechanism that enables efficient reuse of pre-
+trained diffusion networks, circumvents the training instabilities
+and performance degradation observed in Trans-Dimensional-
+Diffusion (TDD), and supports iterative joint refinement of
+structure and content; and (3) empirical validation on LJSpeech
+showing superior intelligibility (lower WER) and natural pause
+insertion in out-of-distribution slow speech compared to two-
+stage baselines, while maintaining competitive naturalness.
+2. Background
+2.1. Score-based Diffusion Probabilistic Modelling
+Generative modeling via diffusion[14, 15] can be formulated
+using Stochastic Differential Equations (SDEs). Following the
+framework established by Song et al. [16], we define a forward
+noising process that gradually transforms the data distribution
+toward a tractable reference distribution according to the It ˆo
+SDE:
+dx = f(x,t )dt +g(t)dw, (1)
+where f(x,t ) is the drift term, g(t) is the diffusion coefficient,
+and w is a standard Wiener process. To generate data, we
+reverse this process from noise back to data using the corre-
+sponding reverse-time SDE, whose drift depends on the score
+∇x logpt(x):
+dx =
+
+f(x,t )−g2(t)∇x logpt(x)
+
+dt +g(t)d ¯w. (2)
+Here,∇x logpt(x) denotes the time-dependent score function,
+which estimates the gradient of the log-density and steers sam-
+ples along the density trajectory from noise back to data. In
+practice, this score is approximated by a neural networksθ(x,t )
+trained via score matching.
+The same marginal density path can also be described by
+the deterministic probability flow ODE[17]:
+dx =
+
+f(x,t )− 1
+2g2(t)∇x logpt(x)
+
+dt. (3)
+This formulation is particularly important because it eliminates
+stochastic noise while preserving the exact same marginal dis-
+tributions as the reverse SDE, enabling faster and fully repro-
+ducible sampling.
+3600
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2875
+2.2. Jump Processes in Generative Modeling
+Recent work in generative modeling [18, 19, 20, 13, 21, 22] has
+highlighted the limitations of purely continuous diffusion and
+flow-matching (FM) dynamics when modeling multi-modal or
+heavy-tailed distributions. This is particularly relevant to TTS,
+where the same text can correspond to multiple valid temporal
+structures. Models that commit to a single fixed temporal struc-
+ture may therefore collapse toward averaged timing patterns,
+while rare events in prosody like silent pauses remain crucial
+for naturalness and intelligibility [19, 7]. A natural extension is
+to augment continuous diffusion with discrete jumps:
+dxt = f(xt,t )dt +g(t)dwt +dJt, (4)
+where Jt is a jump process that admits diverse designs de-
+pending on the state space and probability path [20]; in this
+work, we follow the trans-dimensional formulation of [13],
+where jumps alter the dimensionality of the state.
+3. Method
+We adapt this idea to TTS (Fig. 1, Fig. 2): a Location Predic-
+tor determines where to insert new temporal frames, a Content
+Predictor generates what to fill in, and standard diffusion steps
+refine the spectral content.
+Figure 1: jump diffusion process for Mel-spectrograms.
+3.1. Forward Jump Diffusion
+The forward process q(xt | x0) transforms the ground-truth
+Mel-spectrogram x0 ∈ RD×L0 (where D = 80 is the num-
+ber of Mel-frequency bins and L0 is the original number of
+time frames) into a variable-length latent state xt ∈ RD×Lt
+by coupling structural corruption (frame deletion) and spectral
+corruption (Gaussian noise addition, following the standard dif-
+fusion process in Section 2.1).
+Structural Corruption. We define a protected setP con-
+taining the first frame of each phone (derived from forced align-
+mentA). For t ∈ [0, 1], the target length follows the linear
+schedule
+Lt =|P| +
+
+1− t−tmin
+1−tmin
+
+(L0−|P| )
+
+. (5)
+Following [13], we set tmin = 0.1. Frames not in P are ran-
+domly removed until the target length Lt is reached, yielding
+the downsampled sequencexsub
+t ∈ RD×Lt and the correspond-
+ing encoder output µsub
+t .
+Spectral Corruption. Following the variance-preserving
+diffusion SDE described in the Background (Eqs. (1)–(3)),
+Gaussian noise is added to xsub
+t relative to the phone-level en-
+coder output µsub
+t :
+xt = xsub
+t exp
+
+− 1
+2
+Z t
+0
+βsds
+
++ µsub
+t
+
+1− exp
+
+− 1
+2
+Z t
+0
+βsds
+
++
+s
+1− exp
+
+−
+Z t
+0
+βsds
+
+· zt, (6)
+where zt∼N (0, ID×Lt).
+To generate training targets for the jump predictors,
+we additionally simulate a single-step transition by ran-
+domly removing one column k from xt, forming the triplet
+(x\k
+t ,s target, xk
+0).
+Algorithm 1 Forward Process & Training Target Generation
+1: Input: x0, µ,A; Samplet∼U (0, 1)
+2: ▷ 1. Structural Corruption
+3: ift>t min then
+4: L0← Length(x0)
+5: P← first-frame indices of each phone inA
+6: Lt← ScheduleLength(L0,|P|,t ) ▷ Eq. (5)
+7: SampleIkeep of sizeLt s.t.P⊆I keep
+8: xsub
+t ← x0[:,Ikeep], µsub
+t ← µ[:,Ikeep]
+9: else
+10: xsub
+t ← x0, µsub
+t ← µ
+11: end if
+12: ▷ 2. Spectral Corruption
+13: zt∼N (0, I)
+14: xt← AddNoise(xsub
+t , µsub
+t ,t, zt)
+15: ▷ 3. Single-step Jump Targets
+16: k∼U{ 1,..., Length(xt)}
+17: x\k
+t ← Delete(xt,k ), xk
+0← xsub
+t [:,k ],starget←k
+18: return xt,{x\k
+t , xk
+0,s target}
+3.2. Reverse Process (Inference)
+Figure 2: Inference pipeline. Starting from a noisy and incom-
+plete phone-level state, the model iteratively performs jumps
+and diffusion.
+3601
+The reverse process starts from a compressed phone-level state
+x1≈ ˜µ (where ˜µ∈ RD×Nphone is the non-upsampled output
+of the frozen text encoder) and progressively grows it to the tar-
+get lengthLtarget. The target lengthLt at each reverse step fol-
+lows the same linear schedule as the forward process (Eq. (5)),
+traversed in reverse from L1 =|P| toL0 = Ltarget. It inter-
+leaves discrete structural expansions with continuous spectral
+refinements (see Algorithm 2).
+Structural Jump. At step t, we compute the number of
+insertions needed Nins = max(0,Lt− len(xt)). The Loca-
+tion Predictor (Section 3.3) samples insertion slots S, and the
+Content Predictor generates new frame content ˆx0. Inserted
+columns in the priorµt are created by duplicating the left neigh-
+boring frame.
+Spectral Diffusion. The expanded sequence is updated via
+a standard reverse diffusion step (SDE or ODE solver, Eq. (2)
+in Background) to reduce spectral noise.
+Algorithm 2 Inference
+1: ˜µ,L target← Encoder(Text)
+2: x1← ˜µ + z; µt← ˜µ
+3: fort = 1→ 0 do
+4: Nins← max(0,Lt− len(xt))
+5: ifNins > 0 then
+6: S ← Sample Nins slots from
+LocationNet(xt, µt,t )
+7: ˆx0← ContentNet(xt, µt,t,S )
+8: xt← Insert(xt, Noised(ˆx0,t ),S)
+9: µt← Insert(µt, µt[S],S )
+10: end if
+11: xt← DenoiseStep(xt, µt,t )
+12: end for
+13: return x0
+3.3. Implementation Details
+We adopt the text encoder and U-Net diffusion backbone from
+the official Grad-TTS checkpoint [4] and keep them frozen dur-
+ing training of the jump predictors. The framework introduces
+two additional networks:
+Content Predictor. To reconstruct deleted frames, we use a
+bidirectional Transformer encoder (8 layers, 8 heads). The input
+is the reduced prior µt and xt with the target column zeroed
+(in-place masking). A 1D convolution extracts local features,
+followed by the Transformer for global context. The network
+predicts a residual ∆:
+ˆxk
+0 = µk
+t + ∆. (7)
+The loss is
+Lcont =∥ˆxk
+0− xk
+0∥1 +λprior∥ˆxk
+0− µk
+t∥2
+2. (8)
+Location Predictor (Lloc): The Location Predictor identi-
+fies the optimal insertion slots∈{ 0,...,L t− 1} for the gen-
+erated frame, where Lt is the current sequence length at time
+t. It utilizes a 4-layer Transformer encoder to generate frame-
+level representations hs. A linear scoring head is applied to hs
+to produce logitsoj. The training objective is the cross-entropy
+loss over theLt possible insertion positions:
+Lloc =−
+Lt−1X
+j=0
+yj log
+ 
+exp(oj)PLt−1
+k=0 exp(ok)
+!
+, (9)
+where yj is the one-hot target indicating the original deletion
+index (i.e., the position of the frame that was removed during
+the forward process).
+3.4. UDD and One-shot Variant
+Location predictor
+Content predictor
+Diffusion net
+Figure 3: Upsample–Diffuse–Downsample (UDD).
+The Location Predictor can also act as an upsampler. Given a
+sequence xt ∈ RD×Lt, it predicts a distribution over Lt in-
+sertion slots. To reach the target length Ltarget, we allocate
+Nadd =Ltarget−Lt new frames according to this distribution.
+If all insertions happen in a single step at the very begin-
+ning, our model degrades to a One-shot variant in which the
+Location Predictor replaces Grad-TTS’s regression-based dura-
+tion predictor with a classification-based alternative.
+This insight leads to the Upsample–Diffuse–Downsample
+(UDD) strategy (Fig. 3). We first expand the variable-length
+state to a fixed-length canvas by inserting frames predicted by
+the Location and Content predictors. A standard reverse diffu-
+sion step is then applied to this full-length representation. Fi-
+nally, we downsample by retaining only the original columns
+and proceed to the next iteration. UDD thus enables itera-
+tive joint refinement of temporal structure and spectral content
+while reusing the pretrained fixed-dimensional diffusion net-
+work without retraining.
+4. Experiments
+4.1. Experimental Setup
+Experiments are conducted on the LJSpeech [23] using the
+standard partitions from [4]. The diffusion network and text
+encoder follow the Grad-TTS architecture [4] and are initial-
+ized with pretrained weights. The proposed jump predictors
+are optimized using Adam (lr = 1× 10−4). All training hy-
+perparameters exactly follow the original Grad-TTS recipe [4].
+Waveform synthesis uses a pretrained HiFi-GAN vocoder [24].
+For evaluation, intelligibility (WER) is measured with Whisper
+medium [25] and naturalness with UTMOSv2 [26].
+4.2. Main Results and Comparisons
+We evaluate spectral accuracy (MCD), prosodic consistency
+(Log-F0 RMSE), naturalness (UTMOSv2), and intelligibility
+(WER). To ensure a fair comparison, the total target length
+Ltarget for each utterance is kept identical to Grad-TTS across
+all systems.
+3602
+Table 1: Main evaluation results.
+Method WER (%) ↓ MCD↓ Log-F0 RMSE↓ UTMOSv2↑
+Grad-TTS 4.38 5.872 ± 0.52 0.330 ± 0.09 4.024 ± 0.21
+One-shot 3.37 5.914± 0.55 0.332 ± 0.08 4.050± 0.21
+TDD (Sample) 6.31 6.057 ± 0.58 0.341 ± 0.09 3.867 ± 0.21
+TDD (Argmax) 7.66 5.850 ± 0.61 0.341 ± 0.10 3.988 ± 0.25
+UDD (Sample) 4.55 5.860 ± 0.54 0.344 ± 0.09 3.989 ± 0.20
+UDD (Argmax) 4.71 5.830± 0.55 0.332± 0.08 4.003 ± 0.22
+Classification vs. regression for duration modeling. The
+One-shot model achieves the lowest WER (3.37%) and high-
+est UTMOSv2 (4.050), improving substantially over Grad-TTS
+(4.38% WER, 4.024 UTMOSv2). Since One-shot replaces only
+the regression-based duration predictor with our classification-
+based Location Predictor while keeping all other components
+identical, this result directly confirms that modeling phone du-
+rations as a categorical distribution over insertion slots captures
+the multi-modal nature of speech timing better than MSE re-
+gression, which collapses toward mean durations and underrep-
+resents rare durational events such as pauses.
+Why TDD fails. TDD applies the U-Net architecture di-
+rectly, resulting in the worst WER across all variants (6.31–
+7.66%). We attribute this to two factors. First, the input dimen-
+sionality changes at every diffusion step, drastically increasing
+the task uncertainty faced by the network and making learning
+harder. Second, the convolutional backbone possesses transla-
+tion invariance but lacks scale invariance; since the sequence
+dimensionality changes during the process. Together, these is-
+sues cause TDD to degrade severely compared to fixed-length
+alternatives.
+UDD: bridging variable-length jumps and fixed-
+dimensional diffusion. UDD resolves the dimensional mis-
+match by temporarily upsampling the sequence to the target
+length before each diffusion step. This preserves the pretrained
+U-Net’s inductive bias and yields the best MCD (5.830) and
+competitive Log-F0 RMSE (0.332) among all diffusion-based
+variants.
+4.3. Adaptive Pauses in Slow Speech
+The preceding experiment evaluates all systems at matched tar-
+get lengths derived from ground-truth durations. We now test
+a more challenging scenario: synthesizing speech at 0.75×
+speed. This out-of-distribution setting reveals how each model
+distributes the additional frames.
+Table 2: Duration breakdown and intelligibility at0.75× speed.
+Silence Ratio = Silence / Total.
+Method (0.75×) Avg Total (s) Avg Silence (s) Sil. Ratio ↑ WER (%)↓
+GT (1.00×) 6.26 0.45 7.19% 1.94
+Grad-TTS 7.37 0.47 6.38% 4.29
+UDD (Argmax) 7.37 0.71 9.63% 4.09
+UDD (Sample) 7.37 0.61 8.28% 4.19
+Grad-TTS stretches uniformly.As shown in Fig. 4, Grad-
+TTS produces a near-linear DTW alignment path, indicating
+that the extra frames are distributed proportionally across all
+phones. Its silence ratio (6.38%) is even lower than the ground
+truth at normal speed (7.19%), confirming that uniform stretch-
+ing dilutes pauses rather than preserving them.
+Jump-based models redistribute duration adaptively.
+UDD allocates substantially more duration to silent pauses,
+with UDD (Argmax) reaching a silence ratio of 9.63%—well
+above the 6.38% of Grad-TTS and even exceeding the ground-
+truth level (7.19%). Its DTW path (Fig. 4) and correspond-
+ing Mel-spectrograms (Fig. 5) exhibit a clear staircase pattern,
+where vertical jumps correspond to the autonomous insertion
+of linguistically appropriate pauses. This adaptive redistribu-
+tion yields the lowest WER in this setting (4.09% vs. 4.29%
+for Grad-TTS), confirming allocating extra duration to pauses
+rather than uniformly stretching all frames benefits intelligibil-
+ity.
+Figure 4: DTW alignment paths at 0.75× speed.
+Figure 5: Example Mel-spectrograms at 0.75× speed.
+5. Conclusion and Future Work
+We presented a jump-diffusion framework that unifies discrete
+temporal structure modeling and continuous spectral refinement
+within a single probabilistic process for TTS. Even in its sim-
+plest one-shot degenerate form, our framework achieves 3.37%
+WER and 4.050 UTMOSv2, outperforming the regression-
+based duration modeling baseline (4.38% WER, 4.024 UT-
+MOSv2), confirming the advantage of classification-based du-
+ration modeling. The full iterative UDD variant further enables
+adaptive prosody: in slow speech, it autonomously inserts lin-
+guistically appropriate pauses rather than uniformly stretching
+all frames, achieving 4.09% WER compared to 4.29% for Grad-
+TTS with a silence ratio of 9.63% versus 6.38%.
+Currently, jumps operate exclusively on temporal structure,
+leaving spectral content to be refined solely by continuous diffu-
+sion. Future work will explore jumps in the spectral domain to
+enable discrete corrections of spectral content alongside struc-
+tural changes[18, 19, 20, 21]. We also plan to evaluate on
+multi-speaker and more spontaneous speech corpora, where the
+greater prosodic variability is expected to further highlight the
+advantage of our jump-based duration modeling [7].
+3603
+6. Acknowledgments
+This work was partially supported by the UKRI AI Centre for
+Doctoral Training in Speech and Language Technologies (SLT)
+and their Applications funded by UK Research and Innovation
+[grant number EP/S023062/1]. For the purpose of open access,
+the author has applied a Creative Commons Attribution (CC
+BY) licence to any Author Accepted Manuscript version aris-
+ing.
+7. Generative AI Use Disclosure
+Generative AI tools were used only for assistance with language
+polishing and formatting. The authors reviewed and verified all
+content and take full responsibility for the manuscript.

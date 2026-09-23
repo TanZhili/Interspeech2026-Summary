@@ -1,0 +1,535 @@
+Probing and Mitigating Hallucinations in Speech-augmented Language
+Models for Automatic Speech Recognition via Small Language Models
+Bi-Cheng Yan, Jhih-Rong Guo, Fu-An Chao, Berlin Chen
+National Taiwan Normal University, Taiwan
+{80847001s, jhihrong, fuanchao, berlin}@ntnu.edu.tw
+Abstract
+The widespread success of large language models in natural
+language processing has spurred the development of speech-
+augmented language models (SLMs) to extend their reasoning
+capabilities from textual inputs to spoken ones. Despite im-
+pressive performance, SLMs remain susceptible to hallucina-
+tions, posing challenges in practical utility. To this end, we first
+probe hallucinations in SLMs for automatic speech recognition
+(ASR) via the lens of causal mediation and behavioral analy-
+sis. To mitigate fabricated ASR hypotheses, we propose Au-
+dioSLM, a compact yet effective ASR framework built upon
+a small language model, which leverages alignment cues and
+cross-attention layers to synergistically bolster acoustic model-
+ing and cross-modal interactions. Experiments on LibriSpeech
+reveal that hallucinations arise from multi-head self-attention
+modules with an excessive attention bias towards textual tokens.
+AudioSLM considerably eases ASR hallucinations and outper-
+forms some LLM-based ASR models.
+Index Terms: speech-augmented language model, hallucina-
+tion, cross-modal alignment, alignment information, automatic
+speech recognition
+1. Introduction
+As witnessed by the impressive success of large language mod-
+els (LLMs) in the natural language processing community, a
+growing interest has surged in broadening LLM capabilities
+to process and understand speech signals [1, 2]. By coupling
+a speech encoder with a language model, speech-augmented
+language models (SLMs) have demonstrated promising perfor-
+mance in transducing complex acoustic patterns into contextu-
+ally relevant outputs (e.g., transcriptions, captions, and intents),
+serving as a more natural and direct interface for human-AI in-
+teraction [3, 4]. However, the phenomenon of hallucinations
+persists, as SLMs inadvertently generate content that diverges
+from the spoken inputs, posing an arduous challenge to the reli-
+ability and practical deployment of current SLMs.
+Existing literature in natural language processing and com-
+puter vision suggests that hallucinations primarily arise from
+insufficient grounding on input modalities [5]. Early studies
+reveal that hallucinated words often emerge as backbone lan-
+guage models over-prioritize linguistic priors and rely heavily
+on previously generated tokens, sidelining the information pro-
+vided by visual and textual modalities [6]. To curb the over-
+reliance on language priors, several methods have been pro-
+posed, which broadly fall into two active strands of research.
+The first line of research centers on post-processing strategies,
+such as post-hoc corrections [7, 8] and specialized decoding al-
+gorithms [9]. Another research direction aims to reduce the lex-
+ical co-occurrence bias inherent in backbone language models
+…seeminglyexplodingegoismswhichstrive
+withoneanother(ASRReference)
+…seeminglyexplosionofegoismswhich
+strivewithoneanotherforsunandlightand
+cannolonger…
+HallucinationphenomenoninSpeech-augmentedLanguage
+ModelsforASR
+ASRResult
+(AlignmentbetweenReferenceandHypothesis)
+…seemingly[***]explodingegoismswhich
+strivewithoneanother[***][***][***][***]
+[***][***][***][***] …
+Reference
+…seeminglyexplosionexplodingegoisms
+whichstrivewithoneanotherforsunandlight
+andcannolonger…
+Hypothesis
+ASRHypothesis
+SpokenInput
+Figure 1:A running example illustrates ASR hallucination for
+an SLM. We define hallucinated words as a special case of in-
+sertion error, where fabricated words are highlighted inyellow
+and general standard inserted words are marked inblue.
+via data augmentation and preference optimization [10, 11, 12].
+Despite significant strides in mitigating hallucinations for
+vision-language and text-only models, this issue remains rela-
+tively underexplored in SLMs. In response, this paper focuses
+exclusively on their impacts on automatic speech recognition
+(ASR), systematically investigating the underlying causes of
+hallucinations in SLMs. As illustrated in Figure 1, we first
+characterize hallucinated words as a specific subtype of inser-
+tion error, referring to additional (or fabricated) tokens in the
+ASR hypothesis that lack corresponding references after the
+alignment process. Next, a series of analyses are conducted to
+uncover the causal contributions of internal components within
+SLM to fabricated token generation through the lens of attribu-
+tion and intervention [13]. Finally, we propose AudioSLM, a
+compact yet effective framework built upon a small language
+model that mitigates ASR hallucinations through two com-
+plementary strategies. Our method first leverages alignment
+features from a Connectionist Temporal Classification (CTC)
+module to provide reliable temporal cues for better acous-
+tic modeling, and further enhances the backbone model with
+cross-attention layers to facilitate fine-grained alignment be-
+tween acoustic and textual modalities. Through causal medi-
+ation analysis on the SLM components, we find that multi-head
+self-attention (MHA) modules contribute more significantly to
+hallucinations than multi-layer perceptron (MLP) modules. A
+closer inspection of the attention weights on hallucinated tokens
+reveals a pronounced tendency to over-prioritize textual context.
+Extensive experiments conducted on the LibriSpeech dataset
+with SmolLM2 model family [14] as the backbone demonstrate
+3127
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1278
+AudioEncoder 
+(E.g., Whisper Encoder )
+AudioSignals Generated Tokens(W!")
+…
+LargeLanguageModel(LLM)
+… …
+TheEmbeddingLayerofLLM
+Foodthereisnoneinthemorningit'sbreadatdinnergrueland
+intheevening</s>
+Connector
+…
+Reference Transcription(W)
+Pleaselistenand
+transcribetheaudio
+Instruction(W#)
+<s> Foodthereis
+none…intheevening
+Acoustic
+Feats(X)
+Audio
+To k e n s(H!)
+Instruction
+Embeds(H")
+Output
+Embeds(H#$)
+FeatureDescriptions
+Figure 2:SLM architecture for ASR, comprising a speech en-
+coder for acoustic feature extraction, a connector network for
+modality bridging, and an LLM for text generation.
+the effectiveness of our method in mitigating hallucinations
+while achieving competitive performance compared to some
+prior arts of LLM-based ASR methods.
+2. Preliminary and Problem Statement
+Hallucination Error Rate for ASR.We formally define the
+hallucination error rate (HER) as the ratio of the hallucinated
+tokens to the total number of reference (ground-truth) tokens:
+HER= |Hallucinated Tokens|
+|Reference Tokens| ,(1)
+where the hallucinated tokens are identified as additional recog-
+nized tokens after the alignment process.
+Speech-augmented Language Models (SLMs) for ASR.In-
+struction fine-tuning endows LLMs with the ability to transcribe
+speech by prompting them with acoustic features and task in-
+structions [15, 16]. As shown in Figure 2, an archetype of
+SLMs comprises three components: a speech encoder, a con-
+nector network, and an LLM. The speech encoder, typically
+adapted from a speech foundation model (e.g., Whisper [17]),
+extracts high-level acoustic featuresX = (x 1,x 2,···,x T′ )
+from audio signals. To bridge the modality gap, the connector
+network compresses and projectsXinto a sequence of audio to-
+kensH a = (h a
+1,h a
+2,···,h a
+T ), with a sampling rate ofk(i.e.,
+T=T
+′
+/k). By prependingH a with the textual embeddings
+of an instruction sequenceW i (i.e., task descriptions of ASR
+[18]), the LLM then operates autoregressively over a reference
+transcriptionW = (w 1,w 2,···,w N ), modeling the likelihood
+of the next word emitted. The speech recognition process via
+an SLM can be expressed as:
+P(W|W i,X) =
+N+1Y
+n=1
+P(wn|W<n,W i,X),(2)
+whereW <n is the sequence of previously generated tokens.
+The conditional probability of generating then-th tokenw n is:
+P(wn|W<n,W i,X) = Softmax(Lin(h n)),(3)
+hn = LLM(H<n,H i,H a),(4)
+where the hidden representationh n is derived from the LLM,
+conditioned onH a, and the embeddings of instruction and pre-
+vious outputs (viz.H i andH <n). In the training phase, we
+freeze the pretrained language model and integrate the LoRA
+module for efficient parameter adaptation.
+Causal Mediation Analysis of Hallucinations.To diagnose
+hallucinations in SLMs, causal mediation analysis is leveraged
+to quantify the contributions of internal components in the back-
+bone model (viz. MHA and MLP modules). We employ a
+knockout strategy through zero-ablation to selectively neutral-
+ize a target componentθc in the SLMθM by zeroing the outputs
+ofθc while preserving the remaining architecture and function-
+ality intact [19, 20]. For an ASR hypothesis ˆW, the influence
+scoreI θc ofθ c on a set of hallucinated wordsHis quantified
+as:
+Iθc = 1
+L
+TX
+t=1
+1{ˆwt∈H}·
+PθM ( ˆwt| ˆW<t,W i,X)
+−PθM\c ( ˆwt| ˆW<t,W i,X)
+.
+(5)
+Here,Lis the total number of hallucinated words inH, and
+θM\c represents the modelθM with componentθc knocked out.
+1{·}is an indicator function,ˆw t denotes the token generated at
+time steptbased on the previously generated sequence ˆW<t. A
+high influence score indicates thatθ c has a strong contribution
+to hallucination generation.
+3. Mitigating Hallucination via AudioSLM
+As shown in Figure 3, AudioSLM enhances temporal cues and
+cross-modal alignment at both the input feature level and the
+neural architecture level. At input feature level, we derive a se-
+quence of alignment features from the CTC module and incor-
+porate them into the SLM via a CTC-Gated module. At neural
+architectural level, the Transformer blocks in the backbone lan-
+guage model are augmented with cross-attention layers to bol-
+ster the cross-modal alignment while preserving computational
+efficiency.
+Alignment Feature Integration for AudioSLM.We build a
+CTC module on top of the connector to extract the logit vectors
+Hc as alignment features, which are expected to render tempo-
+ral cues via the CTC objective. Specifically, the CTC objec-
+tive aligns audio tokensH a with the reference transcriptionW
+by marginalizing over all valid alignments and maximizing the
+conditional likelihoodP(W|H a)as:
+P(W|H a) =
+X
+A∈B−1(W)
+P(A|H a)≈
+X
+A∈B−1(W)
+TY
+t=1
+P(at|Ha),
+(6)
+whereA = (a 1,a 2,···,a T )denotes a valid alignment se-
+quence drawn from the setB −1(W), which contains all pos-
+sible alignment paths compatible withW. The token emission
+probability at timetand the corresponding logit feature extrac-
+tion are expressed as:
+P(at|Ha) = Softmax(h c
+t ),(7)
+hc
+t = Lin(h a
+t ),(8)
+whereLin(·)denotes a linear transform projecting the hidden
+dimension into the vocabulary size of LLM. We then collect
+these logit features along the time axis to form the alignment
+featuresH c = (h c
+1,h c
+2,···,h c
+T ). To fuse the audio tokensH a
+with alignment information in a fine-grained manner, the CTC-
+Gated module is employed. As shown in Figure 3(c), CTC-
+Gated module produces refined audio tokens via element-wise
+gating and a Swish-Gated Linear Unit (SwiGLU) layer [1]:
+ˆHa = SwiGLU(H a + Gc⊗H a),(9)
+Gc =σ(Lin 2([DC(Lin1(Hc)); Ha])),(10)
+3128
+AudioEncoder 
+(E.g., Whisper Encoder )
+AudioSignals Generated Tokens(W!")
+…
+BackboneLanguageModel(E.g.,SmolLM2)
+… …
+TheEmbeddingLayerofLLM
+Foodthereisnoneinthemorningit'sbreadatdinnergruelandin
+theevening</s>
+Reference Transcription(W)
+Pleaselistenand
+transcribetheaudio
+Instruction(W#)
+<s> Foodthereis
+none…intheevening
+CTCLoss
+Linear
+Softmax
+CTC-Gated
+Module
+Multi-head Self-
+Attention (MHA)
+Multi-Layer 
+Perceptron (MLP)
+OutputofPrevious
+Block(H$%&)
+CrossAttention
+Query:
+Outputsof
+MHAModule
+(H’()
+$ )
+Key,Value:
+Audio
+To k e n s(H))
+Linear
+(c)CTC-Gated
+Module(a) The Proposed AudioSLM
+(b) The𝑙-thTransformer 
+Block of AudioSLM
+RMSNorm
+RMSNorm
+RMSNorm
+… …
+Depth-Conv1d
+SiLU
+SwiGLU
+Audio 
+Tokens(H!)
+CTC
+Logits (H")
+Linear
+Acoustic
+Feats(X)
+Audio
+To k e n s(H!)
+Instruction
+Embeds(H#)
+Output
+Embeds(H$%)
+FeatureDescriptions
+CTC
+Logits(H")
+CTCModule
+H!"#
+Connector
+…
+H"
+H!
+Refined
+AudioTo k e n s(H#!)
+H"
+…
+TrainableFrozen
+Figure 3:The structure of AudioSLM for ASR to mitigate hallucination errors. As depicted in (a) the audio encoder and the connector
+first extract audio tokens from the audio signals, which are then transformed into alignment features via the CTC module and passed
+through the Gated-CTC module to provide the backbone language model with temporal cues; (b) the proposed Transformer block in
+AudioSLM, which facilitates fine-grained alignment across acoustic and linguistic modalities via a cross-attention layer; and (c) the
+Gated-CTC module, which leverages CTC logits to dynamically gate and refine the audio tokens.
+InfluenceScore	𝐼!!
+(a)Vanilla-SLM (b)AudioSLM
+Figure 4:Comparison of influence scores for MHA and MLP
+modules, along with the cross-attention layer, for (a) Vanilla-
+SLM and (b) AudioSLM.
+where⊗denotes the element-wise dot product. The gating vec-
+torsG c are computed by projectingH c from the vocabulary
+space to the hidden dimension via a linear projectionLin 1(·).
+A depth-wise convolutional layerDC(·)with a kernel size of
+3×1is then applied to capture local temporal dependencies.
+The resulting features are then concatenated withH a and trans-
+formed via a linear layerLin 2(·), followed by a sigmoid activa-
+tionσ(·)to produce the gating vectors.
+Cross-Attention Layer for Transformer Block.As illustrated
+in Figure 3(b), the cross-attention layer is inserted between the
+MHA module and the MLP module. During training, we update
+only the parameters of the cross-attention layer, while keeping
+all others frozen. In thel-th Transformer block, the MHA mod-
+ule computes the contextualized representationsH l
+mha via the
+self-attention over the outputs of previous blockH l−1. The
+cross-attention layer then takesH l
+mha as queries and attends to
+the audio tokensH a for cross-modal alignment. The resulting
+representations,Hl
+ca, are then processed by the MLP module to
+produce the block outputHl:
+Hl
+mha = MHA(Hl−1); Hl
+ca = CA(Hl
+mha,H a),(11)
+Hl = MLP(Hl
+ca),(12)
+whereCA(·)is cross-attention layer.
+AudioTo k e n Te x tTo k e n
+BlockIndex
+(a)AttentionWeightsforNon-hallucinationWords
+BlockIndex
+(b)AttentionWeightsforHallucinationWords
+AveragedAttentionWeights
+AudioTo k e n Te x tTo k e n
+Figure 5:Averaged attention weights over audio and text tokens
+for hallucinated and non-hallucinated words in the Vanilla-
+SLM, where the shaded areas are the standard error of attention
+weights across all heads.
+4. Experiments
+4.1. Experimental Settings
+Dataset.We conducted ASR experiments on the LibriSpeech
+corpus, a benchmark dataset for automatic speech recognition.
+We used the train-clean-100 subset for training, while evaluat-
+ing on the dev-clean/other and test-clean/other sets.
+Implementation Details.The audio encoder in AudioSLM was
+grafted from Whisper-large-v2, comprising 12 Transformer lay-
+ers with 20 attention heads and a hidden dimension of 1280.
+The connector module consisted of a 3-layer convolutional neu-
+ral network with a kernel size of 5, achieving a subsampling
+rate of 4. For the backbone model, we employed SmolLM-2-
+135M [14], which consisted of 30 LLaMA blocks, each with
+9 attention heads and a hidden size of 576. All models were
+trained for 30 epochs using a cosine learning rate scheduler with
+a maximum learning rate of 1e-4. During inference, the decoder
+beam size was set to 5. Our source code is publicly available at
+https://github.com/bicheng1225/AudioSLM.
+Comparative Methods.We compare our proposed AudioSLM
+with the following top-of-the-line methods. As standard bench-
+marks in ASR system, CTC, RNN-T, and Joint CTC-Atten
+3129
+Table 1:Detailed ASR Performance and hallucination error
+rates (HER%) of SLMs on the Dev-clean.
+Model CORR%↑SUB%↓DEL%↓INS%↓ HER%↓
+Vanilla-SLM 94.58 4.78 0.633.69 52.01
+AudioSLM 94.16 5.20 0.640.74 8.69
+-w/o CA 93.97 5.370.66 3.50 11.96
+-w/o CTC-Gate 93.93 5.550.52 1.52 14.67
+models leverage the Transformer architecture and are optimized
+through end-to-end objectives, including CTC, RNNT, and the
+hybrid encoder-decoder framework [21]. LLM-Guided De-
+coder [22] employs a large language model (i.e., LLaMA2-
+Chat-7B) as a front-end feature extractor, with an ASR decoder
+that refines hypotheses by conditioning on both textual repre-
+sentations and acoustic information. Vanilla-SLM is the vari-
+ant of AudioSLM that adopts SmolLM2-135M as the backbone
+without any CTC-related components or cross-attention layers.
+4.2. Experimental Results
+Causal Mediation Analysis of Hallucination in the SLM.
+At the outset of experiments, we first compare the influence
+scores of the MHA and MLP to Vanilla-SLM and AudioSLM
+in Figure 4(a), and then quantify the contribution of the intro-
+duced cross-attention (CA) layers to our model in Figure 4(b).
+As shown in Figure 4(a), both the MHA and MLP modules
+are critical for the generation of hallucinated words; however,
+the removal of MHA modules results to a larger impact than
+that of MLP modules. A consistent trend is observed in our
+AudioSLM, where MHA modules continue to exert the most
+profound influence, followed by the CA layers, both of which
+surpass the impact of the MLP modules in Figure 4(b).
+Analyzing Hallucination Patterns through Attention
+Weights.Building on the causal mediation analysis, we inves-
+tigate the distributions of attention weights for hallucinated and
+non-hallucinated words to uncover distinct behavioral patterns.
+Figure 5 illustrates the attention weights in the MHA layers
+of the Vanilla-SLM, where weights assigned to audio and
+text tokens are averaged across heads and normalized by their
+respective sequence lengths. For non-hallucinated words, as
+shown in Figure 5(a), attention weights exhibit an interleaving
+pattern across modalities, with text tokens dominating at shal-
+lower layers and audio tokens gaining prominence in deeper
+layers. In contrast, from Figure 5(b), it is evident that the
+attention weights for hallucinated words are overwhelmingly
+skewed toward text tokens across all Transformer blocks, with
+negligible attention allocated to audio ones. This result aligns
+with the findings in computer vision [23, 10], where object
+hallucinations are attributed to an over-reliance on language
+priors, nearly setting aside visual information.
+Detailed ASR Performance and HER of SLMs on Dev-
+clean.Table 1 summarizes the detailed ASR performance
+of the SLMs, reporting the correct recognition rate (CORR),
+substitution (SUB), deletion (DEL), insertion (INS), and hal-
+lucination error rates (HER). First, compared to Vanilla-SLM,
+AudioSLM significantly reduces the HER from 52.01% to
+8.69%, accompanied by a marked improvement in insertion
+errors. However, these gains come at the cost of a slight
+degradation in other metrics (viz, CORR, SUB, DEL). Next,
+an ablation study is conducted to evaluate the contribution of
+each component in AudioSLM by separately removing the
+cross-attention layers (w/o CA) and the CTC-Gated module
+(w/o CTC-Gate). From the second part of Table 1, it is evident
+Table 2:ASR Performance (WER%) of AudioSLM and Compar-
+ative Methods on the LibriSpeech-100 Dataset.
+Model Used
+LLM
+Dev WER Test WER
+Clean Other Clean Other
+CTC [24] - 11.20 21.40 11.40 22.00
+RNN-T [24] - 9.70 21.50 9.80 22.20
+CTC-Atten [22] - 7.20 17.50 7.50 18.00
+LLM-Guided
+Decoder [22] LLaMA-7B-Chat 6.20 16.50 6.70 16.90
+Vanilla-SLM SmolLM2-135M 9.11 13.75 10.82 13.93
+AudioSLM
+SmolLM2-135M 6.58 12.29 7.11 11.92
+SmolLM2-360M 5.79 10.69 6.04 11.07
+SmolLM2-1.7B 4.69 8.75 4.71 10.21
+that both proposed components are pivotal to alleviating
+hallucination, as the removal of either leads to an increase
+in HER compared to AudioSLM. Furthermore, these two
+components are complementary, as the CTC-Gate targets
+insertion errors and the CA layers are dedicated to suppressing
+hallucinations. These results suggest that temporal filtering
+via CTC-Gate effectively removes redundant frames, while
+strengthened cross-modal alignment via CA layers prevents the
+language model from relying solely on linguistic priors.
+Benchmarking SLMs on the Librispeech.Table 2 compares
+AudioSLM with several strong baselines on the LibriSpeech
+test sets in terms of word error rate (WER). From this table,
+a consistent performance gain is observed, where AudioSLM
+(w/ SmolLM2-135M) outperforms the Vanilla-SLM and
+conventional architectures (e.g., CTC, RNN-T, and AED)
+under both clean and noisy conditions. In comparison with
+the LLM-Guided Decoder, AudioSLM (w/ SmolLM-135M)
+stands out on the dev-other and test-other, suggesting that our
+model exhibits greater robustness to acoustic variability and
+background noise. These findings are consistent with prior
+efforts on cold and deep fusion architectures, which sought
+to integrate language models into end-to-end ASR systems.
+[25, 26]. Finally, as the backbone model scales up, AudioSLM
+(w/ SmolLM2-1.7B) exhibits improved performance relative to
+both the LLM-Guided Decoder and its smaller-scale variants,
+validating the scalability and flexibility of the proposed
+architecture. Notably, in our empirical results, the HER(%)
+for AudioSLM on Dev-clean rises from 8.69 to 10.64 and
+12.76 as the backbone scales from 135M to 360M and 1.7B,
+respectively. This inverse scaling aligns with the observations
+in [17, 27], suggesting that larger speech foundation models
+are more susceptible to hallucinations due to their stronger
+language priors.
+5. Conclusion and Future Work
+In this paper, we have put forward AudioSLM for ASR to mit-
+igate hallucination. Through causal and behavioral analysis,
+we identified that hallucinations primarily stem from attention
+weights biased toward textual representations. By incorporating
+alignment information and cross-attention layers, AudioSLM
+effectively reduced HER while maintaining competitive ASR
+performance. In future work, we plan to investigate training-
+free methods to suppress hallucinations via decoding strategies
+[23, 28, 29].
+6. Acknowledgments
+This work was supported in part by Realtek Semiconductor Cor-
+poration under Grant Numbers 113KK01103 and 114KK01005.
+Any findings do not necessarily reflect those of the sponsors.
+3130
+7. Generative AI Use Disclosure
+The authors utilized Gemini-3-Flash to refine the wording clar-
+ity of this manuscript. We maintained full control over the re-
+search content and remain responsible for the accuracy and in-
+tegrity of the experimental results and the presented figures.

@@ -1,0 +1,528 @@
+Spec2Spatial: A Time-Frequency Spatial Attention Network for Binaural
+Audio Synthesis
+Changjun He1, Wenjie Zhang2, Shiyun Xu2, Lianyu Zhou1, Weiping Chen1,∗∗, Mingjiang Wang2,∗∗
+1 Harbin Institute of Technology, China
+2 Harbin Institute of Technology (Shenzhen), China
+changjunhe@stu.hit.edu.cn, mjwang@hit.edu.cn, chenwp@hit.edu.cn
+Abstract
+Binaural audio can provide realism and immersion, and it is
+widely used in scenarios such as virtual reality. The difficulty
+of binaural recording has motivated research on binaural audio
+synthesis. Deep learning-based binaural synthesis is promis-
+ing, but existing methods still perform poorly, especially in
+reproducing interaural differences. In this paper, we propose
+Spec2Spatial, a time-frequency spatial attention network for
+binaural audio synthesis. Specifically, we introduce an inter-
+aural spatial attention network to capture left-right relations in
+the frequency domain. Additionally, we propose a condition fu-
+sion residual network that uses sound source position to adjust
+time-frequency features. Experiments on the Binaural Speech
+dataset show that Spec2Spatial synthesizes realistic binaural au-
+dio, achieving state-of-the-art DILD (1.250), DITD (0.034), and
+MRSTFT (1.174).
+Index Terms: binaural audio synthesis, interaural differences,
+spatial perception, spatial audio
+1. Introduction
+Spatial audio is a special type of audio format that differs from
+regular monaural and stereo audio, providing enhanced spatial
+awareness and realism for the listener [1, 2]. To perfectly repro-
+duce spatial audio, speaker playback and binaural rendering are
+the two main methods [3, 4]. Among them, binaural rendering
+is widely used in various scenarios due to its convenience and
+low cost.
+Imagine a scenario in a large offline conference room,
+where the speaker is presenting on stage. The audience in the
+room can perceive the speaker’s position and movement through
+sound. However, the audience watching online through the net-
+work can only hear the content of the sound and cannot perceive
+the speaker’s movement. In response to this issue, if binaural
+audio synthesis can be performed during the speech and trans-
+mitted to the online audience, they will also be able to experi-
+ence an immersive sound experience.
+Binaural audio synthesis has been extensively studied, but
+most of it is implemented using traditional digital signal pro-
+cessing (DSP)-based methods. These methods treat the process
+of sound propagation from the source to the ears as a linear
+time-invariant system and model factors such as head-related
+transfer functions (HRTF), room responses, and environmen-
+tal noise [5, 6, 7, 8]. This approach is simple and easy to im-
+plement, but the existing HRTFs are discontinuous. For posi-
+tions that are not included, interpolation and other methods are
+needed, which can introduce errors and lead to cumulative er-
+rors throughout the system [9].
+**indicates the corresponding author.
+Although many new DSP-based studies have been done to
+solve these problems, considering that deep learning has been
+widely applied to speech enhancement, speech recognition, and
+speech synthesis with remarkable performance [10, 11, 12, 13],
+deep learning methods may provide a new and even more ef-
+fective solution for binaural audio synthesis, which has started
+to be explored. Numerous multimodal binaural audio synthesis
+methods are proposed initially, where video frame information
+is used as an auxiliary condition to synthesize binaural audio
+[14, 15, 16, 17, 18]. However, these methods take pseudo-mono
+mixtures of left and right recordings as training inputs, instead
+of modeling the true source-to-ear propagation.
+To solve this issue, Richard et al. [19] consider the real
+sound propagation process and employ a deep learning-based
+method to synthesize binaural audio in the time domain for the
+first time. This breakthrough has proven to be effective and
+meaningful. Following [19], the diffusion-based BinauralGrad
+model is proposed [20]. In contrast, Lee et al. [21] propose the
+Neural Fourier Shift network in the frequency domain, which
+works well for extending to out-of-domain audio. Huang et al.
+[22] apply discrete vector quantization variational autoencoders
+for binaural audio synthesis. Liang et al. [23] propose a con-
+ditional flow matching model to render binaural audio and im-
+plement flow inference. In addition to these end-to-end meth-
+ods, Gebru et al. [9] use a DNN-based approach to estimate
+HRTF and synthesize binaural audio, while Richard et al. [24]
+propose the IR-MLP network, which estimates the impulse re-
+sponse from positional information for binaural synthesis.
+It is well established that human spatial hearing primarily
+depends on interaural time difference (ITD) and interaural level
+difference (ILD) [25]. Nevertheless, existing methods men-
+tioned above still struggle to reproduce these cues faithfully,
+leaving a noticeable gap between synthesized binaural audio
+and real recordings. To address this, we propose Spec2Spatial,
+a time-frequency spatial attention network for binaural audio
+synthesis with explicit modeling of interaural cues and source-
+position conditioning. The contributions of our work can be
+summarized as follows:
+• We propose Spec2Spatial, a time-frequency spatial attention
+framework that explicitly models interaural cues in the STFT
+domain, aiming to better preserve ILD and ITD compared
+with existing methods.
+• We design an interaural spatial attention network (ISAN) that
+performs cross-ear attention on time-frequency representa-
+tions to capture frequency-dependent interaural correspon-
+dences, producing spatially-aware features that improve ILD
+and ITD.
+• We further introduce a condition fusion residual network
+(CFRN) to inject sound-source position into the time-
+3339
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-607
+Position &
+Orientation
+(a)
+C-Linear
+GeLU
+Split
+F-Linear
+C-Linear
+AvgPool AvgPool
+Conv1D+
+ReLU
+Conv1D+
+Sigmoid
+EAM
+Conv1D+
+ReLU
+Conv1D+
+Sigmoid
+EAM
+H G
+(b)
+Mono TDW
+Concat
+ISAN
+Conv2D
+ISAN
+Conv2D
+ISAN
+Conv2D
+ISAN
+Upsample
+CFRN
+Upsample
+CFRN
+Upsample
+CFRN
+CFRN
+Reshape
+Linear
+iSTFT
+M
+,lryy
+0G
+1G
+2G
+3G
+3M
+2M
+1M
+Mask
+Figure 1:Diagrams of (a) the overall structure of the Spec2Spatial network and (b) the interaural spatial attention network (ISAN).
+frequency features via residual fusion, enabling location-
+aware binaural synthesis. Experimental results demonstrate
+state-of-the-art performance on ILD, ITD, and MRSTFT.
+2. Methodology
+2.1. Overall architecture
+The overall structure of the Spec2Spatial network is shown in
+Fig. 1 (a). The objective of the model is to output the corre-
+sponding binaural audioy= (y l,y r)∈R 2×T based on the
+input monaural audiox∈R 1×T and the position and orienta-
+tion of the sound sourcec∈R 7×L. It can be represented as:
+y= (y l,y r) =h(x|c)(1)
+whereTrepresents the length of the audio sequence,Lrepre-
+sents the length of the position and orientation withinT, and
+each pose is represented by a 7-dimensional vector consisting
+of a 4D orientation and a 3D position.
+Considering that there is a certain delay in the propagation
+of sound from the sound source to the ears, and due to the dif-
+ferent positions of the left and right ears, the time taken for
+the same sound to reach the left and right ears is also differ-
+ent. Therefore, we first follow the design in [19], the monau-
+ral audioxis subjected to physical warping through the Time-
+Domain Warping (TDW) module, resulting in the preliminary
+warped binaural audioy w = (y w
+l ,y w
+r )∈R 2×T . The physical
+warping uses simple geometric calculations to simulate the de-
+lay of sound from the source to the ears. It can be represented
+as follows:
+(yw
+l ,y w
+r ) =TDW(x|c) =f 1(x, s(c)
+vsound
+)(2)
+wheres(c)represents the distances between the sound source
+and the left and right ears, respectively.v sound denotes the speed
+of sound.f 1 applies a time-domain shift to the monaural signal
+xaccording to the per-ear delays s(c)
+vsound
+.
+However, time-domain warping alone mainly provides a
+coarse interaural delay approximation and cannot fully re-
+produce the frequency-dependent interaural cues, such as
+ILD. Therefore, we further refine the warped signals in the
+time–frequency domain. The Short Time Fourier Transform
+(STFT) is applied to obtain the time-frequency domain fea-
+tures(Y w
+l ,Y w
+r )∈R F×T , which are concatenated to obtain
+Y w ∈R 2×F×T . Then, to focus on the relationship between
+the left and right ears and extract multi-scale time-frequency
+featuresG i, an interaural spatial attention network (ISAN) and
+Conv2D are used:
+Gi =ISAN(Conv2D(G i−1)) (3)
+In the decoding stage, a multiple condition fusion residual
+network (CFRN) and upsample modules are used. To facilitate
+feature reuse, element-wise addition is used at each step of the
+decoding stage, obtaining masks of different resolutionsM i:
+Mi =Upsample(CFRN(M i+1)) +G i−1 (4)
+Then Reshape and multiple Linear layers are used to out-
+put the final complex maskM={M l
+R,M l
+I,M r
+R,M r
+I}, where
+M l
+R,M l
+I,M r
+R,M r
+I represent the real and imaginary parts of the
+complex masks for the left and right ears, respectively. Fi-
+nally, following [16], we can obtain the time-frequency features
+Y= (Y l,Y r)∈R 2F×T of binaural audio:
+Yl = (M l
+R +jM l
+I )(Y w
+l (R) +jY w
+l (I))(5)
+Yr = (M r
+R +jM r
+I )(Y w
+r (R) +jY w
+r (I))(6)
+Finally, iSTFT is used to obtain the binaural audio(y l,y r).
+2.2. Interaural spatial attention network
+To better model interaural level and time differences, we then
+operate in the time-frequency domain and propose the interaural
+spatial attention network (ISAN). The architecture is shown in
+Fig. 1 (b).
+First, we apply a channel-wise linear layer followed by a
+GeLU activation to the time–frequency featuresH∈R F×T×C
+to mix feature channels and enhance cross-channel interactions.
+Next, we are inspired by gmlp [26, 27] and splitHalong the
+channel dimension into two parts, obtainingH 1∈R F×T× C
+2
+andH 2∈R F×T× C
+2 . We treatH 1 as a gating branch andH 2
+as a content branch. For the gating branchH 1, we first perform
+a linear projection along the frequency dimension to enable
+frequency-dependent modulation. Specifically,H 1 is reshaped
+toR
+C
+2×T×F and processed through a linear layer. Then, both
+branches are reshaped toR
+C
+2 F×T by stacking the frequency
+and channel dimensions, and are fed into the Energy Analysis
+Module (EAM).
+The EAM produces a time–frequency energy attention map
+by combining two lightweight branches. The temporal branch
+performs average pooling over( C
+2F)followed by 1D convolu-
+tions and a sigmoid activation to obtain a temporal weight vec-
+tor. In parallel, the frequency branch performs average pooling
+3340
+Dilated
+Conv1D
+Reshape
+c
+Linear
+Split
+Interpolation
+ReLU
+Conv1D
+Conv1D
+M
+Avg
+pool
+Max
+pool
+Figure 2:Diagrams of the condition fusion residual network
+(CFRN).
+over time, followed by 1D convolutions and a sigmoid activa-
+tion to obtain a frequency-related weight vector. Their outer
+product yields an attention mapAttn T F∈R
+C
+2 F×T , which is
+applied to reweight the input features via element-wise multi-
+plication.
+Finally, the refined content and gating features are com-
+bined through element-wise multiplication to form a spatial
+gating operation. This dynamic gating allows the network to
+flexibly control cross-channel information exchange and better
+capture the spatial–temporal dependencies required for binau-
+ral rendering. In particular, it facilitates learning interaural cues
+such as level and time differences. A final linear layer maps the
+features back to the original channel dimension, and a residual
+connection is applied to produce the output. This process can
+be expressed as:
+G=FC(EAM(FC(H 1))⊙EAM(H 2)) +H(7)
+H1,H 2 =Split(σ(FC(H)))(8)
+whereHandGrepresent the input and output of the ISAN. FC
+represents the linear layer,⊙indicates element-wise multiplica-
+tion,σdenotes the GeLU activation operation, and Split refers
+to splitting the features along the channel dimension.
+2.3. Condition fusion residual network
+After extracting features at different scales, conditional infor-
+mation is integrated during the decoding stage to synthesize
+binaural audio that closely corresponds to the sound source po-
+sition. To achieve this, we propose the condition fusion residual
+network (CFRN), as shown in Fig. 2.
+First, to increase the receptive field and capture long-range
+time-frequency dependencies, the input time-frequency features
+M∈R C×F×T are processed through dilated convolution, re-
+sulting inM 1 ∈R C×F×T . Then, to incorporate the posi-
+tion and orientation of the sound source as the condition in
+the decoding process, we use the FiLM to process the condi-
+tional informationcand modulate the spectral features [28, 29],
+enabling the network to learn better binaural spatial percep-
+tion. Specifically, the conditional informationcis reshaped and
+passed through a linear layer to obtainc f∈R L×2C. Then,c f
+is split along the last dimension and a new dimension is added to
+obtain the feature scaling factorα 0∈R C×L×1 and the feature
+bias factorβ 0∈R C×L×1. Next,α 0 andβ 0 are interpolated and
+aligned withM 1 to obtainα∈R C×F×T andβ∈R C×F×T .
+Finally, the input featuresM1 are subjected to element-wise lin-
+ear transformations usingαandβ:
+M2 =αM 1 +β(9)
+In the shortcut pathway, to more effectively capture interau-
+ral channel relationships, both average pooling and max pooling
+are performed along the channel dimension to derive a channel
+attention map, which emphasizes the time–frequency distribu-
+tion differences across channels. This attention map is subse-
+quently applied to the features via element-wise multiplication.
+Finally,M 2 passes through the Relu activation layer and the
+Conv1D layer and is added to the shortcut pathway to obtain the
+final output.
+2.4. Loss function
+During training, the model is optimized by minimizing the
+multi-faceted loss between the synthesized audioyand the
+ground-truth binaural referencey t, as follows:
+L(y,y t) =λ 1L2(y,y t) +λ 2Lphase(y,y t) +λ 3LMRSTFT(y,y t)
+(10)
+whereL 2 represents the wave loss in the time domain between
+the synthesized audioyand the ground-truth binaural reference
+yt,L phase andL MRSTFT represent the phase loss [19] and multi-
+resolution STFT loss [30] in the frequency domain between the
+synthesized audioyand the ground-truth binaural referencey t,
+respectively.λ i is a hyperparameter.
+3. Experiments and Analysis
+3.1. Datasets
+In the experiment, the Binaural Speech dataset published in [19]
+is used. The dataset includes 8 speakers, who are asked to move
+around a KEMAR mannequin within a 1.5-meter range while
+speaking. For each speaker, monaural audio is collected using
+a microphone placed near their mouth, and binaural audio is
+recorded using microphones placed at the left and right ears of
+the KEMAR mannequin. Additionally, the OptiTrack system is
+used to record the speaker’s positional information.
+The dataset includes a total of two hours of recorded au-
+dio, with approximately 15 minutes for each speaker. Both the
+monaural and binaural audio are recorded at a sampling rate
+of 48 kHz, while the position and orientation of the speaker
+are recorded at a sampling rate of 120 Hz. Each position-and-
+orientation recording is represented as a 7-dimensional vector,
+with 3 dimensions for position and 4 dimensions for orienta-
+tion. For consistency and fair comparison, we follow the origi-
+nal training, validation, and test split described in [19].
+3.2. Implementation details
+For STFT, a window size of 1024 samples and a hop size of 128
+samples are used. In both the encoding and decoding stages,
+the kernel size, stride, and padding for each convolutional layer
+in the upsampling and downsampling processes are set to 4, 2,
+and 1, respectively. The model parameters are optimized using
+the Adam optimizer [31], and the learning rate is adjusted using
+the Cosine Annealing strategy [32]. The hyperparameters in the
+loss function are set to 1.0, 0.01, and 0.01, respectively.
+3.3. Evaluation metrics
+To evaluate the quality of the synthesized binaural audio, both
+quantitative and perceptual evaluations are conducted. The
+quantitative evaluation metrics include: 1) Wave-L2: The MSE
+between the synthesized binaural audio and the ground truth in
+the waveform domain; 2) Phase-L2: The MSE in the phase do-
+main after applying STFT; 3) Amplitude-L2: The MSE in the
+3341
+amplitude domain after applying STFT; 4) MRSTFT: Multi-
+resolution STFT loss [33]; 5) DILD (dB): The error between
+the interaural level difference of the generated binaural audio
+and the ground truth [34, 35]; 6) DITD (ms): The error between
+the interaural time difference of the generated binaural audio
+and the ground truth [34].
+The perceptual evaluation metrics include: 1) Mean Opin-
+ion Score (MOS): The overall naturalness and fluency of the
+binaural audio; 2) Spatialization MOS: The perceived spatial
+quality of the binaural audio; 3) Similarity MOS: The per-
+ceived similarity between the synthesized binaural audio and
+the ground truth.
+3.4. Comparison with other methods
+We compare our model 1 with several advanced binaural au-
+dio synthesis models on the Binaural Speech dataset. Addition-
+ally, by incorporating positional information, we also use the
+classic WaveNet model [36] for binaural audio synthesis. The
+comparison results are shown in Table 1. Although our model
+performs somewhat worse in Wave-L2 losses, as mentioned in
+[22], Wave-L2 is not a good indicator of binaural audio quality,
+since it is computed over both audio channels as a whole. Even
+with a lower Wave-L2, the quality of binaural audio may still be
+poor. By contrast, human spatial hearing mainly relies on ITD
+and ILD, which are widely considered key metrics for evalu-
+ating the quality of binaural audio [34]. Moreover, MRSTFT
+can better assess the similarity between the synthesized binau-
+ral audio and the ground truth. As shown in Table 1, our model
+achieves the best performance in MRSTFT, DILD, and DITD,
+and ranks second in all other metrics. In addition, we also eval-
+uate DSP-based methods. The HRTF dataset we use was col-
+lected by MIT [37]. Since the Binaural Speech dataset does not
+provide precise room information or HRTFs, the performance
+of DSP-based methods is observed to be particularly poor.
+Table 1:Comparison with other methods on the Binaural
+Speech dataset in quantitative evaluation.
+Model Wave-L2↓Phase-L2↓Amplitude-L2↓MRSTFT↓DILD↓DITD↓
+DSP 0.626 1.564 0.076 3.085 6.926 5.993
+WaveNet [36] 0.188 0.860 0.035 1.683 1.816 0.146
+WarpNet [19] 0.1670.8070.048 1.909 3.252 0.073
+BinauralGrad [20]0.1280.8370.0301.278 1.600 ‡ 0.035‡
+NFS [21] 0.172 0.999 0.035 1.241 ‡ 2.729 0.249
+Ours 0.162 ‡ 0.832‡ 0.033‡ 1.174 1.250 0.034
+The highest score is highlighted in bold and the second highest score is marked with‡.
+For perceptual evaluation, 20 participants are asked to rate
+the binaural audio synthesized by each model in terms of nat-
+uralness, spatiality, and similarity. The score range is 1-5, and
+the higher the score, the better the synthesized audio quality.
+The scale is clearly labeled, where 1 represents ”Poor,” 2 indi-
+cates ”Fair,” 3 corresponds to ”Neutral,” 4 denotes ”Good,” and
+5 signifies ”Excellent.”
+Additionally, we use real recorded binaural audio as a
+ground truth reference to help participants understand the qual-
+ity of an ideal binaural audio sample. Before the formal exper-
+iment, all participants go through a familiarization phase. They
+first listen to a set of example audio samples and then complete
+a trial rating task to ensure they fully understand the evaluation
+criteria. The MOS results with 95% confidence are shown in Ta-
+ble 2. It can be seen that the model we propose surpasses other
+models in all aspects and achieves the best results. For the DSP-
+based methods, since a generic HRTF database is used and the
+exact room information in Binaural Speech dataset is unknown,
+it performs poorly especially in terms of similarity MOS. More-
+1Our test demos: https://SpatialAudioDemo.github.io/Spec2Spatial/
+over, our method also demonstrates strong performance on bin-
+auralization tasks for out-of-distribution audio, such as music
+and songs 1.
+Table 2:Comparison with other methods on the Binaural
+Speech dataset in perceptual evaluation.
+Model MOS↑Spatialization MOS↑Similarity MOS↑
+DSP 3.71±0.20 3.75±0.31 3.36±0.18
+WaveNet [36] 3.67±0.23 3.78±0.29 3.80±0.25
+WarpNet [19] 3.92±0.29 3.84±0.23 3.72±0.22
+BinauralGrad [20] 4.01±0.27 ‡ 3.99±0.28‡ 4.07±0.18‡
+NFS [21] 3.72±0.23 3.68±0.23 3.98±0.30
+Ours4.21±0.244.01±0.254.20±0.18
+The highest score is highlighted in bold and the second highest score is marked with‡.
+Notably, the training dataset we use contains only two hours
+of audio, yet it is sufficient to achieve excellent performance.
+This shows that even for previously unseen scenarios, accurate
+binaural audio synthesis can be achieved with simple training
+on a small dataset, highlighting practicality and applicability of
+our model in real-world settings.
+3.5. Ablation study
+To evaluate the impact of each important module, we con-
+duct ablation experiment as shown in Table 3.onlyTDW
+refers to using time-domain warping alone, which yields the
+poorest performance across all metrics, particularly in DILD.
+This is because TDW primarily models the delay from sound
+to the left and right ears, without affecting ILD, underscor-
+ing the necessity of subsequent time–frequency domain pro-
+cessing.w/oTDWdenotes removing the time-domain warp-
+ing, where the model directly processes the spectral features
+of monaural audio, resulting in consistently degraded perfor-
+mance.w/oEAMindicates that the EAM is omitted from
+the interaural spatial attention network, preventing the model
+from effectively capturing inter-channel differences and lead-
+ing to inferior performance, especially in DILD.w/oCFRN
+represents the exclusion of the CFRN during decoding, where
+conditional information is instead directly combined with the
+time–frequency features to synthesize binaural audio. This re-
+sults in less accurate outputs, particularly in MRSTFT, DILD,
+and DITD. Overall, these ablation studies demonstrate the
+effectiveness and necessity of each module in our proposed
+framework.
+Table 3:Ablation experiment results.
+Model Wave-L2↓Phase-L2↓Amplitude-L2↓MRSTFT↓DILD↓DITD↓
+Spec2Spatial0.162 0.832 0.033 1.174 1.250 0.034
+onlyTDW0.410 1.055 0.060 2.154 23.097 0.243
+w/oTDW0.258 1.110 0.038 1.273 2.633 0.119
+w/oEAM0.169 0.848 ‡ 0.034‡ 1.189‡ 1.403‡ 0.041‡
+w/oCFRN0.163 ‡ 0.832 0.033 1.218 1.409 0.117
+The highest score is highlighted in bold and the second highest score is marked with‡.
+4. Conclusion
+This paper proposes a time-frequency spatial attention network
+for binaural audio synthesis, which uses the interaural spatial
+attention network to learn the relationship between the left and
+right ears and applies condition fusion residual network to in-
+tegrate the sound source position information with the time-
+frequency features, enabling the synthesis of binaural audio
+with spatial awareness. Experimental results on the Binaural
+Speech dataset show that the proposed network achieves the op-
+timal performance in MRSTFT, ILD and ITD, and synthesizes
+results most similar to real binaural audio. Future work will
+improve cross-dataset generalization using larger binaural data
+and broader listening evaluations to enhance binaural quality.
+3342
+5. Acknowledgments
+This work was supported by the National Natural Science Foun-
+dation of China under Grant No.62276076 and No.62176102,
+the Guangdong Basic and Applied Basic Research Founda-
+tion under Grant No.2023A1515140109, the Shenzhen Higher
+Education Institutions Stability Support Program under Grant
+No.GXWD20231130133530002, and the Key Research and
+Development Program of Xinjiang Uygur Autonomous Region
+under Grant No.2025B04037-001.
+6. Generative AI Use Disclosure
+The authors disclose that generative AI tools were 

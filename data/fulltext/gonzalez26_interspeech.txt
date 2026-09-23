@@ -1,0 +1,533 @@
+Absorbing Discrete Diffusion for Speech Enhancement
+Philippe Gonzalez ID
+Department of Health Technology, Technical University of Denmark
+phigon@dtu.dk
+Abstract
+Inspired by recent developments in neural speech coding and
+diffusion-based language modeling, we tackle speech enhance-
+ment by modeling the conditional distribution of clean speech
+codes given noisy speech codes using absorbing discrete diffu-
+sion. The proposed approach, which we call ADDSE, leverages
+both the expressive latent space of neural audio codecs and the
+non-autoregressive sampling procedure of diffusion models. To
+efficiently model the hierarchical structure of residual vector
+quantization codes, we propose RQDiT, which combines tech-
+niques from RQ-Transformer and diffusion Transformers for
+non-autoregressive modeling. Results show competitive per-
+formance in terms of non-intrusive objective metrics on two
+datasets, especially at low signal-to-noise ratios and with few
+sampling steps. Code and audio examples are available online1.
+Index Terms: speech enhancement, neural coding, diffusion
+1. Introduction
+Diffusion models have recently gained attention as powerful
+generative approaches for speech enhancement (SE) [1–4]. They
+typically consider a conditional probability distribution over
+clean speech given noisy speech in the continuous short-time
+Fourier transform (STFT) domain. However, the high dimen-
+sionality of the STFT representation, coupled with the iterative
+nature of the sampling procedure, leads to high computational de-
+mands. In computer vision, diffusion models often operate in the
+latent space of a variational autoencoder [5–9]. This transposes
+the generative modeling task to a well-behaved and perceptu-
+ally relevant space with fewer dimensions. Meanwhile, only a
+handful of studies have explored latent diffusion for SE [10–12].
+Concurrently, neural audio codecs (NACs) have been widely
+adopted for low-bitrate speech coding [13 –18]. They have
+also been applied to downstream tasks successfully, including
+SE [19–32]. Notably, the discrete nature of the NAC represen-
+tation allows applying Transformer-based language modeling
+techniques seamlessly. However, most approaches rely on next-
+code prediction and thus autoregression, which leads to slow
+inference. Recently, discrete diffusion models [33 –39] have
+been proposed for non-autoregressive sequence modeling in dis-
+crete spaces. This enables efficient parallel generation while still
+leveraging the powerful modeling capabilities of Transformers.
+The present study tackles SE by modeling the conditional
+distribution of clean speech codes given noisy speech codes us-
+ing absorbing discrete diffusion (ADD) [37–39]. The proposed
+approach, which we call ADDSE, leverages both the expressive
+NAC latent space and the non-autoregressive diffusion sampling.
+To the best of our knowledge, this is the first study to apply ADD
+1https://philgzl.com/addse-demo
+RQDiT ... RQDiT
+Absorbing discrete diﬀusion
+Decoder
+Lookup
+Encoder
+RVQ
+Neural
+audio
+codec
+Noisy codes Enhanced codes
+Noisy speech Enhanced speech
+Figure 1: Proposed ADDSE framework.
+for SE. While some studies have applied MaskGIT [40], which
+resembles ADD, for SE [21–24], MaskGIT lacks a theoretically
+grounded formulation, and thus may not approximate a princi-
+pled likelihood [38]. Moreover, these studies did not investigate
+the time-independent modeling for efficient sampling [39].
+2. Background
+2.1. Neural audio codecs and residual vector quantization
+A typical NAC [13–15] consists of an encoder, a quantizer, and
+a decoder. The encoder transforms the input waveform into
+a low-frame-rate latent representation h∈ RL×H, where L
+is the number of time frames, and H is the dimension of the
+latent space. The quantizer then maps the latent representation
+to discrete codes. The current dominant approach is residual
+vector quantization (RVQ) [13], which involves cascading D
+quantizers. Each quantizer consists of a learnable codebook with
+K entries, and takes the residual of the previous quantizer as
+input. Formally, the discrete code ci,j∈{ 1,...,K } at frame
+i∈{ 1,...,L } and depthj∈{ 1,...,D } is given by
+ci,j = arg min
+k∈{1,...,K}
+∥ri,j−1− e(k;j)∥2
+2, (1)
+ri,j = ri,j−1− e(ci,j;j), (2)
+where e(k;j)∈ RH is the k-th entry of the j-th codebook,
+ri,j∈ RH is the residual at frame i and depth j, and ri,0 =
+hi∈ RH is the latent at framei. The RVQ output is the discrete
+code sequence c∈{ 1,...,K }L×D. Codes can then be mapped
+back to the latent space by codebook lookup and summation:
+ˆhi =
+DX
+j=1
+e(ci,j;j). (3)
+The decoder then transforms the quantized latent representation
+ˆh = (ˆh1,..., ˆhL)∈ RL×H into the reconstructed waveform.
+1357
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-659
+2.2. Absorbing discrete diffusion
+We consider the finite support{1,...,K + 1} over which prob-
+ability distributions are described by vectors in [0, 1]K+1 whose
+elements sum to 1. A continuous-time discrete diffusion process
+can be defined by evolving an initial distributionp0 = pdata from
+t = 0 tot = T according to a continuous-time Markov chain
+given by the following Kolmogorov forward equation [34, 41],
+dpt
+dt = Qtpt, (4)
+where Qt∈ R(K+1)×(K+1) is the transition rate matrix, which
+has non-negative off-diagonal entries and zero column sums,
+such that pt remains a valid probability distribution for allt. In
+practice, Qt is often chosen to diffuse the probability mass to-
+wards an absorbing state or maskM∈{ 1,...,K +1}. Namely,
+Qt =σ(t)Qabsorb =σ(t)
+
+
+−1 0 ··· 0 0
+0 −1 ··· 0 0
+...
+... ... ...
+...
+0 0 ··· − 1 0
+1 1 ··· 1 0
+
+
+, (5)
+whereσ(t)≥ 0 is the noise schedule andM was set toK + 1
+without loss of generality. The reverse time process is given by
+the following reverse transition rate matrix [36, 42],
+¯Qm,n
+t =
+(pm
+t
+pn
+t
+Qn,m
+t , n ̸=m,
+− P
+k̸=m
+¯Qk,m
+t , n =m,
+(6)
+where superscripts denote indexing of matrices and vectors. Sim-
+ulating the reversal thus requires estimating the concrete score
+pm
+t
+pn
+t
+[35], which can be done using a neural network trained with
+denoising score entropy [37]. Alternatively, the score network
+can be reparametrized to predict a time-independent conditional
+distribution over clean data [39]. The following denoising cross-
+entropy (DCE) can thus be used as the training objective,
+E c∼pdata
+λ∼U[0,1]
+cλ∼pλ
+− 1
+λδcλM logqθ(c|cλ), (7)
+where the variablet was changed toλ = 1−e−
+Rt
+0 σ(s)ds, which
+is the probability of a code being absorbed in [0,t ] during the
+forward process, qθ is the conditional distribution predicted
+by the neural network, which is often parametrized such that
+qθ(M|· ) = 0, andδ is the Kronecker delta.
+For the multi-dimensional case, each dimension is often
+treated as an independent diffusion process with the same transi-
+tion rate matrix, allowing joint distributions to factorize across
+dimensions. The DCE reduces to
+E c∼pdata
+λ∼U[0,1]
+cλ∼pλ
+X
+ci
+λ=M
+− 1
+λ logqθ(ci| cλ). (8)
+For sampling, the Euler or Tweedieτ-leaping methods can be
+used starting from the fully absorbed state cT = (M,...,M ).
+Under a log-linear noise schedule σ(t) = T
+T−t , both methods
+lead to the same reverse transition probability [39],
+pi
+s|t(ci
+s| ct) =
+
+
+
+t−s
+t p0(ci
+s| ct), c i
+s̸=M,ci
+t =M,
+1− t−s
+t , c i
+s =M,ci
+t =M,
+δcisci
+t
+, c i
+t̸=M,
+(9)
+where 0≤s<t ≤T andp0 is approximated withqθ.
+The reparameterization of the score network [39] not only
+facilitates learning by eliminating the need for modeling the time-
+dependency, but also enables more efficient sampling. Namely,
+if no code was unabsorbed during the previous step, then the
+conditional distributionqθ can be reused for the current step.
+3. Absorbing discrete diffusion for speech
+enhancement
+3.1. Noisy-speech-conditioned absorbing discrete diffusion
+We propose to perform SE by modeling the conditional distri-
+bution of clean speech codes given noisy speech codes using
+ADD. The framework, which we call ADDSE, is illustrated in
+Fig. 1. During training, a frozen NAC transforms the clean and
+noisy waveforms into discrete codesc and ˜c in{1,...,K }L×D,
+respectively. Each time frame and codebook depth pair is treated
+as a separate dimension, leading toL×D independent diffusion
+processes. A neural network is trained to predict conditional
+probabilities qθ over clean codes c given noisy codes ˜c and
+partially absorbed clean codes cλ with the following DCE,
+Ec,˜c∼pdata
+λ∼U[0,1]
+cλ∼pλ
+X
+ci,j
+λ =M
+− 1
+λ logqθ(ci,j| cλ, ˜c), (10)
+where pdata is the training data distribution of noisy and clean
+codes, and (i,j ) are the frame and depth indices of the codes.
+During inference, the noisy codes are obtained from the input
+noisy waveform, and the clean codes are initialized to the fully
+absorbed state (M,...,M ) withM =K + 1. Clean codes are
+then generated by sampling according to (9). Finally, the NAC
+transforms the generated clean codes back to the time domain.
+3.2. Hierarchical non-autoregressive sequence modeling
+In contrast to traditional sequence modeling where a single se-
+quence is considered, the hierarchical nature of the RVQ codes
+requires modeling multiple sub-sequences corresponding to dif-
+ferent codebook depths. Flattening the codes and treating them
+as a single sequence substantially raises computational demands
+for algorithms with non-linear complexity in sequence length,
+such as Transformers. Moreover, it does not leverage the hierar-
+chical structure of the codes. To address this, RQ-Transformer
+was proposed [43], which comprises two Transformers applied
+along the space and depth dimensions, respectively.
+Inspired by this, we adapt RQ-Transformer for non-
+autoregressive sequence modeling, by predicting probabilities
+over clean codes qθ(ci,j| cλ, ˜c) for reverse ADD, instead of
+predicting the code at the next position. This is similar to diffu-
+sion Transformers (DiT) for continuous data [7]. The resulting
+architecture, which we thus call RQDiT, is illustrated in Fig. 2.
+Instead of learning an embedding layer at the input of RQDiT
+to map discrete codes to continuous vectors, we reuse the code-
+book entries from the NAC e(ci,j
+λ ;j) and e(˜ci,j;j), which are
+already optimized for representing the latent space. Since the
+mask codeM does not correspond to any codebook entry, we
+assign it the zero vector, i.e. e(M;j) = 0 for allj. Multilayer
+perceptrons (MLPs) map the selected entries to the hidden di-
+mension of two DiTs. The first DiT is applied along the frame
+dimension and processes the sum over codebook depths similar
+to RQ-Transformer. The output of the frame-DiT is added to the
+hidden input activations at each codebook depth. The second
+DiT then processes each time frame independently along the
+depth dimension. An MLP finally maps the output of the depth-
+DiT to probabilities over clean codes qθ(ci,j| cλ, ˜c) for each
+1358
+Frame
+DiTMLP
+MLP
+MLP
+Probabilities
+Partially ab-
+sorbed latents
+Noisy latents
+Depth
+DiT
+(a) RQDiT
+adaLN-MLPadaLN-MHSA
+Input
+Conditioning
+Output
+MLP
+(b) Frame- or depth-DiT
+Figure 2: RQDiT architecture. Two DiTs are applied along the
+NAC frame and depth dimensions, respectively.
+frame and depth pair. Conditioning on the noisy codes ˜c is done
+using adaptive layer normalization (adaLN) [7, 44] in both DiTs.
+Each DiT comprises multi-head self-attention (MHSA) blocks
+and MLPs with residual connections in multiple layers. We use
+rotary position embedding (RoPE) [45] for encoding the frame
+and depth positions in the frame- and depth-DiT, respectively.
+4. Experimental setup
+4.1. Datasets
+Noisy speech is simulated dynamically during training [46, 47]
+by mixing clean speech utterances with noise segments at
+16 kHz. Clean speech utterances are selected from DNS5 [48],
+LibriSpeech [49], MLS [50], VCTK [51], and EARS [52].
+Noise segments are selected from DNS5 [48], WHAM! [53],
+FSD50K [54], FMA [55], and DEMAND [56]. The signal-
+to-noise ratio (SNR) is uniformly selected between −5 dB and
+15 dB. For testing, we build two datasets each comprising 1000
+mixtures. Libri-TUT combines clean speech utterances from
+the held-out test split of LibriSpeech with noise segments from
+TUT [57]. No segments from TUT are used during training,
+and thus this dataset evaluates cross-corpus noise generalization.
+Clarity-FSD50K combines clean speech utterances from Clar-
+ity [58] with the held-out test split of FSD50K. Similarly, no
+utterances from Clarity are used during training, and thus this
+dataset evaluates cross-corpus speech generalization. Moreover,
+FSD50K comprises a broad range of sound events, while TUT is
+limited to relatively stationary urban recordings. Both datasets
+thus represent significantly different acoustic conditions.
+4.2. Neural audio codec
+We train our own NAC following the popular mirrored convolu-
+tional encoder-decoder architecture from previous work [13–17],
+with the same training data as described in Sec. 4.1. We use
+Snake activation functions [59] as in [15] and long short-term
+memory (LSTM) cells in each layer as in [16]. The downsam-
+pling factors in each encoder layer are set to 2, 2, 4, 4, and 5,
+leading to an overall downsampling factor of 320 and a frame
+rate of 50 Hz. The RVQ usesD = 4 codebooks withK = 1024
+entries each, leading to a bitrate of 2 kbps. In contrast to state-of-
+the-art speech NACs which achieve very low bitrates by using
+a single codebook [18], we find that using multiple codebooks
+is crucial for achieving good reconstruction quality, which we
+attribute to the wide range of noise types in our training data.
+We use the low-dimensional ℓ2-normalized codebook lookup
+trick from [60] as in [15]. We use a multi-period discriminator
+(MPD) [61] and a multi-scale short-time Fourier transform dis-
+criminator (MS-STFT) [14] as in [16]. The training objective
+combines anℓ1 multi-scale mel-spectrogram loss with weight
+15, an adversarial hinge loss with weight 1, anℓ1 discriminator
+feature matching loss with weight 1, anℓ2 codebook loss with
+weight 1, and a commitment loss with weight 0.25. We train for
+500 000 steps using Adam [62] with a learning rate of 1×10−4, a
+batch size of 32, and 1 s-long audio segments. The same NAC is
+used for encoding both the clean and noisy speech for ADDSE.
+4.3. Compared systems
+We train RQDiT with hidden dimensions 96, 192, 384, 768,
+and 1152. The resulting systems are denoted as ADDSE-XS,
+ADDSE-S, ADDSE-M, ADDSE-L, and ADDSE-XL, respectively.
+The number of layers and attention heads in each DiT are both
+fixed to 12. We train for 1 000 000 steps using AdamW [63]
+with a learning rate of 1×10−4, a batch size of 16, 4 s-long code
+sequences, and anℓ2 gradient clipping norm of 1. The number
+of uniform sampling stepsNsteps is varied between 1 and 1024.
+Two popular discriminative baselines Conv-TasNet [64] and
+BSRNN [65] are trained with signal-to-distortion ratio (SDR).
+BSRNN ranked first in the URGENT 2025 Challenge [66] and
+is thus considered the state of the art. We also use the generative
+baseline SGMSE+ [2], which performs continuous diffusion in
+the STFT domain. Additionally, we develop EDM-SE, which
+also performs STFT-domain diffusion, but implements advances
+from EDM [9,67]. Namely, it uses the preconditioning, the Heun
+sampler, the log-normal training noise schedule, the polynomial
+sampling noise schedule, and the ADM architecture [68]. The
+preconditioning and the sampler were already shown to improve
+SE performance [3, 69, 70]. Finally, two baselines operate in the
+NAC latent space. NAC-SE is trained to predict clean speech
+latents given noisy speech latents in a discriminative manner
+with anℓ2 loss. It uses a frame-DiT with hidden dimension 768
+and no adaLN conditioning. EDM-NAC-SE performs EDM-style
+diffusion in the low-dimensional codebook lookup space. It uses
+a similar frame-DiT conditioned on both the low-dimensional
+noisy speech latents and the diffusion noise level via adaLN.
+5. Results
+Systems are compared using 4 intrusive metrics PESQ [71],
+ESTOI [72], SDR, and MCD [73], 4 non-intrusive metrics DNS-
+MOS [74], NISQA [75], UTMOS [76], and SCOREQ [77], and
+2 downstream-task-independent metrics LPS [78] and SBS [79].
+Average results for each model and each dataset are shown in
+Table 1. Clean-NAC denotes the clean speech encoded and de-
+coded by the NAC. For the ADDSE systems, the bestNsteps is
+selected. The NAC-based systems achieve poor PESQ, ESTOI
+and SDR, which is expected since the NAC does not reconstruct
+the clean speech phase. However, they achieve competitive non-
+intrusive metrics. For example, all ADDSE systems, including
+the small 4 M-parameter ADDSE-XS, outperform Conv-TasNet
+and SGMSE+ on DNSMOS and NISQA for both datasets. More-
+over, ADDSE-XL shows the best DNSMOS on Clarity-FSD50K,
+and the second best NISQA on both datasets. However, BSRNN
+and EDM-SE show the best performance in most cases.
+Figure 3 shows the non-intrusive metrics averaged across
+both datasets as a function of Nsteps for the ADDSE systems.
+The best NISQA is achieved atNsteps = 8, while the remaining
+metrics plateau atNsteps = 16, suggesting good performance is
+1359
+Table 1: Average objective metrics for each model and each dataset.
+Libri-TUT Clarity-FSD50K
+Params. (M)
+PESQ ↑
+ESTOI ↑
+SDR ↑
+MCD ↓
+DNSMOS ↑
+NISQA ↑
+UTMOS ↑
+SCOREQ ↑
+LPS ↑
+SBS ↑
+PESQ ↑
+ESTOI ↑
+SDR ↑
+MCD ↓
+DNSMOS ↑
+NISQA ↑
+UTMOS ↑
+SCOREQ ↑
+LPS ↑
+SBS ↑
+Noisy – 1.31 0.61 4.96 6.76 2.92 2.03 2.44 2.47 0.82 0.73 1.34 0.74 4.96 7.52 2.90 2.46 2.42 2.46 0.82 0.69
+Clean – 4.64 1.00 ∞ 0.00 3.73 3.31 3.06 3.98 1.00 1.00 4.64 1.00 ∞ 0.00 3.79 3.69 3.38 4.53 1.00 1.00
+Clean-NAC 45 2.93 0.89 3.51 2.88 3.75 3.33 3.01 3.90 0.97 0.96 2.85 0.91 5.50 3.08 3.80 3.66 3.31 4.47 0.97 0.96
+Conv-TasNet 5 2.44 0.85 15.88 5.03 3.58 3.27 2.68 3.49 0.93 0.85 2.54 0.90 18.18 5.00 3.47 3.32 2.92 3.69 0.91 0.84
+BSRNN 13 2.77 0.88 16.77 5.23 3.79 3.59 3.16 3.94 0.96 0.89 3.11 0.94 20.97 4.39 3.72 3.74 3.32 4.22 0.95 0.88
+NAC-SE 87 2.04 0.79 2.61 4.60 3.69 3.15 2.97 3.80 0.87 0.84 2.07 0.83 4.64 4.49 3.69 3.27 3.23 4.17 0.85 0.84
+SGMSE+ 66 1.96 0.77 11.57 5.08 3.36 2.66 2.52 3.00 0.91 0.83 2.31 0.89 13.71 4.87 3.47 3.17 2.93 3.48 0.90 0.81
+EDM-SE 63 2.38 0.83 13.69 4.34 3.75 3.37 3.02 3.67 0.92 0.87 2.80 0.92 17.68 4.02 3.75 3.68 3.29 4.20 0.92 0.88
+EDM-NAC-SE 130 1.54 0.69 0.56 6.06 3.70 3.38 2.69 3.10 0.73 0.74 1.55 0.74 2.30 6.02 3.72 3.61 3.00 3.74 0.71 0.76
+ADDSE-XS 4 1.48 0.66 0.55 6.31 3.67 3.38 2.66 2.86 0.65 0.70 1.46 0.71 2.10 6.27 3.67 3.58 2.90 3.41 0.59 0.70
+ADDSE-S 17 1.56 0.69 0.76 6.04 3.72 3.40 2.78 3.18 0.71 0.73 1.56 0.73 2.44 6.03 3.72 3.61 3.06 3.77 0.67 0.74
+ADDSE-M 65 1.62 0.70 0.89 5.95 3.74 3.41 2.88 3.38 0.76 0.76 1.62 0.75 2.65 5.87 3.74 3.62 3.14 3.96 0.73 0.76
+ADDSE-L 259 1.66 0.71 1.01 5.85 3.75 3.41 2.89 3.46 0.78 0.77 1.67 0.76 2.79 5.75 3.76 3.63 3.17 4.05 0.75 0.78
+ADDSE-XL 580 1.68 0.72 1.10 5.83 3.76 3.43 2.90 3.52 0.79 0.78 1.70 0.77 2.88 5.69 3.76 3.64 3.20 4.10 0.77 0.79
+Values in bold indicate best performance excluding Noisy, Clean, and Clean-NAC. Second best is underlined.
+3.4
+3.5
+3.6
+3.7DNSMOS
+3.3
+3.4
+3.5NISQA
+100 101 102 103
+Nsteps
+2.0
+2.5
+3.0UTMOS
+100 101 102 103
+Nsteps
+2.0
+2.5
+3.0
+3.5SCOREQ
+0 250 500 750 1000
+Nsteps
+0
+200
+400NFE
+ADDSE-XSADDSE-SADDSE-MADDSE-LADDSE-XL
+0
+1
+2
+3
+4DCE
+ADDSE-XS
+ADDSE-S
+ADDSE-M
+ADDSE-L
+ADDSE-XL
+Figure 3: Top and middle rows: Non-intrusive metrics as a
+function ofNsteps. Bottom left: Number of function evaluations
+as a function of Nsteps. Bottom right: DCE on test data.
+achievable with few sampling steps. Also shown is the effective
+number of function evaluations (NFE) as a function of Nsteps.
+ForNsteps≥ 128, NFE is lower thanNsteps for all systems. This
+is because the probabilities predicted by the network can be
+reused (see Sec. 2.2). For Nsteps = 1024, the average NFE is
+545, which represents nearly a 2× speedup compared to time-
+dependent modeling. Finally, the figure shows the DCE (10)
+averaged over both test datasets. The DCE decreases as model
+size increases, which correlates with the non-intrusive metrics.
+Figure 4 shows the non-intrusive metrics averaged across
+both datasets as a function of the input SNR for all systems.
+3.2
+3.4
+3.6
+3.8DNSMOS
+2.50
+2.75
+3.00
+3.25
+3.50
+3.75NISQA
+(-5, 0] (0, 5] (5, 10] (10, 15]
+Input SNR (dB)
+2.4
+2.6
+2.8
+3.0
+3.2UTMOS
+(-5, 0] (0, 5] (5, 10] (10, 15]
+Input SNR (dB)
+3.0
+3.5
+4.0SCOREQ
+Conv-TasNet
+BSRNN
+NAC-SE
+SGMSE+
+EDM-SE
+EDM-NAC-SE
+ADDSE-XS
+ADDSE-S
+ADDSE-M
+ADDSE-L
+ADDSE-XL
+Figure 4: Non-intrusive metrics as a function of input SNR.
+The benefit of ADDSE over Conv-TasNet and SGMSE+ is more
+pronounced at low input SNRs. Notably, ADDSE shows high
+robustness to input SNRs on DNSMOS and NISQA. We attribute
+this to the strong speech prior learned by the NAC, which allows
+producing high-quality speech even in very noisy conditions.
+6. Conclusion
+We proposed ADDSE, a framework for SE based on ADD in the
+latent space of a NAC. The discrete nature of the speech codes
+allows reusing the network predictions for multiple sampling
+steps, leading to more efficient sampling compared to continuous
+diffusion. We also proposed RQDiT, a non-autoregressive ar-
+chitecture for modeling the hierarchical structure of RVQ codes.
+Results on two datasets show competitive performance as mea-
+sured by non-intrusive metrics, especially at low input SNRs
+and with few sampling steps. Future work includes extending to
+full-band SE and incorporating semantic coding.
+1360
+7. Generative AI use disclosure
+Generative AI tools were only used sporadically for language
+refinement. All research ideas, experimental design, implemen-
+tation, and analysis are the original work of the authors.

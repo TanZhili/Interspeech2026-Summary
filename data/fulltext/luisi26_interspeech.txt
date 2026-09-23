@@ -1,0 +1,460 @@
+Smooth Formant Tracking with Differentiable Linear Prediction
+Bryn Luisi ID 1, Lauri Juvela ID 1
+1 Department of Information and Communications Engineering, Aalto University, Finland
+bryn.louise@aalto.fi, lauri.juvela@aalto.fi
+Abstract
+Linear prediction methods for formant estimation are fast and
+interpretable, but assume local stationarity and Gaussian resid-
+uals. Hybrid neural methods are robust and accurate but lack
+interpretability and differentiability. We present LP-DDSP, a
+differentiable all-pole model that estimates formants by directly
+optimizing log-area ratios via a novel loss function that com-
+binesL 1,L 2, and temporal regularization terms. This approach
+addresses the limitations of classic LP by allowing for non-
+Gaussian residuals and smooth parameter tracks across frames.
+We also introduce SMELP, an end-to-end neural formant tracker
+that incorporates our differentiable LP loss, enabling joint learn-
+ing of interpretable intermediate representations and formant
+predictions. Both methods achieve competitive performance
+relative to baselines: KARMA and Praat. Our methods enable
+fully differentiable, interpretable, and smooth formant tracking
+and can be extended to other speech processing tasks.
+Index Terms: speech processing, speech analysis, formant es-
+timation, linear prediction, DDSP
+1. Introduction
+Formants are a concentration of acoustic energy around specific
+frequencies in the spectra of speech signals [1]. They corre-
+spond to the resonances of the vocal tract and are critical for
+distinguishing phonemes, particularly vowels and voiced con-
+sonants. Formant tracking, the estimation of formants across an
+entire utterance, is a common task in speech processing. The
+analysis of formants is useful in linguistic research [2], speech
+recognition [3], and speech synthesis [4].
+The traditional method for estimating formants uses linear
+prediction (LP), where an all-pole model is fitted to the power
+spectrum of a speech signal and the resonances of the model are
+interpreted as formants [5]. Praat is a widely used tool for for-
+mant tracking that employs the LP-based Burg method [6, 7].
+LP-based methods are attractive due to their computational ef-
+ficiency and interpretability: the estimated parameters have a
+clear physical interpretation in terms of vocal-tract resonances
+[1]. However, least-squares estimation of all-pole models is sus-
+ceptible to harmonic bias [8]. It also relies on a local station-
+arity assumption and typically treats frames independently [9].
+Moreover, classical LP assumes a Gaussian excitation, whereas
+the residual of voiced speech is sometimes periodic and better
+approximated by a Laplacian distribution [1].
+Several extensions of classical LP have been proposed to
+correct these issues. Methods such as weighted linear predic-
+tion (WLP) [10] and discrete all pole modeling (DAP) [11]
+aim to address issues related to non-Gaussianity and harmonic
+bias. Quasi-closed phase (QCP) analysis is a specific form of
+WLP that restricts the estimation of LP coefficients to regions
+near glottal closure instants, where the influence of the source
+is minimized, and the vocal tract response is more accurately
+observed [12]. However, these approaches introduce practical
+limitations. QCP requires reliable pitch tracking to construct
+the weighting windows, and the resulting windowing procedure
+is non-differentiable, which complicates its integration into hy-
+brid neural or end-to-end learned systems. Meanwhile, time-
+varying LP aims to improve formant estimation by modeling
+inter-frame dependencies by introducing prediction coefficients
+that share a basis function spanning multiple frames [13], while
+time-regularized linear prediction achieves a similar effect by
+regularizing LP parameter dynamics [14]. Further improve-
+ments can be achieved by using more advanced decoding meth-
+ods for formant tracking, such as Viterbi search in Praat [6] or
+Kalman filters in KARMA [15].
+Several hybrid formant tracking and estimation approaches
+exist that use neural networks to refine or regularize LP-based
+estimates, thereby increasing robustness and accuracy while
+maintaining interpretability. DeepFormants uses LP-obtained
+cepstral coefficients using multiple LP orders as input features
+to an LSTM model for formant tracking [16]. In [17] and [18], a
+deep neural network (DNN) makes initial formant predictions,
+which are refined using peaks of the all-pole spectrum com-
+puted by QCP-FB. Although these methods improve accuracy,
+their lack of differentiability precludes their use in end-to-end
+systems. A fourth approach uses differential digital signal pro-
+cessing (DDSP) [19], a paradigm in which gradients of a loss
+function are backpropagated through a DSP block [20]. End-
+to-end LPCnet uses differentiable LP to produce features for a
+neural vocoder [21]. Yu et al. [22] propose a differentiable all-
+pole filter to model time-varying audio effects, in which gra-
+dients are computed with respect to filter coefficients in direct
+form. DDSP methods can be incorporated into end-to-end sys-
+tems and can enable self-supervised training when combined
+with classic linear predictive tasks.
+Motivated by the limitations of classic LP and the strengths
+of DDSP, we propose an unsupervised DDSP-based framework
+for estimating all-pole model coefficients for formant estima-
+tion. We address the Gaussian residual assumption by incor-
+porating anL 1 term in the prediction error, and mitigate frame
+independence with a temporal regularization term that penal-
+izes large parameter changes across frames. This represents a
+new framework for optimizing LP coefficients in a DDSP set-
+ting. Leveraging the method’s differentiability, we introduce
+SMELP (Smooth end-to-end Linear Prediction), a neural for-
+mant tracking model enhanced with our DDSP loss. Evalu-
+ation on the VTR Formants Database demonstrates that LP-
+DDSP and SMELP achieve competitive or improved perfor-
+mance compared to classical LP estimation methods and estab-
+lished formant tracking tools such as Praat and KARMA.
+1828
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1222
+2. Methods
+In this section, we provide details on our LP implementation
+before describing our new methods, LP-DDSP and SMELP1.
+2.1. Linear Prediction via Autocorrelation
+We use the autocorrelation method as the baseline for estimat-
+ing LP coefficients. First, the short-time autocorrelation se-
+quence,r m, themth window of the speech frame is obtained
+by taking the inverse Fourier transform (IFFT) of the power
+spectrum. Least-squares optimal linear prediction coefficients
+a= [a 1, a2, . . . , aP ]⊤ can be solved from the the Yule-Walker
+equationsRa=r[9], whereRis a Toeplitz autocorrelation
+matrix andPis the polynomial order. The solution is obtained
+efficiently using the Levinson-Durbin recursion [23] to con-
+struct the predictors for each polynomial orderi∈[1, ..., P].
+When using the autocorrelation method, the recursion first sets
+the reflection coefficient as
+ki =
+ri−Pi−1
+j=1 a(i−1)
+j ri−j
+E(i−1) ,(1)
+and the mean-squared prediction errorE (i) is calculated
+E(i) = (1−k 2
+i )E(i−1).(2)
+Finally, the prediction coefficientsa (i) up to order i-1 are up-
+dated based on the RCs
+a(i)
+i =k i;a (i)
+j =a (i−1)
+j −k ia(i−1)
+i−j 1≤j≤i−1.(3)
+The resulting prediction error filter,A(z), is an inverse filter
+for the system
+A(z) = 1−
+PX
+k=1
+akz−k.(4)
+The inverse filter is used to calculate the residual from the in-
+put speech signal, where the residual corresponds to the source
+excitation. The resonances of the vocal tract filterH(z) =
+1/A(z)are associated with the formants and we estimate the
+roots of A(z) to calculate the formant frequencies and band-
+widths as discussed in Section 2.3.
+2.2. LP-DDSP
+The difference between the autocorrelation method and our
+method is that reflection coefficients (RCs) are not coupled to
+autocorrelation as in Eq. (1) and (2). Instead, we initialize RCs
+as free optimization variables and use Eq. 3 to convert RCs to
+direct-form LP coefficients (this is called Forward Levinson re-
+cursion) [24, p. 156]. To ensure a stable parameterization, we
+represent RCs as log-area ratios (LARs)
+Λi = log
+1 +k i
+1−k i
+
+⇔k i = tanh
+Λi
+2
+
+.(5)
+To optimize LARs, we use a loss function,L DDSP, which com-
+prises theL 2 andL 1 norm of the time-domain prediction error,
+and a regularization term,L reg, which penalizes large changes
+in LARs in adjacent frames
+LDDSP = 1
+T
+TX
+t=1
+e2
+t + 0.5· 1
+T
+TX
+t=1
+|et|
++ 0.1· 1
+M·P
+X
+m,i
+(Λm+1,i−Λ m,i)2 ,(6)
+1https://github.com/brynluisi/allpole-formants.git
+wheree t is thetth sample of the residual signal,Tis the number
+of residual samples,Λ m,i are themth frame andith coefficient
+of the log-area ratios, andMis the number of frames andPis
+the order.
+Algorithm 1Log-area Ratio Update
+Λ(0)←N(0,0.2)
+xemph←Emphasis(x,0.97)
+forn= 0, . . . , Ndo
+k←tanh(0.5·Λ (n))
+a←ForwardLevinson(k)
+e←InverseFilter(a, x emph)
+∇Λ(n))←Backpropagate(L DDSP(e,Λ (n)))
+Λ(n+1)←AdamOptimizer(Λ (n),∇ Λ(n))
+end for
+An overview of the optimization procedure for LARs in LP-
+DDSP is presented in Alg. (1). First, LARs are initialized as a
+random matrixΛ∈R m,p, wheremis the number of frames
+andpis the all-pole order. In a single iteration, we convert
+LARs to reflection coefficients, wherek∈R m,p. The LP co-
+efficients,a∈R m,p+1, are computed using Forward Levinson.
+To obtain the prediction error in the time domain,e∈R T ,
+we apply the inverse filter to the frequency-domain signal and
+take the inverse Fourier Transform. Finally, we backpropagate
+LDDSP to the LAR variables and update them using the Adam
+Optimizer. This procedure is repeatedNtimes, wherenis the
+iteration.
+2.3. LP Coefficients to Formants
+Once the filter has been optimized using either the autocor-
+relation method or LP-DDSP, formants are calculated using a
+root-finding algorithm. Using the LP coefficients, we form the
+companion matrix associated with the all-pole polynomial and
+compute its Eigenvalues to obtain the roots. Each complex-
+conjugate root pair corresponds to a potential vocal tract reso-
+nance, from which we calculate a candidate formant frequency
+and bandwidth [25, 26]. The final predictions are the first 4 can-
+didates after filtering for frequencies between 0 Hz and 5500 Hz
+with bandwidths less than 400 Hz [26].
+2.4. SMELP
+SMELP is an end-to-end model using differentiable linear pre-
+diction to estimate formant trajectories. This method differs
+from LP-DDSP in that it does not refine the LAR prediction
+over several epochs on the same speech utterance. Instead,
+the LARs are used to compute the same loss as in LP-DDSP,
+which is then added to supervised losses and backpropagated
+only once per utterance. Figure 1 shows the architecture dia-
+gram for SMELP with the loss functions highlighted in blue.
+SMELP comprises a convolutional neural network (CNN) fea-
+ture predictor and long short-term memory recurrent neural net-
+work (LSTM) decoder [27, 28].
+The CNN predicts LARs from the STFT of the signal.
+LAR predictions are used to calculateL reg. LARs are turned
+into direct-form LP coefficients using forward Levinson recur-
+sion. We take the inverse filter using the LP coefficients to
+find the residual excitation and calculateL 1 andL 2. Then,
+the LSTM predicts formants from the predicted LARs. There
+are two supervised losses,L coeff andL F.L coeff is the mean-
+squared error (MSE) between the predicted LP coefficients and
+1829
+Inverse filter
+Signal
+Residual
+excitation
+Feature
+predictor
+LAR
+Levinson
+Decoder
+LSTM
+Formants GT Formants
+STFT
+Figure 1:SMELP system overview.
+the autocorrelation-obtained LP coefficients.L F is the MSE be-
+tween predicted formants and ground-truth formants. The total
+loss for SMELP isL DDSP +L Coeff +L F.
+3. Experiments
+We use the VTR Formants Database [29], which contains a rep-
+resentative subset of 516 utterances from the TIMIT corpus [30]
+with a sample rate of 16 kHz. These utterances typically range
+from 2 to 5 s in duration and are partitioned into 324 train-
+ing and 192 testing samples. For ground-truth evaluation, the
+dataset includes hand-corrected formant trajectories sampled at
+10 ms intervals, alongside corresponding timestamps for vari-
+ous phoneme categories. Formants are present only for certain
+phonemes: vowels, nasals, liquids, glides, voiced fricatives, and
+voiced stops [1]. Therefore, we use phoneme labels and times-
+tamps to compare the formant predictions only where formants
+are expected. The STFT uses 512 frequency bins, a window
+size of 512, and a hop size of 160, with a Hann window.
+We compare the root mean square error (RMSE) between
+the predicted and ground-truth formants for LP baseline, LP-
+DDSP (ours), SMELP (ours), LP-LSTM, Praat, TV-QCP, and
+KARMA. LP baseline is the autocorrelation method with root-
+finding described in Section 2.1. We use an LP order of 16
+for all our LP models. TV-QCP is a time-varying quasi-closed
+phase model from [31]. KARMA is a model for formant track-
+ing in a state-space framework using Kalman filters and an au-
+toregressive moving-average (ARMA) model of cepstral coeffi-
+cients [15]. LP-LSTM is a two-layer bidirectional LSTM with
+a hidden size of 128, similar to DeepFormants, but equivalent in
+complexity to our model [16]. LP-LSTM uses LP coefficients
+as features and does not incorporate LP into the losses or im-
+prove LP estimates during backpropagation.
+The CNN in SMELP is a five-layer 2D CNN with a kernel
+size of 5, and 16 hidden channels that double every layer. Each
+layer contains a 2D convolution followed by batch normaliza-
+tion and ReLU [32, 33]. LP-DDSP is trained using 1500 epochs
+per utterance with a learning rate of 0.1. LP-LSTM and SMELP
+are trained for 100 epochs using a learning rate of 0.001. All
+0.0 0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz]
+(a)LP Baseline
+0.0 0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz]
+(b)LP-DDSP (ours)
+Figure 2:Spectral envelope calculated from the LP coefficients.
+methods are trained on NVIDIA V100 GPUs using the Adam
+optimizer with a cosine annealing scheduler [34].
+4. Results
+The experimental results are summarized in two tables. Ta-
+ble 1 reports the performance of all models on the testing set.
+The first group represents formant estimation methods with-
+out cross-frame tracking, while the second group combines LP
+features with tracking using Viterbi and Kalman filters. The
+third group uses LP-based features and tracks the formants with
+LSTM. Table 2 presents an ablation study on the training set, il-
+lustrating the effect of different loss function configurations for
+LP-DDSP.
+Table 1:Formant RMSE (in Hz) on testing set.
+Model F1 F2 F3 F4 Overall
+LP Baseline 163±9 299±20 389±26 662±33 378±17
+LP-DDSP 131±10 222±13 268±18 362±24246±12
+TV-QCP 142±8 300±25 371±32 705±42 379±21
+Praat 257±14 350±19 413±22 356±18 344±14
+KARMA108±5195±10228±15 486±34 254±14
+LP-LSTM 107±3 145±6183±10 249±16 171±5
+SMELP100±4141±6 195±10230±15166±5
+Among non-neural decoders in Table 1, LP-DDSP yields
+the lowest overall RMSE (246). KARMA is best on F1–F3 and
+Praat on F4. This shows that the basic LP-DDSP model is com-
+petitive with baselines. Table 1 shows that SMELP achieves the
+lowest RMSE for F1, F2, F4, and the mean. The other neural
+model, LP-LSTM, obtains the second-lowest mean RMSE and
+the lowest RMSE for F3. This is further evidence that much
+1830
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz]
+(a)Praat
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz] (b)LP Baseline
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz] (c)LP-DDSP (ours)
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz]
+(d)LP-LSTM
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz] (e)KARMA
+0.5 1.0 1.5 2.0 2.5
+Time [s]
+0
+1
+2
+3
+4
+5Frequency [kHz] (f)SMELP (ours)
+Figure 3:Comparison of formant tracking methods. ground-truth trajectories are shown in blue. Model predicted trajectories are
+shown in red. Both are overlaid on a spectrogram of a speech utterance from the testing set of the VTR dataset.
+of the performance depends on the decoding. The results indi-
+cate that SMELP is a competitive model for formant tracking,
+producing accurate and smooth predictions. The model is fully
+differentiable, making it easy to incorporate into larger neural
+networks, while still maintaining interpretable features.
+The ablation study in Table 2 shows the effect each com-
+ponent of the proposed DDSP loss function has on the error.
+The proposed loss function, which includesL 1,L 2, and a reg-
+ularization component, outperforms all ablations across all for-
+mants and the mean. Note that RMSE drops between ablations
+where the only change is the addition of the regularization term
+for parameter change between consecutive frames. The addi-
+tion ofL 1 also improves the error when included. This provides
+strong evidence that the inclusion ofL 1 and the regularization
+term greatly improves LP-DDSP.
+For a visual representation of the difference in LP coeffi-
+cients between the LP baseline, LP-DDSP, and SMELP, the en-
+velope spectrum for each method is shown in Figure 2. The en-
+velope spectrum of the LP-DDSP coefficients is smoother over
+time, and the magnitudes are more similar across frequency.
+This is likely due to the regularization term and gradient-based
+optimization. This is desirable as quick changes in vocal tract
+configuration are not physiologically feasible.
+Figure 3 shows a comparison of the ground-truth and pre-
+dicted formant trajectories for each model plotted on top of
+the speech utterance spectrogram. The ground-truth formants
+appear in blue, and the predicted formants in red. TV-QCP
+and KARMA consistently under-predict the formant frequency.
+Praat and LP Baseline perform well, but the predictions are
+more unstable. LP-DDSP, LP-LSTM, and SMELP follow the
+ground-truth more closely and avoid large changes in formant
+frequency predictions across frames.
+Table 2:Loss Function Ablations on Training Set for LP-DDSP .
+(RMSE in Hz)
+Model F1 F2 F3 F4 Overall
+L1 237 405 487 912 510
+L1 + reg. 113 223 259 586 295
+L2 239 396 491 932 514
+L2 + reg. 214 393 411 661 420
+L1 +L 2 236 405 487 910 509
+L1 +L 2 + reg.121 170 201 462 239
+5. Conclusions
+This paper introduces a novel method, LP-DDSP, to estimate
+formant tracks using differentiable all-pole filters. Our ap-
+proach optimizes filter coefficients based on the residual signal,
+differentiating through LARs, which represents a new frame-
+work to optimize LP coefficients. To ensure temporal smooth-
+ness, we incorporated a regularization term using LARs. To
+account for the Laplacian distribution of voiced speech, we in-
+cludedL 1 error. Ablation studies demonstrate that this regu-
+larization greatly improves performance. We also integrated
+our novel loss function into SMELP, an end-to-end formant-
+tracking model. Evaluations against common baselines demon-
+strate that both LP-DDSP and SMELP perform competitively
+or outperform existing methods. Future work will investigate
+self-supervised learning on a larger scale, and integrate differ-
+entiable filters into an end-to-end sound synthesis model.
+1831
+6. Acknowledgments
+The authors acknowledge the computational resources provided
+by the Aalto Science-IT project.
+7. Generative AI Use Disclosure
+Grammarly was used in the editing and polishing of this paper.
+ChatGPT and Claude were used to generate code for plotting,
+documentation, and organization. All code was reviewed and
+approved by the authors.

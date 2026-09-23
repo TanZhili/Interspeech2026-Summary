@@ -1,0 +1,398 @@
+Spiking Vocos: An Energy-Efficient Neural Vocoder
+Yukun Chen1, Zhaoxi Mu1, Andong Li2,3, Peilin Li1, Xinyu Yang1,∗∗
+1 Xi’an Jiaotong University, Xi’an, China
+2 Institute of Acoustics, Chinese Academy of Sciences, Beijing, China
+3 Chinese Academy of Sciences, Beijing, China
+chenyk@stu.xjtu.edu.cn, wsmzxxh@stu.xjtu.edu.cn, liandong@mail.ioa.ac.cn,
+lplin@stu.xjtu.edu.cn, yxyphd@mail.xjtu.edu.cn
+Abstract
+Spiking Neural Networks (SNNs), widely recognized for their
+high energy efficiency due to their event-driven nature, offer a
+promising solution for low-resource scenarios. In this paper,
+we propose Spiking V ocos, a novel spiking neural vocoder with
+ultra-low energy consumption. To mitigate the inherent infor-
+mation bottleneck in SNNs, we design a Spiking ConvNeXt
+module to reduce Multiply-Accumulate (MAC) operations and
+incorporate an amplitude shortcut path to preserve crucial sig-
+nal dynamics. Furthermore, to bridge the performance gap
+with its Artificial Neural Network (ANN) counterpart, we intro-
+duce a self-architectural distillation strategy to effectively trans-
+fer knowledge. A lightweight Temporal Shift Module is also
+integrated to enhance the model’s ability to fuse information
+across the temporal dimension. Experiments demonstrate that
+our model achieves performance comparable to its ANN coun-
+terpart with only14.7%of the energy. The source code and
+demos are available athttps://github.com/pymaste
+r17/Spiking-Vocos.
+Index Terms: Spiking Neural Network, V ocoder
+1. Introduction
+V ocoding, aiming to restore waveform from acoustic features,
+is the critical final step of various tasks like audio synthesis, en-
+hancement and conversion. Neural vocoders gradually become
+mainstream for their improved synthesis quality compared to
+signal-processing-based counterparts. Although with high qual-
+ity, auto-regressive vocoders like WaveNet [1], WaveRNN [2]
+and LPCNet [3] suffer from high computational cost and low in-
+ference speed. Thus, non-autoregressive GAN-based methods
+[4, 5, 6] are developed to output waveform in parallel, signifi-
+cantly improving inference speed and computational efficiency.
+Diffusion models also represent an important branch of mod-
+ern vocoder design, characterized by high synthesis fidelity and
+optimized inference speed [7, 8].
+Despite the success of time-domain vocoders, they all
+need computationally-intensive upsample layers to generate the
+waveform at sample point level, without leveraging the high ef-
+ficiency of the inverse Short-Time Fourier Transform (iSTFT)
+for upsampling. Frequency-domain vocoders, aim to gener-
+ate Fourier spectral coefficients, which can be reconstructed
+to waveform by iSTFT losslessly. Compared with their time-
+domain counterparts, frequency-domain vocoders have more
+lightweight structures in nature, without the burden to gener-
+ate long waveform directly. iSTFTNet [9] designs a hybrid
+network structure based on HiFiGAN [5], replacing the last
+few upsampling layers with iSTFT. V ocos [10] adopts a consis-
+**indicates the corresponding author.
+tent structure without any upsampling layers, maintaining the
+same temporal resolution along all layers. Benefiting from its
+lightweight structure, V ocos achieves a Real-Time Factor (RTF)
+several times higher than that of iSTFTNet. APNet2 [11] ex-
+plicitly models phase spectrum with a proposed anti-wrapping
+function, improve the accuracy of phase prediction. RFWave
+[12] estimates sub-band of complex spectrograms individually
+with rectified flow, with an overlap loss to reduce inconsisten-
+cies among them.
+Although frequency-domain vocoders like V ocos [10] im-
+prove computational efficiency, they are not explicitly opti-
+mized for power consumption. This paper addresses this gap
+by leveraging Spiking Neural Networks (SNNs), a bio-inspired
+computing paradigm known for its exceptional energy effi-
+ciency due to its event-driven, accumulation-based (AC) op-
+erations [13]. Training deep SNNs is challenging due to the
+non-differentiable nature of spike generation. While ANN-to-
+SNN conversion methods exist [14], direct training using a sur-
+rogate gradient [15, 16] has become the mainstream approach
+for achieving low-latency, high-performance models. However,
+directly substituting Artificial Neural Networks (ANNs) with
+SNNs typically results in a performance drop due to inherent
+challenges like the information bottleneck from binary spikes
+and suboptimal temporal modeling [17, 18]. To close the perfor-
+mance gap between ANNs and SNNs, several techniques have
+been proposed. Knowledge Distillation (KD) has proven effec-
+tive for transferring knowledge from a pre-trained ANN teacher
+to an SNN student by matching intermediate features or final
+outputs [19, 20]. Concurrently, methods for improving tempo-
+ral processing have been explored. The Temporal Shift Module
+(TSM) [21] is a lightweight yet effective technique that shifts
+feature channels across the time dimension to fuse past, present,
+and future information with negligible computational overhead.
+In this paper, we propose Spiking V ocos, the first high-fidelity,
+energy-efficient SNN-based vocoder. Integrated with both KD
+and TSM, Spiking V ocos synergistically addresses the perfor-
+mance limitations of SNNs in the context of audio generation.
+Our contributions are:
+• We are the first to introduce an SNN into a frequency-domain
+vocoder, designing an efficient spiking ConvNeXt module
+that significantly reduces energy consumption while main-
+taining high perceptual quality.
+• We propose a self-architectural distillation framework tai-
+lored for vocoding, which effectively boosts the synthesis
+quality of the SNN model.
+• We validate the effectiveness of the Temporal Shift Module
+in the audio synthesis domain, demonstrating its capacity to
+enhance the temporal processing of SNNs.
+3575
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1086
+(a)
+ (b)
+Figure 1:(a) The overall architecture of the Spiking Vocos generator. The input mel-spectrogram is processed by a stack of Spiking
+ConvNeXt blocks, where the Temporal Shift Module (TSM) is applied in each block. (b) A comparison between the standard ConvNeXt
+block (left) and our proposed Spiking ConvNeXt block (right). Our design introduces two PLIF neurons before the computationally
+intensive pointwise convolutions and adds an amplitude shortcut path to mitigate the information bottleneck.
+2. Method
+This section details the proposed Spiking V ocos, an ultra-low-
+power vocoder that adapts the high-efficiency V ocos framework
+to the spiking domain. An overview of the model architecture
+is presented in Fig. 1a. We first introduce the core Spiking Con-
+vNeXt block in Section 2.1, which forms the backbone of our
+generator. Next, Section 2.2 elaborates on the self-architectural
+distillation paradigm used to bridge the performance gap be-
+tween the ANN and SNN models. Finally, Section 2.3 describes
+the integration of the Temporal Shift Module to enhance the
+model’s temporal modeling capabilities.
+2.1. Spiking ConvNeXt Block
+The fundamental building block of the Spiking V ocos generator
+is the Spiking ConvNeXt block, which is adapted from the stan-
+dard ConvNeXt architecture [22]. As illustrated in Fig. 1b, our
+design prioritizes computational efficiency. Since the two point-
+wise convolutions account for the majority of the computational
+load, we choose to insert spiking neurons directly before them.
+This ensures that these computationally intensive operations are
+performed on sparse, binary spikes, maximizing the energy sav-
+ings of the SNN.
+For the neuronal model, we employ the Parametric Leaky
+Integrate-and-Fire (PLIF) neuron [23] for a higher diversity and
+expressiveness. Unlike the standard LIF neuron [13], the PLIF
+neuron features a learnable time constantτ, which allows it to
+adaptively balance the influence of present input against past
+memory. The dynamics of the PLIF neuron follow a three-stage
+process at each timestept: charging, firing, and resetting, which
+can be described as:
+Ht =V t−1 + 1
+τ (Xt−(V t−1−V re))(1)
+St = Θ
+
+Ht−V th
+
+(2)
+Vt =V reSt +H t(1−S t)(3)
+Here, Eq. (1) describes the charging step, where the mem-
+brane potentialV t−1 from the previous timestep is updated with
+the input currentX t to produce the new potentialH t. Eq. (2)
+represents the firing mechanism, whereΘ(·)is the Heaviside
+step function that produces an output spikeS t∈{0,1}ifH t
+exceeds the firing thresholdV th. Finally, Eq. (3) is the resetting
+function, where the membrane potentialV t is reset toV re if a
+spike was fired.
+A critical challenge in SNNs is the information bottleneck
+caused by the all-or-none nature of spiking. As shown in Eq.
+(2), all supra-threshold inputs are mapped to a spike firing, ef-
+fectively erasing crucial amplitude information. This ”satura-
+tion phenomenon” can degrade the final performance. To ad-
+dress this, we introduce an amplitude shortcut path to circum-
+vent the bottleneck:
+Zrecover =|Z in|⊙Z out,(4)
+where⊙denotes element-wise multiplication. This oper-
+ation re-injects the amplitude information into the data stream
+(Fig. 1b), allowing the model to benefit from the computational
+sparsity of spikes without sacrificing essential signal dynamics.
+2.2. Self-architectural Distillation
+While the surrogate gradient method enables direct SNN train-
+ing, challenges such as training instability and a persistent per-
+formance gap compared to ANNs remain [15, 24]. To ad-
+dress this, we employ a self-architectural knowledge distillation
+(KD) framework. As its ANN counterpart, V ocos serves as an
+ideal teacher for Spiking V ocos due to their identical macro-
+architectures. Our distillation strategy provides guidance at two
+critical levels: intermediate feature representations and final
+spectral outputs.
+To align the internal representations of the two models,
+we distill knowledge layer-wise. Lightweight adapters, each
+consisting of a linear layer and an activation function, are em-
+ployed to project the student’s intermediate features (z stu) into
+the teacher’s feature space. The alignment is enforced by min-
+imizing the Mean Squared Error (MSE) over allNdistilled
+blocks between the projected student features and the teacher’s
+features (ztea):
+3576
+Table 1:Performance comparison of Vocos and Spiking Vocos variants. The values in parentheses indicate the difference relative to
+Vocos.
+Model UTMOS (↑) PESQ (↑) ViSQOL (↑) V/UV F1(↑) Periodicity (↓)
+V ocos (ANN Baseline)3.82 3.65 4.67 0.9600 0.108
+Spiking V ocos (8-step)3.80 3.49 4.66 0.9566 0.114
+Spiking V ocos (4-step)3.46(−0.36)3.31(−0.34)4.63(−0.04)0.9522(−0.0078)0.127(+0.019)
++ TSM3.71(−0.11)3.36(−0.29)4.65(−0.02)0.9539(−0.0061)0.116(+0.008)
++ Distillation3.70(−0.12)3.43(−0.22)4.65(−0.02)0.9559(−0.0041)0.118(+0.010)
++ TSM & Distillation3.74(−0.08)3.45(−0.20)4.65(−0.02)0.9558(−0.0042)0.116(+0.008)
+Lfeat =
+NX
+n=1
+∥F(z stu)−z tea∥2
+2,(5)
+wherezdenotes an intermediate representation, andFis
+the adapter’s projection function. This process encourages the
+student SNN to mimic the layer-wise behavior of the teacher.
+At the final layer, we apply distinct distillation objectives
+for the magnitude and phase spectra to account for their dif-
+ferent properties. The magnitude loss,L M is the L1 distance
+between the logarithmic magnitudes of the student and teacher
+models:
+LM =∥log(A stu)−log(A tea)∥1,(6)
+Distilling the phase spectrum is more challenging due to its
+periodic nature, which causes wrapping around±π. Inspired
+by [11], we apply an anti-wrapping functionf AW to the phase
+difference, which maps the error to its principal value:
+fAW(x) =
+x−2π·round
+ x
+2π
+ (7)
+The total phase loss,L P, is a composite of three compo-
+nents that capture different aspects of phase correctness: instan-
+taneous phase loss (LIP), group delay loss (LGD), and phase time
+difference loss (LPTD):
+LIP = mean[fAW (ϕtea−ϕ stu)](8)
+LGD = mean[fAW (∇ωϕtea−∇ ωϕstu)](9)
+LPTD = mean[fAW (∇tϕtea−∇ tϕstu)](10)
+LP =L IP +L GD +L PTD (11)
+where∇ ω and∇ t denote the derivatives with respect to
+frequency and time. The cooperation of the three phase losses
+can constrain the prediction accuracy at point level as well as
+the consistency in time and frequency dimension.
+The total knowledge distillation loss is a weighted sum of
+these components:
+LKD =λ featLfeat +λ PLP +λ MLM.(12)
+This multi-faceted loss function provides comprehensive
+guidance, encouraging the SNN to replicate not only the fi-
+nal output but also the internal computational steps of its high-
+performing ANN counterpart.
+2.3. Temporal Shift Module Integration
+SNN has a similar temporal dynamics to RNN, where an im-
+plicit state (membrane potential) is passed from one block to
+the next. Moreover, the inherent causal nature of SNN causes
+its blindness to future timesteps, termed as ”partial-time depen-
+dency” [18]. Temporal Shift Module [21] is designed to allow
+every block explicitly ”see” the information from past and fu-
+ture simultaneously.
+As shown in Fig. 1a, the tensor of intermediate featureZ org
+is split into three parts by channel indexsC −1,C 0,C 1, where
+C−1 < C0 < C1. The three channel groups will be shifted
+−1,0,1timestep respectively, with proper padding and trunca-
+tion to maintain consistent shape:
+Zshift[t, c, ...] =
+
+
+
+Zorg[t+ 1, c, ...] 0≤c<C −1
+Zorg[t, c, ...]C −1≤c<C 0
+Zorg[t−1, c, ...]C 0≤c≤C 1
+(13)
+However, shifting channels risks diluting information from
+the original timestep. Therefore, a residual connection is
+adopted to combine the original features with the shifted ones:
+Z=α⊙Z shift +Z org,(14)
+whereαis a hyperparameter controlling the intensity of the
+temporal shift.
+3. Experiments
+3.1. Experimental Setup
+We train spiking models on the complete training set of Lib-
+riTTS [25]. The ANN-based V ocos model [10] is trained as
+baseline, as well as the teacher model for distillation. The origi-
+nal24kHz audio is compressed into 100-dimension mel-scaled
+spectrograms withn f f t = 1024andn hop = 256. All Spiking
+V ocos variants and the baseline are trained for 1 million genera-
+tor and discriminator steps. We use the AdamW optimizer with
+β1 = 0.9andβ 2 = 0.999.
+For the TSM, we use a fixed channel split (C −1 =
+1
+4C1,C 0 = 3
+4C1) for training stability, with a residual weight
+α= 0.5. A crucial implementation detail for models using both
+TSM and distillation is that the intermediate distillation points
+are shifted to the subsequent ConvNeXt block. This modifi-
+cation prevents the feature alignment objective from being dis-
+rupted by the temporal shift operation.
+All models are evaluated on the test-clean subset of Lib-
+riTTS. For objective metrics, we use UTMOS [26], a pseudo
+MOS metric correlated well with human Mean Opinion Scores
+(MOS). We also employ acoustic metrics including PESQ [27]
+and ViSQOL [28] for the evaluation of signal quality. Follow-
+ing standard practice [29], we measure objective characteristics
+using the F1 score for voiced/unvoiced classification (V/UV F1)
+and periodicity error. At last, a subjective listening test is con-
+ducted as the gold standard for the synthesis quality. A pre-
+trained HiFiGAN1 on LibriTTS is used as the baseline of time-
+domain vocoder.
+1https://huggingface.co/speechbrain/tts-hifigan-libritts-22050Hz
+3577
+Table 2:Subjective evaluation metrics – 5-scale Mean Opinion
+Score (MOS) and Similarity Mean Opinion Score (SMOS) with
+95% confidence interval.
+Model MOS (↑) SMOS (↑)
+Ground truth3.92±0.14 4.14±0.12
+V ocos3.80±0.14 3.79±0.12
+HiFiGAN3.61±0.13 3.72±0.12
+Spiking V ocos3.69±0.13 3.69±0.13
+3.2. Audio Quality Evaluation
+The audio quality evaluation results are presented in Table 1.
+The baseline ANN V ocos sets a strong benchmark with a UT-
+MOS of3.82. As expected, the vanilla 4-step Spiking V ocos
+exhibits a significant performance degradation, highlighting the
+challenge of direct SNN implementation. Increasing the simu-
+lation timestep to 8 substantially closes this gap, but at the cost
+of doubled computational latency.
+Focusing on the more efficient 4-step setting, our ablation
+studies validate the effectiveness of the proposed techniques.
+Integrating the Temporal Shift Module (TSM) alone provides
+a dramatic improvement, boosting the UTMOS from3.46to
+3.71. This confirms that enhancing temporal information fusion
+is critical for SNN-based audio synthesis. Similarly, applying
+self-architectural distillation yields a comparable UTMOS gain
+(3.70) and provides the largest improvement in the PESQ score
+among the ablations, indicating its success in transferring the
+teacher’s fine-grained spectral knowledge.
+Crucially, when combining both TSM and distillation, our
+4-step Spiking V ocos achieves the best SNN performance with
+a UTMOS of3.74and a PESQ of3.45. While the perceptual
+quality is high, a notable gap remains in the PESQ score com-
+pared to the ANN baseline. We hypothesize this is due to the in-
+herent quantization effect of binary spikes, which may slightly
+reduce the reconstruction precision of the complex spectrum.
+Although this impacts metrics like PESQ that rely on signal-
+level consistency, subjective evaluations (Table 2) suggest that
+human perception is more robust to this type of error. This result
+demonstrates that our methods work synergistically to bridge
+the performance gap, achieving high perceptual fidelity with
+only 4 timesteps.
+3.3. Energy Consumption Analysis
+The primary motivation for using SNNs is their superior energy
+efficiency, which stems from their event-driven nature. Fig. 2
+visualizes the sparse spike activity in our model, where each dot
+represents a firing event. The firing rate increases with network
+depth, a pattern also observed in other SNN audio models like
+SpikeV oice [18].
+The energy consumption of the Spiking ConvNeXt block
+is dominated by its convolution operations. While the depth-
+wise convolution still requires continuous-valued MACs, the
+computationally-intensive pointwise convolutions now oper-
+ate on sparse, binary spike inputs, converting most MACs to
+energy-efficient ACs. The energy of can be modeled as:
+EdwConv =K d·C in·L·T·E MAC,(15)
+EpwConv =K p·C in·C out·L·T·r·E AC,(16)
+Table 3:Estimated theoretical energy consumption of Spiking
+Vocos variants and the baseline whenL= 1000.
+Model Firing Rate (%) Energy Con. (mJ)
+V ocos -58.0
+Spiking V ocos (8-step)14.7 14.4
+Spiking V ocos (4-step)12.9 6.4
++ TSM14.1 6.9
++ Distillation18.0 8.7
++ TSM & Distillation17.6 8.5
+whereKis kernel size,Cis channel count,Lis sequence
+length, andTis the SNN timestep. Table 3 presents the theo-
+retical energy consumption based on established costs for 32-
+bit floating-point AC (E AC≈0.9pJ) and MAC (E MAC≈4.6
+pJ) operations on 45nm technology [30]. Despite having nearly
+identical model parameters, the Spiking V ocos variants exhibit
+slight differences in energy consumption due to their varying fir-
+ing rates. Enabling TSM and distillation moderately increases
+the average firing rate, which is a trade-off for achieving higher
+spectral reconstruction accuracy. Our final 4-step Spiking V o-
+cos model, with an average firing rate ofr= 17.6%, is es-
+timated to consume only14.7%of the energy of the ANN-
+based V ocos. This represents a greater than 6.8x improvement
+in energy efficiency, highlighting the practical benefits of our
+approach.
+Figure 2:Visualization of spike activity at different depths.
+4. Conclusion
+In this work, we introduced Spiking V ocos, the first SNN-based
+frequency-domain vocoder designed for high-fidelity and ultra-
+low-power audio synthesis. We addressed the core challenges
+of applying SNNs to audio generation by designing a Spiking
+ConvNeXt block with an amplitude shortcut to prevent informa-
+tion loss. To bridge the performance gap with the original ANN
+model, we employed a self-architectural distillation framework
+tailored for vocoding and integrated a Temporal Shift Module
+to enhance temporal modeling. Our experiments demonstrate
+that the proposed 4-timestep model achieves perceptual qual-
+ity comparable to the baseline ANN V ocos, while consuming
+merely14.7%of the energy.
+3578
+5. Generative AI Use Disclosure
+No generative AI tools were used to produce any significant
+part of this manuscript. During the preparation of this work,
+the authors used Gemini solely for editing and polishing the
+English language of the manuscript. All co-authors take full
+responsibility and accountability for the content and integrity
+of this paper, and consent to its submission.

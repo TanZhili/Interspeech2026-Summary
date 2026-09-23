@@ -1,0 +1,458 @@
+Preference-ASR: A Preference-Aware Test Set for Benchmarking ASR in the
+Era of Speech LLMs
+Nithin Rao Koluguri1, Sasha Meister1, Nikolay Karpov1, Piotr Zelasko1, Desh Raj1, Jagadeesh
+Balam1, Boris Ginsburg1
+1 NVIDIA, USA
+nkoluguri@nvidia.com
+Abstract
+Popular ASR test sets adopt inconsistent conventions for num-
+bers, disfluencies, entities, and casing, while standard normal-
+izers erase the format distinctions users care about. Current
+benchmarks therefore cannot measure whether a model follows
+user preferences for output style. We introduce Preference-
+ASR, a test set evaluating ASR systems on their ability to follow
+natural-language preference instructions across four categories:
+normalization, entities, disfluencies, and case. Built from seven
+open-source corpora via a two-stage LLM-assisted pipeline
+with human verification, it is evaluated with a preference-aware
+normalizer that selectively skips steps matching the active in-
+struction. Benchmarking four models shows rankings shift
+across preference types, exposing quality differences traditional
+evaluation obscures. We publicly release the dataset1.
+Index Terms: automatic speech recognition, preference-aware
+evaluation, instruction-following, speech language models,
+speech LLMs
+1. Introduction
+Automatic speech recognition (ASR) has evolved rapidly,
+from hidden Markov models through end-to-end CTC and
+RNN-Transducer architectures to the recent class of Speech-
+augmented Large Language Models (SpeechLLMs) such as
+SALMONN [1], Qwen-Audio [2], and Qwen2.5-Omni [3]. Un-
+like earlier systems, SpeechLLMs can follow natural-language
+instructions that specify the desired style and format of a tran-
+scription. Yet the way we evaluate ASR has not kept pace:
+we still measure Word Error Rate (WER) against fixed human-
+annotated references, an approach that increasingly fails to cap-
+ture what modern models can actually do.
+One root cause is that annotation conventions vary widely
+across popular test sets and are seldom documented in
+full. Number formatting alone illustrates the problem: Lib-
+rispeech [4] writes numbers in spoken form and lowercases ev-
+erything, SPGISpeech [5] uses inverse-normalized written form
+but omits proper casing, and Earnings-22 [6] mixes both forms
+within the same dataset. Disfluency handling is equally incon-
+sistent: some corpora retain every filler word, repetition, and
+false start, while others such as SPGISpeech strip them en-
+tirely. Speaker conventions diverge too: GigaSpeech [7] con-
+tains multi-speaker audio yet provides only one speaker’s tran-
+scription, and AMI [8] mostly ignores background speech with-
+out a clear rule for which speaker is the reference. V oxPop-
+uli [9] and Common V oice [10] add further alignment and tran-
+scription quality issues. Figure 1 illustrates two such incon-
+sistencies: GigaSpeech writes numbers in spoken form while
+Earnings-22 uses written form, and AMI preserves filler words
+1https://github.com/nithinraok/
+preference-asr-bench
+Normalization
+GigaSpeech GT:. . . a similar problem exists with theseventy per-
+centrule . . .
+Earnings-22 GT:In the quarter you come up strong as thought,
+10%.
+GigaSpeech uses spoken form; Earnings-22 uses written form
+Disfluencies
+AMI GT: Umand my findings from this is that,you know, small is
+beautiful.
+SPGISpeech GT:And my findings from this is that, small is beau-
+tiful.
+AMI keeps filler words; SPGISpeech strips them
+Figure 1:Existing ASR references exhibit inconsistent conven-
+tions across datasets: GigaSpeech writes numbers in spoken
+form while Earnings-22 uses written form; AMI preserves filler
+words while SPGISpeech strips them.Preference-ASRresolves
+this by conditioning each reference on an explicit user instruc-
+tion.
+while SPGISpeech strips them. The net effect is that a model’s
+ranking on any single benchmark often reflects how well it hap-
+pens to match that dataset’s annotation quirks, rather than its
+genuine transcription quality.
+These inconsistencies matter more now that SpeechLLMs
+can act on user instructions. In practice, users have specific for-
+matting preferences: a database pipeline may need digits (In-
+verse Text Normalization, ITN), while a broadcast script calls
+for words (Text Normalization, TN). A pronunciation coaching
+app needs every disfluency preserved, whereas a meeting sum-
+mary should omit them. Users may also want to supply domain-
+specific entity names (pharmaceutical terms, product names,
+proper nouns) to improve recognition accuracy, or request a spe-
+cific casing style. No existing test set can express these prefer-
+ences. Worse, standard evaluation pipelines apply blanket nor-
+malization (lowercasing, number-to-word conversion, symbol
+removal) that erases precisely the formatting distinctions users
+care about, treating them as noise rather than as meaningful sig-
+nal of system capability.
+Prior work has touched on parts of this problem. Rich tran-
+scription [11] explored end-to-end formatted ASR output but
+did not tie evaluation to explicit user instructions. Multi-modal
+audio benchmarks such as MMAU [12] and Speech-IFEval [13]
+test understanding and reasoning over audio but do not target the
+transcription-level preferences central to ASR. Lai et al. [14]
+demonstrated instruction-following for speech models, though
+without addressing the cross-dataset inconsistencies we iden-
+tify here or releasing a public test set for broader benchmark-
+ing. None of these efforts provide a test set whose ground truth
+is conditioned on a human-specified formatting instruction for
+ASR.
+6687
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-728
+Audio
++
+Ground Truth
+(7 corpora,
+3,545 samples)
+✓
+Manual
+Verification
+GT correction
+Preference
+Classification
+LLM-assisted
+Per. category
+Instruction +
+Reference Gen.
+LLM-assisted
+Per Preference
+✓
+Manual
+Verification
+Human review
+Preference-ASR
+Test Set
+3,210 triples
+(audio, instr., ref.)
+Stage 1 Stage 2
+Figure 2:Two-stage construction pipeline for the Preference-ASR dataset. Audio samples and ground truth from seven corpora are first
+manually verified.Stage 1classifies each sample into preference categories (normalization, entities, disfluencies, case) using LLM.
+Stage 2generates task-specific instructions and reference texts. A final round ofmanual verificationproduces the released test set with
+preference-annotated triples.
+We introducePreference-ASR, a test set that evaluates
+ASR systems on their ability to follow human preference in-
+structions. It draws from seven widely used open-source cor-
+pora, combining their strengths while explicitly controlling for
+the inconsistencies described above. Preference-ASR is not
+meant to replace existing benchmarks such as the Open ASR
+Leaderboard [15]; rather, it complements them by evaluating
+a capability that standard test sets cannot measure: whether a
+model follows user instructions for ASR output formatting. Our
+contributions are as follows:
+1. A preference-annotated English test set covering four pref-
+erence categories: normalization, entities, disfluencies, and
+case.
+2. A two-stage LLM-assisted pipeline for generating the test set,
+with human verification and correction.
+3. A preference-aware normalizer that selectively skips normal-
+ization steps matching the active preference instruction, en-
+abling fair WER computation across diverse formatting re-
+quirements.
+4. We publicly release the test set and evaluation code to support
+reproducible benchmarking of SpeechLLMs on preference-
+following.
+2. Preference-ASR Dataset
+2.1. Preference Categories
+We organize preferences into four categories that capture the
+most common points of friction in real-world transcription
+workflows. Each category is further divided into sub-categories
+that can be combined in a single instruction.
+Normalization.Normalization deals with non-standard
+words whose spoken and written forms differ [16]. Choosing
+between Text Normalization (TN, written to spoken form) and
+Inverse Text Normalization (ITN, spoken to written form) di-
+rectly affects downstream tasks. We define three sub-categories:
+•Numbers: Instructions may require digits (ITN, e.g., “22”) or
+spoken words (TN, e.g., “twenty-two”).
+•Symbols: Models may be asked to produce currency sym-
+bols and mathematical notation (ITN, e.g., “$100”, “20%”)
+or their verbal equivalents (TN, e.g., “one hundred dollars”,
+“twenty percent”).
+•Website Links: Instructions can specify a readable URL (ITN,
+e.g., “www.google.com”) or the exact sequence of letters and
+words spoken (TN, e.g., “www dot google dot com”).
+Together, these sub-categories test whether a model can han-
+dle dates, currencies, and technical identifiers through a simple
+prompt rather than hard-coded post-processing rules.
+Entities.Named entities are a persistent source of errors,
+especially for rare or recently coined names in the tail of the
+training distribution. Contextual biasing, where a list of likely
+terms is provided to the model, has been shown to reduce entity
+word error rate significantly [17]. Our entity category spans
+company, product, people, location, organization, event, and
+drug names. We also include “false positive” entities in some
+instructions: names that are semantically plausible but absent
+from the audio. This lets us measure confabulation, a com-
+mon failure mode where a model favors its textual prior over
+the acoustic evidence.
+Disfluencies.Spontaneous speech is inherently messy,
+filled with false starts, repairs, and fillers [18]. Whether to keep
+or remove them depends on the application: a pronunciation
+coaching tool needs verbatim fidelity, while a meeting summary
+benefits from cleaning. Sub-categories include:
+•Filler Words: Hesitation markers like “um,” “uh,” and “ah.”
+•Repetitions: Consecutive spoken instances of the same word
+(e.g., “I I think”).
+•False Starts: Incomplete phrases that are immediately cor-
+rected (e.g., “I was go- going”).
+•Wrong Grammar: Cases where the speaker makes a gram-
+matical error that a model might “helpfully” but incorrectly
+rectify.
+By framing instructions to either “keep” or “ignore” these dis-
+fluencies, we evaluate whether a model can perform Rich Tran-
+scription tasks [11].
+Case.Casing and punctuation affect both readability and
+the accuracy of downstream text analysis [19]. This category
+covers:
+•Lower case: All letters are lowercased and punctuation is
+omitted.
+•Proper punctuation and capitalization: Sentences begin with
+a capital letter, end with appropriate punctuation, and follow
+standard capitalization rules [20].
+These categories are mutually exclusive, testing the model’s
+ability to switch its output mode completely based on a format-
+ting directive. Figure 3 shows examples from each category.
+2.2. Dataset Construction Pipeline
+We build Preference-ASR through a two-stage pipeline (Fig-
+ure 2) designed to maximize coverage across preference cate-
+gories while maintaining accuracy. We start with approximately
+600 samples from each of the seven source datasets listed in Ta-
+ble 1, giving a pool of 3,545 samples whose baseline transcripts
+were manually verified and corrected by human annotators.
+Stage 1: Preference Classification.We use Qwen3-30B-
+A3B2 [21] for both stages. In stage 1, the model classifies each
+transcription by which preference categories it contains. For
+2https://huggingface.co/Qwen/
+Qwen3-30B-A3B-Instruct-2507-FP8
+6688
+NormalizationEarnings-22, TN
+GT:“Okay, 12% plus, that is higher in around 50 basis points.”
+Instr:Normalize numbers and symbols to spoken form.
+Pref:“Okay,twelve percentplus, that is higher in aroundfiftybasis
+points.”
+EntitiesCommon V oice, with false positives
+GT:“The event was hosted by Geograph’s sponsor, Ordnance Survey.”
+Instr:Audio may contain: Geograph, Ordnance Survey,
+National Geographic, British Geological Survey.
+Pref:“The event was hosted by Geograph’s sponsor, Ordnance
+Survey.”
+DisfluenciesAMI, remove
+GT:“I shoulduh,you know, at least very least haveuh uma GUI and
+uhwire I’ll be wiring that in hopefully tomorrow morning.”
+Instr:Remove hesitation markers like uh, um, ah, and ignore repeated
+words if any.
+Pref:“I should at least very least have a GUI and wire I’ll be wiring
+that in hopefully tomorrow morning.”
+CaseGigaSpeech, lower case
+GT:“the governor’s race would be the culmination of his life’s work.”
+Instr:Output the transcription in lowercase format.
+Pref:“the governors race would be the culmination of his lifes work”
+Figure 3:Examples from Preference-ASR. Each box shows
+ground truth (GT), preference instruction, and expected out-
+put (Pref). Bold marks transformations; underlined entities are
+false positives absent from audio.
+Table 1:Distribution of unique preference triples across seven
+source datasets and four preference categories after priority-
+based deduplication including both directions. Original test
+sets are obtained from leaderboard3 to keep evals reproducible.
+Dataset Norm. Ent. Disfl. Case Total
+AMI [8] 25 6 163 213 407
+Common V oice [10] 17 98 3 234 352
+Earnings-22 [6] 102 37 108 90 337
+GigaSpeech [7] 88 118 132 181 519
+LibriSpeech [4] 23 92 34 445 594
+SPGISpeech [5] 105 72 41 198 416
+V oxPopuli [9] 49 257 58 221 585
+Total 409 680 539 1,582 3,210
+instance, a sample with “three point five dollars” is tagged un-
+der normalization (numbers and symbols), while one containing
+“um” or word repetitions is flagged for disfluencies.
+Stage 2: Instruction and Reference Generation.For each
+classified sample from stage 1, the model generates one or two
+distinct instructions along with the corresponding “preference
+texts.” We produce both directions where applicable: TN and
+ITN for normalization, keep or remove for disfluencies. For
+entities and casing, the preference text matches the ground-truth
+transcription and we generate instructions accordingly.
+To keep each sample in only one category we apply a pri-
+ority ordering: normalization first, then entities, disfluencies,
+and finally case. This reflects the relative complexity of the
+alignment challenge, with normalization and entities being the
+hardest to verify and case being the most straightforward.
+2.3. Dataset Statistics and Distribution
+After construction and deduplication, the dataset contains 3,210
+unique audio-instruction-reference triples; the remaining 335
+samples serve as standard baseline test cases without preference
+instructions. Table 1 shows the distribution across datasets and
+categories.
+The distribution reflects the nature of each source corpus.
+AMI [8] and GigaSpeech [7] contribute heavily to disfluencies
+because of their spontaneous, conversational style. V oxPop-
+uli [9] supplies the bulk of entity samples, consistent with its
+parliamentary domain. SPGISpeech [5] and Earnings-22 [6]
+dominate normalization, as expected from financial transcripts.
+This natural variation ensures the benchmark exercises a broad
+range of real-world transcription challenges.
+3. Experiment Setup
+We evaluate the Preference-ASR dataset along two dimensions:
+(1) how providing a preference instruction affects raw transcrip-
+tion accuracy under standard normalization, and (2) whether
+models actually comply with the requested preference when as-
+sessed with a preference-aware metric.
+3.1. Preference-Aware Normalizer
+Standard WER pipelines [22] apply blanket text normalization
+(lowercasing, converting numbers to words, stripping symbols)
+before computing edit distance [23]. This erases exactly the
+formatting distinctions that preference instructions target: if a
+model correctly outputs “22nd” following an ITN instruction, a
+standard normalizer converts it to “twenty second,” penalizing
+correct behavior [24].
+We propose apreference-aware normalizerthat selectively
+disables the steps corresponding to the active preference. For
+normalizationpreferences, it skips its own TN or ITN step
+so that spoken-form (e.g., “twenty two”) or written-form (e.g.,
+“22nd”) outputs are compared as-is. Fordisfluencypreferences
+requesting retention, it preserves repetitions and fillers in both
+reference and hypothesis; when removal is requested, it strips
+them from both. We also normalize all filler words to “um”
+for fair comparison across models. Forcasepreferences, it
+suppresses lowercasing so that capitalization and punctuation
+are directly evaluated. Forentities, standard normalization is
+applied, since WER naturally captures entity-name accuracy.
+All non-conflicting steps (spelling standardization, whitespace
+cleanup) remain active regardless of preference type.
+3.2. Models
+We benchmark four models chosen to cover a range of
+instruction-following ability.Parakeet-TDT-0.6B-v3[25] is a
+traditional non-LLM baseline: a FastConformer [26] encoder
+with a TDT [27] decoder using greedy decoding and no in-
+struction input.Canary-Qwen-2.5B[25, 28] pairs a FastCon-
+former encoder with a Qwen 2.5 LLM backend via LoRA [29]
+adaptation but was trained on standard ASR pairs without
+preference-specific tuning. The remaining two models natively
+support instructions:Phi-4-Multimodal[30] (5.6B), which in-
+tegrates speech, vision, and text through modality-specific
+LoRA experts andQwen3-Omni-30B[31], a natively multi-
+modal model trained with contextual biasing, representing the
+strongest instruction-aware system we evaluate. All inference
+and dataset generation were conducted on two 48GB NVIDIA
+A6000 GPUs.
+4. Evaluation Results
+Each model is evaluated under two settings:default(D), a stan-
+dard ASR prompt without any preference instruction, andin-
+structed(I), with a preference-specific instruction appended.
+3https://huggingface.co/spaces/hf-audio/open_
+asr_leaderboard
+6689
+Table 2:WER (%) on Preference-ASR. For each model,Std= standard WER with full normalization;Pref= preference-aware WER
+with selective normalization that skips steps matching the active preference. Each preference category shows results under a default
+prompt (no preference directive) and an instruction prompt (preference instruction appended).
+Model WER Eval Normalization Entities Disfluencies Case Standard Overall
+default instruction default instruction default instruction default instruction default instruction default instruction
+Parakeet-tdt-0.6b-v3 [25] Std 6.24 – 5.26 – 10.65 – 3.75 – 4.81 – 6.09 –
+Pref 11.16 – 4.97 – 10.93 – 9.40 – 4.77 – 8.35 –
+Canary-Qwen-2.5b [32] Std 5.54 6.43 5.04 5.17 10.04 9.98 3.59 3.60 3.33 3.33 5.64 5.84
+Pref 10.56 11.32 4.78 4.90 10.49 10.63 10.08 10.04 3.30 3.30 8.16 8.36
+Phi-4-multimodal [30] Std 5.95 6.23 5.50 5.50 50.18 10.46 3.93 19.76 4.41 3.88 13.79 9.95
+Pref 10.76 11.10 5.26 5.28 49.88 10.79 5.88 27.23 4.39 3.87 15.11 12.64
+Qwen3-Omni-30B [31] Std 6.00 5.25 5.12 12.85 9.87 9.28 3.32 3.09 3.40 3.46 5.66 7.81
+Pref 10.90 9.84 4.84 12.68 10.83 9.90 10.01 9.82 3.40 3.46 8.30 10.34
+Parakeet does not accept instruction input and is therefore eval-
+uated only in the default setting. We report WER (%) grouped
+by preference category.
+Standard WER.Table 2 reports WER with full standard
+normalization applied to both reference and hypothesis, isolat-
+ing how instructions affect raw word accuracy independent of
+formatting.
+Under standard normalization, Canary-Qwen (5.64%) and
+Qwen3-Omni (5.66%) achieve nearly identical default WER,
+both outperforming Parakeet (6.09%). Their responses to in-
+structions, however, diverge sharply. Qwen3-Omni’s entity
+WER spikes from 5.12% to 12.85% when instructed: the model
+inserts entity names from the prompt even when they are absent
+from the audio, a clear case of prompt-driven hallucination. On
+normalization (6.00%→5.25%) and case (3.32%→3.09%),
+the same model improves with explicit formatting cues.
+Canary-Qwen, by contrast, shows minimal sensitivity to in-
+structions across all categories (5.64%→5.84% overall), sug-
+gesting its LLM backend does not transfer instruction-following
+to the audio domain without dedicated alignment training.
+Phi-4 exhibits a striking pattern on disfluencies: its default
+WER of 50.18% indicates the model aggressively removes dis-
+fluencies by default, but when explicitly instructed it drops to
+10.46%, showing strong compliance for this category. How-
+ever, case instructions backfire (3.93%→19.76%), suggesting
+the model misinterprets casing directives.
+On the 335 non-preference baseline samples (“Standard”
+column), the default and instructed settings use slightly differ-
+ent generic prompts (“Transcribe the English audio into text”
+vs. “Transcribe the speech in the input English audio”) with no
+preference directive. Even this minor rephrasing causes measur-
+able WER shifts in some models (e.g., Phi-4: 4.41%→3.88%),
+showing how sensitive SpeechLLMs can be to prompt wording.
+Canary-Qwen remains entirely invariant (3.33%), confirming
+that preference prompts do not degrade standard recognition,
+as it was solely trained to perform ASR.
+Preference-Aware WER.The Pref rows of Table 2 report
+WER with our selective normalizer, directly measuring whether
+models comply with the requested formatting preference.
+Once we switch to the selective normalizer, quality dif-
+ferences that standard evaluation hides become visible. WER
+rises across all models; for example, Canary-Qwen’s case WER
+jumps from 3.59% to 10.08% in the default setting, revealing
+that its output formatting deviates from the expected casing
+even when word content is largely correct.
+Model rankings also shift when instructions are provided.
+In normalization, Qwen3-Omni (I) at 9.84% clearly outper-
+forms both Canary-Qwen (I) at 11.32% and Parakeet at 11.16%,
+a gap entirely invisible under standard normalization. For dis-
+fluencies, Qwen3-Omni (I) achieves 9.90%, beating all default
+baselines including Parakeet (10.93%) and showing genuine in-
+struction compliance. Phi-4’s disfluency improvement carries
+over here as well (49.88%→10.79%), but its case WER wors-
+ens sharply (5.88%→27.23%), confirming that its instruction-
+following is category-dependent rather than general.
+The entity hallucination problem persists under preference-
+aware evaluation (12.68%), confirming it is not a normalization
+artifact but a real failure to ground predictions in the audio. This
+highlights a key open challenge: current SpeechLLMs strug-
+gle to balance textual prompt context against acoustic evidence,
+which is critical for context-biased ASR deployment.
+Taken together, these results show that Preference-ASR sur-
+faces tradeoffs invisible to traditional benchmarks. Qwen3-
+Omni excels at formatting compliance for normalization, dis-
+fluencies, and case, but its entity handling degrades when in-
+struction context conflicts with the audio. Canary-Qwen’s
+flat response to instructions confirms that an LLM backbone
+alone, without preference-specific training, is not enough for
+instruction-following ASR.
+5. Conclusion
+We introduced Preference-ASR, a test set of 3,210 samples
+drawn from seven open-source corpora that evaluates whether
+ASR systems can follow explicit human preference instructions
+across four categories: normalization, entities, disfluencies, and
+case. Together with a preference-aware normalizer that selec-
+tively skips steps matching the active instruction, the bench-
+mark exposes quality differences that standard WER evaluation
+hides. Our experiments show that model rankings shift substan-
+tially depending on the preference type. Qwen3-Omni follows
+formatting instructions well for normalization, disfluencies, and
+case, but hallucinates entity names when biasing terms appear
+in the prompt, a failure mode that traditional benchmarks cannot
+detect. Canary-Qwen’s flat response to instructions shows that
+an LLM backbone alone, without preference-aligned training,
+is not enough.
+Several limitations remain: the dataset covers only English,
+does not yet include multi-speaker preferences, and the LLM-
+generated preference texts required manual verification, espe-
+cially for normalization where acoustic context cannot be in-
+ferred from text alone. As SpeechLLMs grow more capable of
+following instructions, benchmarks must evolve to test that ca-
+pability 

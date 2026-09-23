@@ -1,0 +1,467 @@
+Streaming Open-Vocabulary Keyword Spotting via Role Swapping in
+Cross-Attention
+Xi Chen, Haichuan Bai, Liming Song
+Samsung R&D Institute China-Beijing, Beijing, China
+{xi2.chen, haichuan.bai, lm0518.song}@samsung.com
+Abstract
+In recent years, attention-based multi-modal open-vocabulary
+keyword spotting (KWS) has attracted attention, yet its stream-
+ing deployment on device with such a design remains under-
+explored. We identify a data flow mismatch in traditional
+frameworks: speech as Key/Value requires global context but,
+in streaming, provides only local frames; enrollment repre-
+sentation as Query supplies only local information, despite
+its inherent global semantics. To resolve this mismatch, we
+propose a role-swapping streaming open-vocabulary KWS ap-
+proach: streaming speech becomes Query (carrying frame-level
+local info) and enrollment representation as Key/Value (encod-
+ing global semantics), enabling streaming processing. With-
+out loss of generality, we instantiate this framework with a
+text-registered model (∼0.8M parameters) and evaluate it on
+LibriPhrase, achieving an EER/AUC of 6.82%/97.95% on easy
+negative subset and 28.21%/79.19% on hard negative subset.
+Index Terms: human-computer interaction, open-vocabulary
+keywords spotting, cross-attention, multi modal
+1. Introduction
+In the era of large language models, attention to human-
+computer interaction through voice continues to increase.
+Among various approaches to initiating voice interaction, voice
+wake-up technology has garnered significant industry focus.
+This technology is typically implemented through keyword
+spotting (KWS) tasks, which fall into two categories: prede-
+fined KWS [1] and open-vocabulary KWS [2].
+Open-vocabulary KWS is designed to detect pre-registered
+keywords from continuous speech, where the keywords may be
+unseen during training. It has gained widespread attention in re-
+cent years [3, 4, 5, 6, 7] due to its ability to support personaliza-
+tion. Benefiting from advances in multi-modal semantic align-
+ment, registration for open-vocabulary KWS has evolved from
+single-modal [2, 8] to multi-modal paradigms [7, 9]. More-
+over, the integration of large-scale pre-trained models (e.g.,
+BERT [10] for text, Whisper [11] for speech) has significantly
+improved the quality of enrollment representations, providing
+richer semantic and acoustic features for alignment [9, 12].
+Among these approaches, Cross-Attention has proven par-
+ticularly effective in enabling semantic alignment between en-
+rollment representations and speech frames, providing inter-
+pretable and clear distinctions between positive and negative
+samples. However, most existing Cross-Attention based meth-
+ods operate at the segment level, assuming the entire speech ut-
+terance is available prior to alignment—an assumption that does
+not hold in streaming scenarios. For on-device applications,
+where low latency and real-time processing are critical, stream-
+ing KWS systems are essential yet remain underexplored.
+Recent approaches to open-vocabulary KWS can be
+broadly grouped into Connectionist Temporal Classifica-
+tion (CTC)-based methods [6, 13] and a similarity-based
+method [7]. CTC-based methods force-align keyword frames
+from streaming speech, enabling streaming operation; however,
+their alignment confidence drops on mismatched text-speech
+pairs, requiring extra tuning for on-device deployment. The
+similarity-based method computes frame-level similarity be-
+tween enrollment and speech embeddings, making it applica-
+ble to open-vocabulary tasks, but it relies on heuristic post-
+processing for acceptance decisions.
+To bridge this gap, we argue that the key to stream-
+ing open-vocabulary KWS lies in rethinking the data flow of
+Cross-Attention. While the proposed framework generalizes
+to various enrollment modalities, this paper focuses on a text-
+registered instantiation where streaming speech is assigned as
+Query and registered text as Key/Value, enabling frame-by-
+frame processing while preserving the semantic richness of pre-
+trained text encoders. However, this frame-by-frame design
+leads to performance loss. To address this issue, we optimize
+the model with the following strategies:
+•Multi-modal Embedding Enhancement: Integrate modal
+embedding information into the Pattern Discriminator. The
+Discriminator combines pattern learning with frame-level bi-
+nary classification decisions to improve keyword detection
+accuracy;
+•Contrastive Learning: Compute InfoNCE loss [14] using
+text and audio as anchors to assist audio-text embedding
+alignment;
+•Staged Learning: Complete semantic alignment in the first
+stage by combining text information with attention outputs.
+In the second stage, use pattern fusion to optimize decision-
+making with audio information;
+•Hard Sample Generation: Generate challenging samples
+online via time-domain masking to enhance model robust-
+ness.
+Compared to existing streaming solutions CTC-
+aligned Audio-Text (CTCAT) keyword detector [6] and
+SYNASPOT-AT [7], this work:
+•Eliminates CTC alignment requirements, reducing de-
+ployment complexity;
+•Replaces heuristic post-processing with network-based
+decisions, enabling end-to-end optimization and data aug-
+mentation tailored to error types;
+•Incorporates an autonomous learning mechanismthat
+handles challenging samples directly from data, improving
+robustness.
+This work presents a scalable and efficient solution
+16
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1676
+Train Phase Ⅰ
+Audio Encoder
+Text Encoder
+Cross 
+Attention
+emb_t
+Attention 
+Out
+Q
+Concate GRU
+Dense
+Dense
+Cross 
+Attention
+Q
+KV
+Attention Out
+GRU
+KVemb_temb_t
+emb_t
+emb_semb_s
+emb_s
+emb_t atten_out
+Train Phase Ⅱ
+Audio Encoder
+Text Encoder
+Cross 
+Attention
+Q
+emb_s
+Affinity 
+Matrix
+Concate
+Dense
+GRU
+GRU
+Dense
+Cross
+Attention
+Q
+KV
+Attention Out
+KV
+emb_semb_s
+emb_s
+emb_t emb_t
+emb_t
+emb_s
+affi_matrix
+(a)Two-stage training
+Audio Encoder
+Text Encoder
+Cross 
+Attention
+emb_s
+emb_s
+emb_t
+Affinity 
+Matrix
+Q
+KV
+Concate
+GRU Dense 0 0 0 0 1 1 1
+Inference
+Phase
+off-line
+emb_s
+affi_matrix
+ (b)Inference
+Figure 1:Model architecture.(a) Two-stage training:Phase Icompares the cross-attention output against the reference text embed-
+dings to learn text-speech multi-modal alignment;Phase IIthen concatenates the affinity matrix with speech embeddings, learning to
+make frame-level acceptance decisions based on both alignment and acoustic context. (b) During inference, the trained model directly
+takes the affinity-based input from Phase II and produces frame-level keyword acceptance. (Notations:m, dimension of embeddings;
+Ts, length of speech embeddings;Tt, length of text embeddings;emb s, speech embeddings;emb t, text embeddings.)
+for streaming, attention-based, multi-modal open-vocabulary
+KWS, offering improved performance and practical applicabil-
+ity in real-world scenarios.
+2. Proposed Method
+This paper builds upon the cross-modal correspondence de-
+tector (CMCD) [3] framework with two key distinctions: (i)
+a redesigned Cross-Attention data flow that assigns streaming
+speech as Query and registered text as Key/Value, enabling
+frame-by-frame processing; and (ii) a two-stage training strat-
+egy that incorporates text representations in the first stage and
+speech representations in the second stage to assist decision-
+making. The overall architecture is illustrated in Figure 1.
+The remainder of this section is organized as follows. Sec-
+tion 2.1 details the training phase, covering both encoder train-
+ing and the sequence discriminator design. Section 2.2 then
+describes the streaming inference process.
+2.1. Training Phase
+We adopt a multi-task learning strategy with the total loss:
+Ltotal =L f +Lp +Lc,(1)
+where
+•L f is the frame-level binary classification loss,
+•L p is the phoneme matching loss,
+•L c is the audio-text contrastive loss.
+The encoders are trained usingL p andL c to facilitate se-
+mantic alignment, as detailed in Section 2.1.1. The frame-level
+binary classification lossL f optimizes the entire network (en-
+coders and sequence discriminator) for frame-wise prediction,
+with its configuration and two-stage training strategy described
+in Section 2.1.2.
+2.1.1. Encoder model
+The text encoder follows the design of CMCD. To satisfy the
+causality constraint of streaming processing, the audio encoder
+consists of two causal convolutional layers followed by two
+GRU layers; its detailed structure is shown in Figure 2.
+FBank
+Causal Conv
+100Hz
+GRU
+50Hz50Hz
+Dense
+50Hz emb_s
+BN+RELU
+Conv Block
+Figure 2:Structure of audio encoder.
+To strengthen cross-modal semantic alignment, we incor-
+porate InfoNCE loss. Specifically, a GRU network extracts
+segment-level embeddings from the sequence of frame-level
+embeddings, and the InfoNCE loss is computed using both au-
+dio and text as anchors in two directions, as depicted in Figure 3.
+The contrastive lossLc is defined as:
+Lc =−
+X
+i
+log exp
+ CosSim(Ei
+t,Ei
+s)
+τ
+
+P
+j exp
+ CosSim(Ei
+t,Ej
+s )
+τ
+
+−
+X
+j
+log exp
+ CosSim(Ej
+t,Ej
+s )
+τ
+
+P
+i exp
+ CosSim(Ei
+t,Ej
+s )
+τ
+ .
+(2)
+In addition, we introduce a phoneme alignment lossL p,
+which is beneficial to the multi-modal semantic alignment of
+Cross-Attention. There are two common approaches: incorpo-
+rating a CTC-based ASR task or using the PhoneMatch task
+proposed in [4]. Unlike CTC, which aligns acoustic units to
+17
+Audio Encoder
+Text Encoder
+emb_s
+emb_t
+GRU
+GRU
+emb_s
+emb_t
+CosSim
+speechtext
+Figure 3:Audio-Text contrastive learning.
+(a)positive sample
+(b)negative sample
+Figure 4:Alignment patterns for different samples.Positive
+samples exhibit a monotonic alignment pattern, whereas nega-
+tive samples lack a systematic alignment pattern.
+speech frames, PhoneMatch operates at the token level and di-
+rectly facilitates the token-level semantic alignment required in
+Cross-Attention, making it a more suitable choice for our ob-
+jective.
+2.1.2. Sequence Discriminator
+The Cross-Attention mechanism produces two important ten-
+sors: the Affinity MatrixA∈R Ts×Tt (whereTs is the number
+of audio frames andTt is the length of the text token sequence),
+and the Attention OutputO∈R Ts×m, which is the weighted
+sum of text token embeddings. To leverage both sources of in-
+formation for the final decision, we design a Pattern Discrimi-
+nator consisting of a GRU followed by a dense layer.
+Two types of inputs are considered:
+•Attention-based input: The Attention OutputOis concate-
+nated with the text token embeddingsEt along the time axis,
+producing a sequence[E t, O]∈R (Tt+Ts)×m that aligns
+with the audio frames.
+•Affinity-based input: The Affinity MatrixAis concatenated
+with the audio embeddingsE s along the feature dimension,
+forming[A(t,:);E s(t)]∈R Tt+m at each time stept.
+Experimental observations reveal that the model converges
+more easily when using the Affinity-based input, but it may
+learn incorrect decision patterns. In contrast, the Attention-
+based input guides the model toward the desired pattern shown
+in Figure 4. To combine the benefits of both, we adopt a staged
+learning strategy:
+•First stage: Train the Discriminator using the Attention-
+based input. This stage establishes a correct decision bound-
+ary.
+•Second stage: Continue training using the Affinity-based in-
+put, which provides clearer and more decision-friendly pat-
+terns, further improving performance.
+Figure 4 visualizes the typical patterns of the Affinity Ma-
+trix for positive and negative samples after training.
+2.2. Inference
+In the enrollment phase, the text encoder (pre-trained) extracts
+raw token embeddingsE t, which are linearly projected to key
+vectorsK t(i) =W K Et(i). During inference, the streaming
+speech is processed frame by frame: the audio encoder runs
+causally, producingE s(t)∈R m at timet, which is projected
+toQ s(t) =W QEs(t)while the unprojectedE s(t)is retained
+for concatenation.
+The Affinity MatrixAis updated incrementally: the ele-
+mentA(t, i)is computed as the dot product of the projected
+embeddings:
+A(t, i) =Q s(t)·K t(i).(3)
+This computation depends only on the current audio frame,
+ensuring that the attention stage introduces no latency.
+Consistent with the Phase II training input (as shown in Fig-
+ure 1), at each time steptthe newly computed rowA(t,:)is
+concatenated with the unprojected audio embeddingE s(t)and
+fed into the Pattern Discriminator (a GRU layer and a Dense
+layer). The discriminator outputs a decision (wake-up or not)
+for that frame. This process is repeated frame by frame, en-
+abling real-time streaming detection.
+3. EXPERIMENTAL
+3.1. Datasets
+Dataset: We evaluate the proposed method using the
+LibriPhrase dataset [3], where the training set is extracted from
+the train-clean-100 and train-clean-360 subsets of LibriSpeech,
+and the test set is drawn from the train-others-500 subset
+of LibriSpeech. LibriPhrase categorizes negatives into two
+classes: easy negatives (LPE) and hard negatives (LPH), a clas-
+sification standard adopted here.
+Preprocessing: Frame-level labels are provided at a sampling
+rate of 50 Hz, which matches the output rate of the network.
+The final 5 frames of keywords are labeled 1, while all other
+frames are labeled 0 to generate frame-level annotations. These
+labels are then padded to a uniform length for consistency. We
+simulate noisy environments using the babble noise subset of
+MS-SNSD [15] as the noise source. The SNR is uniformly dis-
+tributed across [-5 dB, 15 dB], and amplitude perturbation is
+applied to audio signals to ensure the magnitude is uniformly
+distributed across [-40 dB, 0 dB].
+3.2. Setup
+The proposed streaming model is trained using TensorFlow
+with the Adam optimizer.
+For the audio Encoder, the first convolutional layer outputs
+a filter size of 128, with kernel size set to 5, strides set to 2,
+and padding mode set to causal; the second convolutional layer
+outputs a filter size of 256, with kernel size set to 5, strides set
+to 1, and padding mode set to causal. The hidden dimensions
+of the 2 GRU layers and a Dense layer are set to 128. The text
+Encoder is inherited from the CMCD text Encoder. The GRU
+18
+and Dense hidden dimensions of the Discriminator are the same
+as its inputs.
+During training, noisy input data undergoes time-frequency
+masking: two masks are applied in both the time and frequency
+domains, with a time mask width of 5 frames and a frequency
+mask width of 10 frequency bins. Hard samples are generated
+by masking the first 600 ms of audio features. These hard sam-
+ples only participate in the calculation ofL f andLc, whileL p
+does not utilize hard samples in its calculation.
+3.3. Result
+The model obtained through the above methods has a param-
+eter count of 0.8M and is compared with other text-registered
+streaming open-vocabulary KWS approaches.
+Table 1:Performance Comparison Against Baseline Models
+Params EER(%) AUC(%)
+(M) LP E LPH LPE LPH
+SYNASPOT-AT 0.9 7.07 28.69 97.17 77.35
+CTCAT 0.26.0629.6398.3277.10
+Ours 0.8 6.8228.2197.9579.19
+Compared to CTCAT and SYNASPOT-AT, our model per-
+forms comparably on LP E while achieving the best results on
+LPH:
+• LP H subset: EER decreased by 0.48%, AUC increased by
+1.84% vs. SYNASPOT-AT (best baseline).
+• LP E subset: EER increased by 0.76%, AUC decreased by
+0.37% vs. CTCAT (best baseline).
+Our proposed method achieves competitive performance
+compared to state-of-the-art baselines. While CTCAT demon-
+strates superior performance on the easy negative dataset (LPE),
+its performance drops significantly on the hard negative subset
+(LPH), as shown in Table 1. This suggests that while alignment-
+based methods excel in simple scenarios, they are susceptible
+to failure when alignment is compromised by complex acoustic
+conditions. In contrast, our method achieves the best perfor-
+mance on LP H, demonstrating its robustness. This advantage
+stems from our framework’s ability to perform online hard-
+negative generation during training. As evidenced by the ab-
+lation study in Table 2, our hard-negative construction mech-
+anism specifically enhances performance on challenging sam-
+ples. This indicates that our approach holds greater potential
+for deployment in real-world production environments where
+complex acoustic interference is common.
+As analyzed in Section 2.2, our method is inherently
+streamable. The absence of explicit CTC alignment require-
+ments allows for a more streamlined inference process com-
+pared to CTCAT-like models. To empirically validate this real-
+time efficiency, we conducted single-thread latency tests on an
+AMD EPYC 9654 platform, achieving a total RTF of 0.065
+(Feat+AE: 0.05; Attention+DIS: 0.015). Notably, this latency
+was measured at float32 precision without platform-specific op-
+timization; with further techniques such as quantization, fixed-
+point arithmetic, and instruction-level acceleration commonly
+applied in edge deployment, our approach shows potential for
+streaming-friendly on-device applications.
+Table 2:Ablation study on training strategies
+EER(%) AUC(%)
+LPE LPH LPE LPH
+Proposed 6.82 28.21 97.95 79.19
+w/o hard neg 7.45 29.04 97.62 78.51
+w/o stage strategy 8.72 30.24 96.91 76.98
+w/o phone match 9.07 30.73 96.69 76.35
+ori 13.14 31.37 91.09 74.10
+4. Discussion
+We have presented a streaming text-registered open-vocabulary
+KWS model based on a redesigned Cross-Attention data flow.
+The core idea—assigning streaming speech as Query and
+registered text as Key—enables frame-by-frame processing
+while preserving the semantic richness of pre-trained text en-
+coders. To mitigate performance loss inherent in local frame-
+level information, we introduced four optimization strategies:
+(i) multi-task learning with contrastive and phoneme matching
+losses, (ii) a staged learning scheme for the Pattern Discrim-
+inator, (iii) online hard sample generation via time-frequency
+masking, and (iv) multi-modal feature concatenation to enrich
+discriminator inputs.
+Experimental results on LibriPhrase demonstrate that our
+method achieves competitive performance, particularly on
+hard negatives (LPH), outperforming both SYNASPOT-AT and
+CTCAT in AUC. The elimination of CTC alignment simplifies
+deployment, and the learnable Pattern Discriminator replaces
+heuristic post-processing, making the system more adaptable to
+real-world false alarm patterns.
+Future work will explore more sophisticated hard sample
+generation strategies tailored to specific error types, including
+leveraging multi-modal information (e.g., verifying text simi-
+larity credibility through speech representations). We will also
+investigate model compression techniques (e.g., CNN and GRU
+pruning) to further reduce the parameter footprint for resource-
+constrained devices.
+5. Generative AI Use Disclosure
+During the preparation of this paper, generative AI tools (e.g.,
+DeepSeek) were used solely for language polishing and editing
+purposes, including grammar checking and rephrasing of sen-
+tences to improve clarity and readability. All scientific content,
+ideas, experimental design, data analysis, and conclusions were
+entirely conceived and authored by the (co-)authors. The (co-
+)authors take full responsibility and accountability for the entire
+content of this paper.

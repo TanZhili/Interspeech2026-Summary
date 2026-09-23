@@ -1,0 +1,450 @@
+CoRE: Contrastive Rescoring for Evidence-Aware Multiple-Choice
+Audio Question Answering
+Peihong Zhang ID , Zhixin Li, Yuxuan Liu, Yiqiang Cai, Yizhou Tan, Shengchen LiID
+School of Advanced Technology, Xi’an Jiaotong-Liverpool University, Suzhou, Jiangsu, China
+Peihong.Zhang20@student.xjtlu.edu.cn, Zhixin.Li22@student.xjtlu.edu.cn,
+Yuxuan.Liu2204@student.xjtlu.edu.cn, Yiqiang.Cai21@student.xjtlu.edu.cn,
+Yizhou.Tan22@student.xjtlu.edu.cn, Shengchen.Li@xjtlu.edu.cn
+Abstract
+Large Audio-Language Models (LALMs) achieve strong
+performance on multiple-choice Audio Question Answering
+(AQA) but often exhibit modality bias, over-relying on textual
+priors in questions and candidate options rather than grounded
+acoustic evidence. We present CoRE, a training-free, plug-and-
+play test-time option re-scoring method. CoRE constructs coun-
+terfactual audio via chunk permutation and random segment
+reversal to disrupt long-range temporal structure while largely
+preserving short-time acoustics. It estimates option-level evi-
+dence gain by contrasting scores from original and counterfac-
+tual audio, and applies an adaptive evidence-aware gate for fi-
+nal prediction. Under a unified option-scoring protocol, experi-
+ments on DCASE 2025 Task 5 and AIR-Bench SoundQA show
+consistent gains withQwen2-AudioandKimi-Audio.
+Index Terms: Audio Question Answering, Large Audio-
+Language Models, Modality Bias, Test-Time Rescoring
+1. Introduction
+Audio Question Answering (AQA) is a multimodal question-
+answering task that requires joint analysis of input audio signals
+and natural-language content to produce the corresponding an-
+swer [1, 2]. Recent Large Audio-Language Models (LALMs)
+combine large-scale pre-trained acoustic encoders with Large
+Language Models to capture fine-grained acoustic cues and se-
+mantic representations, and they have achieved strong perfor-
+mance on AQA tasks [3, 4, 5, 6, 7].
+Despite this progress, LALMs often exhibit modality bias
+in AQA, which reduces reliance on grounded acoustic evi-
+dence during option selection and final prediction [8, 9, 10].
+In multiple-choice AQA, decisions can be dominated by lin-
+guistic priors and semantic associations between the question
+and candidate options, rather than evidence in the audio sig-
+nal [8, 11, 12]. For example, given the question“What follows
+the sound of thunder?”, a model may predict“heavy rain”be-
+cause of strong linguistic co-occurrence, even when the record-
+ing contains acoustic evidence that is more consistent with a
+“car alarm”, as shown in Figure 1. The resulting prediction is
+linguistically plausible but acoustically incorrect [13, 14].
+Recent efforts to mitigate modality bias in multimodal
+question answering have explored both training-time and
+inference-time strategies. Training-time approaches improve
+grounding through debiasing objectives [13], auxiliary super-
+vision [15], or architectural modifications [16], but they typi-
+cally require retraining and substantial computation, which lim-
+its practicality for model deployment. By contrast, training-free
+contrastive methods at inference time, which improve faithful-
+ness by comparing model outputs under an original input and a
+perturbed input condition, have attracted growing interest [17].
+Figure 1:Modality bias in multiple-choice AQA.
+However, this paradigm does not directly transfer to
+multiple-choice AQA. First, designing a negative audio con-
+dition is more delicate than in visual or text settings because
+naive audio removal or masking may introduce strong interven-
+tion artifacts and distribution shift, so the resulting score differ-
+ence may not faithfully represent relative acoustic evidence for
+candidate options [18, 19]. Second, many existing contrastive
+methods operate at the token decoding level, whereas multiple-
+choice AQA is naturally formulated through option-level scor-
+ing and re-scoring under a unified scoring protocol [1]. These
+limitations motivate a dedicated training-free test-time method
+for multiple-choice AQA that can construct an informative neg-
+ative audio condition while preserving local acoustic statistics
+to a practical extent, derive option-level evidence gain from
+score contrast, and support reliable option re-scoring.
+To address these limitations, we propose CoRE, a training-
+free and plug-and-play test-time option re-scoring method for
+multiple-choice AQA. CoRE constructs a counterfactual au-
+dio condition via chunk permutation and random segment re-
+versal to disrupt long-range temporal structure while approx-
+imately preserving short-time acoustics. It estimates option-
+level evidence gain by contrasting option scores under the origi-
+nal and counterfactual audio conditions within a unified option-
+scoring protocol, and applies an adaptive evidence-aware gate
+for final prediction. Experiments on DCASE 2025 Task 5
+and AIR-Bench SoundQA show consistent improvements with
+Qwen2-AudioandKimi-Audio, and further analyses sup-
+port the counterfactual design and adaptive gating strategy.
+2. Related Work
+Prior work on mitigating modality bias and improving ground-
+ing in multimodal question answering can be broadly grouped
+into training-time and inference-time approaches. Training-
+915
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-656
+Figure 2:Overview of CoRE.
+time methods are complementary to our goal, but they usually
+require retraining or model modifications, which often incur
+substantial computational cost and limit practicality in deploy-
+ment settings [13, 20, 16, 10].
+In contrast, training-free contrastive inference has emerged
+as a promising direction to improve faithfulness. The core
+idea is to estimate a corrective signal by contrasting model be-
+havior under an original input and an intervention condition,
+and then use it to steer predictions toward better-grounded out-
+puts. In vision-language models, Visual Contrastive Decoding
+[17] perturbs visual inputs to suppress hallucination and over-
+reliance on unimodal priors, and Instruction Contrastive Decod-
+ing [21] perturbs instruction conditions to expose and counter-
+act hallucination-prone decoding behavior. In audio-language
+models, Audio-Aware Decoding (AAD) [12] constructs an
+audio-absent reference via silence and applies token-level con-
+trastive decoding under audio-present and audio-absent condi-
+tions. Recent adaptive contrastive decoding in text-only LLMs
+leverages distributional disagreement and confidence cues to
+modulate contrast strength [22, 23]. Whether such signals re-
+main reliable indicators of cross-modal bias in large audio-
+language models is still underexplored. This line of work pro-
+vides the closest conceptual paradigm to CoRE, but in multiple-
+choice AQA it leaves two components insufficiently specified:
+constructing an informative audio-side contrastive reference
+and using contrastive signals for stable option-level correction.
+Compared with prior contrastive inference methods, CoRE
+addresses these limitations in three aspects. First, CoRE con-
+structs counterfactual audio instead of audio removal or silence,
+disrupting long-range semantic continuity while approximately
+preserving short-time acoustic statistics. This provides a more
+informative reference for estimating relative acoustic evidence
+across candidate options. Second, CoRE formulates contrastive
+correction directly at the candidate-option level under a unified
+option scoring protocol, avoiding decoding-specific confounds
+such as prefix dynamics and lexical uncertainty. Third, CoRE
+uses adaptive gating for option re-scoring: the gate weight is
+computed from Jensen-Shannon divergence and one-sided en-
+tropy reduction, which suppresses over-correction when the
+original and counterfactual conditions exhibit low conflict.
+3. Method
+3.1. Problem Setup
+Each example consists of an audio clipa, a natural-language
+questionq, and a set ofKcandidate answersX={x i}K
+i=1.
+The large audio-language model outputs option-level logits
+z+ =z(a,q,X)∈R K,p + = softmax(z+),(1)
+wherep + is the induced distribution over theKoptions.
+3.2. Counterfactual Construction and Evidence Gain
+We construct a counterfactual audioaneg via block-wise tempo-
+ral scrambling, which randomly permutes the block order and
+stochastically applies within-block time reversal. Letx[n]de-
+note the waveform of the input audioa, with lengthTsamples.
+Block partition.We splitx[n]intoBcontiguous, non-
+overlapping blocks{bj}B
+j=1 with a fixed block lengthτ(in sam-
+ples), whereB=⌈T/τ⌉. Forj= 1,...,B−1,
+bj[t] =x[(j−1)τ+t], t= 0,...,τ−1,(2)
+and the last block contains the remaining samples:
+bB[t] =x[(B−1)τ+t], t= 0,...,T−(B−1)τ−1.(3)
+Permutation and local reversal.Letπbe a random permuta-
+tion over{1,...,B}. For each blockb j, we sample an indicator
+rj∈{0,1}. The reversal operator is defined as
+Rev(b)[t] =b[|b|−1−t],(4)
+where|b|denotes the length of block. The transformed block is
+˜bj[t] = (1−r j)bj[t] +rjbj[|bj|−1−t].(5)
+Counterfactual synthesis.The audioa neg is obtained by con-
+catenating the transformed blocks in permuted order:
+aneg = Concat(˜bπ(1),˜bπ(2),..., ˜bπ(B)).(6)
+We compute the counterfactual logits and distribution
+z− =z(a neg,q,X)∈R K,p − = softmax(z−),(7)
+and define the evidence gain as
+∆ =z +−z −∈R K.(8)
+3.3. Adaptive Evidence-Aware Gating
+We introduce a gate coefficientβ∈[0,1]to adaptively con-
+trol how much the final option-level score should rely on
+audio-conditioned evidence. A shift between the original and
+counterfactual predictions can be uninformative in low-conflict
+regimes, where small discrepancies may reflect stochastic vari-
+ation or noisy conditioning rather than consistent acoustic ev-
+idence [23]. We therefore computeβby combining (i) a
+916
+bounded conflict signal based on Jensen–Shannon divergence
+and (ii) an entropy-based confidence signal that retains only cer-
+tainty gains under real audio.
+JSD–entropy gate.LetJSD 2(·∥·)denote Jensen–Shannon
+divergence with base-2 logarithms and letH(p) =
+− PK
+i=1pi log2pi be Shannon entropy. We quantify distribu-
+tional conflict by
+J= JSD 2(p+∥p−), u J = exp2(J)−1 = 2 J−1,(9)
+whereJ∈[0,1]and thereforeu J∈[0,1].
+A distributional shift alone does not indicate whether real
+audio yields a more reliable decision or merely injects uncer-
+tainty. We therefore retain entropy reductions under real audio:
+∆H+ = max(0, H(p−)−H(p +)), u H = ∆H+
+log2K+ϵ ,
+(10)
+whereϵ >0is a small constant. This normalization ensures
+uH∈[0,1]and increases only when conditioning on real audio
+makes the option distribution more concentrated relative to the
+counterfactual baseline. We then compute
+β= √uJuH.(11)
+The geometric mean suppresses updates unless both signals are
+present:u J indicates non-trivial conflict betweenp + andp −,
+whileu H indicates that the shift coincides with a confidence
+increase under real audio. When audio contributes limited in-
+cremental evidence,Jtends to be small andH(p +)does not
+decrease, yielding a smallβ.
+Gated re-scoring.We fuse the two logit vectors by a convex
+interpolation:
+Z=z − +β(z +−z −) = (1−β)z − +βz +,(12)
+which remains within the segment betweenz − andz + and thus
+does not extrapolate beyond the model output under real audio.
+4. Experimental Setup
+4.1. Dataset
+We conduct experiments on the DCASE 2025 Challenge Task 5
+AQA dataset [1], which comprises three complementary sub-
+sets: Bioacoustics QA (BQA) [24], Temporal Soundscapes QA
+(TSQA) [25, 26], and Complex QA (CQA, MMAU-derived
+[27]). BQA focuses on bioacoustic recognition and reasoning
+over recordings with highly variable durations, TSQA empha-
+sizes temporal reasoning in soundscape scenarios, and CQA
+targets complex acoustic scenes that require higher-level infer-
+ence. We follow the official split and report top-1 accuracy
+on each subset. To assess cross-benchmark generalization, we
+additionally evaluate on AIR-Bench [28] Sound Question An-
+swering, using the same option-level scoring protocol.
+4.2. Baseline Models
+We use Qwen2-Audio-7B-Instruct [4] 1 and Kimi-Audio-7B-
+Instruct [7]2 as baselines. Qwen2-Audio combines a Whisper-
+initialized audio encoder with a large language model for audio-
+conditioned instruction following. Kimi-Audio adopts hybrid
+audio representations and initializes an audio-language model
+from a pre-trained text LLM. Both provide token-level logits
+during inference, enabling a unified option-scoring interface
+without architectural modifications or parameter updates.
+1https://github.com/QwenLM/Qwen2-Audio.
+2https://github.com/MoonshotAI/Kimi-Audio.
+4.3. Option-Level Scoring and Evaluation
+We evaluate all methods under a unified option-level scoring
+protocol. For each candidate option, we compute a score from
+the backbone output logits using teacher-forced conditional log-
+likelihood under a fixed answer template, thereby sidestepping
+generation-time decoding artifacts [18]. Specifically, given au-
+dioa, questionq, and an ordered list of candidate options
+Cπ ={o π(1),...,o π(K)}, we compute the length-normalized
+conditional log-likelihood of optionoi:
+ℓi(a,q,C π) = 1
+Ti
+TiX
+t=1
+logp(xi,t|a,q,C π,xi,<t),(13)
+wherexi,1:Ti is the token sequence ofoi. The predicted answer
+is the option with the highest score. Performance is reported
+as top-1 accuracy on each subset. To quantify robustness to
+answer-choice ordering, we sampleM= 8random permuta-
+tionsπper example, recompute predictions under eachC π, and
+report mean±std across theMshuffles.
+4.4. CoRE Implementation Details
+We construct counterfactual audio in the waveform domain after
+resampling to each backbone input rate. The waveform is split
+into non-overlapping blocks of durationτ= 40ms, followed
+by a random block permutation and independent time reversal
+with probabilityp rev = 0.5. This short-time window largely
+preserves local acoustic statistics while disrupting long-range
+semantic continuity [29, 30]. We generate one counterfactual
+waveform per example (Ncf = 1) and apply 3 ms linear cross-
+fading at block boundaries. To isolate ordering robustness in
+theM= 8shuffle evaluation, we fix the counterfactual sam-
+pling seed and reuse the same counterfactual audio across all
+permutations of the same example.
+4.5. Compared Methods
+We compare CoRE with training-free methods under the same
+backbones and the unified option-level scoring protocol.De-
+faultuses standard inference without any test-time interven-
+tion.Prompt engineeringprepends a fixed audio-attention
+prefix prompt,“Focus on the audio evidence and answer the
+question based on what is heard, rather than textual plausibility
+from the question or answer choices”.Audio-Aware Decoding
+(AAD)[12] uses silence as a negative audio condition and forms
+a contrastive correction by contrasting audio-present and audio-
+absent predictions.CoRE-Silencereplaces our counterfactual
+audio construction with silence while keeping the evidence-gain
+formulation and adaptive gating unchanged.
+5. Experiments and Results
+5.1. Results on DCASE Task 5 and AIR-Bench SoundQA
+Table 1 summarizes results on DCASE 2025 Task 5 and AIR-
+Bench SoundQA. On DCASE, CoRE yields the best accuracy
+on all subsets, with the largest gains on BQA where fine-grained
+acoustic cues are crucial. CoRE further improves over CoRE-
+Silence, a matched control using silence as the reference, sug-
+gesting that performance depends on an informative counterfac-
+tual rather than contrastive re-scoring alone. Gains on CQA are
+smaller, which is expected because CQA requires higher-level
+inference beyond audio grounding. On AIR-Bench SoundQA,
+CoRE continues to outperform the training-free baselines un-
+917
+Table 1:Top-1 accuracy (%) on the DCASE 2025 Challenge Task 5 dataset (BQA/TSQA/CQA) and AIR-Bench SoundQA. Results are
+reported as mean±std overM= 8answer-choice permutations.
+Qwen2-Audio-7B-Instruct Kimi-Audio-7B-Instruct
+Method BQA TSQA CQA SoundQA BQA TSQA CQA SoundQA
+Default 30.0±2.6 39.2±0.9 49.6±1.1 67.2±1.2 43.3±3.2 42.5±1.1 60.3±1.1 71.5±1.4
++ Prompt Engineering 31.6±2.3 42.5±0.8 51.0±1.0 68.5±1.1 44.2±2.9 44.4±1.0 61.2±1.0 72.7±1.3
++ AAD 33.1±2.1 45.7±0.8 52.6±0.9 71.5±1.0 45.2±2.7 46.6±1.0 62.2±0.9 75.0±1.2
++ CoRE-Silence 33.8±2.2 45.6±0.8 52.9±0.9 72.0±1.0 46.0±2.8 47.3±1.0 62.8±0.9 75.3±1.2
++CoRE (Ours) 40.7±2.2 49.6±0.8 53.2±0.9 73.8±0.9 51.9±2.8 51.3±1.0 63.5±0.9 77.0±1.1
+Table 2:Validation of counterfactual audio construction.ρ local
+andρ global are masked SSM correlations in the local (near-
+diagonal) and global (off-diagonal) regions; Gap=ρ local−
+ρglobal. We also report short-time acoustic-statistics preserva-
+tion via cosine similarity of log-mel mean (s µ) and std (s σ).
+Log-mel: 16 kHz, 25 ms window, 10 ms hop, 80 mels. Counter-
+factual:τ=40 ms,p rev=0.5, 3 ms cross-fade.
+Setting Subsetρ local ↑ρ global ↓Gap↑s µ ↑s σ ↑
+Permutation only
+BQA 0.86 0.49 0.37 0.9990 0.9850
+TSQA 0.88 0.36 0.52 0.9992 0.9997
+CQA 0.79 0.57 0.22 0.9976 0.9997
+Local reversal only
+BQA 0.74 0.57 0.17 0.9986 0.9953
+TSQA 0.76 0.50 0.26 0.9998 0.9996
+CQA 0.69 0.56 0.13 0.9997 0.9998
+Permutation + Reversal (CoRE)
+BQA 0.80 0.34 0.46 0.9988 0.9791
+TSQA 0.83 0.23 0.60 0.9992 0.9997
+CQA 0.74 0.46 0.28 0.9978 0.9997
+der the same option-level scoring protocol, indicating that the
+improvement transfers to a different benchmark.
+5.2. Validation of Counterfactual Audio Construction
+We validate the counterfactual audio construction using self-
+similarity matrices (SSMs) computed from frame-level log-
+spectral features. Table 2 shows that the full construction
+yields the largest Gap across all subsets, mainly by reducing
+ρglobal, indicating stronger disruption of long-range temporal
+structure than single-operation variants while keepingρ local rel-
+atively high. We additionally measure preservation of short-
+time acoustic statistics using cosine similarity of log-mel mean
+and std vectors (s µ,sσ), which remain close to 1, suggesting
+that the perturbation does not introduce a large low-level distri-
+bution shift. Figure 3 provides examples, where changes con-
+centrate in off-diagonal regions while the near-diagonal band
+remains comparatively stable, consistent with the quantitative
+SSM trends and the intended structural effect of CoRE.
+5.3. Ablation of Adaptive Gating
+Table 3 reports gating ablations on DCASE 2025 Task 5 with
+Kimi-Audio. Fixedβvalues behave inconsistently across sub-
+sets, indicating that a constant gating strength is suboptimal.
+Our adaptive gate performs best overall. Single-signal variants
+are weaker than the full gate, suggesting that conflict sensitivity
+Figure 3:SSM visualization for BQA, TSQA, and CQA.
+Table 3:Ablation experiments of adaptive gating.
+Method BQA TSQA CQA Overall
+Fixed gating
+β= 0.0(counterfactual branch only) 38.7 36.9 58.1 44.6
+β= 0.347.8 47.0 62.3 52.4
+β= 0.549.9 49.3 62.7 54.0
+β= 0.750.8 48.8 62.4 54.0
+β= 1.0(original branch only) 43.3 42.5 60.3 48.7
+Single-signal gating
+β=u J (JSD-only) 51.0 50.5 63.0 54.8
+β=u H (Entropy-only) 50.4 49.8 63.0 54.4
+w/o one-sided entropy filtering 49.2 48.6 61.8 53.2
+Gate combination rule
+β= (u J +u H )/2(arithmetic mean) 51.3 50.8 63.2 55.1
+β=u JuH (product) 50.7 50.0 62.9 54.5
+β= √uJuH (Ours) 51.9 51.3 63.5 55.6
+and certainty gain provide complementary signals, and remov-
+ing the one-sided entropy filter hurts performance.
+6. Conclusion
+We propose CoRE, a training-free contrastive re-scoring
+method for multiple-choice AQA that uses an informative coun-
+terfactual audio reference and adaptive evidence-aware gating,
+and improves performance on two benchmarks. CoRE incurs
+a modest inference overhead, requiring one additional forward
+pass per example to score the counterfactual audio. We plan to
+extend CoRE to generative AQA in future work.
+918
+7. Acknowledgment
+This work is supported by Jiangsu Provincial Major Science and
+Technology Project (BG2024027).
+8. Generative AI Use Disclosure
+During preparing this manuscript, we used Chatgpt to polish the
+writing and improve grammatical issues.
+9. References
+[1] C.-H. H. Yang, S. Ghosh, Q. Wang, J. Kim, H. Hong, S. Kumar,
+G. Zhong, Z. Kong, S. Sakshi, V . Lokegaonkar, O. Nieto,
+R. Duraiswami, D. Manocha, G. Kim, J. Du, R. Valle, and
+B. Catanzaro, “Multi-domain audio question answering toward
+acoustic content reasoning in the dcase 2025 challenge,” 2025.
+[Online]. Available: https://arxiv.org/abs/2505.07365
+[2] H. M. Fayek and J. Johnson, “Temporal reasoning via audio ques-
+tion answering,”IEEE/ACM Transactions on Audio, Speech, and
+Language Processing, vol. 28, pp. 2283–2294, 2020.
+[3] Y . Chu, J. Xu, X. Zhou, Q. Yang, S. Zhang, Z. Yan, C. Zhou, and
+J. Zhou, “Qwen-audio: Advancing universal audio understand-
+ing via unified large-scale audio-language models,”arXiv preprint
+arXiv:2311.07919, 2023.
+[4] Y . Chu, J. Xu, Q. Yang, H. Wei, X. Wei, Z. Guo,
+Y . Leng, Y . Lv, J. He, J. Lin, C. Zhou, and J. Zhou,
+“Qwen2-audio technical report,” 2024. [Online]. Available:
+https://arxiv.org/abs/2407.10759
+[5] S. Ghosh, Z. Kong, S. Kumar, S. Sakshi, J. Kim, W. Ping, R. Valle,
+D. Manocha, and B. Catanzaro, “Audio flamingo 2: An audio-
+language model with long-audio understanding and expert rea-
+soning abilities,”arXiv preprint arXiv:2503.03983, 2025.
+[6] Z. Kong, A. Goel, R. Badlani, W. Ping, R. Valle, and B. Catanzaro,
+“Audio flamingo: A novel audio language model with few-shot
+learning and dialogue abilities,”arXiv preprint arXiv:2402.01831,
+2024.
+[7] D. Ding, Z. Ju, Y . Leng, S. Liu, T. Liu, Z. Shang, K. Shen,
+W. Song, X. Tan, H. Tanget al., “Kimi-audio technical report,”
+arXiv preprint arXiv:2504.18425, 2025.
+[8] C. Wang, G. Deng, X. Yang, H. Qiu, and T. Zhang, “When au-
+dio and text disagree: Revealing text bias in large audio-language
+models,” inProceedings of the 2025 Conference on Empirical
+Methods in Natural Language Processing, 2025, pp. 4878–4888.
+[9] X. Zheng, C. Liao, Y . Fu, K. Lei, Y . Lyu, L. Jiang, B. Ren, J. Chen,
+J. Wang, C. Liet al., “Mllms are deeply affected by modality
+bias,”arXiv preprint arXiv:2505.18657, 2025.
+[10] J. Ma, Z. Gao, Q. Chai, J. Liu, P. Wang, J. Tao, and Z. Su,
+“Fortisavqa and maven: a benchmark dataset and debiasing
+framework for robust multimodal reasoning,”arXiv preprint
+arXiv:2504.00487, 2025.
+[11] N. Chandak, S. Goel, A. Prabhu, M. Hardt, and J. Geiping, “Elim-
+inating discriminative shortcuts in multiple choice evaluations
+with answer matching,” inICML 2025 Workshop on Assessing
+World Models, 2025.
+[12] T.-w. Hsu, K.-H. Lu, C.-H. Chiang, and H.-y. Lee, “Reducing ob-
+ject hallucination in large audio-language models via audio-aware
+decoding,”arXiv preprint arXiv:2506.07233, 2025.
+[13] S. Ramakrishnan, A. Agrawal, and S. Lee, “Overcoming language
+priors in visual question answering with adversarial regulariza-
+tion,”Advances in neural information processing systems, vol. 31,
+2018.
+[14] Y . Wu, Y . Zhao, S. Zhao, Y . Zhang, X. Yuan, G. Zhao, and
+N. Jiang, “Overcoming language priors in visual question answer-
+ing via distinguishing superficially similar instances,” inProceed-
+ings of the 29th International Conference on Computational Lin-
+guistics, 2022, pp. 5721–5729.
+[15] R. R. Selvaraju, S. Lee, Y . Shen, H. Jin, S. Ghosh, L. Heck, D. Ba-
+tra, and D. Parikh, “Taking a hint: Leveraging explanations to
+make vision and language models more grounded,” inProceed-
+ings of the IEEE/CVF international conference on computer vi-
+sion, 2019, pp. 2591–2600.
+[16] A. Agrawal, D. Batra, D. Parikh, and A. Kembhavi, “Don’t just
+assume; look and answer: Overcoming priors for visual question
+answering,” inProceedings of the IEEE conference on computer
+vision and pattern recognition, 2018, pp. 4971–4980.
+[17] S. Leng, H. Zhang, G. Chen, X. Li, S. Lu, C. Miao, and L. Bing,
+“Mitigating object hallucinations in large vision-language mod-
+els through visual contrastive decoding,” inProceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recogni-
+tion, 2024, pp. 13 872–13 882.
+[18] H. Yin, G. Si, and Z. Wang, “The mirage of performance gains:
+Why contrastive decoding fails to mitigate object hallucinations
+in mllms?” inThe Thirty-ninth Annual Conference on

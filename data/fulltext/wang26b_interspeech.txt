@@ -1,0 +1,533 @@
+FoleyGenEx: Unified Video-to-Audio Generation with Multi-Modal Control,
+Temporal Alignment, and Semantic Precision
+Shiyao Wang ID 1,∗, Xijuan Zeng ID 2,∗, Hui Wang ID 1,∗, Shiwan Zhao ID 1, Feng Deng2, Chen Zhang2,
+Yong Qin ID 1,∗∗
+1 Academy for Advanced Interdisciplinary Studies, Nankai University, Tianjin, China
+2 Kling Team, Kuaishou Technology, Beijing, China
+wangshiyao@mail.nankai.edu.cn, qinyong@nankai.edu.cn
+Abstract
+We present FoleyGenEx, a unified video-to-audio (VTA) frame-
+work integrating multi-modal control, frame-level temporal
+alignment, and fine-grained semantics, enabling synchronized,
+versatile audio synthesis for diverse tasks. Existing VTA meth-
+ods either have multi-modal control but weak temporal align-
+ment or strong alignment but lack reference audio condition-
+ing and semantic precision. FoleyGenEx fills this gap via three
+core innovations: a conditional injection mechanism for audio-
+controlled VTA and Foley extension, a multi-modal dynamic
+masking strategy preserving training synchronization, and an
+adverb-based data augmentation algorithm leveraging signal
+processing and large language models to enhance textual su-
+pervision with nuanced semantics. Experiments on AudioCaps,
+VGGSound, and Greatest Hits demonstrate its competitive con-
+trollable VTA performance against existing methods. Demo
+samples are available athttps://foleygenex.github.
+io/FoleyGenEx.
+Index Terms: audio synthesis, video-to-audio, text-to-audio
+1. Introduction
+Text-to-video (T2V) generation has made remarkable progress
+with models such as OpenAI’s Sora [1] and others [2, 3, 4, 5],
+producing visually compelling content. However, most T2V
+outputs remain silent, severely limiting user immersion and re-
+alism. Adding synchronized audio would dramatically enhance
+the viewing experience, yet manual dubbing and alignment are
+prohibitively time-consuming. This challenge has driven grow-
+ing interest in generative models for video-to-audio (VTA) syn-
+thesis, which aim to automatically produce audio tracks condi-
+tioned on video content.
+Despite recent advances, existing VTA methods[6, 7, 8,
+9, 10, 11, 12, 13] face persistent challenges in three key ar-
+eas: temporal synchronization, multi-modal control, and fine-
+grained semantic precision. MultiFoley [12] integrates video,
+text, and reference audio by upsampling video semantic fea-
+tures and performing channel-wise concatenation with the refer-
+ence audio in the latent space to enable style transfer and Foley
+extension (FE). However, this simplistic upsampling strategy
+often results in degraded temporal synchronization.In contrast,
+MMAudio [13] achieves superior frame-level synchronization
+by leveraging a Multi-modal Diffusion Transformer (MMDiT)
+[14] architecture. This framework effectively disentangles dif-
+This work was done during Shiyao Wang’s internship at Kuaishou
+Technology.
+*These authors contributed equally.
+**indicates the corresponding author.
+FE CLAP A
+VTA DeSync
+VTA IB-scoreTC-VTA DeSync
+TC-VTA CLAPT
+TTA CLAPT
+AC-VTA Resemblyzer
+AC-VTA CLAPT AC-VTA OnsetSyncAP
+FE DeSync
+GenAU-Large
+FoleyCrafter
+CondFoleyGen
+MMAudio
+MultiFoley
+FoleyGenEx (Ours)
+FoleyGenEx + AA (Ours)
+Figure 1:FoleyGenEx supports a range of multi-modal con-
+trolled audio generation tasks, including Text-to-Audio (TTA),
+basic Video-to-Audio (VTA), Text-Controlled VTA (TC-VTA),
+Audio-Controlled VTA (AC-VTA), and Foley extension (FE). It
+unifies these tasks while achieving strong synchronization, ver-
+satile control, and expressive audio generation.
+ferent modalities and facilitates complex cross-modal interac-
+tions through joint-attention mechanisms, further enhanced by
+the Synchformer [15] for precise alignment. Despite its syn-
+chronization strengths, MMAudio lacks a dedicated reference
+audio conditioning branch. Consequently, it struggles with
+tasks like audio-controlled VTA (AC-VTA) and FE, where the
+objective is to generate audio that precisely matches the timbre,
+prosody, and acoustic events of a reference track. Moreover,
+both approaches fail to provide fine-grained semantic control
+when textual descriptions specify subtle variations in manner
+or intensity—for example, distinguishing between “fast knock-
+ing” and “slow knocking,” or “loud knocking” and “soft knock-
+ing”—largely because standard datasets [16, 17, 18] contain
+few adverbial cues, offering limited supervision for such nu-
+anced semantics.
+These limitations create a clear trade-off: MultiFoley sup-
+ports diverse control inputs but sacrifices temporal precision,
+whereas MMAudio delivers strong synchronization but lacks
+versatility in conditioning and semantic expressivity. As illus-
+trated in Figure 1, neither approach achieves all three objectives
+simultaneously, leaving a gap for methods that can unify tem-
+poral alignment, multi-modal control, and semantic precision
+within a single framework.
+To close this gap, we introduce FoleyGenEx, a novel VTA
+framework built upon the MMDiT architecture. FoleyGenEx
+preserves the strong synchronization capabilities of MMAudio
+while extending its functionality with a conditional injection
+mechanism that enables reference audio conditioning for AC-
+VTA and FE. A multi-modal dynamic masking strategy fur-
+4052
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-112
+DAC-V AE
+CLIP-Text Encoder
+CLIP-Visual EncoderM𝑋t
+InputEmbedding
+Audio Projection    
+Text Projection Visual Projection
+BM
+Multimodal Diffusion Transformer Block x N
+Single-modal Diffusion Transformer Block x N
+Flow
+IM
+MSE Loss
+Synchformer
+Projection & Upsamle
+M
+Image Sequence
+Average
+Pooing
+MLP
+M Masking
+𝑋t
+𝑋1 Latent
+IM Inverse 
+Masking
+BM
+Bilinear-
+mapping 
+Masking
+Audio
+𝑋0 Initial Noise
+1 − 𝑡 𝑋0 + 𝑡𝑋1
+Text Video 
+Add
+C Concat
+M𝑋1 𝑋𝑡
+C
+Linear Projection  
+ConvPositionEmbedding
+30% Probability
+Zeroing 
+InputEmbedding
+Figure 2:FoleyGenEx training framework.
+ther ensures alignment between training and inference, miti-
+gating the synchronization degradation observed in MultiFo-
+ley. Beyond synchronization and control, FoleyGenEx incor-
+porates an adverb-based data augmentation algorithm that lever-
+ages both signal processing techniques and large language mod-
+els (LLMs) to enrich training data with adverbial cues, enabling
+fine-grained semantic control over the generated audio.
+Extensive experiments on AudioCaps [17], VGGSound
+[16], and Greatest Hits [19] demonstrate that FoleyGenEx
+not only inherits the strong synchronization performance of
+MMAudio but also achieves the versatile multi-modal control
+of MultiFoley, while uniquely providing fine-grained seman-
+tic precision through adverb-based augmentation. As shown
+in Figure 1, FoleyGenEx and its adverb-augmented variant
+achieve competitive performance compared to existing meth-
+ods across synchronization, control, and semantic metrics, and
+excel in several key aspects, representing significant progress
+for controllable VTA generation.
+2. Related work
+Flow matchingFlow matching [20] models the continuous
+transformation of data distributions using an ordinary differen-
+tial equation (ODE):
+dXτ
+dτ =v(τ,X τ ),(1)
+whereX τ represents the state at continuous timeτ(ranging
+from 0 to 1), andv(τ,X τ )is a learned flow field guidingX τ
+from an initial distributionp 0(X)(e.g., Gaussian noise) to a
+target distributionp 1(X)(the real data distribution). To solve
+this ODE numerically, Euler’s method is used for discretization,
+resulting in the iterative update formula:
+Xt =t·X 1 + (1−t)·X 0,(2)
+wheretis a discrete time step (a scalar controlling interpola-
+tion),X 0 is a sample from the initial noise distributionp 0(X),
+andX 1 is a sample from the target data distributionp 1(X).
+Multi-modal diffusion transformerMMDiT [14] builds upon
+the Diffusion Transformer (DiT) architecture, emphasizing col-
+laborative modeling and information interaction across multi-
+ple modalities. This is crucial for cross-modal generative tasks
+like VTA, which require coordinated multi-source condition-
+ing. MMDiT uses separate weight parameters to construct in-
+dependent feature streams for each modality. Within attention
+layers, it concatenates multi-modal sequences to enable bidi-
+rectional cross-modal information flow, preserving modality-
+specific characteristics while ensuring precise alignment. To
+further enhance cross-modal collaboration, the adaLN mecha-
+nism [21] is integrated to inject conditions.
+Multi-modal controlled audio generationText-to-audio
+(TTA) [22, 23, 24, 25] offers control over background and en-
+vironmental sounds but often struggles with video semantics or
+accurate synchronization. Conversely, VTA excels at generat-
+ing audio aligned with video content and events, essential for
+applications like silent film dubbing and damaged audio track
+restoration. Recent efforts focus on multi-modal controlled au-
+dio generation to increase VTA’s flexibility. For example, Cond-
+FoleyGen [26] utilizes a target video, a conditional reference
+video, and a conditional reference audio track to synthesize au-
+dio that is temporally synchronized with the target video while
+inheriting the specific acoustic style and timbre from the ref-
+erence audio. Sketch2Sound [27] uses loudness, spectral cen-
+troid, and pitch probabilities from reference audio to control the
+generated audio’s prosody. MultiFoley integrates video, text,
+and audio by aligning upsampled video features with reference
+audio latents via channel-wise concatenation to achieve multi-
+modal control for style transfer and Foley extension.
+3. FoleyGenEx
+3.1. Overview
+The FoleyGenEx training framework, as depicted in Figure 2,
+leverages an MMDiT backbone for multi-modal feature fusion
+and a single-modal DiT for high-fidelity audio modeling via it-
+erative flow-matching. The core architectural innovation lies in
+our conditional injection mechanism within the audio stream,
+synergized with a novel multimodal dynamic masking strategy
+that ensures robust cross-modal alignment.
+Audio modalityAudio latents are extracted using a pre-trained
+DAC-V AE [28]. To facilitate conditional injection and ensure
+zero-shot generalization, we employ a stochastic masking strat-
+egy during training, obscuring 70–100% of the audio latent.
+This design enforces consistency between the training objective
+(“context + mask”) and inference-time workflows (“reference
+4053
+MMDiT
+Audio
+DiT
+(1) Text-to-Audio (2) Video-to-Audio (3) Text-Control-Video-to-Audio (4) Audio-Control-Video-to-Audio (5) Foley Extension
+X0
+F𝐴0
+F𝑇F𝑉0
+MMDiT
+Audio
+DiT
+X0
+F𝐴0
+F𝑇F𝑉
+FS MMDiT
+Audio
+DiT
+X0
+F𝐴0
+F𝑇F𝑉0
+FS MMDiT
+Audio
+DiT
+X0
+F𝐴
+F𝑇0F𝑉0
+FS MMDiT
+Audio
+DiT
+X0F𝑇0F𝑉
+FS
+FAF𝐴
+Ref Audio
+F𝑅𝑆
+FA
+Figure 3:Multi-modal controlled audio generation tasks. F T: text semantic features; F V: video semantic features; F S: video syn-
+chronization features; FRS: reference video synchronization features; FA: reference audio latents. F V0, FA0, and FT0 represent all-zero
+features for video, audio, and text, respectively. ‘Ref’ denotes ‘reference’.
+audio + generated audio”). Both during training and inference,
+anInputEmbeddinglayer processes the concatenated masked
+latent and intermediate stateX t to inject conditional cues. To
+ensure compatibility with tasks where no reference audio is pro-
+vided, the masked latent is zeroed out with a 30% probability
+prior to concatenation. The resulting features are enriched via
+aConvPositionEmbeddingmodule [29] for sequence positional
+encoding before being projected into the MMDiT input space.
+At inference, the conditional latent is injected through theIn-
+putEmbeddinglayer and summed with initial noise, rendering
+the segment equivalent to the training-time masked region. To
+align audio and video durations, a surrogate video is prepended
+to the target video; potential misalignments are mitigated via
+synchronized masking on the video branch.
+Text modalitySemantic features are extracted via a CLIP [30]
+text encoder. Given that textual descriptors do not maintain a
+strictly frame-to-frame temporal alignment with audio, masking
+is not applied to the text modality.
+Video modalityVisual semantic features are derived from a
+CLIP visual encoder, while temporal synchronization features
+are extracted using Synchformer. To neutralize the influence
+of potentially misaligned features from the surrogate reference
+video introduced during inference, visual semantics undergo bi-
+linear mapping-based masking, precisely mirroring the mask
+applied to the audio latents. Since synchronization features are
+projected and upsampled for temporal alignment, we investi-
+gated an alternative approach of similarly upsampling visual
+semantic features prior to masking. However, this resulted in
+suboptimal performance as upsampling-induced padding arti-
+facts diluted the original semantic density. After undergoing an
+identical masking process, synchronization features are com-
+bined with the semantic features, which have been average-
+pooled and projected via a Multi-Layer Perceptron (MLP), to
+ensure that unsynchronized reference segments do not disrupt
+the alignment between the generated audio and the target video.
+ConditioningMulti-modal fusion is achieved by concatenating
+projected video and text semantic features with audio latents
+for MMDiT processing. Simultaneously, these semantic fea-
+tures are average-pooled and projected via an MLP to generate a
+global conditioning vector. This vector is combined with visual
+synchronization features to produce a frame-aligned condition.
+Both conditions are injected into the MMDiT blocks through
+the adaLN mechanism, with the frame-aligned condition fur-
+ther guiding the single-modal DiT.
+Loss function designWe implement a Masked Mean Squared
+Error (MSE) loss,L MSEMasked, which restricts gradient descent to
+the masked regions of each sample. While the baseline MMAu-
+dio loss,L MSEMMAudio, provides a global average over batch
+(B), time (T), and features (F), our adaptation first computes a
+per-frame loss:
+LMSEF rame(b,t) = 1
+F
+FX
+f=1
+(ˆ yb,t,f−y b,t,f )2.(3)
+Using a boolean indicatorrand span mask(b,t), we isolate
+the masked frames. The final objective is normalized by the
+total number of masked framesN:
+LMSEMasked = 1
+N
+BX
+b=1
+TX
+t=1
+ 
+LMSEF rame(b,t)
+×rand span mask(b,t)
+
+,
+(4)
+whereN= PB
+b=1
+PT
+t=1 rand span mask(b,t).
+3.1.1. Distinction from MMAudio architecture
+FoleyGenEx represents a structural evolution over the MMAu-
+dio framework through several critical innovations:
+•Conditional injection pathway:Unlike MMAudio, which
+lacks reference audio conditioning, FoleyGenEx introduces a
+dedicated injection mechanism. This pathway facilitates the
+integration of conditional latents with flow states via channel-
+wise concatenation and residual summation during inference,
+enabling sophisticated tasks like style transfer.
+•Multimodal disentanglement via masking:We implement
+a comprehensive multimodal masking strategy across au-
+dio, visual, and synchronization streams. This ensures train-
+inference consistency and prevents the model from develop-
+ing shortcut biases between unsynchronized modalities.
+•Segment-focused optimization:By replacing global MSE
+with a masked MSE loss, FoleyGenEx prioritizes the recon-
+struction of precisely aligned segments, leading to superior
+temporal synchronization.
+3.2. Multi-modal-controlled audio generation
+The flexible adaptation of the FoleyGenEx architecture to
+diverse input modalities enables five distinct paradigms of
+multi-modal controlled audio generation, as illustrated in Fig.
+3. These tasks include Text-to-Audio (TTA), Video-to-Audio
+(VTA), Text-Controlled VTA (TC-VTA), Audio-Controlled
+VTA (AC-VTA), and Foley Extension (FE). Furthermore, by
+leveraging the latent inversion property [31] of the DiT back-
+bone, we introduce a sixth capability: fine-grained audio editing
+through precise temporal segment control.
+TTAIn the TTA setting, only text semantic features are pro-
+vided, while all other modality streams are initialized as all-zero
+vectors. This configuration guides the model to synthesize au-
+dio that is strictly aligned with the linguistic semantics of the
+input prompt.
+4054
+Data Mining
+Audio Augmentation 
+Train Set
+Caption generation for 
+Augmented Audio
+Speed Augmentation
+1. Very Fast: Fast + 1.3x Speed
+2. Fast : Fast
+3. Medium: Fast + 0.7x Speed, Slow+1.3x Speed
+4. Slow: Slow
+5. Very Slow: Slow+0.7x Speed
+V olume Dynamic Augmentation 
+1. Crescendo: volume increase 
+from the start to the end.
+2. Decrescendo: volume 
+decrease from the start to the 
+end.
+Distance Augmentation
+1. Far: augment audio with 
+reverberation.
+2. Very Far: construct a large room 
+scene, process the audio to create a 
+listening experience of "coming from 
+a distance".Text Augmentation
+Filter out samples from the captions that contain three categories of opposing adverb
+Fast fast, quick, rapid, swift, brisk, hasty, quickly, rapidly, swiftly, briskly, hastily
+Slow slow, leisurely, gradual, sluggish, unhurried, languid, slowly, gradually, sluggishly, unhurriedly, languidly
+Far        distant, far, remote, distantly, remotely
+Near      near, close
+Loud loud, boisterous, deafening, thunderous, resounding, blaring, piercing, noisy, loudly, boisterously, deafeningly, 
+thunderously, resoundingly, blaringly, piercingly, noisily
+Quiet    soft, quiet, faint, gentle, muffled, whispering, hushed, muted, softly, quietly, faintly, gently, whisperingly,mutedly
+Figure 4:Adverb-based data augmentation algorithm.
+VTABoth semantic and synchronization features of the target
+video are supplied. Textual input remains optional; however,
+if provided, it must be semantically consistent with the video
+content to avoid modal conflicts. This setup ensures that the
+generated audio is both temporally synchronized with visual
+events and aligned with the combined semantics derived from
+the video content and the complementary information provided
+by the text.
+TC-VTABy nullifying video semantic features (setting them
+to zero), the generation is guided by a combination of text se-
+mantics and video synchronization cues. Crucially, this allows
+for semantic-visual decoupling, where the text content need not
+match the video. For instance, a video of a cat meowing paired
+with the prompt “Lion roaring” can synthesize a roar that is per-
+fectly synchronized with the cat’s mouth movements.
+AC-VTAIn this task, both video and text semantic features
+are set to zero (F V0, F T0). As detailed in the inference setup
+illustrated in Figure 7, the reference audio latent is integrated
+through both channel-wise concatenation and residual summa-
+tion with the initial noise. To maintain temporal structure, a
+surrogate reference video is constructed by cropping or dupli-
+cating segments from the target video to match the reference
+audio’s duration. Its synchronization features (FRS) are concate-
+nated prior to the target video’s features (FS). This paradigm uti-
+lizes the timbre, prosody, and acoustic events of the reference
+audio as semantic anchors, enabling cross-modal style trans-
+fer. A practical application includes generating metal-knocking
+sounds synchronized with vegetable-chopping actions using a
+metal-knocking clip as a reference.
+FETarget video semantic and synchronization features are pro-
+vided alongside a reference latent extracted from an existing
+audio segment. This latent is summed with the initial noise to
+provide conditional guidance, ensuring that the generated au-
+dio maintains stylistic and temporal continuity with the original
+segment.
+EditingBuilding upon the TC-VTA, AC-VTA, and FE frame-
+works, we utilize latent inversion to facilitate fine-grained audio
+manipulation. This enables the regeneration of audio within
+specific temporal windows, which are then seamlessly inte-
+grated with unedited regions in the latent space. By operat-
+ing within the latent domain rather than the waveform level,
+our method avoids the audible clipping artifacts typically asso-
+ciated with standard concatenation. Qualitative results of this
+local editing feature are available on our project page.
+https://foleygenex.github.io/FoleyGenEx
+3.3. Adverb-based data augmentation
+While architectural advancements expand the functional scope
+of multi-modal audio generation, the role of high-quality, fine-
+grained data remains paramount for achieving precise control.
+As established in Section 3.2, text serves as the primary seman-
+tic controller ; however, existing models predominantly priori-
+tize nouns and actions, often overlooking the nuanced physical
+attributes conveyed by adverbs (e.g., speed, distance, and vol-
+ume). We attribute this deficiency to the scarcity of adverb-rich
+training samples in standard benchmarks and the prohibitive
+costs associated with manual annotation. To bridge this gap
+and enable refined adverbial control, we propose an automated,
+four-stage data augmentation algorithm (Fig. 4):
+Data miningWe focus on three orthogonal dimensions of op-
+posing adverbs: Speed (Fast/Slow), Distance (Far/Near), and
+V olume (Loud/Quiet). A base dataset is curated by filtering
+training samples that explicitly contain these adverbial cate-
+gories or their corresponding adjective forms.
+Audio augmentationTargeted acoustic modifications are ap-
+plied to the base dataset to synthesize diverse physical varia-
+tions:
+•Speed augmentation: For speed-related samples, we con-
+struct a five-level scale by modulating audio playback rates:
+(1)Very Fast: Original ‘Fast’ samples increased by 1.3×
+speed. (2)Fast: Original ‘Fast’ samples. (3)Medium: Orig-
+inal ‘Fast’ samples slowed by 0.7×or ‘Slow’ samples in-
+creased by 1.3×. (4)Slow: Original ‘Slow’ samples. (5)
+Very Slow: Original ‘Slow’ samples reduced by 0.7×speed.
+•Distance augmentation: For ‘Near’ or ‘Loud’ samples,
+which possess high initial signal energy, we apply distance
+simulation by introducing room reverberation and spectral at-
+tenuation.
+•Volume dynamic augmentation: For ‘Loud’ samples,
+we modulate the amplitude envelope to create dynamic
+trends—such asCrescendo(increasing volume) andDe-
+crescendo(decreasing volume)—while preserving the orig-
+inal peak amplitude.
+Caption generation for augmented audioTo ensure seman-
+tic alignment, we employ LLMs with specialized prompts—the
+details of which are provided on our project page—to generate
+new captions for the augmented audio. These prompts synthe-
+size the original context with the specific physical modification
+applied.
+Text augmentationTo bolster linguistic generalization, LLMs
+are used to extract key semantic tokens and produce para-
+phrased versions of the augmented captions. This strategy ac-
+4055
+MultiFoley
+FoleyGenEx
+Bird chirping. Male speaking. Rooster crowing. Sheep bleating.
+Figure 5:Spectrograms of audio generated by MultiFoley and our FoleyGenEx.
+Table 1:Performance on the AudioCaps test set. The results
+of all baseline are from [13]. Bold font indicates the optimal
+performance under each metric, while underlined text marks
+the second-best performance.
+Method FD VGG↓IS↑CLAP T↑
+GenAU-Large [25]1.2111.75 0.285
+MMAudio [13] 4.0312.080.348
+FoleyGenEx (Ours) 2.61 11.80 0.364
+FoleyGenEx + AA (Ours) 2.60 11.89 0.366
+Table 2:Performance on the VGGSound test set.
+Model FD VGG↓IS↑IB-score↑DeSync↓
+VTA-LDM [32] 2.04 10.14 24.72 1.263
+FoleyCrafter [9] 2.51 15.68 25.68 1.225
+MMAudio [13] 0.97 17.4033.22 0.442
+FoleyGenEx (Ours) 0.74 18.37 32.52 0.467
+FoleyGenEx + AA (Ours)0.73 18.4933.17 0.453
+MultiFoley * [12] 2.92 — 28.00 0.800
+VTA-LDM * 2.02 11.32 28.34 1.275
+FoleyCrafter * 2.74 16.15 30.20 1.240
+MMAudio * 1.13 17.59 37.85 0.393
+FoleyGenEx (Ours) * 0.87 18.64 37.23 0.409
+FoleyGenEx + AA (Ours) *0.86 19.56 38.060.403
+counts for the inherent variability in natural language, where a
+single acoustic event can be described through diverse syntactic
+structures.
+We conducted a stratified manual verification on 300 ran-
+domly sampled entries to ensure audio-caption correspondence.
+The set included 20 samples per speed level and 50 samples for
+each distance and volume operation type. This verification pro-
+cess yielded an ac

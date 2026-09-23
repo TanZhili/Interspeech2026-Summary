@@ -1,0 +1,470 @@
+Considerate Listener Modeling for Korean Streaming Backchannel Prediction
+Yong-Seok Choi ID 1,∗∗, Seung Hi Kim ID 1, Sung Yup Lee ID 1
+1 Electronics and Telecommunications Research Institute, Republic of Korea
+yseokchoi@etri.re.kr, seunghi@etri.re.kr, sylee549@etri.re.kr
+Abstract
+Mistimed backchannels can interrupt ongoing speech and de-
+grade user experience. AConsiderate Listenerconcentrates
+backchannel interventions near pause-proximate regions in real
+time, since backchannels cluster around speaker pauses. How-
+ever, not all pauses invite a backchannel. Pauses that follow
+utterances calling for a reply may be pragmatically inappro-
+priate for backchannel intervention. Acoustic cues alone may
+not capture the linguistic context needed to distinguish these
+cases, so acoustic-only predictors tend to over-predict. We there-
+fore propose a zero look-ahead streaming backchannel predictor
+combining pause-aware soft scaling with Q-Former fusion of
+partial ASR hypotheses. We introduce Semantic False Discov-
+ery Rate (Semantic FDR) to quantify backchannel predictions in
+pragmatically inappropriate pause regions. On a Korean coun-
+seling corpus, our approach reduces Semantic FDR by 53.8%
+and improves Macro-F1 by 2.16 pp compared to an acoustic-only
+baseline.
+Index Terms: streaming backchannel prediction, considerate
+listener, pause-aware soft scaling, text-guided fusion, semantic
+false positives
+1. Introduction
+Backchannels (BCs) are brief listener responses that convey
+attention and empathy without claiming the conversational
+floor [1]. Prior work has shown that BC-capable agents tend
+to increase engagement and self-disclosure [2, 3, 4]. However,
+BC effectiveness depends critically on timing and context. A
+supportivemm-hmmfeels natural during a pause after an on-
+going narrative. Yet, the same token mid-utterance can disrupt
+the flow, and even a pause-timed BC may feel intrusive if the
+pause follows a direct question that calls for a reply [5]. This
+contrast motivates theConsiderate Listenerprinciple: a sys-
+tem should concentrate BC interventions near pause-proximate
+regions and avoid overlapping ongoing speech, prioritizing non-
+disruptiveness over response frequency [6, 7]. Yet the discourse
+context of a pause matters as much as its timing.
+Streaming BC prediction involves three interrelated chal-
+lenges. The first concerns latency. A block-wise joint ASR–BC
+models often rely on look-ahead frames, which introduce a delay
+at the BC decision point. The second is class imbalance, as BC
+events are highly sparse and can bias learning while weakening
+metrics such as Macro-F1 [8]. The third concerns pragmatic
+appropriateness. Pauses following initiating actions that make a
+response relevant [9], such as direct questions or directives, tend
+to make a response relevant rather than invite a BC. We refer to
+such pause blocks asNOBC-PauseFPregions, that is, acousti-
+**indicates the corresponding author.
+cally detectable pauses where BC intervention is pragmatically
+inappropriate. Acoustic cues may not reliably distinguish these
+contexts in streaming conditions, so predictors relying solely
+on acoustic features may over-predict BCs inNOBC-PauseFP
+regions. We refer to such erroneous predictions as Semantic
+False Positives (Semantic FPs), i.e., BC insertions that are prag-
+matically inappropriate in the surrounding discourse context. In
+practice, such intrusions can disrupt turn-taking and degrade the
+perceived naturalness of the agent.
+To address these challenges, we propose a zero look-ahead
+streaming BC predictor that combines pause-aware soft scaling
+with text-guided fusion. A pause detector (PD) estimates the
+pause probability for each block and uses this probability to
+softly scale acoustic features, biasing predictions toward pause-
+proximate regions in line with theConsiderate Listenerprinci-
+ple. Streaming partial ASR hypotheses are additionally fused
+via Q-Former cross-attention, which may help suppress BC pre-
+dictions inNOBC-PauseFPblocks. Our main contributions
+are as follows:
+•Considerate Listener framework:We formalize non-
+disruptiveness as a primary design criterion and introduce
+Semantic False Discovery Rate (Semantic FDR), the fraction
+of predicted BCs occurring in pragmatically inappropriate
+pause blocks (Section 4.5).
+•Pause-aware soft scaling:PD-based probability-weighted
+scaling down-weights non-pause blocks, concentrating deci-
+sions near pause-proximate regions and mitigating effective
+class imbalance.
+•Text-guided fusion:Q-Former cross-attention over partial
+ASR hypotheses provides discourse context that acoustic cues
+alone may not capture, which may help suppress Semantic FPs
+inNOBC-PauseFPblocks.
+2. Related Work
+Prior work has identified prosodic features that tend to invite
+BCs, including sustained low-pitch regions [10] and utterance-
+boundary cues [11], and corpus analyses confirm that BCs fre-
+quently co-occur with speaker pauses [12]. Fors [13] further
+reported that BCs tend to cluster near transition relevance place
+(TRP) pauses, while most intra-utterance pauses do not coin-
+cide with BC production. In Korean, however, reactive tokens
+are also produced at intra-turn unit boundaries formed by con-
+junctive verbal suffixes, not only at turn-final positions [14, 15].
+Taken together, these observations suggest that acoustic silence
+alone may be insufficient to determine BC opportunity, and that
+identifying the appropriate pause requires understanding its dis-
+course role, not only its acoustic properties.
+Beyond prosodic cues, approaches have progressed from
+3405
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1854
+Figure 1:Time-axis illustration of the proposed system across streaming blocks. BC predictions concentrate near pause boundaries,
+consistent with the Considerate Listener principle.
+rule-based and probabilistic methods [12, 16] to deep learning
+models incorporating lexical context [17, 18], dialogue acts [19],
+and attentive context modeling [20], suggesting that textual con-
+text may provide information complementary to acoustic fea-
+tures.
+However, most of these approaches assume offline or non-
+streaming conditions. In streaming settings, frame-wise contin-
+uous prediction via Voice Activity Projection (V AP) [21, 22]
+has been explored. V AP-based models require stereo input
+and do not incorporate textual context at inference. Choi et
+al. [8] proposed a joint ASR and BC prediction model with a
+look-ahead of 16 frames (reported as≈640ms). Our baseline
+follows this architecture but enforcesL look-ahead=0throughout.
+To our knowledge, pragmatically inappropriate BC regions and
+dedicated metrics to quantify them have not been systemati-
+cally addressed. This gap motivates our method (Section 3) and
+metric design (Section 4.5).
+3. Proposed Method
+As introduced in Section 1,NOBC-PauseFPregions are acous-
+tically detectable pauses where BC intervention is pragmatically
+inappropriate, specifically pauses following initiating actions
+that make a response relevant [9]. Our system addresses these
+challenges using two conditioning signals: a pause detector
+(PD) that softly scales acoustic features toward pause-proximate
+regions, and text-guided fusion of partial ASR hypotheses to
+help suppress BC predictions inNOBC-PauseFPblocks (Fig-
+ure 1). Region-level annotations are mapped to streaming blocks
+for training and evaluation, aligning them with the block-wise
+decision points of the streaming model.
+3.1. System Architecture
+Building on the block-wise streaming ASR+BC multitask sys-
+tem of [8], three modules share a common acoustic encoder: a
+pause detector (PD), an ASR decoder, and a BC predictor. The
+acoustic encoder processes input in fixed-size blocks without
+look-ahead frames, ensuring zero look-ahead at every BC de-
+cision point. The BC predictor also includes a Q-Former that
+extracts textual context from the ASR decoder hidden states. At
+Figure 2:Module-level architecture of the proposed
+backchannel-prediction system. The PD outputp pause
+b softly
+scales acoustic features, which are fused with Q-Former-
+compressed text featuresF b
+text.
+each blockb, the mean-pooled encoder representation ¯ab∈R d
+is used by the PD and BC predictor, while the ASR decoder
+receives the full frame-level encoder outputs accumulated up to
+blockb.
+3.2. Pause-Aware Soft Scaling
+Given that BCs tend to cluster around pauses [12, 13], the PD
+predicts a scalar pause probability for each block,
+ppause
+b =σ(W pd¯ab +b pd).(1)
+This design operationalizes theConsiderate Listenerprinciple,
+as pause-proximate blocks are more likely to contain BC oppor-
+tunities. Rather than usingp pause
+b as a hard gate, we apply soft
+scaling,
+˜ab =p pause
+b · ¯ab,(2)
+providing continuous attenuation so all blocks remain eligible
+while speech-region blocks are down-weighted. This concen-
+3406
+Table 1:Data statistics for training and evaluation splits.nobc
+covers both in-speech and pause blocks withoutbcannota-
+tion. In the evaluation set,NOBC-PauseFPblocks are ob-
+tained by labeling regions in time and mapping them to blocks.
+∗Percentage with respect to the pause-block subset.
+Split Class / Condition # Blocks Ratio (%)
+Train
+nobc(Negative BC)1,133,866 96.4
+bc(Positive BC)42,701 3.6
+Subset: Pause Blocks234,071 19.9
+⌞BC within Pause subset 42,701 18.2 ∗
+Eval
+nobc(Negative BC)126,678 97.0
+⌞NOBC-PauseFP817 –
+bc(Positive BC)3,959 3.0
+trates the effective decision space near pause boundaries and
+may also help mitigate class imbalance.
+3.3. Text-Guided Fusion
+To incorporate textual context from partial ASR hypotheses
+without accessing future tokens,N q learnable queries attend
+to the ASR decoder hidden statesH b
+dec ∈R Lb×d via cross-
+attention, following the compressed query bottleneck of [23]:
+Fb
+text = CrossAttn(Qtext,H b
+dec,H b
+dec,M b
+text).(3)
+Here,M b
+text is a training-only text-side causal mask for blocking
+future ASR tokens beyond blockb; at inference, autoregressive
+decoding provides only the partial hypothesis. The resulting
+Fb
+text provides partial textual context for identifying pragmati-
+cally inappropriate pause regions.
+3.4. BC Prediction
+The BC predictor concatenates˜ab withF b
+text before a transformer
+encoder,
+hb = TransformerEncoder([˜ab;F b
+text])[0].(4)
+Since acoustic cues tend to play a more decisive role than lexical
+cues in BC prediction [17], we use the output corresponding
+to ˜ab for classification, as it occupies the first position in the
+concatenated sequence; text features inform the decision through
+attention without overriding the acoustic signal.
+ˆyb = Softmax(Wbchb +b bc).(5)
+Under this design, the acoustic stream primarily drives BC op-
+portunity detection, while text-guided fusion may help suppress
+BC predictions in pragmatically inappropriate regions.
+4. Experiments
+4.1. Dataset
+We use a small private Korean counseling corpus (116 sessions,
+∼99 hours) that is manually annotated for BCs. We split the
+data by session into 83/22/11 for train/validation/evaluation. We
+define pause intervals as inter-word gaps of at least 200 ms based
+on WhisperX word timestamps [24, 25]. These pause intervals
+are mapped to pause blocks (streaming blocks that overlap the
+intervals) and used for PD supervision. Each BC event is mapped
+Table 2:Model variations for ablation study. Each variant iso-
+lates pause-aware soft scaling and text fusion, and(D)combines
+both.
+Model Acoustic Text Fusion Pause Scaling
+(A)✓× ×
+(B)✓×✓
+(C)✓ ✓×
+(D)✓ ✓ ✓
+to the nearest pause interval, and overlapping blocks are labeled
+BC-positive. As shown in Table 1, BC constitutes 3.6% of all
+blocks; within pause blocks, the rate rises to 18.2%, suggesting
+that pause-aware soft scaling may focus the model on higher-
+density BC regions. We segment the transcripts into sentence-
+level units, which serve as the input unit across all data splits.
+For Semantic FDR evaluation, a trained annotator identified
+NOBC-PauseFPregions in time and a second annotator cross-
+reviewed the labels. Verified regions were then mapped to blocks
+for evaluation. We focused on pauses following initiating actions
+that make a response relevant [9, 15], such as direct questions
+or directives, where BC intervention was judged pragmatically
+inappropriate. Disputed cases were excluded.
+4.2. Model Configuration
+We adopt a streaming acoustic encoder, a CTC/attention ASR
+decoder[8], and incorporate a pause detector (PD) and a Q-
+Former module. STFT frame and hop sizes are 20 ms and 10 ms,
+respectively. We setL block=40,L hop=4, andL look-ahead=0. Par-
+tial ASR hypotheses are compressed with a BLIP-2-style Q-
+Former (N q=16, 4-layer decoder, 4 heads, FFN dim 2048).
+The BC Prediction module uses a 1-layer Transformer encoder
+for acoustic–text fusion. The PD and BC classifiers are each
+implemented as a linear layer.
+4.3. Model Variations
+Table 2 summarizes four model variants in a factorial ablation
+designed to isolate each component’s contribution.(A)repro-
+duces the acoustic encoder and multitask training setup of [8]
+without pause-aware scaling or text fusion and serves as the base-
+line.(B)and(C)each introduce one component in isolation,
+and(D)combines both to constitute the proposed system.
+4.4. Training
+We optimize a multitask objective,
+Ltotal =λ 1LASR +λ 2
+ 
+λPDLPD +λ BCLBC
+
+,(6)
+withλ 1=λ2=0.5, following the weighting convention of [8],
+andλ PD=1.0. BothL PD andL BC are cross-entropy losses. To
+reduce the risk ofL PD dominatingL BC during training,λ BC
+is dynamically adjusted based on the inter-task loss ratio and
+clipped to[0.05,5.0]. Per-class loss weights for bothL BC and
+LPD are set proportional to the inverse square root of class fre-
+quency [26]. Training uses Adam with WarmupLR (peak lr
+10−3, 5k warmup steps) for up to 100 epochs with batch size 128
+on a single NVIDIA A40 GPU, implemented in ESPnet2 [27].
+4.5. Metrics
+We evaluate four model variants and report the BC-class preci-
+sion, recall, F1 score, and Macro-F1 score. We adopt Macro-F1
+3407
+Table 3:Classification performance across model configura-
+tions. Macro-F1 is reported as mean±standard deviation via
+segment-level bootstrap (n=2000). † indicates improvement
+over Model (A) (p<0.01, paired bootstrap).
+Model Precision (%) Recall (%) BC F1 (%) Macro-F1 (%)
+(A) 24.7280.4037.81 66.77 (±0.53)
+(B) 26.39 77.62 39.39 67.77 (±0.54) †
+(C) 28.39 79.5441.84 69.14(±0.57) †
+(D)28.8571.74 41.15 68.93 (±0.56) †
+as the primary metric because Weighted-F1 can be dominated
+by majority-class performance under the 3.6% BC positive rate.
+Macro-F1 averages per-class F1 without frequency weighting,
+making it more informative under severe class imbalance.
+We additionally report Semantic FDR, defined as the frac-
+tion of BC predictions occurring in pragmatically inappropriate
+pause blocks:
+Semantic FDR= |NOBC-PauseFPpred. BC|
+|All BC predictions on the test set|.(7)
+The numerator counts predicted BCs falling within manually la-
+beledNOBC-PauseFPblocks. Lower values indicate a smaller
+proportion of BC predictions in pragmatically inappropriate con-
+texts, more directly reflecting theConsiderate Listenerobjective
+than Macro-F1. BecauseNOBC-PauseFPblocks constitute a
+small fraction of the evaluation set, their impact on Macro-F1 is
+negligible, making Semantic FDR the more sensitive indicator
+of pragmatic appropriateness.
+5. Results
+5.1. Classification Performance
+Table 3 reports precision, recall, BC-class F1, and Macro-F1.
+Model (A) attains the highest recall (80.40%) but the lowest
+precision (24.72%) and Macro-F1 (66.77%). The acoustic-only
+model does not explicitly constrain decision timing and therefore
+tends to produce BC predictions broadly across pause blocks,
+consistent with the known tendency of acoustic-only systems to
+over-predict under class imbalance.
+Adding pause-aware soft scaling in (B) yields a significant
+improvement in Macro-F1 (+1.00 pp,p <0.01). This is con-
+sistent with the PD providing explicit pause supervision that
+guides BC predictions toward pause-proximate regions, which
+may reduce predictions outside pause boundaries.
+Text fusion in (C) achieves the best Macro-F1 (69.14%,
+p <0.01) while largely preserving recall (79.54%), suggest-
+ing that partial ASR hypotheses provide additional signal be-
+yond acoustics. The precision gain over (B) (+2.00 pp) further
+suggests that discourse context helps filter BC predictions in
+pragmatically inappropriate regions.
+The full system (D) achieves the highest precision (28.85%)
+and a Macro-F1 of 68.93% (p <0.01), which is marginally
+below Model (C). We tentatively attribute this gap to slight
+over-suppression: both conditioning signals may jointly down-
+weight blocks that could otherwise yield correct BC predictions,
+which could explain the lower recall relative to Model (C). As
+shown in Section 5.2, however, this suppression appears to be
+concentrated in pragmatically inappropriate blocks rather than
+BC-inviting ones.
+Table 4:Pragmatic quality analysis via Semantic FDR. Se-
+mantic FP counts predicted BCs inNOBC-PauseFPpause
+blocks. Results are reported as mean±standard deviation via
+segment-level bootstrap (n=2000), and lower is better. † indi-
+cates improvement over Model (A) (p<0.01, paired bootstrap).
+Reductions are computed relative to Model (A).
+(A) (B) (C) (D)
+Semantic FDR (%) 5.76 (±0.62) 4.83 (±0.58) † 3.74 (±0.52)† 3.07(±0.46)†
+Total BC Prediction 3,418 3,274 3,314 2,960
+Semantic FP 197 158 12491
+Semantic FP reduction (%) — 19.8% 37.1%53.8%
+5.2. Pragmatic Quality: Semantic FDR
+Table 4 reports Semantic FDR forNOBC-PauseFPanalysis.
+Model (A) produces 197 Semantic FPs among 3,418 BC pre-
+dictions (5.76%). This is consistent with acoustic features alone
+providing limited ability to distinguish turn-holding pauses from
+BC-inviting ones [13].
+Pause-aware soft scaling in (B) reduces Semantic FDR to
+4.83% (p <0.01). The remaining errors suggest that pause
+proximity alone may be insufficient for pragmatic appropriate-
+ness, as the model cannot distinguish the discourse function of
+a pause using acoustic features alone.
+Text fusion in (C) yields a larger reduction to 3.74%
+(p <0.01), suggesting that partial transcript cues help reduce
+BC predictions in pragmatically inappropriate contexts. The
+improvement over (B) indicates that discourse context provides
+information complementary to pause proximity.
+The full system (D) achieves the lowest Semantic FDR of
+3.07% (p<0.01), reducing Semantic FPs from 197 to 91 out of
+2,960 total BC predictions, a 53.8% reduction. Pause-aware soft
+scaling constrainswhenthe model responds, while text fusion
+constrainswhetherthe discourse context warrants a response.
+Their combination appears to targetNOBC-PauseFPcases
+more precisely than either signal alone.
+Overall, Models (C) and (D) achieve similar Macro-F1
+scores (69.14% vs. 68.93%), yet their Semantic FDR differs
+(3.74% vs. 3.07%), reflecting the two-motive structure of the
+Considerate Listenerframework: pause-aware soft scaling con-
+strains decision timing, while text-guided fusion constrains de-
+cision appropriateness. This gap suggests that Macro-F1 alone
+may not fully capture pragmatic quality.
+6. Conclusion
+We introduced theConsiderate Listenerframework, which pri-
+oritizes non-disruptive, pause-proximate backchannel interven-
+tions over response frequency in streaming settings. Pause-
+aware soft scaling implements the first design criterion by con-
+centrating decisions near pause boundaries, while Q-Former-
+based text fusion addresses pragmatically inappropriate pause
+regions. On a Korean counseling corpus, the full system reduces
+Semantic FDR by 53.8%. It improves Macro-F1 by 2.16 pp over
+the acoustic-only baseline, suggesting that pragmatic appropri-
+ateness and classification performance may not trade off under
+streaming constraints.
+Our evaluation is limited to a single Korean corpus, and
+text fusion may be sensitive to ASR errors under strict zero
+look-ahead inference. Future work may examine robustness to
+ASR errors, cross-lingual generalizability, and application to
+backchannel category prediction.
+3408
+7. Acknowledgments
+This work was supported by Institute of Information & Com-
+munications Technology Planning & Evaluation (IITP) grant
+funded by the Korea government(MSIT) (No.2022-0-00608,
+No.RS-2022-II220608, A development of artificial intelligence
+technology of multi-modal interaction for empathetic and social
+conversations with humans)
+8. Generative AI Use Disclosure
+The authors used ChatGPT and Claude solely for language edit-
+ing and polishing to improve readability. These tools were not
+used to generate research ideas, experimental design, or results.
+All authors remain fully responsible and accountable for the
+content of the paper.
+9. References
+[1] V. H. Yngve, “On getting a word in edgewise,” inPapers from the
+sixth regional meeting Chicago Linguistic Society, April 16-18,
+1970, Chicago Linguistic Society, Chicago, 1970, pp. 567–578.
+[2] L. Huang and J. Gratch, “Crowdsourcing Backchannel Feedback:
+Understanding the Individual Variability from the Crowds,” in
+Interdisciplinary Workshop on Feedback Behaviors in Dialog.
+ISCA, 2012.
+[3] J. Y. Jang, S. Shin, and G. Gweon, “Minimal Yet Big Impact: How
+AI Agent Back-channeling Enhances Conversational Engagement
+through Conversation Persistence and Context Richness,” inFind-
+ings of the Association for Computational Linguistics: EMNLP
+2024, Y. Al-Onaizan, M. Bansal, and Y.-N. Chen, Eds. Miami,
+Florida, USA: Association for Computational Linguistics, Jan.
+2024, pp. 14 509–14 521.
+[4] H. W. Park, M. Gelsomini, J. J. Lee, and C. Breazeal, “Telling
+Stories to Robots: The Effect of Backchanneling on a Child’s
+Storytelling,” inProceedings of the 2017 ACM/IEEE International
+Conference on Human-Robot Interaction, ser. HRI ’17. New
+York, NY, USA: Association for Computing Machinery, 2017, pp.
+100–108.
+[5] H. Z. Li, Y. Cui, and Z. Wang, “Backchannel Responses and
+Enjoyment of the Conversation: The More Does Not Necessarily
+Mean the Better,”International Journal of Psychological Studies,
+vol. 2, no. 1, p. p25, May 2010.
+[6] H. W. Park, M. Gelsomini, J. J. Lee, T. Zhu, and C. Breazeal,
+“Backchannel opportunity prediction for social robot listeners,” in
+2017 IEEE International Conference on Robotics and Automation
+(ICRA), May 2017, pp. 2308–2314.
+[7] T.-E. Lin, Y. Wu, F. Huang, L. Si, J. Sun, and Y. Li, “Duplex Con-
+versation: Towards Human-like Interaction in Spoken Dialogue
+Systems,” inProceedings of the 28th ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining, ser. KDD ’22. New
+York, NY, USA: Association for Computing Machinery, 2022, pp.
+3299–3308.
+[8] Y.-S. Choi, J.-U. Bang, and S. H. Kim, “Joint streaming model for
+backchannel prediction and automatic speech recognition,”ETRI
+Journal, vol. 46, no. 1, pp. 118–126, 2024.
+[9] S. G. Roberts, F. Torreira, and S. C. Levinson, “The effects of
+processing and sequence organization on the timing of turn taking:
+A corpus study,”Frontiers in Psychology, vol. 6, May 2015.
+[10] N. Ward and W. Tsukahara, “Prosodic features which cue back-
+channel responses in English and Japanese,”Journal of Pragmat-
+ics, vol. 32, no. 8, pp. 1177–1207, Jul. 2000.
+[11] A. Gravano and J. Hirschberg, “Backchannel-inviting cues in task-
+oriented dialogue,” inInterspeech 2009. ISCA, Sep. 2009, pp.
+1019–1022.
+[12] K. P. Truong, R. Poppe, and D. Heylen, “A rule-based backchan-
+nel prediction model using pitch and pause information,” inInter-
+speech 2010. ISCA, Sep. 2010, pp. 3058–3061.
+[13] K. L. Fors, “The temporal relationship between feedback and
+pauses: A pilot study,” inInterdisciplinary Workshop on Feed-
+back Behaviors in Dialog, 2012, pp. 43–45.
+[14] R. F. Young and J. Lee, “Identifying units in interaction: Reactive
+tokens in Korean and English conversations,”Journal of Sociolin-
+guistics, vol. 8, no. 3, pp. 380–407, 2004.
+[15] S. Y. Yoon, “A Comprehensive Analysis of Response Tokens in
+Korean: Resources for Managing Turns, Sequences, and Stances
+in Talk-in-Interaction.”
+[16] L.-P. Morency, I. De Kok, and J. G

@@ -1,0 +1,451 @@
+Convolutional Dynamic Rotary Positional Encoding
+Euijin Hong ID 1, Meng-Chun Zhang ID 2
+1 Carnegie Mellon University, United States
+2 University of Pittsburgh, United States
+ehong@andrew.cmu.edu, MEZ141@pitt.edu
+Abstract
+Rotary Position Embedding (RoPE) is a strong alternative to
+relative positional encoding in modern automatic speech recog-
+nition (ASR) encoder models. However, its discrete, uniformly-
+spaced chronological index is misaligned with the continuous,
+semantic nature of speech features. We propose Convolutional
+Dynamic RoPE (CD-RoPE), a dynamic positional encoding
+complementing Branchformer’s attention path by warping the
+rotary temporal index conditioned on local acoustic context via
+a lightweight depthwise-separable convolution. Additive posi-
+tion modulation preserves RoPE’s harmonic structure, enabling
+continuous input-dependent shifts. CD-RoPE achieves consis-
+tent WER improvements over RelPos on Branchformer across
+all LibriSpeech test sets with 2.2M fewer parameters. Targeted
+robustness evaluation on Speech Robust Bench (SRB) confirms
+that CD-RoPE’s advantage is strongest under temporal pertur-
+bations, validating the temporal warping mechanism.
+Index Terms: dynamic positional encoding, rotary posi-
+tion embedding, convolutional positional encoding, automatic
+speech recognition
+1. Introduction
+Positional encoding mechanisms for transformer-based ASR
+encoders, such as RelPos [1] and RoPE [2], assume discrete,
+uniformly-spaced integer indices, which is an assumption mis-
+aligned with the continuous and semantically elastic nature of
+speech features. RoPE encodes position through rotation in a
+complex plane, providing an effective relative inductive bias.
+However, its rigid chronological index treats every frame as
+equidistant, ignoring the variable information density across
+speech segments. Furthermore, recent work [3] has shown that
+RoPE can diverge during ASR training, highlighting the need
+for more robust positional encoding. RelPos partially alleviates
+this rigidity through learnable relative biases, but relies on lin-
+ear projections that are less expressive for capturing temporal
+dynamics in continuous-domain features.
+Self-supervised models (wav2vec 2.0 [4], HuBERT [5],
+WavLM [6]) use convolutional features as input-dependent po-
+sitional encodings. However, these embeddings are highly cor-
+related with the input, cannot preserve the magnitude of the
+original feature, and are only applied at the first layer. CD-RoPE
+addresses all three limitations through multiplicative integration
+via RoPE’s rotation mechanism, applied independently at every
+layer.
+We propose Convolutional Dynamic RoPE (CD-RoPE),
+a dynamic positional encoding that warps RoPE’s tem-
+poral index conditioned on local acoustic context via a
+lightweight depthwise-separable convolution. A bounded,
+input-conditioned shift∆tis added to the base integer index
+before multiplication by the inverse frequencies, preserving
+RoPE’s harmonic structure, since the inverse frequencies re-
+main pure outer multipliers of the shifted index, leaving the fre-
+quency spectrum itself unperturbed while enabling continuous
+and input-dependent temporal repositioning.
+CD-RoPE is particularly well-suited to Branchformer [7],
+whose attention path processes global context without inter-
+mediate convolutional layers. Unlike Conformer [8] and E-
+Branchformer [9], which incorporate convolution modules that
+implicitly provide local temporal context within or adjacent
+to the attention computation, Branchformer’s attention branch
+operates without such convolutional context. The depthwise-
+separable convolution in CD-RoPE fills this gap, providing
+complementary local temporal modeling directly within the po-
+sitional encoding.
+We empirically demonstrate that CD-RoPE achieves con-
+sistent WER improvements over RelPos on Branchformer
+across all LibriSpeech [10] evaluation sets while using 2.2M
+fewer parameters. Targeted evaluation on Speech Robust Bench
+[11] further validates the temporal warping mechanism, with
+the largest improvements observed under temporal perturba-
+tions.
+2. Related Works
+2.1. Static Positional Encoding
+The original Transformer architecture [12] is inherently
+permutation-equivariant and relies on absolute sinusoidal po-
+sitional encodings added directly to the input embeddings to
+retain sequence order. Subsequent models, such as BERT
+[13], demonstrated that absolute positional embeddings could
+be fully parameterized and learned during training. However,
+absolute encodings fail to generalize to sequence lengths un-
+seen during training and struggle to represent the distance be-
+tween tokens explicitly.
+Relative Positional Encodings [14] were introduced to re-
+solve this, modeling the pairwise distances between tokens, a
+concept heavily refined in Transformer-XL (RelPos) [1]. More
+recently, Rotary Position Embedding (RoPE) [2] bridged the
+gap between absolute and relative formulations by multiplying
+the query and key representations with an orthogonal rotation
+matrix in a complex plane. Although RoPE provides a highly
+effective relative inductive bias, these static methods share a
+fundamental limitation: they rely strictly on a rigid, discrete
+chronological integer index (t∈Z), completely agnostic to the
+underlying semantic or acoustic elasticity of the input signal.
+ALiBi [15] replaces positional parameters with a static, linearly
+decaying attention bias; while effective for length extrapolation,
+this fixed approach cannot model input-dependent temporal dy-
+namics.
+5466
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1312
+2.2. Input-dynamic Positional Encoding
+To move beyond static grid assumptions, recent literature in
+Natural Language Processing (NLP) and Computer Vision (CV)
+has explored input-dynamic positional encodings. In CV , Con-
+ditional Positional Encodings for Vision Transformers (CPVT)
+[16] introduced a Positional Encoding Generator (PEG) to dy-
+namically generate encodings conditioned on the local visual
+neighborhood. In NLP, Positional Encoding via Token-Aware
+Phase Attention [17] proposed a mechanism to learn position
+phase conditioned on token representations for language mod-
+eling.
+More recently, dynamic adaptations of RoPE have emerged.
+Context-aware Rotary Position Embedding (CARoPE) [18] uti-
+lizes a linear projection to modulate the frequency of the ro-
+tation based on input dependencies. Similarly, Selective Ro-
+tary Position Embedding [19] introduces an input-conditioned
+RoPE mechanism designed specifically for gated linear atten-
+tion models. Furthermore, ComRoPE [20] parameterizes the
+rotational mechanism with trainable commuting angle matrices
+to improve positional robustness and length extrapolation.
+Despite these advancements in text and vision, applying
+input-conditioned positional encodings remains heavily under-
+explored in speech and audio modalities. Furthermore, exist-
+ing dynamic RoPE methods in NLP typically modulate the fre-
+quency or phase angle directly. In contrast, our proposed CD-
+RoPE modulates the temporal index itself, physically warping
+the time domain while preserving the crucial harmonic consis-
+tency between low and high rotational frequencies necessary for
+acoustic modeling.
+2.3. Convolutional Positional Encoding
+In the audio domain, convolutions have long been utilized to
+inject local temporal awareness into otherwise permutation-
+invariant architectures. Wav2vec 2.0 [4] successfully replaced
+explicit absolute positional embeddings with a convolutional
+feature encoder, using grouped convolutions to implicitly model
+relative positional information directly from the raw audio
+waveform. Similarly, the Conformer architecture [8] interca-
+lates convolution modules between self-attention layers to cap-
+ture local, fine-grained acoustic patterns, effectively acting as
+an implicit relative positional encoding. E-Branchformer [9]
+achieves strong ASR via enhanced branch merging, but its
+convolutions extract general features rather than providing ex-
+plicit positional modulation. Alternatively, Zipformer [21] by-
+passes positional encoding entirely, modeling temporal dynam-
+ics through variable-ratio resolution reduction.
+While CPVT [16] demonstrated the efficacy of convo-
+lutional positional encoding generators in vision, CD-RoPE
+uniquely adapts this concept for the speech modality. By uti-
+lizing a depthwise-separable 1D convolution as an acoustic and
+semantic edge detector, CD-RoPE merges the local feature-
+extraction strengths of convolutional models with the rigor-
+ous multiplicative phase-shifting properties of RoPE. This al-
+lows the model to explicitly learn continuous temporal shifts
+(∆t) rather than simply adding a learned vector to the resid-
+ual stream. This is particularly relevant for architectures like
+Branchformer, where the attention path processes global con-
+text without intermediate convolutional layers.
+3. Methodology
+3.1. Preliminaries
+Transformer architecture relies on self-attention mechanisms
+that are permutation-equivariant, inherently lacking the ability
+to process sequential order. RoPE addresses this by encoding
+absolute positional information through rotation matrices in a
+complex plane. For a given token representation at chronolog-
+ical time stept∈Z ≥0, the features are divided into pairs, and
+each pairi∈[0,d/2)is rotated by an angleΘ t,i strictly defined
+as:
+Θt,i =t·θ i =t·b −2i/d (1)
+wheredis the hidden dimension andbis a pre-defined base
+frequency (typically 10,000). Although RoPE effectively in-
+jects relative positional inductive bias, it relies on a discrete,
+static integer indext, assuming that every sequential token rep-
+resents an identical and inflexible duration within the semantic
+space.
+3.2. Convolutional Dynamic Rotary Positional Embedding
+Instead of relying on a static, chronological, and discrete integer
+indext, our proposed CD-RoPE (Figure 1) dynamically com-
+putes a continuous positional shift∆tconditioned on the input
+feature that contains rich acoustic context. We add the learned
+time-shift∆tto the absolute position indextbefore multiplying
+by the inverse frequenciesθ:
+ˆΘt,i = (t+ ∆t t,i)·θ i (2)
+The design choice of additive modulation on the time do-
+main is intentional, in order to preserve the harmonic consis-
+tency, thus creating a more robust dynamic positional shifting.
+Because the inverse frequencyθi operates as an outer multiplier,
+the physical properties of the rotation are preserved. This mech-
+anism dynamically warps the underlying temporal grid while
+preserving the phase relationships required for preserving ro-
+bust acoustic information. We observed that modulating∆t
+is more stable than directly modulating∆θ, where the latter
+caused numerical instability and divergence during early train-
+ing epochs. We use harmonic consistency to direct that the
+inverse-frequency spectrumθ i enters only as an outer multi-
+plier of the shifted index (2), so the geometric properties of ro-
+tational frequencies across bands are left unperturbed and high-
+frequency bands continue to rotate proportionally faster than
+low-frequency ones. Because|∆t t,i|≤1, the additive index
+shift contributes a per-band angular perturbation bounded by
+θi, whereas modulating the frequency directly replacesθ i with
+θi + ∆θi and injects a position-growing termt·∆θ i.
+To extract the positional shift∆t∈R B×T×d/2 from
+the acoustic context, we utilize a depthwise-separable 1D con-
+volution over the time dimension of the input featureX∈
+RB×T×d model. Here, the dimensionality of∆tis set tod/2
+since RoPE operates on pairs of dimensions, requiringd/2shift
+values. To ensure that the position shift does not overlap with
+base time stepstand to prevent potential temporal collapse
+(where positions merge to a single scalar), the predicted shift
+is bounded as∆t∈[−1,1]via a hyperbolic tangent (tanh) ac-
+tivation. For training stability, the output is scaled by a ReZero-
+style [22] learnable parameterα:
+∆t=α·tanh(Conv1D(X))(3)
+5467
+Here,∆t∈R B×T×d/2 represents a continuous time-warp.
+For example, a local shift of∆t=−0.2allows the model to
+effectively pull an input feature 20% of a frame backward in
+time, aligning it with its latent semantic sequence, prior to the
+self-attention operation.
+, ,  
+,   
+CD-RoPE
+Attention Branch
+Local   context
+RoPE
+Figure 1:CD-RoPE architecture in the Branchformer encoder.
+A continuous positional shift∆tis computed from the input us-
+ing depthwise separable convolution (DWSConv1D), tanh, and
+scaling. This modifies the standard rotary angle to ˆΘt,i = (t+
+∆t)·θ i for queries and keys, injecting input-conditioned tem-
+poral context into the attention branch parallel to the cgMLP
+branch.
+In standard Transformer implementations, the hidden di-
+mensiondof query and key representations are split intoH
+attention heads prior to applying RoPE, forcing every feature
+across all heads at steptto share an identical temporal coordi-
+nate. An alternative design would compute∆tdirectly per-head
+in the lower-dimensional head space (d head =d/H). CD-
+RoPE instead computes the positional shift across the full d-
+dimensional embedding before head splitting, reducing tod/2
+shift values via the depthwise-separable convolution. This de-
+sign choice is motivated by the fact that the full-dimensional
+convolution operates over a richer feature space, capturing
+cross-feature temporal correlations that would be inaccessible
+within the narrower per-head view (d head = 64in our config-
+uration vs.d= 512). As a result, each of thed/2positional
+shifts can be informed by the complete local acoustic context
+rather than a single head’s subspace. After head splitting, differ-
+ent heads receive different subsets of these shifts, naturally en-
+abling per-head temporal diversity without requiring indepen-
+dent per-head computation.
+4. Experiments
+4.1. LibriSpeech ASR
+We train and evaluate transformer-based ASR models on the
+LibriSpeech dataset [10], which consists of 960 hours of la-
+beled speech. We train the models on the dataset corpus of con-
+catenating ‘train-clean-100’, ‘train-clean-360’, and ‘train-other-
+500’. We evaluate the models on ‘dev-clean’, ‘test-clean’, and
+‘test-other’ datasets. We utilize the SpeechBrain toolkit [23] to
+incorporate the proposed method into existing ASR transformer
+models and launch experiments.
+We apply CD-RoPE to Branchformer [7], a transformer-
+based ASR encoder whose parallel MLP-attention architecture
+processes local and global context through separate branches.
+We compare the proposed positional encoding method with the
+well-established RelPos [1] as a baseline. We do not include
+vanilla RoPE as a baseline because prior work [3] reports train-
+ing divergence of RoPE on Conformer-based ASR, and we ob-
+served similar instability in our preliminary experiments. Since
+vanilla RoPE fails to converge to a usable model under these
+training conditions, direct comparison is uninformative. All
+models are trained from scratch with identical architectures and
+hyperparameters, varying only the positional encoding type.
+The detailed configurations are as follows. We compare Rel-
+Pos (109.8M parameters) and CD-RoPE (107.6M parameters),
+consisting of 18 encoder layers and 6 decoder layers, following
+the standard SpeechBrain Branchformer recipe. Both models
+use encoder modules of model dimension 512, 8 heads, FFN
+expansion factor of 4, and GELU activation in the FFN. Also,
+all models share the same decoder and language model (LM) ar-
+chitectures. We also matched to use the same hyperparameters
+for training across the models, including the gradient accumu-
+lation steps of 8, allowing the global batch size to exceed 128.
+We followed the hyperparameter settings as initialized in the
+SpeechBrain toolkit, and the exhaustive list of hyperparameters
+can be found in the published recipes [23].
+For CD-RoPE module, we select depthwise-separable con-
+volution with kernel size 9, tanh bounding, and ReZero-style
+scaling [22] throughout the experiment. We select kernel size
+9 based on preliminary sweeps conducted on the smaller train-
+clean-100 subset (100h), which showed minimal WER variation
+amongk∈{7,9,11}(Table 1), suggesting the method is ro-
+bust to this hyperparameter. The main experiments (Table 2) use
+the full 960h training set. We use tanh bounding and ReZero-
+style learnable gating parameter, consistent with the stability
+analysis in Section 3.2.
+Table 1:Kernel size (k) sweep for CD-RoPE depthwise con-
+volution, evaluated on LibriSpeech test-clean. WER (%)↓.
+All models are trained on the train-clean-100 subset (100h), a
+smaller-scale preliminary experiment used to selectk, separate
+from the full 960h training used in the main results (Table 2).
+k5 7 9 11 13
+WER5.67 5.47 5.44 5.44 5.60
+4.2. Speech Robust Bench
+To evaluate robustness of varying positional encoding meth-
+ods and demonstrate the temporal warping mechanism of CD-
+RoPE, we use Speech Robust Bench (SRB) [11], a comprehen-
+sive benchmark of 114 types of input perturbations for ASR.
+We select 9 perturbations spanning temporal (tempo up/down,
+speed up/down), spectral (resample, pitch up/down), and noise
+(Gaussian, environmental) categories, targeting perturbation
+types most relevant to CD-RoPE’s temporal warping mecha-
+nism. Perturbation severities 2 (moderate-level) and 4 (extreme-
+level), are utilized for evaluating temporal perturbation while
+only severity 2 is used for evaluating on spectral and noise cate-
+gories, since temporal perturbation is relatively more significant
+compared to other perturbation types. SRB evaluation uses the
+5468
+Table 2:Branchformer WER (%)↓on LibriSpeech and Speech
+Robust Bench. LibriSpeech and SRB use CTC/Attn joint de-
+coding with LM rescoring (beam 66).Boldindicates the better
+result where both models have data.†= all models exceed 50%
+WER.
+LibriSpeechRelPos(109.8M)CD-RoPE(107.6M)
+dev-clean 2.021.96
+test-clean 2.172.13
+test-other 5.074.95
+SRB (test-clean)Sev. 2 Sev. 4 Sev. 2 Sev. 4
+Temporal
+Tempo↓2.29 4.002.13 3.38
+Tempo↑2.95 10.732.85 8.63
+Slowdown 2.44†51.98 2.31†54.39
+Speedup 5.34†75.694.87†72.98
+SRB (test-clean)Sev. 2 Sev. 2
+Spectral
+Resample 2.232.19
+Pitch↑3.123.08
+Pitch↓3.553.62
+Noise
+Gaussian 2.472.37
+Environ.2.742.87
+perturbed LibriSpeech test-clean set with LM rescoring during
+beam search. We use consistent decoding across all evaluations
+to ensure direct comparability with the evaluation results of Lib-
+riSpeech ASR. Overall, we rigorously evaluate the performance
+of CD-RoPE and RelPos-based Branchformer models across
+three LibriSpeech test splits and 13 SRB conditions (4 temporal
+perturbations × 2 severities + 5 non-temporal perturbations × 1
+severity), thus 16 evaluation settings in total.
+5. Results
+5.1. LibriSpeech ASR Results
+Table 2 compares the word error rate (WER) result of the mod-
+els applying CD-RoPE against the RelPos [1] baseline on Lib-
+riSpeech dev-clean/test-clean/test-other. All our evaluation re-
+sults are rounded to 2 decimal places.
+CD-RoPE reduces WER from 2.02%→1.96% (dev-clean),
+2.17%→2.13% (test-clean), and 5.07%→4.95% (test-other)
+over RelPos on Branchformer, while using 2.2M fewer param-
+eters. Here, the CD-RoPE module adds approximately 2.5M
+parameters in total (depthwise + pointwise convolution weights
+plus the scalarα), which is 2.2M less compared to the 4.7M
+parameters required by RelPos’s learnable relative position ma-
+trix. We attribute CD-RoPE’s effectiveness on Branchformer
+to the absence of intermediate convolution in its attention
+path, where the depthwise-separable convolution in CD-RoPE
+provides complementary local temporal context that Branch-
+former’s parallel branch structure does not otherwise supply.
+McNemar’s test on utterance-level correct/incorrect predictions
+(Table 3) shows the improvement is statistically significant on
+test-other (p=0.043, with 205 discordant pairs favoring CD-
+RoPE versus 165 favoring RelPos), where acoustic conditions
+are the most challenging.
+5.2. Speech Robust Bench Results
+To validate that CD-RoPE’s temporal warping mechanism
+provides genuine representational benefits beyond clean-data
+Table 3:McNemar’s test contingency table for the
+test-othersplit. Utterances compared: 2939, Discordant
+pairs: 370, McNemar statistic: 4.11, P-value: 0.0426.
+CD-RoPE correct CD-RoPE wrong
+RelPos correct1470 165
+RelPos wrong205 1099
+WER, we evaluate on a targeted subset of Speech Robust Bench
+[11]. At moderate perturbation (severity 2), CD-RoPE improves
+over RelPos on 7 of 9 perturbations, with all four temporal
+perturbations showing improvement (Table 2). Largest gains
+were observed on speedup (-0.47 absolute reduction) and slow-
+down (-0.13), while spectral perturbations show smaller im-
+provements (resample -0.04, pitch up -0.04), and noise pertur-
+bation gains are mixed (Gaussian -0.10, environmental +0.13).
+At severity 4 for slowdown and speedup, all models exceed
+50% WER, indicating near-complete recognition failure. Direct
+comparisons at this level are uninformative, as absolute differ-
+ences dominantly reflect noise rather than genuine architectural
+capability. The exceptions are tempo perturbations, where mod-
+els remain functional: CD-RoPE shows its largest advantage on
+tempo up (8.63 vs 10.73, -2.10 absolute, 19.6% relative reduc-
+tion) and tempo down (3.38 vs 4.00, -0.62 absolute).
+The pattern that CD-RoPE’s advantage concentrates on
+temporal perturbations, especially those that directly alter the
+temporal spacing of speech frames, is consistent with the ar-
+chitectural hypothesis: the learned∆tshifts enable adaptive
+repositioning when temporal structure is distorted.
+6. Conclusion
+In this work, we introduce CD-RoPE, a positional encoding
+method that extracts continuous semantic information from
+the incoming hidden representations of the transformer, trans-
+lates into a continuous positional time shift∆t, and seam-
+lessly integrates continuous dynamic positional offsets to the
+transformer by rotation. We empirically demonstrate that
+CD-RoPE achieves consistent WER improvements on Branch-
+former across all LibriSpeech evaluation sets while using 2.2M
+fewer parameters than RelPos. Targeted robustness evaluation
+on Speech Robust Bench further validates the temporal warping
+mechanism, with CD-RoPE showing its largest advantages un-
+der temporal perturbations where adaptive repositioning is most
+beneficial.
+Our evaluation is intentionally confined to Branchformer
+to isolate the temporal-warping mechanism from confound-
+ing intermediate convolutions, ensuring observed gains are at-
+tributable to the positional encoding rather than added con-
+volutional capacity. Establishing whether the gains trans-
+fer to architectures with built-in convolution (Conformer, E-
+Branchformer), to large self-supervised encoders, and to cor-
+pora with higher acoustic variability and out-of-domain conver-
+sational speech, is left to future work. In addition, a formal
+ablation of individual components is deferred to an extended
+version of this work. We also acknowledge the following lim-
+itations: (a) evaluation on a single dataset with a single seed,
+and (b) the lack of a direct mechanistic interpretability analysis
+on the learned∆t, although the consistency of improvements
+across all three evaluation splits and temporal perturbation on
+SRB suggests systematic architectural effect and its temporal
+warping nature.
+5469
+7. Acknowledgments
+The authors thank the anonymous reviewers and area chairs
+for their careful reading and constructive feedback, which im-
+proved the clarity and rigor of this manuscript.
+8. Generative AI Use Disclosure
+In accordance with ISCA policy, the authors disclose that Gen-
+erative AI tools were utilized during the preparation of this
+manuscript strictly for editing, refining, and polishing the writ-
+ten text to improve clarity and readability. No Generative
+AI tool was used to produce any significant portion of the
+manuscript’s core content, experimental design, or scientific
+findings, nor is any 

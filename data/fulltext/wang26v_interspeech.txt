@@ -1,0 +1,482 @@
+TC-DBI: A Plug-and-Play Trajectory Confidence-Guided Dynamic Block
+Inference Strategy for Speech Synthesis with Continuous Block Flow Matching
+Ren Wang1, Zhiyu Cui2, Shun Lei1, Jiawei Jin1, Dongfu Song1, Zhiyong Wu1,∗∗
+1 Shenzhen International Graduate School, Tsinghua University, China
+2 Ant Group, China
+wang-r24@mails.tsinghua.edu.cn, cuizhiyu.czy@antgroup.com, leis21@mails.tsinghua.edu.cn,
+jjw23@mails.tsinghua.edu.cn, songdf24@mails.tsinghua.edu.cn, zywu@sz.tsinghua.edu.cn
+Abstract
+Block Flow Matching combines block-level autoregression with
+intra-block parallelism for efficient and high-quality Text-to-
+Speech (TTS). However, using a fixed block size during in-
+ference ignores the non-uniform modeling difficulty of speech,
+which can cause unstable velocity estimation in challeng-
+ing regions. This motivates the need for a reliability metric
+that can guide dynamic adjustment of block size. We pro-
+pose Trajectory Confidence (TC), a geometric measure de-
+rived from trajectory straightness during ODE integration, and
+introduce TC-Guided Dynamic Block Inference (TC-DBI), a
+plug-and-play strategy that truncates and regenerates unreli-
+able regions to adapt block size without architectural changes.
+Experiments show that TC correlates strongly with gener-
+ation errors, and TC-DBI improves robustness and percep-
+tual quality while maintaining comparable efficiency. Audio
+samples are available athttps://thuhcsi.github.io/
+interspeech2026-TC-DBI/.
+Index Terms: Speech Synthesis, Block Flow Matching, Trajec-
+tory Confidence
+1. Introduction
+Modern Text-to-Speech (TTS) systems primarily adopt two
+paradigms: Autoregressive (AR) and Non-Autoregressive
+(NAR) models. AR models [1, 2, 3, 4, 5, 6, 7] generate speech
+sequentially, enabling strong temporal and prosodic depen-
+dency modeling but incurring high latency and exposure bias
+[8, 9, 10]. In contrast, NAR models [11, 12, 13, 14, 15, 16, 17]
+relax strict sequential conditioning to achieve parallel gener-
+ation and improved efficiency. However, they often strug-
+gle to capture fine-grained temporal dynamics and expressive
+prosody, partly because parallel generation lacks the instanta-
+neous, incremental context available in AR decoding.
+To balance expressiveness and efficiency, block-wise gener-
+ative modeling [18, 19] has recently emerged as an intermediate
+paradigm. By partitioning sequences into blocks, these methods
+maintain long-range contextual coherence across blocks while
+preserving parallel generation within each block. Among block-
+wise generative frameworks, continuous Block Flow Matching
+has recently shown strong performance in speech synthesis due
+to its continuous latent modeling and stable probability flow
+formulation. Representative systems such as ARDiT [20] and
+DragonFM [21] adopt Block Flow Matching for high-fidelity
+generation. Similar designs have also been explored in music
+generation (e.g., Diffrhythm2 [22]).
+Despite the effectiveness of block-wise modeling, applying
+it to speech synthesis is inherently constrained by the use of a
+**indicates the corresponding author.
+fixed block size, which poorly matches the intrinsic characteris-
+tics of speech. Speech exhibits highly non-uniform information
+density. Rapid phonetic transitions and prosodically complex
+regions demand strong contextual conditioning, whereas steady
+segments can be generated reliably with limited conditioning.
+As a result, a fixed block size creates an unfavorable trade-off.
+Small block size improves conditioning but greatly reduces par-
+allelism and efficiency. While large block size boosts efficiency,
+it may provide insufficient context for locally difficult regions,
+which can degrade quality and cause error accumulation. To ad-
+dress this issue, we need a computationally lightweight metric
+that can quickly assess the reliability of the generated segments
+and dynamically adjust the block size accordingly.
+Prior work [23] leverages token-level probabilities in dis-
+crete generative models (e.g., cross-entropy–based confidence)
+to dynamically control block-wise inference. However, such
+strategies are difficult to transfer to continuous block-wise
+models, where ODE-based sampling does not expose an ex-
+plicit probabilistic confidence signal. Meanwhile, recent works
+[24, 25] on continuous diffusion and flow-based models ex-
+plore leveraging sampling-trajectory geometry in probability
+flow ODEs to improve scheduling strategies. This prompts a
+natural question: can such trajectory characteristics—readily
+available during inference—also serve as a training-free signal
+of local generation reliability?
+In this work, we propose Trajectory Confidence (TC), a
+training-free and computationally lightweight reliability sig-
+nal. TC directly derives from the sampling trajectory of the
+probability-flow ODE during inference. It measures the local
+straightness of the trajectory, and serves as an on-the-fly indica-
+tor of generation stability. Building on TC, we introduce Trajec-
+tory Confidence–Guided Dynamic Block Inference (TC-DBI),
+a plug-and-play decoding strategy for continuous Block Flow
+Matching (and potentially other continuous block-wise ODE
+samplers). TC-DBI detects unreliable suffix regions within a
+block and selectively refines them by truncation and regener-
+ation with refreshed contextual conditioning, enabling adap-
+tive block granularity without any model retraining or architec-
+tural changes. We apply TC-DBI to our reproduced continuous
+Block Flow Matching TTS system and demonstrate consistent
+improvements in robustness and speech quality with minimal
+inference overhead.
+(1) We propose TC, a training-free and low-cost reliability met-
+ric and provide quantitative evidence that TC correlates with
+generation errors.
+(2) We introduce TC-DBI, a plug-and-play dynamic block in-
+ference strategy that adaptively identifies unreliable suffixes
+and refines them via truncation and regeneration to obtain
+stronger contextual conditioning in challenging regions.
+6906
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1242
+T Lref
+VAE Encoder
+reference audio
+Z01 Z02
+Z1 Z2
+VAE Decoder
+final wav
+Z3
+Z1 Z2
+Diffusion Transformer
+flow trajectory
+updated context truncated tail
+(a) (b)
+T Text
+Lref reference latent
+Z0i i-th noise block
+Zi i-th clean block
+i-th truncated blockZi
+noise latent
+clean latent with high Trajectory Confidence
+clean latent with low Trajectory Confidence
+Z03
+Z3
+Figure 1:Overview of Our Method:(a) Our reproduced Block Flow Matching architecture; (b) Details of TC-DBI.
+(3) We apply TC-DBI to our reproduced Block Flow Matching
+TTS baseline and substantially improve speech quality and
+robustness while preserving comparable efficiency.
+2. Methodology
+2.1. Model Architecture
+Fig. 1(a) shows our reproduced Block Flow Matching architec-
+ture, which consists of two components:
+Speech variational autoencoder (V AE): We employ a pre-
+trained V AE to compress high-dimensional waveforms into
+continuous latent variablesZ. It operates as a frozen acous-
+tic codec, ensuring high-fidelity reconstruction while reducing
+the sequence length for efficient generation.
+Diffusion Transformer (DiT): The core generator is a DiT
+designed for block-wise autoregressive modeling. Conditioned
+on historical blocks, textT, and reference latentL ref , the DiT
+predicts the flow trajectories for the current block, which are
+subsequently decoded by the V AE.
+2.2. Block Flow Matching
+We adopt Conditional Flow Matching (CFM) with Optimal
+Transport (OT) interpolation to model the generation process
+in the continuous latent space. Given a target latent sequence
+Z, we partition it into consecutive fixed-length blocksZ=
+{Z 1,Z 2,...,Z N}.
+For each blockZi, we define a conditional flow from Gaus-
+sian noise to the data distribution. Specifically, we sample
+Zi
+0∼N(0,I)with the same shape asZ i, and construct the OT
+interpolation pathZ i
+ti = (1−t i)Zi
+0 +tiZi, wheret i∈[0,1]
+denotes the independent noise level for each blocki. Under
+this linear interpolation, the corresponding target velocity field
+is constant and given byvi =Z i−Z i
+0.
+The modelvθ is trained to regress this velocity field condi-
+tioned on historical blocks and external inputs:
+L= 1
+N
+NX
+k=1
+E
+vθ(ti,Zi
+ti,Z<i,T,L ref )−v i
+
+2
+2
+
+(1)
+Here,Z <i denotes the historical blocks used for condition-
+Z
+Z
+Z0
+Z0
+Z
+Z
+High Trajectory Confidence
+Low Trajectory Confidence
+Z0: Source Noise
+Z: Final Result
+Z: Predicted Target
+Figure 2:Paths with different Trajectory Confidence
+ing. During training, it refers to the ground-truth blocks, while
+during inference it is replaced by the generated blocks ˆZ<i, en-
+suring autoregressive dependency at the block level.
+During inference, generation proceeds sequentially over
+blocks. For thei-th block, we initialize ˆZi(0)∼N(0,I)and
+solve the following conditional ordinary differential equation
+(ODE):
+d ˆZi(t)
+dt =v θ
+ 
+t, ˆZi(t), ˆZ<i, T, Lref
+
+, t∈[0,1].(2)
+To enable variable-length generation, we append End-of-
+Prediction (EOP) frames to the acoustic latents and jointly
+model them under the same flow objective. EOP frames are
+padded to complete the final block during training, and infer-
+ence terminates once the EOP signal is detected.
+Traditional Block Flow Matching adopts a fixed block
+length throughout inference, which fails to account for the
+non-uniform modeling difficulty of speech signals. To ad-
+dress this issue, we propose a training-free and computation-
+ally lightweight metric that can quickly assess the reliability of
+the generated segments and dynamically adjust the block size
+accordingly, as detailed in the following sections.
+6907
+2.3. Trajectory Confidence: Definition & Geometric Intu-
+ition
+To overcome the limitations of fixed block size, we need a
+metric that assesses generation reliability to dynamically adjust
+the block size. Under ideal optimal transport interpolation, the
+probability flow follows a straight path from noise to data; de-
+viations from this straightness can indicate local modeling dif-
+ficulty and instability in the estimated velocity field. This in-
+stability can reflect the model’s predictive confidence. As il-
+lustrated in Fig. 2, when the model is certain about the target
+output, the trajectory remains approximately straight across in-
+tegration steps. If the model is uncertain about the target, its ve-
+locity predictions may become inconsistent across integration
+steps and lead to curved trajectories and unreliable results.
+Motivated by this observation, we quantify Trajectory
+Confidence using the straightness of the integration path.
+For thek-th frame within a generated block, assuming the
+ODE solver performsSsteps and produces trajectory points
+{z(0)
+k ,...,z (S)
+k }, we define the trajectory confidenceCk as:
+Ck =
+z(S)
+k −z (0)
+k
+
+2
+PS
+s=1
+z(s)
+k −z (s−1)
+k
+
+2
++ϵ
+.(3)
+where the numerator denotes the Euclidean displacement
+from start to end, and the denominator represents the total path
+length traversed.ϵis a small constant introduced for numerical
+stability. The value ofC k lies in(0,1], where a value closer to
+1 indicates a straighter trajectory and higher confidence.
+2.4. Trajectory Confidence-Guided Dynamic Block Infer-
+ence (TC-DBI)
+Building upon the proposed Trajectory Confidence metric, we
+propose TC-DBI that adaptively adjusts the effective generation
+length according to local modeling difficulty.
+As illustrated in Fig. 1(b), at each generation stage, the
+model first performs parallel generation of a candidate block
+with a maximum lengthL max, following the standard fixed-
+block inference procedure. After ODE integration, trajectory
+confidence is computed for each frame using Eq. 3, yielding a
+confidence sequenceC= [C 1,...,C Lmax ].
+Rather than accepting the entire block, we determine the
+longest reliable prefix based on a predefined confidence thresh-
+oldτ. Specifically, we define the truncation boundary as:
+k∗ =
+(
+max
+ 
+2,min{k|C k <τ}
+
+,if∃,ks.t.C k <τ,
+Lmax + 1,otherwise.
+(4)
+The prefix{1,...,k ∗−1}is regarded as reliable and ap-
+pended to the generated sequence, while the remaining frames
+are truncated. Notably, Eq. 4 strictly enforces a minimum reten-
+tion of one frame per iteration. This prevents a potential infinite
+loop: if all frames were truncated, the unchanged conditioning
+context may cause the model to repeatedly generate the identi-
+cal trajectory. Generation then resumes from positionk ∗, using
+the retained prefix as updated conditioning context.
+This Trajectory Confidence guided mechanism dynami-
+cally modulates the effective block size during inference. In re-
+gions where the flow trajectory remains approximately straight,
+large parallel steps are preserved for efficiency. In contrast,
+when trajectory deviations indicate local uncertainty, the block
+size is automatically reduced, preventing unreliable predictions
+from propagating across subsequent blocks.
+3. Experiments
+3.1. Experimental Setup
+Our reproduced Block Flow Matching (BFM) is built upon a
+Diffusion Transformer (DiT) with 22 layers, hidden dimension
+1024, and 16 attention heads. Block-wise autoregressive gener-
+ation is performed with a fixed block size of 32 during training.
+For acoustic representation, we adopt the open-source V oxCPM
+[26] V AE, which compresses 44.1 kHz waveforms into 25 Hz
+continuous latent sequences, serving as a frozen neural codec.
+Our model is trained on approximately 100k hours of speech
+data from the Chinese and English subsets of Emilia. Training is
+conducted on 16 NVIDIA A100 (80G) GPUs for approximately
+two weeks. During inference, we perform ODE integration with
+32 steps. For TC-DBI, the trajectory confidence threshold is
+fixed toτ= 0.75to determine the truncation boundary.
+3.2. Experiment Results
+3.2.1. Main Results
+Table 1 reports the main results on the Seed-eval benchmark.
+Since no publicly available BFM model matches our training
+scale, we reproduced a Block Flow Matching model (BFM) as
+a baseline. For a comprehensive comparison, we also include
+CosyV oice2, MaskGCT, and F5-TTS, covering AR and NAR
+paradigms.
+We evaluate performance using three metrics. Word Error
+Rate (WER,↓) measures intelligibility via Whisper-large-v3 for
+English and Paraformer-zh for Mandarin and reflects genera-
+tion robustness. Speaker Similarity (SIM,↑) calculates the co-
+sine similarity of speaker embeddings extracted by a fine-tuned
+WavLM-large model, which quantifies speaker consistency be-
+tween synthesized and reference audio. Naturalness MOS (N-
+MOS,↑) evaluates perceptual quality, rated by 15 experienced
+listeners on 10 utterances per language.
+As shown in Table 1, BFM with TC-DBI demonstrates the
+most balanced performance across both test sets. It attains
+the lowest WER on seed-test-en (1.798%) and the second-best
+WER on seed-test-zh (1.568%), close to CosyV oice2 (1.504%),
+indicating high content fidelity while maintaining strong per-
+ceptual quality. Notably, our method delivers the highest
+N-MOS on seed-test-zh/en (3.809/3.973), surpassing the best
+baselines by consistent margin, demonstrating improved real-
+ism and prosody that generalizes across languages. Speaker
+similarity is comparable to the strongest systems, suggesting
+that the improvements are not driven by similarity optimization
+but by enhanced perceptual quality. Finally, removing TC-DBI
+degrades WER (zh: 1.568%→1.628%; en: 1.798%→1.921%)
+and N-MOS (zh: 3.809→3.673; en: 3.973→3.727) with min-
+imal SIM change, confirming the effectiveness of TC-DBI in
+improving robustness and perceptual quality.
+3.2.2. Validity of Trajectory Confidence
+Figure 3 presents a combined error density analysis on the Chi-
+nese and English subsets of Seed-eval. For each utterance, we
+use the minimum Trajectory Confidence as its sentence-level
+reliability score. We progressively filter samples whose score
+falls below a given threshold and compute the percentage of er-
+roneous samples (WER>0) within the filtered subset. The
+red curve shows the error probability of the selected subset,
+while the gray dashed line indicates the global baseline error
+rate (21.36%). The blue bars (log scale) denote the number
+of filtered samples at each threshold. A clear monotonic trend
+6908
+Table 1:Main evaluation results on the Seed-eval dataset in terms of WER (↓), SIM (↑), and N-MOS (↑)
+Method seed-test-zh seed-test-en
+WER↓SIM↑N-MOS↑WER↓SIM↑N-MOS↑
+CosyV oice2 [6]1.504% 0.752 3.391±0.149 2.634% 0.658 3.700±0.129
+F5-TTS [16] 1.640% 0.760 3.509±0.137 1.830% 0.672 3.545±0.144
+MaskGCT [17] 2.330% 0.773 3.191±0.148 3.936% 0.715 3.409±0.136
+BFM (ours) 1.628% 0.764 3.673±0.123 1.921% 0.676 3.727±0.145
+BFM with TC-DBI (ours) 1.568 % 0.7533.809±0.157 1.798% 0.6763.973±0.134
+emerges: as the confidence threshold becomes stricter, the error
+density increases significantly. For example, when the thresh-
+old is set to 0.65, the error rate rises to 35.0%, corresponding to
+a 1.64× increase over the global baseline. As the threshold re-
+laxes toward 0.85 and above, the error rate gradually converges
+to the baseline level. This behavior demonstrates that sentences
+with lower Trajectory Confidence are substantially more likely
+to exhibit recognition errors. These results provide strong sta-
+tistical evidence that Trajectory Confidence serves as a reliable,
+training-free quality estimator, justifying its use for adaptive
+block inference.
+0.60 0.65 0.70 0.75 0.80 0.85 0.90
+Confidence Threshold
+22
+24
+26
+28
+30
+32
+34
+Error Samples Ratio (%)
+Error Probability
+Global Baseline (21.4%)
+Sample Count
+102
+103
+Filtered Samples (Count)
+Figure 3:Error enrichment analysis under varying Trajectory
+Confidence thresholds
+3.2.3. Ablation Study: Impact of Confidence Thresholdτ
+To further examine how trajectory confidence translates into in-
+ference gains, we evaluate TC-DBI under different thresholdsτ
+(Table 2). Across all tested thresholds, TC-DBI consistently im-
+proves WER over the Fixed-Block baseline of our reproduced
+BFM. Atτ= 0.65, only very low-confidence segments are
+truncated, yielding limited WER reduction due to their low fre-
+quency. Increasingτto 0.75 allows TC-DBI to cover a broader
+set of moderately low-confidence segments, resulting in the best
+WER on both Seed-ZH (1.568%) and Seed-EN (1.798%) while
+incurring only a modest 1.08×relative RTF. Further increas-
+ingτto 0.80 triggers more aggressive truncation, which raises
+RTF to 1.63×with diminishing returns. These results demon-
+strate that trajectory confidence effectively identifies high-risk
+regions, and that balancing error density and occurrence fre-
+quency is crucial for optimal performance.
+3.2.4. Trajectory Confidence Improvement Analysis
+To further evaluate the effectiveness of dynamic regeneration,
+we analyze the confidence distribution of frames that were orig-
+inally below the threshold (τ= 0.75) after backtracking and re-
+generation. As shown in Fig. 4, more than 90% of these frames
+Table 2:Ablation study on confidence thresholdτ. “Rela-
+tive RTF” is normalized to the Fixed-Block baseline (lower is
+faster).
+Method RTF Seed-ZH Seed-EN
+WER↓SIM↑WER↓SIM↑
+Fixed-Block (τ= 0) 1.00×1.628% 0.764 1.921% 0.676
+TC-DBI (τ= 0.65)1.00×1.621% 0.764 1.810% 0.676
+TC-DBI (τ= 0.70) 1.01×1.619% 0.753 1.839% 0.676
+TC-DBI (τ= 0.75) 1.08×1.568%0.7531.798%0.676
+TC-DBI (τ= 0.80) 1.63×1.608% 0.754 1.876% 0.675
+are promoted above the predefined threshold, and nearly half
+exceed 0.85, indicating a substantial recovery in trajectory reli-
+ability. This shift suggests that regeneration successfully trans-
+forms previously uncertain regions into high-confidence pre-
+dictions. The improvement can be attributed to strengthened
+contextual conditioning: once unreliable suffixes are removed,
+generation resumes from a confirmed reliable prefix, providing
+more stable temporal context and reducing trajectory deviation.
+As a result, the model produces more deterministic and trust-
+worthy outputs.
+<0.70 0.70-0.75 0.75-0.80 0.80-0.85 0.85-0.90 0.90-0.95 0.95-1.00
+Trajectory Confidence Interval
+0
+20
+40
+60
+80
+100
+Percentage (%)
+14.0%
+86.0%
+1.3%
+5.4%
+15.6%
+27.5% 25.9%
+10.7%
+13.6%
+Threshold (0.75)
+ Low Conf. | High Conf. 
+Before Regeneration
+After Regeneration
+Figure 4:Trajectory Confidence improvement analysis
+4. Conclusion
+We proposed Trajectory Confidence (TC) as a training-free and
+computationally lightweight reliability metric for continuous
+Block Flow Matching in text-to-speech synthesis. Building on
+TC, we introduce TC-DBI, a plug-and-play decoding strategy
+that adaptively adjusts block-wise generation by truncating low-
+confidence regions and regenerating uncertain segments, re-
+quiring no architectural changes or retraining. Experiments on
+bilingual Seed-eval benchmarks demonstrate that TC-DBI ef-
+fectively identifies high-risk regions, improves robustness, and
+enhances perceptual quality while maintaining efficiency and
+speaker similarity.
+6909
+5. Acknowledgments
+This work was supported by National Natural Science Founda-
+tion of China (62076144) and Ant Group.
+6. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools exclusively for the purpose of language editing
+and manuscript polishing to improve readability. These tools
+were not used to generate any core scientific ideas, experimen-
+tal data, or technical contributions. All authors have thoroughly
+reviewed and approved the final version of the manuscript, and
+assume full responsibility for the integrity and entirety of its
+content.

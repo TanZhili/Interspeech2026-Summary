@@ -1,0 +1,431 @@
+Speaker Verification with Speech-Aware LLMs: Evaluation and Augmentation
+Thomas Thebaud ID 1,2,∗∗, Yuzhe Wang ID 1, Laureano Moro-Velazquez ID 1, Jesus Villalba-Lopez ID 1,2,
+Najim Dehak ID 1,2
+1 Electrical and Computer Engineering Department, Johns Hopkins University, Baltimore, MD, USA
+2 Human Language Technology Center of Excellence, Johns Hopkins University, Baltimore, MD,
+USA
+tthebau1@jhu.edu
+Abstract
+Speech-aware large language models (LLMs) can accept speech
+inputs, yet their training objectives largely emphasize linguis-
+tic content or specific fields such as emotions or the speaker’s
+gender, leaving it unclear whether they encode speaker iden-
+tity. First, we propose a model-agnostic scoring protocol that
+produces continuous verification scores for both API-only and
+open-weight models, using confidence scores or log-likelihood
+ratios from the Yes/No token probabilities. Using this protocol,
+we benchmark recent speech-aware LLMs and observe weak
+speaker discrimination (EERs above 20% on V oxCeleb1). Sec-
+ond, we introduce a lightweight augmentation that equips an
+LLM with ASV capability by injecting frozen ECAPA-TDNN
+speaker embeddings through a learned projection and train-
+ing only LoRA adapters. On TinyLLaMA-1.1B, the resulting
+ECAPA-LLM achieves 1.03% EER on V oxCeleb1-E, approach-
+ing a dedicated speaker verification system while preserving a
+natural-language interface.
+Index Terms: automatic speaker verification, speech-aware
+LLM, large language model
+1. Introduction
+Large Language Models (LLMs) [1, 2, 3] have recently become
+essential components of modern artificial intelligence systems.
+They have evolved into versatile architectures capable of pro-
+cessing inputs and outputs from multiple modalities, such as
+images [1, 4] and speech [5, 6, 7]. Speech-aware LLMs, defined
+by their capacity to process audio inputs [8], extend traditional
+text-based transformers by incorporating acoustic front-ends or
+audio tokenizers, enabling them to process spoken language di-
+rectly rather than relying solely on automatic speech recogni-
+tion transcripts. This innovation opens the door to models that
+could reason jointly over linguistic content and paralinguistic
+cues. However, most speech-aware LLMs either focus on lin-
+guistic understanding [9, 10], or audio-based question answer-
+ing [11, 10, 12], with a few prosody-based closed-set classifica-
+tion tasks such as accent, gender and emotion recognition [10].
+Automatic Speaker Verification (ASV) aims to determine
+whether two speech recordings originate from the same speaker.
+It is a critical component in numerous applications, including
+biometric authentication, but also personalized assistants and
+dialogue analysis. State-of-the-art ASV systems [13, 14] are
+usually based on speaker embeddings (x-vectors [15]), which
+encode the identity of a speaker within a single vector. These
+systems are highly optimized for identity discrimination and
+achieve remarkable performance on benchmarks such as V ox-
+Celeb [16]. If they can be leveraged for a variety of purposes,
+**indicates the corresponding author.
+from speech emotion recognition [17] to healthcare [18, 19]
+or speaker characterization [20], they are generally narrow in
+scope: they do not reason over linguistic content, nor are they
+designed to integrate seamlessly with higher-level reasoning
+tasks.
+The emergence of speech-aware LLMs raises an intriguing
+question: can a single large-scale, general-purpose model also
+perform fine-grained biometric tasks such as speaker verifica-
+tion? More specifically, do these models internally encode suf-
+ficient speaker-discriminative information, and can this infor-
+mation be harnessed or enhanced through appropriate training
+strategies? If so, this would suggest a path toward unified ar-
+chitectures capable of both high-level reasoning and low-level
+acoustic discrimination, reducing the need for task-specific
+pipelines.
+In this work, we investigate the capabilities of current
+speech-aware LLMs for automatic speaker verification. We an-
+alyze whether their learned representations contain discrimina-
+tive information for speaker identity. Building on this analy-
+sis, we propose a fine-tuning strategy that augments two widely
+used open-weight small-scale LLMs, tinyLLaMA 1.1B [21] and
+Ministral3 3.3B [1], with speaker verification capabilities by
+utilizing a pre-trained ECAPA-TDNN network from the speech
+brain toolkit [22]. Our approach adapts these models to pro-
+duce speaker-discriminative representations while preserving
+their general modeling capacity, effectively creating ’speaker-
+aware’ LLMs.
+Our contributions are as follows:
+• We propose a model-agnostic protocol to evaluate speaker
+verification capability in speech-aware LLMs.
+• We show that off-the-shelf speech-aware LLMs exhibit weak
+speaker discrimination on V oxCeleb1, mainly relying on
+coarse speaker characteristics.
+• We introduce a lightweight augmentation that injects frozen
+ECAPA speaker embeddings with LoRA adaptation to equip
+LLMs with ASV capability, achieving near SOTA capabili-
+ties.
+2. Related Works
+2.1. Automatic Speaker Verification
+Automatic Speaker Verification (ASV) has been extensively
+studied over the past two decades, evolving from generative sta-
+tistical models to highly discriminative deep learning systems.
+Most of those systems have been evaluated on the V oxceleb1
+dataset [23], a corpora of over a 100k utterances extracted from
+YouTube videos of 1251 celebrities, which contains 3 testing
+splits: Original, Extended and Hard (V ox1-O/E/H).
+4576
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2670
+The introduction of the i-vector [24] marked a major mile-
+stone, providing a compact representation of speaker char-
+acteristics that could be compared using probabilistic linear
+discriminant analysis (PLDA), which showed a 8.8% EER
+on V ox1-O trained under the same conditions [23]. Thex-
+vector framework [15] replaced generative factor analysis with
+a deep neural network trained to classify speakers, extracting
+fixed-dimensional embeddings from variable-length utterances,
+which bought up to 44% relative improvement in EER in var-
+ious scenarios evaluated on SITW [25]. Subsequent work in-
+troduced architectural refinements and training objectives tai-
+lored to speaker discrimination. In particular, time-delay neu-
+ral networks (TDNNs) and their enhanced variants, such as
+ECAPA-TDNN [13], incorporate channel attention, multi-scale
+feature aggregation, and squeeze-and-excitation mechanisms to
+better capture long-range speaker characteristics, which pushed
+the EER down to 0.8% on V ox1-O. If more recent improve-
+ments have been produced since, we selected ECAPA-TDNN
+for our experiments for its accessibility through the speechbrain
+toolkit [22], maximizing the reproducibility of our results.
+2.2. Speech-Aware Large Language Models
+Large Language Models (LLMs) are transformer-based archi-
+tectures trained on large-scale text corpora using self-supervised
+next-token prediction. This scaling has led to strong reasoning
+abilities, making LLMs a core component in many frameworks.
+Open-weight models such asLLaMA[2] andMinistral3[1]
+provide efficient decoder-only architectures with competitive
+generalization, while proprietary systems such asGPT[3] and
+Gemini[26] extend these capabilities to multimodal reason-
+ing. Although originally designed for text, transformers are
+modality-agnostic and can process other inputs once mapped
+into a compatible embedding space.
+For speech, raw waveforms are typically encoded using pre-
+trained acoustic models such as HuBERT [27], WavLM [28], or
+Whisper [29], or discretized using speech tokenizers and neural
+codecs [30, 31, 32]. Speech-aware LLMs integrate these rep-
+resentations with pretrained language models through learned
+projection layers or adapters [33, 34, 5, 6, 35], enabling tasks
+such as speech recognition, spoken QA, and multimodal dia-
+logue [8]. However, their training objectives primarily target
+linguistic and semantic understanding, leaving open the ques-
+tion of whether they encode sufficiently discriminative speaker
+information for biometric tasks such as speaker verification. We
+will investigate some of those models, utilizing a range of ar-
+chitectures, such asQwen-2.5-7B[6] andAudioFlamingo3[36]
+which leverages a Whisper encoder for its audio inputs orKimi-
+audio-7B[35] which also adds a neural audio codec for noise
+and music processing.
+3. Methods
+3.1. Dataset
+V oxCeleb1 [23] and V oxCeleb2 [37] are large-scale, pub-
+licly available audiovisual datasets widely used for speaker
+recognition research. V oxCeleb1 contains over 100,000 utter-
+ances from 1,251 celebrities, extracted from YouTube interview
+videos. V oxCeleb2 significantly expands this effort, comprising
+over one million utterances from 5,994 speakers. When training
+is needed, the experiment performed in this article will use the
+development set of V oxCeleb2 as training, and the testing set of
+V oxCeleb2 as validation. Both sets are defined in the original
+article and contain disjoint speakers. For ablation studies, we
+also define a smaller set of V oxCeleb2-dev, using only 10% of
+the speakers selected at random, and keeping only 10 utterances
+per speaker, which we nameVoxCeleb2-dev-XS, containing 600
+speakers, for 6k utterances and a total of 12.4h of audio. The
+testing sets used for all experiments will be the 3 test splits from
+V oxCeleb1 mentioned previously: the Original, Extended, and
+Hard trials, which are defined as lists of pairs of enroll and test
+utterances to compare.
+3.2. Proposed Speaker-Aware LLM architecture
+Cascadedspeech-aware LLMs are usually built around a pre-
+trained speech encoder, a connector, and a pretrained LLM,
+which are finetuned to work jointly. We propose a cascaded
+speaker-aware LLM, as shown in Figure 1, which is built using
+a pretrained ASV system, a connector, and a pretrained LLM:
+• The ASV system is an ECAPA-TDNN [13], trained on
+V oxCeleb2-dev using speechbrain toolkit [22], which shows
+0.89%, 0.45% and 0.96% EER respectively on V oxCeleb1
+Original, Extended and Hard splits using cosine scoring. This
+system will be frozen during training.
+• The connector is a linear layer, which is used to project the x-
+vectors in the dimension of the text embeddings of the LLM.
+• The LLM is either a TinyLLaMA 1.1B [21] or a Ministral3
+3.3B [1]. Each model is finetuned using Lora adaptors [38].
+The two Speaker-Aware configurations will be referred as SA-
+TinyLLaMA and SA-Ministral3 depending on the LLM used.
+3.3. Metrics
+ASV is a binary classification task, where a pair of utterances is
+either from the same speaker (target) or not (non-target). Stan-
+dard evaluation of an ASV system relies on the computation of
+a likelihood score for a predefined list of target and non-target
+pairs of utterances, which is used to compute the Equal Error
+Rate (EER).
+This metric requires a continuous set of scores for evalua-
+tion. If open-source models allow access to intermediate repre-
+sentations and the likelihood of an answer for different tokens,
+closed-source models usually only output the text answer to a
+query, which makes the computation of a continuous score a
+harder task.
+The next section details the proposed techniques to obtain a
+score from speech-aware LLMs
+3.4. Scoring speaker awareness in Speech-aware LLMs
+3.4.1. Confidence scoring based on speaker characteristics
+In the case of closed-weight LLMs, or when the logits are not
+available, the only available output is the text. We propose to
+ask for a confidence score between 0 and 100 in the probabil-
+ity that two given utterances are from the same speaker. This
+confidence score can then be used to compute the EER. The
+proposed prompt is:
+These are two distinct audios. First, think about the elements that
+characterize each speaker, such as their gender, accent, tone, prosody,
+and speech rate. Give the characteristics for each audio Then, from those
+characteristics, infer the likelihood that both speakers are the same.
+Answer by Yes or No, and give a confidence score between 0 and 100: 0
+corresponds to the certainty that they are from different speakers, 100
+corresponds to the certainty that they are from the same speaker, And 50
+means you are uncertain.
+First audio:[audio1]and second audio:[audio2].
+3.4.2. Log-likelihood scoring based on logits
+For more open-weights LLMs, were the logits associated
+to an answer are accessible, we can simplify the prob-
+lem by asking a binary output, and compute the ratio of
+4577
+Figure 1:Schematic of the pipeline to train and test a speaker-aware LLM.
+the logits for each answer. The simplified prompt would be:
+These are two distinct audios. First, think about the elements that
+characterize each speaker, such as their gender, accent, tone, prosody,
+and speech rate. Give the characteristics for each audio Then, from those
+characteristics, infer the likelihood that both speakers are the same.
+Answer by Yes or No.
+First audio:[audio1]and second audio:[audio2].
+Then, we can access the logits probability for the tokenYes
+and the logits for the tokenNo, and compute a log likelihood
+ratio as:
+LLR(prompt) =log( p(Yes|prompt)
+p(No|prompt) )(1)
+ThisLLRcan be used subsequently as a score to compute the
+EER, offering a much finer-grained analysis than the integer
+confidence score previously used. This technique is used to
+evaluate the capabilities of our two proposed cascaded speaker-
+aware LLMs: SA-TinyLLaMA and SA-Ministral3.
+3.5. Experiments
+3.5.1. Off-the-shelf speech-aware LLMs: confidence scoring
+We probe a set of off-the-shelf speech-aware LLMs using the
+confidence-scoring protocol described in Section 3.4.1. For
+each V oxCeleb1 trial (enrollment utterance, test utterance) we
+issue a single prompt containing the two audio segments and
+request a binary decision (same/different speaker) together with
+a confidence score in[0,100]. The returned confidence is used
+as the trial score to compute EER on the V oxCeleb1 trial lists
+(V ox1-O/E/H).
+This protocol is used to evaluate GPT-4.0-audio [3]
+(modelgpt-4o-audio-preview-2025-06-03), Qwen-
+2.5-7B [6], Gemini 3-flash and 2.5-flash-lite[26], Au-
+dioFlamingo3 [36], and Kimi-audio-7B [35].
+Failure rate:In addition to verification performance, we track
+the fraction of trials for which the model response cannot be
+parsed into a valid decision and confidence score (reported as
+failure rate).
+3.5.2. Unprompted speaker characterization
+As the prompt requests the model to consider paralinguistic el-
+ements such as the accent, gender, and prosody of the speaker,
+most models explicitly detail their perception of those qualities.
+We probe the outputs to measure the percentage of outputs con-
+taining gender and accents from the speakers, and report both
+the frequency of reporting and its accuracy.
+Gender Metrics:To simplify the evaluation process, only the
+outputs ’male’ or ’female’ are considered as reported gen-
+der1. The gender accuracy is computed using the gender labels
+1No other expression of gender was noted in the outputs of any
+model.
+provided in the metadata. According to the metadata, speakers
+in V oxCeleb1 are 44.84% female and 55.15% male.
+Accent Metrics:Accent accuracy is computed using the na-
+tionality labels provided in the metadata. Attribution of a
+speaker to any geographical location is considered as a success-
+ful accent prediction. If the model predicts a more restrictive
+label than the nationality (’London accent’ or ’Scottish
+accent’ for ’UK’ for example), the accent is counted right.
+A less restrictive accent (’Hispanic accent’ for ’Mexico’
+for example) is counted as wrong. According to the metadata,
+speakers in V oxCeleb1 are 63.86% from the USA, 17.18% from
+the UK, 4.31% from Canada, and other 33 nationalities are each
+less than 3%.
+3.5.3. Speaker-aware LLMs training and evaluation
+Training:All the proposed speaker-aware models are trained
+for 50 epochs on V oxCeleb2-dev, using a batch size of 64, a
+learning rate of10 −4 for all trainable parts, using V oxCeleb2-
+test as a validation set, on a single Nvidia A100 80Gb GPU. The
+models are trained for next token prediction, to predict either
+’Yes’ or ’No’, using batches composed of half target pairs and
+half non-target pairs. The model with the best validation EER
+across epochs is kept. The training and testing code for those
+models is available at this address2.
+Evaluation:We evaluate our speaker-augmented models using
+the log-likelihood scoring protocol from Section 3.4.2, where
+the verification score is the log-likelihood ratio (LLR) between
+theYesandNotokens, and present the results for the 3 evalu-
+ation split of V oxCeleb1.
+Ablations:We train a variant where the LLM backbone re-
+mains frozen (no LoRA adapters) and only the connector is
+learned. We denote this model SA-TinyLLaMAF . This setting
+follows the frozen-LLM adaptation proposed in [33], which re-
+ported 12.08% EER on V oxCeleb1-O using LLaMA2 3B.
+Considering this problem could be seen merely as an align-
+ment problem between the speaker embedding space and the
+LLM embedding space, we hypothesize that only a fraction of
+the speakers would be enough. To that end, we train a model
+using the V oxCeleb2-dev-XS subset defined in section 3.1, and
+name this model SA-TinyLLaMA XS . To complete the abla-
+tion, a model is trained on the V oxCeleb2-dev-XS subset with a
+frozen TinyLLaMA, named SA-TinyLLaMAF
+XS .
+4. Results
+4.1. Off-the-shelf speech-aware LLMs
+Table 1 shows that off-the-shelf speech-aware LLMs exhibit
+weak speaker discrimination under the confidence-scoring pro-
+tocol. EERs remain far above a dedicated ASV system, rang-
+2https://github.com/thomasthebaud/
+ASV-with-SpeechLLMs
+4578
+Table 1:Speaker-awareness evaluation of a set of Speech-aware LLMs using confidence scoring. EER (%) is shown for each split of
+Voxceleb1-test, as well as the confidence score failure rate, accuracy and failure rate for gender and accent prediction. Accuracies are
+left empty for Kimi as those fields were never predicted. Note that in case of failure to provide a score for a trial, the trial is ignored in
+the computation of the EER.
+Model EER%↓Failure Gender Gender Accent Accent
+V ox1-O V ox1-E V ox1-H Rate%↓Accuracy%↑Predicted%↑Accuracy%↑Predicted%↑
+Qwen-2.5-7B [6] 37.01 34.83 45.43 0.6897.9899.82 75.45 76.76
+Kimi-audio-7B [35] 43.58 43.02 43.93 16.12 - 0 - 0
+Gemini3-flash [26] 45.13 45.64 44.260.3892.1699.7584.99 85.72
+Gemini2.5-flash-lite [26] 36.15 37.09 47.55 16.56 91.4099.9183.32 83.90
+GPT4.0-audio [3]22.62 21.8838.910.0597.3299.42 82.65 82.90
+AudioFlamingo3 [36]32.90 31.0031.5176.23 77.29 55.68 59.06 47.95
+Table 2:EER (%) results on the splits of VoxCeleb1 for
+our proposed speaker-augmented LLMs, evaluated using log-
+likelihood based scoring. The ECAPA-TDNN system is shown
+as a comparison, evaluated using cosine scoring.
+Model V ox1-O V ox1-E V ox1-H
+ECAPA-TDNN[13] 0.89 0.45 0.96
+SA-Ministral3 14.76 15.88 21.04
+SA-TinyLLaMA1.87 1.03 2.20
+SA-TinyLLaMAF 5.48 4.21 6.60
+SA-TinyLLaMAXS 3.57 2.21 3.44
+SA-TinyLLaMAF
+XS 27.01 27.82 28.55
+ing from 22.62% (GPT-4.0-audio on V ox1-O) to approximately
+45% (Gemini), with several models operating close to chance
+level (50% EER). These results indicate that, under standard
+instruction-following prompts, current speech-aware LLMs do
+not reliably expose speaker-discriminative information suffi-
+cient for verification, even when explicitly asked to reason about
+paralinguistic cues. Those poor performances could be ex-
+plained by the coarse granularity of the scores, effectively al-
+lowing for only 101 levels, but those are not even used by the
+models, as all the prompted models yielded up to 16 different
+scores3. We also observe substantial differences in robustness
+across models. In particular, AudioFlamingo3 exhibits a high
+failure rate (76.23%), making its raw EER difficult to interpret.
+4.1.1. Speaker Characteristics prediction
+Although verification performance is poor, several models are
+nevertheless able to infer coarse speaker attributes. For ex-
+ample, Qwen-2.5-7B, Gemini, and GPT-4.0-audio achieve high
+gender classification accuracy when a gender label is produced
+(92-98% in Table 1), with near-complete gender coverage. This
+contrast reveals a clear limitation: although the models cap-
+ture coarse speaker attributes, such information is insufficient
+for fine-grained speaker identity discrimination. This is partic-
+ularly evident on V ox1-H, where the absence of cross-gender
+trials reduces the usefulness of gender cues and leads to a no-
+ticeable performance drop. These findings support the hypoth-
+esis that current speech-aware LLM training objectives priori-
+tize linguistic and high-level paralinguistic features rather than
+identity-specific representations.
+4.2. Speaker-aware LLMs results
+In contrast to off-the-shelf speech-aware LLMs, Table 2 shows
+that injecting frozen ECAPA speaker embeddings and train-
+ing only a lightweight connector together with LoRA adapters
+yields a large improvement in verification performance. SA-
+TinyLLaMA achieves EERs close to the ECAPA-TDNN co-
+3Full set of outputed scores across all models: [0, 1, 2, 5, 10, 15, 20,
+30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99, 100]
+sine baseline, indicating that a general-purpose LLM can be
+endowed with strong ASV capability when provided with an
+explicit speaker representation and minimal task-specific adap-
+tation, while preserving a natural-language interface.
+Ablation results further highlight the importance of adapt-
+ing the LLM backbone. When the LLM is frozen, and only
+the connector is learned, performance degrades substantially:
+SA-TinyLLaMAF reaches 5.48% EER on V ox1-O. This con-
+firms that the gains are not solely attributable to the quality
+of the injected speaker embeddings; parameter-efficient adap-
+tation is necessary for the LLM to reliably interpret the speaker
+representation and produce stable verification decisions un-
+der the prompted output format. Finally, we observe that the
+smaller TinyLLaMA-1.1B backbone outperforms larger back-
+bones (LLaMA-3B and Ministral3-3B) in our current training
+setup, an effect that merits further investigation. The poor per-
+formance of Ministral3-3B remains unexplained despite efforts
+to optimize its training, but it may be attributed to differences
+in model size and fine-tuning procedures, which could require
+alternative loss functions for optimal performance.
+5. Conclusion
+This work investigated whether modern speech-aware LLMs
+encode speaker identity information and whether this can be
+leveraged for automatic speaker verification (ASV). We in-
+troduced a model-agnostic evaluation protocol that derives
+continuous verification scores from both API-only systems
+(via prompted confidence) and open-weight models (via log-
+likelihood ratios overYes/Notokens). Benchmarking on V ox-
+Celeb1 shows that off-the-shelf speech-aware LLMs exhibit
+weak speaker discrimination, with EERs typically above 20%.
+We proposed a lightweight augmentation that injects frozen
+ECAPA-TDNN speaker embeddings into an LLM through a
+learned projection and LoRA adaptation. On TinyLLaMA-
+1.1B, the resulting model approaches the performance of a
+dedicated ECAPA-TDNN system while preserving a natural-
+language interface.
+Overall, our results suggest a practical path toward speaker-
+aware LLMs by explicitly integrating strong speaker represen-
+tations rather than relying on implicit learning. Nevertheless,
+our evaluation is limited by the coarse and model-dependent na-
+ture of confidence-based scoring for closed systems, as well as
+by parsing failures in some APIs, which constrain direct com-
+parisons. If this article show the technical possibility to aug-
+ment LLMs with speaker verification capabilities, the comput-
+ing cost both at training and inference remains orders of magni-
+tude higher than traditional dedicated systems. Future work will
+explore more robust scoring strategies and extend this fr

@@ -1,0 +1,419 @@
+A Compact Fully-Open Cache-Aware Streaming Model for Japanese ASR
+Yinchang Yang1
+1 The Kyoto College of Graduate Studies for Informatics, Japan
+yoinncyan2306@gmail.com
+Abstract
+We present a 123M-parameter fully-open cache-aware stream-
+ing model for Japanese ASR with a hybrid RNNT/CTC design.
+To our knowledge, no prior Japanese ASR system simultane-
+ously provides full openness—open weights, data preparation
+details, code, and logs—together with streaming capability. On
+a 35K-hour pre-training corpus we show that CER-stratified
+data curation consistently benefits underrepresented domains
+but can hurt performance under multi-domain fine-tuning with
+higher decoder capacity. We further study progressive fine-
+tuning across five domains totaling 507 hours. Evaluated on
+five test sets, our model achieves 12.4% average CER (RNNT),
+outperforming the 1B OWSM-CTC v4 (13.5%) and 619M Rea-
+zonSpeech NeMo-v2 (14.1%) while being 5–8×smaller, with
+an RTFx of 1220 (batch) and 446 (streaming).
+Index Terms: streaming ASR, Japanese speech recognition,
+cache-aware attention, data curation, open-source
+1. Introduction
+Recent speech foundation models such as Whisper [1] have
+achieved remarkable accuracy by training on massive datasets.
+However, many high-performing Japanese ASR systems remain
+either closed-source (e.g., commercial APIs), rely on propri-
+etary training data, or operate exclusively in offline mode—
+requiring the full utterance before producing output.
+For on-device applications such as real-time transcription
+on smartphones and IoT devices,streamingcapability is essen-
+tial: the model must process audio incrementally with bounded
+latency, rather than waiting for the complete utterance. Further-
+more,full openness—publicly available weights, data details,
+code, and logs—is critical for reproducibility and community
+adoption. While several Japanese ASR models have been re-
+leased in recent years, each falls short on at least one of these
+Table 1:Greedy CER (%) on Japanese test/dev sets, no external
+LM. Format: RNNT / CTC; n/a = decoder not available.Bold:
+best overall. Blue : our 123M cache-aware streaming models
+(M1-4, M1-6).
+Test set parakeet espnet-str Reazon OWSM-CTC Ours (123M, cache-aware)
+0.6B / off 0.15B / block 0.62B / off 1.01B / off M1-4 (R2) M1-6 (R4)
+JSUT6.4 / 6.5n/a / 11.58 8.47 / n/a n/a / 8.84 8.90 / 9.40 9.17 / 10.16
+MCV 8.0t 7.1 / 7.2 n/a / 14.18 8.88 / n/a n/a / 7.25 6.90 / 8.49 6.72/ 8.53
+MCV 16.1d 10.1 / 10.2 n/a / 22.57 13.45 / n/a n/a / 12.33 10.15 / 11.69 10.04/ 11.97
+MCV 16.1t13.2 / 13.3n/a / 26.65 17.27 / n/a n/a / 16.98 15.62 / 16.81 15.87 / 17.52
+TEDxJP-10K9.0 / 9.1n/a / 15.16 19.76 / n/a n/a / 17.60 13.18 / 13.81 12.36 / 15.76
+FLEURS-d4.56 / 4.67n/a / 13.84 6.03 / n/a n/a / 5.54 7.44 / 9.05 5.94 / 6.88
+FLEURS-t5.78 / 5.86n/a / 14.90 6.52 / n/a n/a / 6.68 8.00 / 9.49 6.96 / 7.72
+SPREDS-D1 15.48 / 15.70n/a / 12.3918.72 / n/a n/a / 17.64 17.83 / 18.53 17.58 / 17.85
+dimensions.
+We survey existing Japanese ASR systems and find that, to
+the best of our knowledge, no prior model simultaneously satis-
+fies both full openness and streaming capability. Whisper [1] re-
+leases inference code and weights but not data details or training
+recipe. NVIDIA parakeet [2] releases weights and references
+public data but provides no training recipe. The espnet stream-
+ing model [3] documents its training corpora but lacks complete
+pipeline reproducibility. OWSM-CTC v4 [4, 5] achieves full
+openness but does not provide a streaming inference recipe.
+Beyond the model-level gap, building a competitive
+Japanese streaming ASR system faces adata challenge: a large-
+scale open Japanese corpus, ReazonSpeech [6] (∼35K hours),
+is derived entirely from terrestrial TV broadcasts, while lecture
+and conversational domains remain underrepresented in public
+resources. To bridge this domain gap, we assemble a∼507-
+hour multi-domain fine-tuning pool spanning five complemen-
+tary sources—crowd-sourced read speech, TV-domain filtered
+subsets, spontaneous conversation, and lecture-style talks. A
+key component is anewly curated TEDxJP-20h training split:
+we collect all publicly available Japanese TED talk record-
+ings with human-uploaded subtitles (as of January 2026), seg-
+ment them by subtitle timestamps, and apply quality filter-
+ing (CER<10% against a teacher ASR), yielding∼20 hours
+(21.9K utterances) that fill the previously empty lecture slot.
+Similarly, MSR-86K [7] is quality-filtered with the same CER
+threshold, and the BTSJ-1000 dialogue corpus [8] is segmented
+via forced alignment [9] to yield∼117 hours of conversational
+data. The established TEDxJP-10K evaluation set [10] is ex-
+plicitly excluded to prevent train–test leakage.
+To address this gap, we propose a compact 123M-
+parameter model based on the FastConformer [11] architecture
+with cache-aware multi-context streaming [12] and a hybrid
+RNNT/CTC dual-decoder design. Our contributions are:
+• To our knowledge, the first fully-open Japanese ASR model
+with cache-aware streaming, releasing weights, data mani-
+fests and preparation scripts, code, and logs for full repro-
+ducibility.
+• A2×2factorial study of CER-stratified pre-training
+data curation on ReazonSpeech [6] (35K hours), iso-
+lating the interaction between curation, model capacity
+(pred rnn layers), and fine-tuning scope.
+• A progressive multi-domain fine-tuning study across five
+Japanese speech domains (∼507 hours), including a newly
+curated TEDxJP-20h training split, quantifying domain-
+dependent trade-offs.
+• Competitive accuracy: 12.4% average CER (RNNT) across
+five test sets, outperforming models 5–8×larger, with RTFx
+1220 (offline) / 446 (streaming).
+6579
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3380
+Table 1 previews the main results: despite being 5–8×
+smaller, our streaming model matches or surpasses larger of-
+fline systems on multiple domains.
+2. Proposed Method
+2.1. Model architecture
+Our model uses the FastConformer-Hybrid-Transducer-CTC-
+BPE-Streaming architecture [11] implemented in NVIDIA
+NeMo [13]. The encoder is a 17-layer FastConformer with
+dmodel = 512and8×depthwise-striding subsampling (108M
+parameters), paired with an RNNT decoder [14] (9.2M) and a
+CTC decoder [15] (2.1M), totaling 123M parameters. Input fea-
+tures are 80-dimensional mel-filterbanks with 10 ms frame shift.
+During training, the CTC branch serves as an auxiliary objective
+(weight 0.3), stabilizing encoder representations; at inference, it
+provides a faster decoding path when throughput is prioritized
+over accuracy.
+2.2. Cache-aware streaming
+We adopt cache-aware multi-context attention [12] with
+att context style=chunked limited, preventing ef-
+fective look-ahead from accumulating across encoder lay-
+ers. During training, we uniformly sample from four context
+configurations[L,R]∈{[70,13], [70,6], [70,1],
+[70,0]}, whereLandRdenote left and right context frames
+after8×subsampling (1 frame = 80 ms). Algorithmic look-
+ahead isR×8×10ms:[70,13]yields 1.04 s and[70,0]
+yields zero for fully causal streaming. A single model thus
+supports multiple latency–accuracy trade-offs at inference time
+without retraining.
+2.3. Pre-training data curation
+We pre-train on ReazonSpeech v2 [6] (∼35K hours of Japanese
+TV broadcast speech) and compare two strategies:
+Baseline: all utterances without filtering.
+CER-stratified (CER-strat): (1) transcribe all utterances
+with parakeet-0.6b-ja [2] and compute CER against original
+transcripts as a quality proxy; (2) discard utterances with
+CER>20% (∼41% of data); (3) sample from three quality
+bands—[0%,1%],(1%,5%],(5%,20%]—with weights 0.65,
+0.25, 0.10, retaining∼59% of the original data.
+Table 2:Effect of pre-training curation on CER (%),
+CTC greedy decoding. Within each pair, architec-
+ture and fine-tuning are held constant; only the Rea-
+zonSpeech subset differs. All pairs use multi-context
+[[70,13],[70,6],[70,1],[70,0]]. The four
+pairs form a2×2factorial:pred rnn layers∈ {1,2}
+×fine-tuning scope∈ {MCV,MCV+TED+MSR}.
+P1/P2: MCV; P3/P4: MCV+TEDxJP-20h+MSR. P1/P3:
+pred rnn layers=1; P2/P4:pred rnn layers=2.
+Bold: best CER within each pair.
+Pair Pre-train Fine-tune JSUT FLEURS-t TEDxJP-10K SPREDS
+P1 Baseline MCV 10.16 10.12 24.20 21.77
+P1 CER-strat MCV 9.77 10.3019.8121.21
+P2 Baseline MCV 10.32 10.31 25.80 18.08
+P2 CER-strat MCV 10.59 10.3521.2220.90
+P3 Baseline MCV+TEDxJP-20h+MSR 9.86 10.01 13.20 18.19
+P3 CER-strat MCV+TEDxJP-20h+MSR9.19 9.7113.2517.82
+P4 Baseline MCV+TEDxJP-20h+MSR 9.40 9.49 13.81 18.53
+P4 CER-strat MCV+TEDxJP-20h+MSR 9.328.7117.17 18.75
+Table 2 compares the two strategies in a2×2factorial de-
+sign that independently variespred rnn layersand fine-
+tuning scope. Under single-domain fine-tuning (P1, P2), CER-
+strat consistently improves TEDxJP-10K by∼18%(24.20→
+19.81and25.80→21.22) regardless ofpred rnn layers,
+indicating that curation compensates for the missing lecture
+domain in MCV-only fine-tuning. Under multi-domain fine-
+tuning withpred rnn layers=1(P3), TEDxJP-10K is neu-
+tral (13.20→13.25,+0.4%) while JSUT and FLEURS
+improve, suggesting that multi-domain coverage already sub-
+sumes the curation benefit for TEDxJP without introducing
+harm. However, combining multi-domain fine-tuning with
+pred rnn layers=2(P4) causes TEDxJP-10K to degrade
+(13.81→17.17,+24%) despite FLEURS improving (9.49→
+8.71,−8%). Since the same curation is harmless under
+pred rnn layers=1(P3), the degradation is attributable
+to the three-way interaction of CER-strat, multi-domain fine-
+tuning, and increased decoder capacity, rather than to curation
+alone.
+2.4. Multi-domain fine-tuning
+All models are pre-trained on ReazonSpeech with AdamW (lr
+= 2.0, 15K warmup steps, min lr= 5×10 −6), exponential
+moving average (EMA, decay 0.9995), SpecAugment, and fast-
+emit regularization (λ= 10 −4). Fine-tuning uses the same
+optimizer with lr= 0.6.
+We fine-tune progressively on five Japanese speech do-
+mains (∼507 hours total). Table 3 lists the data sources.
+TEDxJP-20h and MSR-86K are quality-filtered by comparing
+pseudo-transcriptions from parakeet-0.6b-ja against original la-
+bels and retaining utterances with CER<10%; BTSJ is force-
+aligned via NeMo Forced Aligner [9]. Sampling weights are
+rebalanced at each step to prevent domain collapse. The full
+training pipeline completes in∼200 hours on 4×NVIDIA RTX
+6000 Ada (48 GB) GPUs.
+Table 3:Fine-tuning data sources used in recipes R0–R4. Hours
+and utterance counts refer to filtered training splits actually
+used. “NFA”: segmented via NeMo Forced Aligner.
+Source Domain Hours Utts. Filter
+MCV ja-v23 read speech 19.66 15,145 —
+TEDxJP-20h lecture 20.36 21,921 CER<10%
+MSR-86K mixed 342.41 205,629 CER<10%
+BTSJ-1000 conversation 116.94 204,481 NFA
+FLEURS-ja read speech 7.42 2,292 —
+Total 506.79 449,468
+3. Experimental Results
+We evaluate on five domain-representative Japanese test sets:
+JSUT basic5000 [16] (read speech), MCV 16.1 test [17]
+(crowd-sourced), TEDxJP-10K [10] (lecture), FLEURS-ja
+test [18] (read), and SPREDS-D1 [19] (simulated meeting).
+These five sets span read, spontaneous, lecture, and conversa-
+tional domains, providing a broad evaluation of robustness.
+CER is computed with greedy decoding, no external LM;
+text is normalized by NFKC, num2words (Japanese), and non-
+letter removal (retaining CJK, kana, and Latin characters).
+Throughput is reported as batch RTFx=total audio duration /
+wall-clock time (higher is better); each model is evaluated with
+its native inference pipeline on a single NVIDIA RTX 6000 Ada
+(48 GB).
+6580
+3.1. Fine-tuning data composition
+Table 4:Effect of fine-tuning data composition on CER (%),
+CTC greedy decoding. R0–R4 share the same pre-trained
+checkpoint and progressively expand the mixture. Weights are
+rebalanced at each step; reported effects reflect both domain
+addition and weight redistribution.Bold: best CER in each
+column.
+Recipe Fine-tune mixture JSUT FLEURS-t TEDxJP-10K SPREDS
+R0 MCV 10.32 10.31 25.80 18.08
+R1 MCV+TEDxJP-20h 10.42 9.32 13.71 19.54
+R2 MCV+TEDxJP-20h+MSR 9.40 9.49 13.81 18.53
+R3 MCV+TEDxJP-20h+MSR+BTSJ 9.12 9.23 12.9016.79
+R4 MCV+TEDxJP-20h+MSR+BTSJ+FLEURS 10.167.7215.76 17.85
+Table 4 shows how progressively expanding the fine-tuning
+mixture affects CER. Adding TEDxJP-20h data (R0→R1)
+yields the largest single-step TEDxJP-10K reduction (25.80→
+13.71,−47%), confirming the benefit of explicit domain cov-
+erage, though SPREDS degrades (18.08→19.54,+8%).
+Adding MSR-86K (R1→R2) substantially improves JSUT
+(10.42→9.40) and partially recovers SPREDS (19.54→
+18.53), while TEDxJP-10K remains flat. Adding BTSJ con-
+versational data (R2→R3) brings the largest SPREDS improve-
+ment (18.53→16.79,−9%), while TEDxJP-10K continues to
+improve (13.81→12.90). Incorporating FLEURS (R3→R4)
+achieves the best FLEURS score (9.23→7.72,−16%) but re-
+gresses TEDxJP-10K (12.90→15.76,+22%), highlighting a
+domain-dependent trade-off between broader coverage and spe-
+cialization.
+3.2. Openness and streaming comparison
+Table 5:Openness and streaming configurations of Japanese
+ASR systems. Multilingual models (Whisper, MMS, OWSM) all
+support Japanese. Models are categorized into three tiers of
+openness following owsm v4 [4]. Data (h) shows hours of la-
+beled ASR data used for training. Streaming modes:cache-
+aware= bounded right context per encoder layer;block-based
+= chunked processing;offline= full utterance required.
+Model Name Openness Model Data (h) GPU Streaming
+Weights Data Logs Size Hrs
+Open-weight models
+Whisper base [1] ✓ ✗ ✗ 0.07B 555k unk. offline
+Whisper small [1] ✓ ✗ ✗ 0.24B 555k unk. offline
+Whisper medium [1] ✓ ✗ ✗ 0.77B 555k unk. offline
+Whisper large-v3 [1] ✓ ✗ ✗ 1.55B 5M unk. offline
+parakeet-0.6b-ja [2] ✓ ✓a ✗ 0.6B 35k unk. offline
+Open-weight, open-data models
+MMS-fl102 [20] ✓ ✓c ✗ 0.97B 1.4ke unk. offline
+MMS-all [20] ✓ ✓c ✗ 0.97B 107ke unk. offline
+espnet-str (ouktlab) [3] ✓ ✓b ✗ 0.15B 0.9k unk. block-based
+ReazonSpeech NeMo-v2 [21] ✓ ✓ ✗ 0.62B 35k unk. offline
+Fully-open models
+AED models
+OWSM v4 small [4] ✓ ✓ ✓ 0.37B 290k 1.7kf offline
+OWSM v4 medium [4] ✓ ✓ ✓ 1.02B 290k 3.8kf offline
+CTC models
+OWSM-CTC v4 [4, 5] ✓ ✓ ✓ 1.01B 290k 4.1kf offline
+Hybrid RNNT/CTC models
+M1-4 (Ours) ✓h ✓ ✓ 0.12B 40k 0.73kgcache-aware
+M1-6 (Ours) ✓h ✓ ✓ 0.12B 40k 0.73kgcache-aware
+a Trained on ReazonSpeech v2.0 (public); fine-tuning data not released.
+b Some corpora require academic licenses, but provides detailed statistics and links to
+sources.
+c Not publicly released, but provides detailed statistics and links to sources.
+e The 491k hours of unlabeled speech for pre-training are not included.
+f Trained on NVIDIA H100 (96GB).
+g Trained on 4×NVIDIA RTX 6000 Ada (48GB).
+h We release manifests, download/prepare scripts, and the complete filtering/segmentation
+pipeline; all training sources are publicly accessible (possibly under terms), and we do
+not redistribute audio.
+Following [4], we mark “Data” as available (✓) when the au-
+thors provide sufficient detail—corpus identifiers, download
+instructions, and preparation scripts—for an independent re-
+searcher to reconstruct the training set, even if the authors do not
+redistribute the audio themselves. Table 5 surveys 11 existing
+Japanese ASR systems along two axes: openness and stream-
+ing capability. The OWSM series [22, 4, 5] achieves full open-
+ness across a wide range of model sizes, but all variants operate
+exclusively in offline mode. Among the systems surveyed, no
+prior baseline simultaneously satisfies full openness (weights,
+data, logs)andstreaming capability. The closest streaming
+baseline, espnet-str [3], documents its training corpora but does
+not release the complete training pipeline or logs, preventing
+end-to-end reproducibility. Our model is, to our knowledge, the
+first fully-open Japanese ASR system with cache-aware stream-
+ing and bounded right context. The entire training pipeline (pre-
+training on 35K hours + multi-domain fine-tuning on 507 hours)
+completes in∼800 GPU hours on 4×RTX 6000 Ada (48 GB),
+demonstrating feasibility on widely available workstation hard-
+ware.
+3.3. Streaming latency–accuracy trade-off
+Table 6:Effect of streaming context on CER (%). M1-6
+(R4) evaluated under each context configuration; look-ahead
+=R×8×10ms. Format: RNNT / CTC. Full-utt = offline (no
+streaming constraint).
+Test set [70,13] [70,6] [70,1] [70,0] full-utt
+1040 ms 480 ms 80 ms 0 ms∞
+JSUT 9.17 / 10.16 9.24 / 10.55 9.72 / 11.21 10.30 / 11.90 9.17 / 10.16
+MCV-16t 15.87 / 17.52 16.05 / 17.90 16.64 / 18.48 17.04 / 18.81 15.87 / 17.52
+TEDxJP-10K 12.36 / 15.76 12.94 / 16.60 14.96 / 19.90 16.74 / 21.50 12.36 / 15.76
+FLEURS-t 6.96 / 7.72 7.11 / 7.81 7.58 / 8.15 7.65 / 8.33 6.96 / 7.72
+SPREDS-D1 17.58 / 17.85 17.91 / 18.97 18.24 / 20.16 18.46 / 20.40 17.58 / 17.85
+Avg 12.39 / 13.8012.65 / 14.37 13.43 / 15.58 14.04 / 16.1912.39 / 13.80
+Table 6 examines how reducing right context affects recogni-
+tion accuracy across five domains. From 1040 ms look-ahead
+([70,13]) to fully causal mode ([70,0]), average RNNT CER
+degrades by only 1.65 points while CTC degrades by 2.39,
+indicating that RNNT is more robust under low-latency con-
+straints. The gap is most pronounced on TEDxJP-10K, where
+CTC degrades by 5.74 (15.76→21.50) versus 4.38 for RNNT
+(12.36→16.74). Even in the fully causal setting (0 ms look-
+ahead), our RNNT (14.04% avg) remains competitive with Rea-
+zonSpeech NeMo-v2 (14.1%) and substantially outperforms
+espnet-str (16.1%). The [70,13] configuration matches offline
+decoding exactly (12.39 vs 12.39 avg), confirming that 1040 ms
+of right context is sufficient to recover full-utterance accuracy.
+3.4. Multi-domain evaluation and throughput
+To evaluate generalization across diverse Japanese speech con-
+ditions, we compare our model against baselines spanning three
+openness tiers on five domain-representative test sets (Table 7).
+The five baseline systems cover four decoder architectures
+(AED, CTC, RNNT, TDT) and range from 150M to 1.55B pa-
+rameters, including both offline and streaming configurations.
+This comparison isolates the contribution of our compact 123M
+model against systems with up to12×more parameters. We ad-
+ditionally report inference throughput (RTFx) measured under
+identical hardware conditions, enabling a joint accuracy–speed
+evaluation across all openness levels.
+6581
+Table 7:Japanese ASR CER (%) on five domain-representative test sets; greedy decoding, no external LM, text normalised by NFKC
++ num2words + non-letter removal. Each cell: RNNT / CTC; n/a = decoder not available. Inverse Real Time Factor (RTFx) measured
+on a single NVIDIA RTX 6000 Ada (48 GB).Bold: best among fully-open models.
+Model Arch. Size Avg. CER↓RTFx↑JSUT MCV-16t TEDxJP-10K FLEURS-t SPREDS-D1
+Open-weight models
+Whisper-large-v3 [1] AED 1.55B 10.7 37.3 7.19 15.95 9.84 4.91 15.57
+parakeet-0.6b-ja [2] TDT/CTC 0.6B 10.0 / 10.1 881.3 6.4 / 6.5 13.2 / 13.3 9.0 / 9.1 5.78 / 5.86 15.48 / 15.70
+Open-weight, open-data models
+espnet-str [3] CTC 0.15B n/a / 16.1 0.69‡§ n/a / 11.58 n/a / 26.65 n/a / 15.16 n/a / 14.90 n/a / 12.39
+ReazonSpeech NeMo-v2 [21] RNNT 0.62B 14.1 / n/a 636.6 8.47 / n/a 17.27 / n/a 19.76 / n/a 6.52 / n/a 18.72 / n/a
+Fully-open models
+OWSM-CTC v4 [4, 5] CTC 1.01B n/a / 13.5 45.1§ n/a / 8.84 n/a / 16.98 n/a / 17.60 n/a / 6.68 n/a / 17.64
+M1-6 (Ours) RNNT/CTC 0.12B 12.4/ 13.8 1220.4 9.17/ 10.16 15.87/ 17.52 12.36/ 15.76 6.96/ 7.72 17.58/ 17.85
+‡ Block-based streaming incurs a quadratic finalization (flush) cost; we report end-to-end time including this step.
+§ ESPnet inference; unlike NeMo, ESPnet currently lacks lower-level inference optimization [4].
+Table 7 reports CER and inference throughput across five
+Japanese domains. Among all baselines, the 600M offline para-
+keet achieves the lowest average CER (10.0% TDT), followed
+by Whisper-large-v3 (10.7% AED). Our 123M cache-aware
+streaming model achieves 12.4% (RNNT) / 13.8% (CTC); the
+RNNT result surpasses the fully-open OWSM-CTC v4 base-
+line (13.5%, CTC-only), as well as ReazonSpeech NeMo-v2
+(14.1%, RNNT) and espnet-str (16.1%, CTC). The RNNT de-
+coder consistently outperforms CTC across all five domains,
+validating the hybrid training strategy. On FLEURS-t, Ours
+(6.96%) narrows the gap to parakeet (5.78%) to 1.18 abso-
+lute CER. Per-domain gains are largest where fine-tuning cov-
+erage is strongest: on TEDxJP-10K, our RNNT (12.36%) re-
+duces CER by 5.24 absolute over OWSM-CTC v4 (17.60%),
+attributable to self-collected training data (Table 3); on read-
+speech benchmarks with thinner coverage (JSUT, FLEURS-t),
+OWSM-CTC v4’s 1.01B parameters close the gap (e.g. 8.84 vs.
+9.17 on JSUT). Regarding throughput, Ours achieves an RTFx
+of 1220, 1.4×faster than parakeet (881.3); OWSM-CTC v4
+reports 45.1 under ESPnet §, where the gap primarily reflects
+framework-level differences. In cache-aware streaming mode
+([70,13]), Ours still achieves RTFx 446, confirming real-
+time viability with substantial headroom. With an8×param-
+eter advantage (123M vs. 1.01B), Ours to our knowledge re-
+mains the only model that simultaneously satisfies full open-
+ness, streaming capability, and competitive multi-domain accu-
+racy.
+4. Conclusion
+We presented a 123M-parameter fully-open cache-aware
+streaming model for Japanese ASR based on FastConformer-
+Hybrid-Transducer-CTC. To our knowledge, this is the first
+Japanese ASR system that simultaneously provides open
+weights, data details, code, logs, and streaming capability. A
+2×2factorial study of CER-stratified pre-training data curation
+on 35K hours of ReazonSpeech showed that curation consis-
+tently benefits domains absent from fine-tuning, but degrades
+TEDxJP-10K only when combined with both multi-domain
+coverage and increased decoder capacity—implicating a three-
+way interaction rather than curation alone. Progressive multi-
+domain fine-tuning across five domains (∼507 hours), includ-
+ing a newly curated TEDxJP-20h training split, yielded 12.4%
+average CER (RNNT) on five test sets, outperforming fully-
+open baselines up to8×larger. With RTFx 1220 (offline)
+and 446 (streaming), the model confirms real-time viability on
+widely available workstation hardware. We publicly release all
+weights, data manifests, code, and training logs to support re-
+producible research.1
+5. Acknowledgements
+The author thanks Ye Wang, Sheng Tan, and Jiehao Zhang for
+their support as fellow students at The Kyoto College of Gradu-
+ate Studies for Informatics, including assistance with collecting,
+organizing, and checking heterogeneous speech corpora. The
+author also thanks Yimeng Sun and Masaharu Imai for their su-
+pervision and guidance.
+6. Generative AI Use Disclosure
+Generative AI tools were used for language polishing and edit-
+ing assistance. The author reviewed and is responsible for all
+content in the manuscript.

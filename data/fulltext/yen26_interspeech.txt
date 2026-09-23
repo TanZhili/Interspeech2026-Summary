@@ -1,0 +1,538 @@
+MDM-ASR: Bridging Accuracy and Efficiency in ASR with Diffusion-Based
+Non-Autoregressive Decoding
+Hao Yen1,∗, Pin-Jui Ku1,∗, Ante Juki´c3, Sabato Marco Siniscalchi1,2
+1 Georgia Institute of Technology, USA
+2 Universit`a degli Studi di Palermo, Italy
+3 NVIDIA, USA
+rick.yen@gatech.edu, pku9@gatech.edu, ajukic@nvidia.com
+Abstract
+In sequence-to-sequence Transformer-based automatic speech
+recognition (ASR), autoregressive (AR) models achieve
+strong accuracy but suffer from slow decoding, while non-
+autoregressive (NAR) models enable parallel decoding at the cost
+of degraded performance. We propose a principled NAR ASR
+framework based on Masked Diffusion Models to significantly
+reduce this gap. A pre-trained speech encoder is coupled with a
+Transformer diffusion decoder conditioned on acoustic features
+and partially masked transcripts for parallel token prediction. To
+mitigate the training–inference mismatch, we introduceItera-
+tive Self-Correction Trainingthat exposes the model to its own
+intermediate predictions. We also propose aPosition-Biased
+Entropy-Bounded Confidence-basedsampler to further boost
+results. Experiments across multiple benchmarks demonstrate
+consistent gains over prior NAR models and competitive per-
+formance with strong AR baselines, while retaining parallel
+decoding efficiency.
+Index Terms: automatic speech recognition, discrete diffusion,
+masked diffusion model, non-autoregressive
+1. Introduction
+Automatic Speech Recognition (ASR) [ 1] has become a cor-
+nerstone technology, powering applications from smart home
+devices and virtual assistants to real-time transcription. Over the
+past decade, deep learning advances have greatly improved ASR
+accuracy and robustness. Connectionist Temporal Classification
+(CTC) [2, 3], which enables alignment-free training by mapping
+input frames directly to output sequences, initially revolution-
+ized ASR. CTC-based models are non-autoregressive (NAR),
+allowing parallel token decoding, and typically combine strong
+encoders, such as Wav2Vec2.0 [4], HuBERT [5], or MMS [6],
+with a CTC prediction head and loss. This design enables very
+fast decoding [7, 8] across benchmarks [9]. However, the strong
+conditional independence assumption between output tokens
+limits the modeling of rich linguistic dependencies, often result-
+ing in performance degradation [10] and preventing CTC from
+dominating state-of-the-art ASR.
+To address CTC’s limitations, Conformer-based transduc-
+ers [11, 12, 13, 14] combine a Conformer [ 15] encoder with
+an autoregressive (AR) token predictor via a joint network,
+making them well suited for streaming ASR. Another class of
+AR models are sequence-to-sequence (seq2seq) Transformer
+ASR systems [16, 17], which leverage an encoder-decoder archi-
+tecture [18, 19] with cross-attention to implicitly align speech
+frames and output tokens. This approach has produced highly
+*These authors contributed equally.
+competitive fully Transformer-based systems, including Whis-
+per [20] and Canary [21], achieving strong accuracy across mul-
+tiple languages and domains. Despite their effectiveness, AR
+models generate tokens sequentially, so inference time grows
+linearly with output length. Maintaining long-range context dur-
+ing decoding further increases computational cost, limiting their
+suitability for real-time or large-scale applications [1, 10].
+In text generation, NAR models have recently gained con-
+siderable attention, demonstrating their potential to be a valid
+alternative to AR solutions. In particular, models based on diffu-
+sion [22, 23] and flow-matching [24, 25] frameworks enable par-
+allel sequence generation and allow a flexible trade-off between
+accuracy and efficiency through iterative refinement. Among
+them, masked diffusion models (MDMs) [26, 27, 28, 29] have
+emerged as a promising solution for sequence modeling. In-
+stead of generating tokens one by one, MDMs start from a
+masked sequence and iteratively predict multiple tokens in par-
+allel. This bidirectional refinement process allows the model
+to use both past and future contexts at every step, leading to
+improved modeling capacity while significantly reducing infer-
+ence latency. MDMs have shown promise in unconditional text
+generation [30, 31, 32] and zero-shot evaluation [33, 34] for lan-
+guage modeling tasks. Given that ASR fundamentally performs
+text generation conditioned on speech, these advances suggest
+that diffusion-based NAR generation may also be beneficial for
+speech recognition. However, the scalability of MDMs and their
+effectiveness for ASR have not been fully explored. Moreover,
+very recent studies on diffusion- [35, 36, 37] and flow-matching-
+based ASR [38] report a substantial performance gap compared
+with strong AR ASR models.
+In this work, we study NAR modeling within the standard
+seq2seq Transformer-based ASR framework and seek to close
+the performance gap between AR and NAR approaches. To
+this end, we introduce an audio-conditioned masked diffusion
+decoder that replaces conventional left-to-right AR decoding
+while preserving the encoder–decoder architecture. Our model
+consists of a strong pre-trained speech encoder to extract high-
+level acoustic representations, which are then consumed by a
+Transformer-based discrete diffusion decoder that iteratively re-
+fines masked token sequences. At each diffusion decoding step,
+the decoder jointly conditions on the complete acoustic embed-
+ding and the partially masked text sequence, enabling parallel
+token updates and bidirectional context modeling across the en-
+tire output. Unlike prior diffusion ASR attempts that couple
+separately trained speech and text components via an additional
+fusion module [ 37, 36], or recent flow-matching ASR efforts
+that introduce an additional auxiliary modeling [38], our model
+builds directly on a standard encoder–decoder ASR architecture
+and replaces sequential decoding with a masked diffusion gen-
+621
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-488
+eration process. Moreover, unlike earlier BERT-style masked
+refinement ASR [39], which relies on ad-hoc objectives with-
+out an explicit generative interpretation, we employ a discrete
+diffusion formulation with a training objective derived from the
+forward corruption process. The resulting diffusion loss, in-
+cluding the noise-dependent reweighting term, provides each
+refinement step with a clear probabilistic interpretation. In ad-
+dition, it defines a theoretically grounded multi-step generative
+model, whose inference procedure is fully consistent with the
+training process.
+Building on this framework, we propose several practical
+techniques to further improve performance. First, we introduce
+Iterative Self-Correction Training(ISCT) to reduce the mis-
+match between training and inference by exposing the model
+to intermediate decoding states. Second, we explore multiple
+inference strategies, including theEntropy-Bounded Confidence
+(EB-Conf) sampler for stable and efficient decoding, and propose
+thePosition-Biased EB-Conf(PBEB-Conf) sampler to incorpo-
+rate positional bias. Experiments on four benchmark English
+datasets show that the proposed model achieves competitive accu-
+racy with strong AR systems while delivering significantly faster
+decoding and consistently outperforming existing generative
+NAR ASR models. On multilingual tasks, the proposed demon-
+strates robust performance across languages. Comprehensive
+ablation studies further examine model scaling, ISCT, and infer-
+ence strategies, providing clear insights into system design and
+empirical behavior. We will release our source code, all hyper-
+parameters, and the pre-trained models upon de-anonymization.
+2. Related Work
+2.1. Masked Diffusion Model
+Discrete diffusion models [26, 27, 40, 41, 42] extend diffusion-
+based generative modeling to categorical variables, enabling
+diffusion-style learning in discrete token spaces such as text.
+In contrast to continuous diffusion models that progressively
+inject Gaussian noise into signals, discrete diffusion defines a
+stochastic corruption process over a finite vocabulary and learns
+a corresponding reverse-time denoising process.
+Let x be a one-hot vector in{0,1}|V| representing a clean
+token from the vocabularyV with size|V|. A forward noising
+process constructs a sequence of latent variables zt, indexed
+by a continuous diffusion time t∈[0,1] . A commonly used
+formulation is themasked diffusion process, in which tokens are
+progressively replaced by an absorbing mask state, denoted with
+a special [MASK] token inV. The marginal forward distribution
+at timetis defined as
+q(zt|x) = Cat (zt;αtx+ (1−α t)m),(1)
+where Cat(·;p) denotes a categorical distribution over |V|
+classes with probabilities p∈∆ |V|, ∆|V| denotes the |V|-
+dimensional probability simplex that sums to 1,m is the one-hot
+vector corresponding to the mask token, andαt : [0,1]→[0,1]
+is a monotonically decreasing noise schedule satisfyingα0≈1
+andα1≈0 . As t increases, probability mass gradually shifts
+from the original token to the absorbing mask state. Under
+this absorbing-state construction, the conditional distribution of
+an intermediate latent variable zs given a later variable zt and
+the clean token x, for 0< s < t <1, admits a closed-form
+expression
+q(zs|z t,x) = Cat
+
+zs;αs−αt
+1−α t
+x+ 1−α s
+1−α t
+zt
+
+.(2)
+This posterior provides a convenient parameterization for defin-
+ing the reverse-time denoising process.
+The generative model learns a parameterized reverse transi-
+tionpθ(zs|z t) by replacing the unknown x in (2) with a neural
+network prediction xθ(zt,t) , which outputs a categorical distri-
+bution over the vocabularyV conditioned on the noisy input zt
+and diffusion timet. In the masked diffusion setting, the reverse
+transition simplifies to the following piecewise form
+pθ(zs|z t) =q(z s|z t,xθ(zt,t))
+=
+(
+Cat(zs;zt),z t̸=m
+Cat
+
+zs; (1−αs)m+(αs−αt)xθ (zt,t)
+1−αt
+
+,z t =m
+That is, positions that are already unmasked remain unchanged,
+while masked positions are progressively unmasked using the
+model’s predictions.
+For a sequence of lengthL, the clean sequence can be written
+as x(1:L) ={x (1),...,x (L)}, and the corresponding masked
+sequence at time t is denoted z(1:L)
+t . The corruption process
+is applied independently across token positions. Training is
+performed by randomly sampling diffusion time t, generating
+corrupted sequences z(1:L)
+t using the forward process, and max-
+imizing the likelihood of the original clean tokens under the
+model’s reverse predictions. The training objective for the whole
+sequence can be written as
+L=E q
+Z 1
+0
+α′
+t
+1−α t
+LX
+ℓ=1
+log
+D
+x(ℓ)
+θ (z(1:L)
+t ,t),x (ℓ)
+E
+dt,(3)
+whereα′
+t = dαt
+dt and x(ℓ)
+θ (·) denotes the predicted probability
+for token at positionℓ. This objective encourages accurate recon-
+struction of masked tokens across all noise levels, yielding a fully
+non-autoregressive generative model over discrete sequences.
+2.2. Diffusion-/Flow-matching based NAR ASR
+Research on generative NAR models for ASR remains rela-
+tively limited. To the best of our knowledge, only a few studies
+have investigated this direction, most notably Transfusion [35],
+FFDM [36] and Whisfusion [37]. On the one hand, Transfusion
+and FFDM formulate ASR using a multinomial diffusion process
+over discrete output tokens, enabling parallel decoding across
+time steps. On the other hand, Whisfusion combines a pretrained
+Whisper encoder with a pretrained text diffusion decoder, con-
+nected through a lightweight cross-attention module, with the
+goal of reducing the inference latency typically associated with
+autoregressive generation. The model is trained in a two-stage
+manner, where the speech encoder and text diffusion decoder are
+pretrained independently, followed by a separate training stage
+to learn their acoustic–text fusion, making the overall training
+pipeline more complex and less end-to-end compared to a unified
+ASR framework. Despite these initial efforts, diffusion-based
+generative NAR ASR models have been evaluated primarily on a
+single English-only dataset and lack comprehensive experiments
+on more benchmark datasets or additional ablation studies. More-
+over, their recognition accuracy remains notably below that of
+current state-of-the-art AR ASR models, leaving their scalability
+and generalization capabilities insufficiently explored.
+More recently, Drax [38] introduces a NAR ASR framework
+based on discrete flow-matching (DFM) [24], providing an al-
+ternative to diffusion-based generative modeling. In addition,
+Drax formulates ASR as a transport process from a uniform
+622
+text distribution to the target transcript, and introduces an audio-
+conditioned intermediate distribution along this probability path
+to better align training with inference. During inference, decod-
+ing follows the learned flow trajectory through this predefined
+intermediate state rather than directly denoising from the source
+distribution. Despite the relatively competitive recognition accu-
+racy and improved accuracy-efficiency trade-offs, its probability
+path design introduces additional components and hyperparame-
+ters that require careful tuning, and the intermediate distribution
+may still fail to capture the full variability of inference dynamics
+across diverse acoustic contexts.
+2.3. Iterative Masked Refinement NAR ASR
+It is worth pointing out that a few prior works have explored
+NAR ASR through iterative refinement of token-level transcrip-
+tion hypotheses, where partially observed output sequences are
+progressively completed and corrected across multiple decoding
+steps. At a high level, these models share the idea of predicting
+missing tokens in parallel and progressively refining the output
+over multiple iterations. Representative examples include Mask-
+CTC [43, 44], Imputer [45], and Align-Refine [46]. However,
+these methods differ from diffusion-based model in both training
+and inference procedures. In particular, these models typically
+rely on either CTC-style alignments or dynamic programming to
+handle variable-length outputs. Moreover, the refinement steps
+usually require repeated re-alignment between acoustic frames
+and text tokens. This reliance on explicit alignment introduces
+additional algorithmic complexity and constrains model design,
+leading to more complex training and inference process.
+The most similar work to ours is [ 39], which formulates
+ASR as an audio-conditioned masked language model trained
+with a BERT-style objective [47]. A key distinction from our
+model lies in the underlying generative formulation. As pointed
+out in [26, 48], BERT-style masked reconstruction objectives,
+which apply a uniform loss over every noise-level without noise-
+dependent reweighting, are not equivalent to discrete diffusion
+objectives and do not faithfully optimize the model likelihood. In
+contrast, discrete diffusion training introduces explicit reweight-
+ing
+α′
+t
+1−αt
+in (3) to compensate for the varying expected number
+of masked positions across noise levels, which is derived from
+the forward corruption process, yielding a principled multi-step
+reverse-time generative model. This distinction is particularly
+concerning for [39], where training follows a BERT-style objec-
+tive while inference attempts to perform a multi-step iterative
+refinement resembling discrete diffusion. We argue that the
+mismatch between training and inference behaviors may lead
+to suboptimal solutions. In addition, their evaluation is limited
+to a small number of refinement steps and is conducted mainly
+on Japanese and Chinese datasets. As noted in [ 39], English
+and Latin alphabet-based tasks were more challenging for their
+model, making it difficult to assess its robustness and general
+applicability across languages and decoding settings.
+3. Masked Diffusion Based ASR
+3.1. Audio-conditioned Masked Diffusion Model
+Masked diffusion models can be naturally extended to ASR by
+conditioning the discrete denoising process on an acoustic input.
+In this setting, the goal is to generate a sequence of linguistic
+tokens that correspond to a given speech signal, while retain-
+ing the NAR advantages of discrete diffusion modeling. Let
+a∈R T×D denote an input acoustic representation extracted
+by a pretrained speech encoder, whereT is the number of time
+[mask][mask] [mask] [mask] [mask]
+Masked Diffusion Model for ASR
+Masked Diffusion Model great ASR
+ModelMasked Diffusion [mask] ASR
+Model[mask] [mask] ASR
+Model[mask] [mask] [mask] ASR
+Non-causal Transformer Decoder
+Pretrained 
+Encoder
+ 
+ 
+Speech
+ 
+  
+  
+ 
+  
+Diffusion
+Acoustic 
+Feature 
+Figure 1:Overview of our MDM-ASR framework.
+frames andD is the feature dimension. Let x(1:L) denote the
+corresponding target token sequence. As in Section 2.1, a for-
+ward diffusion process corrupts the clean token sequence into
+a noisy sequence z(1:L)
+t at diffusion time t. Importantly, the
+forward noising process remains unchanged and is independent
+of the audio signal.
+The distinction from conventional MDMs arises in the re-
+verse denoising/unmasking process, which is now conditioned
+on the acoustic input feature a. Therefore, the reverse transition
+is parameterized as
+pθ(z(1:L)
+s |z (1:L)
+t ,a) =
+LY
+ℓ=1
+pθ(z(ℓ)
+s |z (1:L)
+t ,a),(4)
+whereθ denotes model parameters. As before, the reverse transi-
+tion is constructed by replacing the unknown clean tokens with a
+neural network prediction, now conditioned on both the masked-
+corrupted sequence and the acoustic feature. Specifically, let
+x(ℓ)
+θ (z(1:L)
+t ,a)∈∆ |V| denote the model-predicted categorical
+distribution over the vocabulary at position ℓ, produced by an
+MDM decoder that attends to the acoustic feature a and the
+masked token sequence z(1:L)
+t . Plugging this prediction into the
+posterior in (2) yields the audio-conditioned reverse transition
+pθ(z(ℓ)
+s |z (1:L)
+t ,a)
+=
+
+
+
+Cat(z(ℓ)
+s ;z (ℓ)
+t ),z (ℓ)
+t ̸=m
+Cat
+
+z(ℓ)
+s ;
+(1−αs)m+(αs−αt)x (ℓ)
+θ (z(1:L)
+t ,a)
+1−αt
+
+,z (ℓ)
+t =m
+Following [31, 49], we introduce zero masking probabilities
+and carry-over properties for unmasked tokens to simplify the
+training objective in (3) by excluding the timestep t from the
+input in xθ(·). In addition, we set the noise scheduleαt = 1−t
+as suggested in previous work [31, 41, 48]. Therefore, we arrive
+at a modified training objective
+L=E q
+Z 1
+0
+−1
+t
+X
+ℓ|zℓ
+t =m
+log
+D
+x(ℓ)
+θ (z(1:L)
+t ,a),x (ℓ)
+E
+dt.(5)
+This objective can be interpreted as an audio-conditioned MDM
+language modeling loss where tokens that remain unmasked
+incur no loss, while masked positions are trained to directly
+reconstruct the original clean token sequence.
+3.2. Model Architecture
+Figure 1 illustrates the proposed MDM-based ASR model,
+referred to as MDM-ASR, which adopts a standard en-
+coder–decoder architecture augmented with a diffusion-based
+623
+decoder. The speech input is first processed by a pre-trained
+speech encoder to produce high-level acoustic representations,
+which serve as conditioning information for a Transformer-based
+text decoder via cross-attention. Apart from the decoding strat-
+egy, the overall architecture remains identical to conventional
+encoder–decoder ASR models. The key distinction lies in the de-
+coder design. Instead of employing a causal self-attention mask
+as in AR decoding, the proposed decoder uses a non-causal
+self-attention mask, enabling each token position to attend to
+the entire output sequence. This bidirectional context allows
+the model to predict all tokens in parallel at each diffusion step,
+rather than generating them sequentially from left to right. As
+a result, the decoder can iteratively refine the full transcript at
+every inference step, effectively removing the sequential decod-
+ing bottleneck while preserving the representational strengths of
+encoder–decoder ASR models.
+3.3. Iterative Self-Correction Training
+A common challenge for MDMs is the mismatch between train-
+ing and inference. During standard training, the model only
+observes oracle corrupted sequences obtained by masking the
+ground-truth sequence. During inference, the model instead
+denoises sequences that are partly self-generated. Therefore,
+these sequences contain plausible decoding errors from previous
+iterations. The discrepancy between training and inference re-
+sembles the sampling mismatch introduced by teacher forcing in
+AR model training [50, 51], which can lead to error propagation
+and degraded performance.
+To mitigate the mismatch between training and multi-step
+inference, we adopt aniterative self-correction training(ISCT)
+approach inspired by [52, 53]. ISCT explicitly simulates multiple
+masking/unmasking steps during training, allowing the model to
+learn to correct its own errors. Using two steps in the following
+as a proof of concept, we first sample an initial timestept1 and
+generate a masked sequence zt1 from the ground-truth transcript
+x. The MDM decoder produces a preliminary reconstruction
+ˆx=x θ(zt1,a) , which is an estimated clean token sequence
+for the given speech. We then sample another timestep t2 and
+corrupt the model’s own output by applying the forward masking
+process to ˆx, yielding a partially masked sequenceˆzt2 =q( ˆzt2|
+ˆx) analogous to (1). Feeding ˆzt2 into the decoder produces a
+refined prediction xθ(ˆzt2,a) . We can then extend the original
+training loss in (5) by adding a second term for this refinement
+step, essentially summing the cross-entropy objectives over both
+the first and second unmasking stages. Formally, the ISCT
+objectiveL ISCT can be expressed as
+LISCT =Eq
+Z 1
+0
+− 1
+t1
+X
+ℓ|zℓ
+t1 =m
+log
+D
+x(ℓ)
+θ (z(1:L)
+t1 ,a),x (ℓ)
+E
+dt1
++Eq
+Z 1
+0
+− 1
+t2
+X
+ℓ| ˆzℓ
+t2 =m
+log
+D
+x(ℓ)
+θ ( ˆz(1:L)
+t2 ,a),x (ℓ)
+E
+dt2.
+(6)
+It is important to note that prior flow-matching models [25,
+54, 55], including Drax [38], addresses the training–inference
+mismatch by introducing a fixed audio-conditioned intermediate
+distribution along a predefined probability path. However, this
+method tightly couples the training dynamics with the chosen
+inference path, making design choices difficult and non-trivial.
+In contrast, ISCT directly exposes the model to its own interme-
+diate decoding states. By corrupting and refining the model’s
+self-generated predictions during training, the MDM decoder
+learns to correct realistic errors that arise during iterative infer-
+ence, rather than relying on a handcrafted or static intermediate
+representation. This data-driven process allows the model to
+capture a broader range of inference dynamics induced by acous-
+tic variability, early mispredictions, and domain mismatch. As
+a result, ISCT provides a closer alignment between training
+and inference in the proposed MDM-ASR, leading to improved
+robustness and generalization across diverse speech conditions.
+3.4. Inference Samplers
+As discussed in Section 1, a key advantage of MDMs over AR
+models lies in their flexibility during inference. Unlike AR de-
+coding, which follows a fixed left-to-right order, MDMs allow
+tokens to be decoded in arbitrary orders. Moreover, multiple
+tokens can be decoded in parallel to trade off accuracy for effi-
+ciency. This flexibility enables a variety of decoding strategies
+beyond the vanilla random-unmasking sampler [31], motivating
+a series of works that develop more advanced sampling meth-
+ods [56, 57, 58, 59]. In this section, we describe the inference
+samplers evaluated in our experiments, including our proposed
+combination of entropy-bounded decoding and positional bias.
+3.4.1. Discrete Flow-Matching Sampler
+Although our ASR system is based on MDMs, we can still apply
+the Discrete Flow-Matching (DFM) sampler at inference time by
+interpreting the model’s categorical predictions as a probability
+flow in the discrete token space. Although applying DFM in this
+setting is not entirely straightforward, for completeness and to
+ensure a fair comparison with flow-matching based baselines, we
+also evaluate this sampler in our experiments. At each decoding
+step, the predicted distribution x(1:L)
+θ (zt,a) over clean tokens
+is used to co

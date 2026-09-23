@@ -1,0 +1,503 @@
+Do Modern Video-LLMs Need to Listen? A Benchmark Audit and Scalable
+Remedy
+Geewook Kim ID 1,2, Minjoon Seo ID 2
+1 NA VER Cloud AI, South Korea
+2 KAIST AI, South Korea
+gwkim.rsrch@gmail.com, minjoon@kaist.ac.kr
+Abstract
+Speech and audio encoders developed over years of commu-
+nity effort are routinely excluded from video understanding
+pipelines, not because they fail, but because benchmarks never
+required listening. We audit 10 video benchmarks and find
+items largely solvable from visual cues alone: a single-frame
+probe answers about 76% of A VQA without audio, suggest-
+ing poor measurement of audio-visual reasoning. Building on
+LLaV A-OneVision, we attach a speech/audio encoder and com-
+pare five compressor architectures under 25-fold token reduc-
+tion (25 Hz to 1 Hz). Across 10 benchmarks, with and with-
+out filtering, audio yields clear gains on tasks requiring speech
+comprehension or cross-modal grounding, while vision-centric
+suites remain largely unaffected. Our results show that speech
+encoders play a larger role in video understanding than current
+benchmarks suggest. We will open-source our work athttps:
+//github.com/naver-ai/unimambamia-av.
+Index Terms: video large language models, audio-visual ques-
+tion answering, multimodal benchmarks
+1. Introduction
+Speech and audio encoders such as Whisper [1] are now strong
+at recognition, speaker analysis, and sound event detection. Yet
+these encoders are routinely excluded from video understanding
+pipelines. The LLaV A family [2, 3, 4, 5] and the Qwen-VL fam-
+ily [6] default to “Video (w/o Audio)→Text,” treating the audio
+stream as dispensable. When a user asks a model to summarize
+a lecture or recap a meeting, understanding naturally requires
+listening—yet current pipelines silently discard the soundtrack.
+Why are capable speech encoders left out? A structural is-
+sue lies in the benchmarks: suites like ActivityNetQA [7], NEx-
+TQA [8], and TempCompass [9] probe visual recognition and
+temporal structure without requiring audio to answer. Because
+the field’s primary benchmarks do not require listening, most
+research has focused on vision-only pipelines, normalizing the
+omission of audio.
+More critically, even benchmarks explicitly designed for
+audio-visual QA suffer from severe visual shortcuts. We ap-
+ply a single-frame shortcut test: feed only the temporally
+central frame—no audio, no other frames—to GPT-4o and
+check whether the answer is correct. The results are strik-
+ing:from a single muted frame, GPT-4o answers 76% of
+A VQA [10] correctly(Fig. 3). This suggests that widely used
+benchmarks—even those marketed as audio-visual—are poorly
+suited to measuring cross-modal reasoning. Consider the A VS-
+peakerBench item in Fig. 2: the question “who speaks most
+quietly” requireslistening—a capability speech encoders read-
+ily provide but Video-LLMs currently discard. While recent
+suites [11, 12, 13, 14] more tightly couple audio-visual cues,
+legacy suites remain the de facto standard and have not been
+audited for such shortcuts.
+Our experiments show that speech encoders clearly help,
+especially on the audio-demanding items our audit retains.
+The real challenge is integrating themefficiently. Audio
+front-ends produce tokens at 25–50 Hz; at 25 Hz, a one-hour
+video already yields∼90K audio tokens, quickly saturating
+context budgets. Benchmarks such as VideoMME [15] and
+LongVideoBench [16] routinely include hour-long videos, mak-
+ing this token cost a concrete bottleneck rather than a hypo-
+thetical one. Models that do ingest audio, such as Qwen2.5-
+Omni [17], feed these tokens uncompressed at 25 Hz, incurring
+substantially higher latency (4.1 s vs. 1.0 s per sample). With-
+out compressing audio to roughly 1 Hz, hour-long audio-visual
+understanding remains impractical. Starting from LLaV A-
+OneVision [4], we attach a speech/audio encoder and com-
+pare input strategies (concatenation vs. time-aligned interleav-
+ing) across 10 benchmarks, with and without single-frame fil-
+tering. We compare five compressor architectures and show
+that a causal Mamba-based design reduces audio token rates
+by25×(from 25 Hz to 1 Hz), enabling scalable audio-visual
+inference for long-form videos. Time-aligned interleaving with
+a causal compressor is also the only configuration compatible
+with streaming inference, where audio arrives incrementally
+alongside video frames—a practical requirement for real-time
+applications. Our contributions are as follows:
+• We audit 10 video benchmarks with a single-frame filtering
+protocol, revealing that widely used suites—even those mar-
+keted as audio-visual—largely admit vision-only shortcuts.
+We release the filtered evaluation splits to support fairer as-
+sessment of audio-visual models.
+• We conduct a controlled comparison of input strategies (Ta-
+ble 1, top) and show that, after single-frame filtering (Table 1,
+bottom), audio produces clear gains on tasks requiring speech
+comprehension or cross-modal grounding—confirming these
+gains are not artifacts of visual shortcuts. Among five com-
+pressor architectures compared under25×compression, a
+causal Mamba-based design proves the most stable (Table 2).
+2. Related work
+Video-LLMs and Benchmarks.The LLaV A series [2, 4, 5]
+and Qwen-VL family [6, 17] are representative examples of
+multimodal LLMs that typically evaluate on muted video.
+Audio-visual variants such as VideoLLaMA2 [18] rely on
+learned-query resampling [19]. Even dedicated audio-visual
+suites (A VQA [10], Music-A VQA [20]) admit single-frame
+shortcuts (Sec. 3.1). Recent benchmarks (A V-Odyssey [21],
+OmniBench [22], SA VVY [23], A VSpeakerBench [13], World-
+Sense [12]) more tightly couple audio-visual cues. We evaluate
+1126
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2532
+Large Language Model
+Vision-Only
+A-V , Non-Interleaving
+A-V , Interleaving
+Types of Input Sequence (Vision and Audio)
+Figure 1:Three input policies for feeding vision and audio to-
+kens to the LLM. Audio tokens may be compressed via Fig. 2.
+: Periodic Queries
+Large Language Model
+Among the people who 
+speak, who speaks the 
+most quietly overall?
+The woman in the gray sweater.
+: Compression Layer
+Figure 2:Mamba-based audio compressor with an AVSpeaker-
+Bench [13] example. The question (yellow) requires listening;
+the answer (red) requires watching. A periodic query everyR
+tokens yieldsR×reduction.
+on a broad set spanning legacy and recent suites.
+Mamba-based Token Compression.Recent vision-
+language work has moved from sparse frame sampling toward
+keeping more frames and compressing their tokens, using
+aggregation (LongVU [24], V AMBA [25]), learned-query
+resampling [19], or state-space models [26]. Vision-token
+compression is now well studied [19, 24, 25, 27]; however,
+audio-token compression has not been systematically compared
+despite 25–50 Hz front-ends [28] that produce token counts
+rivaling or exceeding those of vision. We present the first
+systematic comparison of compressor architectures for audio
+tokens and ask whether designs proven effective for 2-D visual
+tokens transfer to the structurally different—1-D and inherently
+causal—audio stream.
+3. Method
+We address two questions: (1) do current benchmarks genuinely
+require listening? and (2) how can audio be integrated effi-
+ciently into modern Video-LLMs? We first describe our bench-
+mark audit protocol and then our modeling approach.
+3.1. Single-frame benchmark audit
+To quantify how much current benchmarks rely on visual cues,
+we design a conservative single-frame probe. We feed only
+the temporally central frame—no audio, no other frames—to
+GPT-4o (gpt-4o-2024-08-06) in two independent runs at
+different temperatures; items answered correctly in both runs
+are removed. We additionally apply a refusal-aware prediction
+parser so that GPT-4o refusal responses (e.g., “I cannot deter-
+mine. . . ”) are not counted as correct, preventing false positives
+from coincidental letter matches in refusal text.
+As shown in Fig. 3, filtering rates vary widely:∼80%
+0 20 40 60 80
+Solvable from Single Muted Frame (%)
+T empCompass
+AVQA
+Music-AVQA
+VideoMME
+ActivityNetQA
+NExTQA
+VideoMMMU
+LongVideoBench
+WorldSense
+AVSpeakerBench
+79.5%
+76.1%
+45.2%
+35.9%
+31.3%
+31.0%
+30.7%
+24.0%
+4.0%
+1.4%
+Figure 3:Fraction of items solvable from a single muted frame
+(GPT-4o, two runs at different temperatures, both correct).
+of TempCompass and∼76% of A VQA items are answerable
+from a single muted frame, while WorldSense (4%) and A VS-
+peakerBench (1%) retain nearly all items. This filtering is de-
+liberately conservative: it removes only items solvable from a
+single muted frame, providing a lower bound on audio depen-
+dence. Comparing unfiltered and filtered halves of Table 1 re-
+veals which gaps are genuine vs. artifacts of visual shortcuts.
+We release the filtered splits to support fairer evaluation; details
+and qualitative examples are available in our repository.
+3.2. Audio-visual input construction
+We build on the LLaV A family [2, 3, 4, 5]: a vision encoder
+(SigLIP2, 576 tokens per384×384frame) is aligned to an LLM
+(Qwen2-7B) via a lightweight projector. LetVandAdenote
+visual and audio token sequences, respectively. We compare
+three input policies (Fig. 1): (i) visual-only (Valone), (ii) non-
+interleaving ([V;A], all visual tokens first), and (iii) time-
+aligned interleaving (audio tokens placed adjacent to their tem-
+porally corresponding frame tokens). The audio encoder is
+the Whisper-based encoder of Qwen2-Audio [28] (the encoder
+only, not the full audio LLM); raw waveforms are converted
+to log-Mel spectrograms and processed by a Transformer stack
+with average pooling to 25 Hz. Even at this rate, a 60-minute
+video yields∼90K audio tokens, motivating the compression
+described next.
+3.3. Audio token compression
+We compress audio tokens by a factor ofRusing a lightweight
+module inserted between the audio encoder and the LLM
+(Fig. 2). The core idea is aperiodic-querydesign: given audio
+featuresx 1:N and strideR, we insert a shared trainable queryq
+everyRsteps and pass the augmented sequence through a two-
+layer compression network. Only the outputs at query positions
+are retained:
+˜x=
+
+x1, . . . , xR−1, q, x R, . . . , x2R−1, q, . . .
+
+,(1)
+zt = ˜yjt , j t∈{positions ofqin ˜x},(2)
+where ˜yis the network output. Althoughqis shared, each
+zt absorbs different context. This yieldsR-fold reduction to
+⌊N/R⌋tokens aligned to wall-clock time. For a 60-minute
+video,R=25reduces∼90K tokens to∼3.6K (1 token/s). We
+instantiate the compression network with several architectures
+(Sec. 4.1); the comparison reveals which designs best preserve
+information for the 1-D, causal audio stream.
+1127
+Table 1:Audio integration ablation (top) and single-frame filtered evaluation (bottom). All audio rows use Avg Pool (25×). Items
+solvable from a single muted frame (Fig. 3) are removed in the filtered subset. Results averaged over three random seeds. Small values
+under each benchmark are its approximate average / maximum video length.
+Audio Intlv. Comp.
+A VQA
+2m / 45m
+A VSpkr-
+Bench
+14s / 66s
+Activity-
+NetQA
+2m / 16m
+LVideo-
+Bench
+12m / 1h
+Music-
+A VQA
+1m / 1m
+NExT-
+QA
+40s / 3m
+Temp-
+Comp.
+11s / 35s
+Video-
+MMMU
+4m / 34m
+Video-
+MME
+17m / 1h
+World-
+Sense
+2m / 11m Avg
+– 90.8±0.241.1±0.953.0±0.554.5±0.481.3±0.281.4±0.263.7±0.632.7±1.059.2±0.539.3±0.8 59.7
+✓Avg Pool 91.1±0.642.5±0.652.8±0.355.3±0.380.9±0.181.5±0.363.5±0.833.7±1.159.9±1.440.9±1.2 60.2
+✓ ✓ Avg Pool 91.6±0.3 44.1±0.7 52.6±0.7 56.2±0.7 80.7±0.1 81.6±0.4 63.5±0.5 34.0±0.2 61.6±1.4 42.0±1.2 60.8
+Results on single-frame filtered subset
+– 72.5±0.140.7±0.841.4±0.646.7±0.372.0±0.276.0±0.363.7±2.026.9±1.149.6±0.638.3±0.8 52.8
+✓ ✓ Avg Pool 73.9±0.6 43.7±0.7 41.0±0.5 48.6±0.9 71.1±0.1 76.2±0.4 61.7±0.5 27.6±0.5 52.0±1.6 41.0±1.2 53.7
+Table 2:Compressor comparison on single-frame filtered sub-
+set scores (interleaved,25×, averaged over three seeds).
+Compressor A VQA
+A VSpkr-
+Bench
+LVideo-
+Bench
+Video-
+MMMU
+Video-
+MME
+World-
+Sense Avg
+Avg Pool 73.9 43.7 48.6 27.6 52.0 41.0 47.8
+Resampler [19] 74.0 41.4 47.2 27.3 50.1 40.4 46.7
+UniMamba [29] 73.6 43.9 48.3 27.2 52.2 42.5 48.0
+BiMamba [30] 74.0 43.9 48.428.651.2 41.1 47.9
+UniMambaMia 74.5 44.1 48.9 27.9 54.4 42.8 48.8
+4. Experiments and analysis
+4.1. Setup
+Benchmarks.We evaluate on 10 benchmarks: vision-
+centric suites (VideoMME [15], TempCompass [9], Activi-
+tyNetQA [7], NExTQA [8], LongVideoBench [16]), audio-
+visual QA (Music-A VQA [20], A VQA [10], the latter on a re-
+trievable∼9K subset documented in our repository), and recent
+audio-visual suites (A VSpeakerBench [13], VideoMMMU [31],
+WorldSense [12]).
+Compressor variants.We instantiate five architectures
+within the periodic-query framing (Sec. 3.3; Fig. 2):
+(i)Avg Pool—parameter-free average pooling followed
+by an MLP projector (∼17M params); (ii)Resam-
+pler[19]—attention-based compression with learnable
+queries; (iii)UniMamba[29]—causal (unidirectional) SSM;
+(iv)BiMamba[30]—bidirectional SSM, widely used for video
+tokens but applied here to inherently sequential audio; and
+(v)UniMambaMia—adapted from MambaMia [27], which
+compresses video tokens with a BiMamba backbone plus a
+gated attention module that re-weights compressed tokens by
+their pooled context. We replace the bidirectional backbone
+with a causal Mamba, retaining the gated attention while
+ensuring causal processing—a prerequisite for streaming audio.
+Learned compressors (ii–v) each have∼130M parameters; all
+variants share identical input/output shapes for fair comparison.
+Training.We compare three input configurations (Sec. 3.2)
+combined with five compressor architectures. Ablations (Ta-
+bles 1–2) use strideR=25(25×; 1 audio token/s); after com-
+paring compressors (Table 2), we select UniMambaMia for the
+final model (Table 3). All experiments are averaged over three
+random seeds. We first perform image-level instruction tuning
+following ELV A [32]; we then insert the audio compressor and
+perform module-only alignment on subsets of LLaV A-Video-
+Set [5] and FineVideo-Set [33] (update compressor only); fi-
+nally, we unfreeze the LLM and conduct video instruction tun-
+ing. Video instruction data is constructed from LLaV A-Video-
+Set [5], FineVideo-Set [33], Music-A VQA v2 train set [34],
+A VSD train set [35], and A VQA train set [10]. Ablations use
+188K samples; the final model uses 420K. All experiments use
+32 frames at 1.0 fps. Both encoders are kept frozen for ef-
+ficiency; we use a learning rate of1×10 −4 for module-only
+alignment and2×10−5 for LLM tuning.
+4.2. Results and discussion
+Does audio help, and does interleaving matter?Table 1
+reports ablations on 10 benchmarks (three seeds, all using
+Avg Pool25×). Adding audio with interleaving improves
+six of ten benchmarks—A VSpeakerBench (+3.0), A VQA,
+LongVideoBench, VideoMMMU, VideoMME (+2.4), and
+WorldSense (+2.7)—with the largest gains on tasks requir-
+ing speech comprehension or cross-modal grounding. Activ-
+ityNetQA, Music-A VQA, NExTQA, and TempCompass show
+marginal or no changes, consistent with their predominantly
+vision-centric designs (Fig. 3). Both A VQA and Music-A VQA
+training splits are included in our instruction data, yet their
+outcomes diverge: audio improves A VQA (+1.4 pp after fil-
+tering) while Music-A VQA shows no benefit. This asymme-
+try is consistent with Fig. 3—Music-A VQA admits 45% single-
+frame shortcuts and centers on musical content largely outside
+our speech-oriented encoder’s domain, leaving minimal head-
+room for audio. This contrast shows that including training data
+alone does not guarantee audio utility:benchmark designdeter-
+mines whether the model learns to listen or to shortcut.
+Interleaving yields only modest accuracy gains over non-
+interleaving (Table 1). We adopt it because (i) it preserves tem-
+poral co-occurrence between modalities, and (ii) paired with a
+causal compressor, it is the only configuration compatible with
+streaming inference. The absence of a BiMamba advantage
+over UniMamba (Table 2) further supports a causal design.
+Do gains survive single-frame filtering?Filtering (Table 1,
+bottom) removes visually solvable items, sharpening the pic-
+ture. A VQA scores drop from∼92 to∼73, confirming that
+many items were answerable from visual cues alone. Af-
+ter filtering, audio produces clear gains on 5 of 10 bench-
+marks: A VSpeakerBench (+3.0 pp), WorldSense (+2.7 pp),
+VideoMME (+2.4 pp), LongVideoBench (+1.9 pp), and A VQA
+(+1.4 pp)—all centered on speech comprehension or cross-
+modal grounding. Across VideoMME’s three duration cat-
+egories, the filtered gain widens from+0.6 (short) to+1.8
+(medium) to+4.4 (long): with the frame budget fixed, longer
+videos are sampled more sparsely, so frames alone capture less
+1128
+Table 3:Comparison with modern Video-LLMs. †Reproduced under unified evaluation; each cell shows original / filtered, where the
+filtered score is evaluated only on itemsnotanswerable from a single muted frame (GPT-4o probe; Sec. 3.1). Latency is the mean
+per-sample wall time on VideoMME (single A100 80GB). Bold = best among Qwen2-7B models above the double line; underline
+= best from Qwen2.5-Omni (different backbone and training scale). Rows below the double line use different LLM backbones or
+paper-reported numbers.
+Model LLM
+Use
+Aud.
+Lat.
+(s) A VQA
+A V-
+Spkr
+Act-
+Net LVB
+M-
+A VQA
+NExT-
+QA
+Temp-
+C.
+V-
+MMMU
+Vid-
+MME WS Avg
+†Qwen2-VL [6] Qwen2-7B×1.63 86.6 / 59.3 42.6 / 42.2 51.4 / 39.6 22.9 / 22.9 60.3 / 45.4 79.3 / 73.470.1/64.232.9 / 26.3 57.5 / 45.8 36.6 / 35.7 54.0 / 45.5
+†LLaV A-OneVision [4] Qwen2-7B×0.97 84.7 / 59.7 41.8 / 41.5 54.7 / 42.5 56.5 / 48.3 60.4 / 48.7 78.8 / 72.9 65.1 / 60.8 33.1 / 26.8 57.6 / 47.2 38.0 / 36.7 57.1 / 48.5
+†LLaV A-Video [5] Qwen2-7B×1.00 85.0 / 57.6 43.5 / 43.3 59.1 / 47.258.4/50.160.2 / 45.281.8/76.167.0 /64.2 38.3/31.962.2 / 52.6 39.7 / 38.5 59.5 / 50.7
+Ours Qwen2-7B ✓ 1.60 89.4/70.0 46.6/46.3 59.9/49.2 53.9 / 46.6 79.5/69.2 81.8/ 76.0 63.7 / 58.6 36.7 / 30.8 65.6/56.6 44.7/43.9 62.2/54.7
+†LLaV A-NeXT-Vid. [3] Vicuna-7B×0.24 79.8 / 54.8 27.4 / 27.4 49.2 / 36.5 43.9 / 37.2 54.6 / 47.0 53.6 / 44.1 51.0 / 38.6 16.3 / 14.7 33.8 / 29.1 27.6 / 26.8 43.7 / 35.6
+†Qwen2.5-Omni [17] Qwen2.5-7B✓4.12 90.0 / 68.3 47.1 / 47.0 48.3 / 38.5 22.4 / 21.6 45.7 / 32.4 76.8 / 70.1 69.6 / 67.9 48.8 / 38.5 66.5 / 56.0 45.4 / 44.5 56.1 / 48.5
+VideoLLaMA2 [18] Mistral-7B✓- - - 50.2 / - - 73.6 / - - - - 46.6 / - - -
+V AMBA [25] Qwen2-7B×- - - - - - 78.1 / - - - 57.8 / - - -
+and audio contributes more. Benchmarks that decline slightly
+(ActivityNetQA, Music-A VQA, TempCompass) are predomi-
+nantly vision-centric; for these, audio tokens carry little task-
+relevant signal and can mildly interfere. TempCompass shows
+a small filtered drop, but filtering removes∼80% of items, leav-
+ing only 324 questions; TempCompass is almost entirely vision-
+centric by design, so the surviving items still rarely require au-
+dio, and filtered scores on such a small set are inherently noisy
+(e.g., A VQA retains 2,194; VideoMME 1,731). WorldSense—
+which retains 96% of items after filtering—shows a gain of
++2.7 pp both before and after filtering, consistent with its al-
+ready audio-demanding design. This result is compressor-
+agnostic: even the simplest baseline (Avg Pool) reveals audio’s
+value, and a better compressor (Table 2) can further amplify
+gains.
+Which compressor works best?Having established that au-
+dio helps even with a parameter-free compressor (Table 1),
+we now ask which architecture best preserves information un-
+der25×compression. Table 2 compares five compressors
+on filtered scores (interleaved,25×). The main findings are
+threefold. First, Mamba-based compressors outperform Avg
+Pool, confirming that the token-compression techniques re-
+cently developed for vision [24, 25, 27] transfer effectively to
+audio. Second, unlike the 2-D video setting where bidirec-
+tional models often dominate, BiMamba offers no clear ad-
+vantage over causal UniMamba on any benchmark. This is
+consistent with the inherently sequential, 1-D nature of au-
+dio, where future context provides limited additional infor-
+mation. Third, UniMambaMia achieves the best or tied-best
+scores on five of six benchmarks (A VQA, A VSpeakerBench,
+LongVideoBench, VideoMME, WorldSense), making it the
+most consistent choice. Given the comparable accuracy of uni-
+and bidirectional designs, we prefer the causal variant because
+it is the only one compatible with streaming inference.
+Compression ratio sweep.Fig. 4(a) shows that25×com-
+pression reduces a one-hour video’s 90K tokens to 3.6K.
+Panel (b) confirms UniMambaMia degrades more gracefully
+than Avg Pool at25×, motivating its adoption.
+How does our model compare with modern Video-LLMs?
+Based on Tables 1–2, we select UniMambaMia (interleaved,
+25×) as our final model. Under unified evaluation (Table 3),
+it achieves the best or tied-best results on 7 of 10 benchmarks
+among Qwen2-7B models; filtered scores confirm these gains
+persist after removing visual shortcuts. Differences here are
+90
+90K
+Qwen2.5-Omni
+(a) Audio T okens (1h video)
+1× 5× 10× 25×
+Compression Ratio
+0
+5
+10
+15
+20 18K
+9.0K
+3.6K
+5× 10× 25×
+Compression Ratio
+51
+52
+53
+54
+55
+56
+57
+55.5
+55.0
+54.9
+54.9 53.7 54.5
+(b) Avg. Filtered Score (10 bench.)
+Avg Pool
+UniMambaMia
+Figure 4:(a) Audio token count for a one-hour video; without
+compression, 90K tokens are consumed (e.g., Qwen2.5-Omni).
+(b) Avg. filtered score (10 benchmarks) vs. compression ratio.
+UniMambaMia degrades less at25×(−0.5 pp vs.−1.8 pp).
+confounded by backbone and training data: Qwen2.5-Omni
+(Qwen2.5-7B, proprietary data) leads on VideoMMMU, while
+our model leads on Music-A VQA (79.5 vs. 45.7). These gaps
+reflect more than the audio pathway alone. Our model adds
+audio at moderate latency cost (1.60 s vs. 1.00 s for LLaV A-
+Video) by compressing to∼3.6K tokens per hour; Qwen2.5-
+Omni feeds uncompressed audio (∼90K tokens/hour) at 4.12 s
+and∼62 GiB peak inference-time GPU memory in our setup,
+versus∼34 GiB for ours, illustrating the practical value of com-
+pression.
+5. Conclusion
+Our experiments yield a clear answer to the title question: yes,
+modern Video-LLMs do need to listen—but only if benchmarks
+are designed to require it. Many widely used suites admit
+vision-only shortcuts, hiding the true value of listening. Once
+these shortcuts are controlled for, audio produces clear gains on
+speech- and audio-dependent tasks. On the modeling side, time-
+aligned interleaving with a lightweight causal compressor offers
+a simple, scalable recipe that retains audio benefits while largely
+preserving visual performance. The gap between muted evalu-
+ation and real-world use—where lectures, meetings, and every-
+day videos carry essential speech and sound—remains wide. By
+showing that muting systematically underestimates the value of
+speech and audio representations, we aim to encourage more
+rigorous audio-visual evaluation and help close this gap be-
+tween benchmarks and deployment.
+1129
+6. Generative AI Use Disclosure
+Generative AI tools (e.g., Claude) were used for editing and pol-
+ishing the manuscript text. All scientific content, experimental
+design, analysis, and conclusions are the sole responsibility of
+the authors.

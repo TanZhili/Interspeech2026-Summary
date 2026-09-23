@@ -1,0 +1,463 @@
+Avoiding Catastrophic Forgetting in Text-Only Adaptation of LLM-based ASR
+via Multi-View Text Denoising
+Sergio Burdisso ID 1,∗∗, Esa´u Villatoro-Tello ID 1,∗∗, Thibault Ba˜neras-Roux ID 1, Shashi Kumar ID 1,2,
+Srikanth Madikeri3, Pradeep Rangappa1, Manjunath K E4, Petr Motlicek ID 1,5, Andreas Stolcke4
+1Idiap Research Institute, Switzerland
+2EPFL, Switzerland
+3University of Zurich, Switzerland
+4Uniphore, USA & India
+5Brno University of Technology, Czech Republic
+{sergio.burdisso, esau.villatoro}@idiap.ch
+Abstract
+Adapting LLM-based automatic speech recognition (ASR)
+systems to new domains using text-only data is challeng-
+ing. Naively fine-tuning the LLM on target text disrupts the
+speech–text alignment learned by the projector, causing catas-
+trophic forgetting. We propose a lightweight text-only adap-
+tation strategy that formulates adaptation as a denoising task
+and introduces a multi-view noise-driven batching scheme to
+preserve alignment. Each mini-batch mixes paired source au-
+dio–text examples, projector-induced noisy transcripts, synthet-
+ically corrupted source transcripts, and corrupted target tran-
+scripts. This mixing enables domain adaptation while main-
+taining speech–text alignment. Our method requires no archi-
+tectural changes or additional parameters and achieves up to
+25.4% relative WER improvement over the non-adapted base
+model, outperforming recent text-only adaptation methods.
+Index Terms: Text fine-tuning, text denoising, domain adapta-
+tion, automatic speech recognition, LLM-based ASR.
+1. Introduction
+Recent efforts to integrate speech capabilities into large lan-
+guage models (LLMs) have enabled new voice interaction sys-
+tems, assistive technologies, and conversational AI applica-
+tions [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. LLM-based ASR systems
+have emerged as a practical and computationally efficient al-
+ternative to conventional end-to-end ASR, connecting a pre-
+trained speech encoder to an LLM through a learnable pro-
+jection layer and using a fixed prompt during training and in-
+ference [3, 11, 12, 13, 14, 15, 16, 17, 18]. This modular de-
+sign leverages advances in speech and text pretraining, enabling
+scalable transcription without costly instruction tuning. The
+projection layer maps speech representations into the LLM em-
+bedding space, allowing the LLM to interpret them as noisy text
+and reconstruct transcriptions.
+However, training these systems typically requires large
+audio-text corpora, which are costly to collect and annotate, and
+performance can degrade on out-of-domain data [12]. Since text
+is more widely available than paired speech-text data, text-only
+adaptation is a desirable alternative. Previous text-only adapta-
+tion methods for conventional E2E ASR include intermediate-
+CTC adaptation [19], shallow fusion with external language
+models [20], text-to-mel generation [21], and decoder adapta-
+tion for Whisper [22].
+**indicates the corresponding author.
+Figure 1:Batch composition used for fine-tuning the LLM dur-
+ing text-only adaptation to a target domain. Here,σ a,σ ta, and
+σt denote the source-domain batch proportions, andτdenotes
+the target-domain proportion.
+Nevertheless, text-only adaptation of LLM-based ASR re-
+mains largely unexplored, especially regarding preservation of
+the cross-modal alignment between the speech projector and
+the LLM. Fine-tuning the LLM only on text can disrupt this
+alignment, weakening the connection between speech represen-
+tations and the language model [14, 23]. Fang et al. [14] ad-
+dress this issue by monitoring alignment degradation and stop-
+ping fine-tuning before collapse, while Ma et al. [23] introduce
+soft prompts that replace speech inputs during adaptation.
+To address these challenges, we propose a text-only adap-
+tation strategy that formulates adaptation as adenoising task,
+training the LLM to reconstruct inputs that mimic speech-
+projector outputs. Our contributions are:(i)a denoising for-
+mulation for text-only adaptation that preserves speech-LLM
+alignment;(ii)a lightweight multi-view noise-driven batching
+strategy requiring no additional learnable parameters;(iii)ex-
+tensive evaluation on two datasets, achieving up to 25.4% rela-
+tive improvement over previous approaches; and(iv)release of
+our source code for reproducibility.1
+2. Method
+LLM-based ASR systems consist of three main components:
+(i) a pretrained speech encoder (e.g., Whisper [24], Hubert [25],
+or WavLM [26], etc.) that extracts frame-level acoustic rep-
+1https://github.com/idiap/llm-asr-text-only-adaptation
+4597
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3422
+resentations, (ii) a learnable projectorsp(·)that maps these
+representations into the LLM input embedding space (e.g.,
+pooling-based [2], CNN-based [10, 27], or linear-transform-
+based [3, 28, 12]),2 and (iii) a pretrained LLM (e.g., Llama [29],
+Vicuna [30] ) that acts as a decoder, and generates final tran-
+scripts.
+Prior work has shown that even a simple projectorsp(·)
+(two linear layers with a nonlinearity) combined with a frozen
+LLM is sufficient to obtain strong transcription performance [3,
+12, 13]. This suggests that the projector learns to convert speech
+into a sequence ofsoft tokensthat approximate entries in the
+LLM vocabulary. For example, the projector may map the au-
+dio utterance “yes that would be” into embeddings resembling
+“mmy ZYesssSS SGSthat WillBbeS S”, as reported in prior
+work [12, 13]. This illustrates how the projector outputs re-
+semble a noisy transcript rather than raw speech features. As a
+result, the LLM is forced to interpret these inputs as a corrupted
+or noisy version of the transcript, which it then recovers.
+We interpret this behavior as evidence that LLM-based
+ASR can be viewed as adenoising task: the LLM learns to re-
+construct the clean transcript from the noisy, text-like sequence
+produced by the projector. Building on this insight, we propose
+a novel approach to adapt LLM-based ASR models using only
+text data by explicitly teaching the LLM to denoise distorted
+transcripts from the target domain, even when no target-domain
+audio is available.
+2.1. Task Formulation
+LetD src ={(a i,t i)}denote the source-domain dataset with
+paired audioa i and transcriptt i, and letD tgt ={t j}denote
+the target-domain dataset with transcripts only.3 While standard
+LLM-based ASR training requires large numbers of(a,t)pairs
+to achieve high recognition performance, we enable text-only
+adaptation by introducing a noise functionnoise(·). This func-
+tion takes transcripts as input and emulates the audio projection
+task by adding synthetic noise that approximates the outputs of
+a trained projector in an LLM-based architecture.
+Thus, given only textt∈ D tgt, we replace the missing
+audio withnoise(t)and fine-tune the LLM to recovert. Adap-
+tation is therefore reframed as training on(noise(t),t)pairs,
+i.e., learning to solve a text denoising problem.
+2.2. Batch Construction for Text Denoising Adaptation
+Directly fine-tuning the LLM with(noise(t),t)pairs from
+Dtgt leads tocatastrophic forgetting, i.e., the alignment be-
+tween the speech encoder and the LLM degrades, and the pro-
+jector’s mapping becomes ineffective, negatively impacting the
+model’s performance. A similar observation has also been re-
+cently reported in [14]. To address this challenge, we propose
+a more effective batch composition strategy for fine-tuning the
+LLM. Specifically, each batch is constructed as a mixture of ex-
+amples from both source and target domains (see Figure 1). Let
+σa,σ ta,σ t, andτ t denote the proportions (relative shares) of
+the following components in each batch:
+•σ a:(sp(a),t)pairs where(a,t)∈D src, i.e., paired audio
+and transcripts to preserve the original speech–text alignment.
+•σ ta:(noise a(t),t)pairs where(a,t)∈D src andnoise a(t)
+2Also known as “speech projector” in the literature, with some re-
+ferring to it as a “speech adapter” or “connector”.
+3It is worth mentioning that in all our experiments, the text-only data
+consists of (ground truth) transcripts from conversational speech, rather
+than arbitrary text such as that found on web pages.
+Table 1:Data statistics for the two datasets used in our domain
+adaptation experiments: DefinedAI and SlideSpeech. For each
+dataset, source models are trained on selected domains (Source
+role), and adaptation and evaluation are conducted separately
+for each target domain (Target role). Domain abbreviations
+are: B = Banking, I = Insurance, H = Healthcare, L = Life,
+T = Talent, E = English, Ag = Agriculture, An = Animation,
+MI = Musical Instruments. We report the number of utterances
+(#Utts) and total duration in hours (Hrs) for each split.
+Role Domains Train Val Test
+#Utts Hrs #Utts Hrs #Utts Hrs
+DefinedAI
+Source B/I/H 17,398 38:10 – – – –
+Target B 26,704 36:20 1,625 2:08 3,111 4:16
+Target I 32,249 46:54 1,951 2:45 3,807 5:30
+SlideSpeech
+Source L/T/E 34,682 34:59 – – – –
+Target Ag 30,498 29:20 1,679 1:43 3,470 3:26
+Target An 56,593 49:48 3,283 2:55 7,005 5:50
+Target MI 9,981 8:30 852 0:44 984 0:54
+is obtained by projectingathrough the model’s projector
+sp(a)and mapping the resulting embeddings to their near-
+est tokens in the LLM vocabulary. This approximates an op-
+timal noise function, as it corresponds to projector-induced
+text noise.
+•σ t:(noise(t),t)pairs wheretis taken fromD src and
+noise(t)is generated through random character substitutions
+and duplications. This serves as a naive approximation of
+noisea(t), obtainable without access to audio. By including
+both projector-induced and naive noise in the same batch for
+the source domain, the LLM is encouraged to learn to bridge
+the three views oft(audio,noise a(t), andnoise(t)).
+•τ:(noise(t),t)pairs fromD tgt, analogous to the previous
+item but applied to the target domain, thereby driving adapta-
+tion by exposing the LLM to target-domain textual data.
+The proportions are set so thatσ a +σ ta +σ t +τ= 1.
+In practice, maintaining a small but nonzeroσ a is critical to
+avoid forgetting the speech-to-text alignment (Table 5), whileτ
+controls the strength of adaptation. Ideally,τshould be opti-
+mized on held-out validation data for each application setting,
+since it directly governs the balance between source retention
+and target specialization. In this work, however, we adopt a
+simple heuristic: we setτproportional to the relative size of
+the target domain with respect to the source domain (in terms of
+training examples), and distribute the remaining source-domain
+proportions equally, i.e.,σ a =σ ta =σ t = 1−τ
+3 . This choice
+ensures that larger target domains naturally receive more adap-
+tation weight, while still preserving source-domain coverage. It
+also allows us to systematically analyze the effect of varying
+τacross domains. 4 By carefully mixing audio, projector-based
+noise, and synthetic textual noise in each batch, we enable the
+LLM to maintain its original transcription ability (i.e., not for-
+getting the alignment already learned by the projector) while
+adapting to the target domain in the absence of target-domain
+audio.
+4Exactτvalues appear in the result tables next to each domain.
+4598
+Table 2:In-domain results on DefinedAI: targets B/I; base
+model trained on the DefinedAI source (B/I/H) split.
+System
+Banking
+(τ= 0.61)
+Insurance
+(τ= 0.65)
+WER∆(↑)WER∆(↑)
+Base model 8.02 – 9.36 –
+Adapted model (audio)4.55 43.3 6.01 35.8
+Adapted model (text)
+Fang et al. [14] 7.89 1.6 9.10 2.8
+Ma et al. [23] 7.75 3.4 9.24 1.3
+Ours 6.53 18.6 7.59 18.9
+3. Datasets Preparation
+Table 1 presents the composition of the source and target do-
+main datasets, including their training, development, and test
+splits, as used in our experiments.
+Our experiments use two conversational corpora, chosen
+both for their explicit domain grouping and for their rele-
+vance to real-world ASR applications. DefinedAI 5 is a com-
+mercially available corpus corpus of manually transcribed cus-
+tomer–agent telephone calls (125 hours used), selected for its
+production-like conditions. Conversational data like this cap-
+tures naturalistic speech patterns, e.g., including disfluencies,
+interruptions, and colloquial expressions, that are critical for
+evaluating ASR robustness in practical settings. To broaden
+domain diversity and speaking styles, we use the open-source
+SlideSpeech [31] dataset, a large-scale audio-visual dataset gen-
+erated from online conference videos on YouTube, which con-
+tains multi-speaker conversations across 22 domains (1,705
+videos; 1,000 hours; 473 hours transcribed). By working with
+these corpora, we focus on realistic conversational scenarios
+that are more challenging than scripted speech.
+From DefinedAI we prepared three partitions: a source (au-
+dio, transcripts pairs) partition covering Banking (B), Insurance
+(I) and Healthcare (H) domains, and two target (text-only) par-
+titions with Banking (B) and Insurance (I) domains. For the
+SlideSpeech dataset, although it provides a challenging testbed
+for evaluating ASR robustness, the limited amount of data in its
+original development and test partitions (approximately 1 hour
+per domain) limits its usefulness for our experiments. To ad-
+dress this, we computed domain-level perplexity with the same
+base LLM used in our adaptation pipeline, ranked domains in
+descending perplexity (higher means less familiar to the base
+model), and selected domains from the original SlideSpeech
+training set with sufficient examples for partitioning into train-
+ing and development/test portions. Using this ranking, we con-
+structed the source and target partitions: the source domains
+comprise Life, Talent, and English, while the target domains
+are Agriculture, Animation, and Musical Instruments (see Ta-
+ble 1). Note that, in our setup, the training split of the target
+domain contains text-only data.
+4. Experimental Setup
+All experiments were implemented in the SLAM-ASR frame-
+work [3] with WavLM-Large [26] as the speech encoder and
+Llama 3.2 3B Instruct 6 [29] as the decoder LLM. These mod-
+els are connected via a learnable projector consisting of a single
+hidden layer followed by a ReLU activation and a regression
+5https://defined.ai
+6https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct
+Table 3:Out-of-domain results on SlideSpeech: targets
+Ag/An/MI; base model trained on SlideSpeech source (L/T/E).
+System
+Ag
+(τ= 0.47)
+An
+(τ= 0.62)
+MI
+(τ= 0.22)
+WER∆(↑)WER∆(↑)WER∆(↑)
+Base model 16.25 – 16.45 – 15.16 –
+Adapted model (audio)13.86 14.7 13.17 19.9 13.10 13.6
+Adapted model (text)
+Fang et al. [14] 16.19 0.4 16.27 1.1 14.58 3.8
+Ma et al. [23] 16.13 0.7 16.34 0.7 14.75 2.7
+Ours 15.56 4.2 15.35 6.7 14.10 7.0
+layer. For all the performed experiments, the prompt template
+is defined as:
+PROMPT(input,transcript) =<|start header id|>user
+<|end header id|>\n\nTranscribe speech to text.
+Speech:{input}<|eot id|><|start header id|>
+assistant<|end header id|>\n\n{transcript}
+During training,{transcript}is the ground truth and{input},
+depending on the batch component type (Section 2.2), is one
+ofsp(a),noise a(t), ornoise(t). During inference,{input}
+is alwayssp(a)and{transcript}is the model-generated tran-
+scription.
+•Base model: We train abase modelfor each dataset (De-
+finedAI and SlideSpeech) using the source (audio-text pairs)
+partition, and evaluated on the test split of the target data. For
+training the base model, we followed the original setup as de-
+scribed in [3]: the speech encoder and the LLM are frozen,
+while the projector is trained on the source domain data dur-
+ing 5 epochs with learning rate10 −4,1000warm-up steps, and
+batch size of10.
+•Adapted model (audio): This experiment reflects the best-
+case scenario, i.e., when audio-text pairs are available for fine-
+tuning the LLM for the target domain. Specifically, for adapting
+the LLM, we fine-tuned on the target partition, using audio-text
+pairs, for 5 epochs, using LoRA applied to the self-attention
+queryandvalueprojection layers with rank 16, alpha 32, learn-
+ing rate10 −4, and1000warm-up steps.
+•Text-only adaptation (ours): For these experiments, we im-
+plementnoise(t)as a two-step process: (1) random character
+substitution followed by (2) random character duplication. In
+step (1), we usenlpaug 7 to select15%of the words and re-
+place30%of the characters within those words with random
+symbols, with a minimum of 1 and a maximum of 10 charac-
+ter edits per utterance. These values match thenlpaugdefaults,
+except that we reduce the fraction of edited words from30%to
+15%, which yielded better performance in preliminary experi-
+ments. In step (2), each character has a10%chance of being
+repeated; when selected, it is duplicated 1 to 3 times with equal
+probability. This last step is designed to emulate the duplication
+patterns observed in the optimal noise (i.e.noise a(t)).
+Additionally, we also reimplemented two recently proposed
+text-only adaptation approaches for LLM-based ASR:
+•F ang et al.[14]: the adaptation process consists of: (a)
+fine-tuning the LLM using raw target-domain text (no prompt
+involved); (b) monitoring the perplexity on the validation set
+(with audio) every 200 steps to identify when catastrophic for-
+getting occurs. The adapted model is the checkpoint with the
+minimum perplexity before the sudden increase.
+7https://nlpaug.readthedocs.io/en/latest/augmenter/char/random.html
+4599
+Table 4:Cross-domain results on SlideSpeech targets
+(Ag/An/MI); base model trained on DefinedAI source (B/I/H).
+System
+Ag
+(τ= 0.64)
+An
+(τ= 0.77)
+MI
+(τ= 0.37)
+WER∆(↑)WER∆(↑)WER∆(↑)
+Base model 41.09 – 33.92 – 31.18 –
+Adapted model (audio)16.03 61.0 14.12 58.4 17.30 44.5
+Adapted model (text)
+Fang et al. [14] 34.93 15.0 29.87 11.9 27.06 13.2
+Ma et al. [23] 38.22 7.0 32.74 3.5 30.09 3.5
+Ours 30.78 25.1 25.32 25.4 24.76 20.6
+•Ma et al.[23]: the text-only adaptation is performed in two
+stages: (1) first, freeze the model and learnktrainable embed-
+dingse i inserted where the audio would go in the prompt —i.e.
+the input of the LLM is PROMPT(e 1...e k,t); (2) fine-tune the
+LLM using thosekembeddings instead of audio, i.e., batches
+are composed only of(e 1...e k,t)pairs. In our experiments,
+we usek= 30as in the original work. As this setup uses no
+audio, it is also prone to catastrophic forgetting; we therefore
+also evaluated checkpoints every 200 steps and selected the best
+one before the forgetting point.
+Finally, all experiments are evaluated in terms of word error
+rate (WER, %), and we report the relative improvement (∆, %)
+over the correspondingbase model. Unless stated otherwise, all
+result tables report WER and∆in percentages.
+5. Experimental Results
+We evaluate our proposed text-only adaptation method in three
+scenarios of increasing difficulty: (1) in-domain adaptation,
+(2) out-of-domain adaptation, and (3) cross-domain adaptation.
+The main results for each of these experiments are reported in
+Table 2, Table 3 and Table 4, respectively.
+(1) In-domain adaptation- The target domain corresponds to
+a domain type already represented in the source-domain data,
+both in terms of domain exposure and similar speech and acous-
+tic characteristics. The goal of this experiment was to assess the
+benefit of additional text data for a domain familiar to the base
+model. Specifically, for this experiment, the source and target
+partitions are both drawn from DefinedAI. Table 2 reports the
+in-domain results. After text-only adaptation, performance nar-
+rows the gap to audio-based adaptation, with 6.53% vs. 4.55%
+WER in Banking and 7.59% vs. 6.01% WER in Insurance.
+(2) Out-of-domain adaptation- The target domain is not rep-
+resented in the source domain partition but shares the same
+speech and acoustic characteristics. The goal of this exper-
+iment was to validate how well the LLM can learn domain-
+specific lexical and syntactic patterns from text alone, given sta-
+ble acoustic conditions. This scenario was simulated using the
+SlideSpeech dataset, where source domain data is represented
+by L,T,E domains and the target domain is defined by Ag, An,
+MI domains. Table 3 presents the out-of-domain results. Our
+method improves WER across all three target domains, includ-
+ing MI despite its lowτvalue.
+(3) Cross-domain adaptation- This setting is the most chal-
+lenging and realistic scenario; the target domain is not rep-
+resented in the source data and additionally exhibits different
+speech and acoustic characteristics. The goal of this experiment
+was to evaluate the impact of the text-only adaptation approach
+in bridging the linguistic gap in a scenario where there are ev-
+ident acoustic shifts. For this experiment, we use DefinedAI
+Table 5:Ablation of source-side batch componentsσ a,σ ta, and
+σt on DefinedAI targets. Checkmarks indicate included compo-
+nents;∆is reported w.r.t. the base model in Table 2.
+σa σta σt
+Banking Insurance
+WER∆(↑)WER∆(↑)
+✓ ✓ ✓ 6.53 18.67.59 18.9
+✓ ✓ 6.40 20.2 7.59 18.9
+✓ ✓ 6.75 15.8 7.79 16.8
+✓ 7.13 11.1 8.28 11.5
+✓ ✓ 10.55 -31.5 12.95 -38.4
+✓ 10.63 -32.5 15.24 -62.8
+✓ 10.33 -28.8 12.72 -35.9
+Table 6:Noise-type ablation on DefinedAI targets. Random
+samples uniformly from a–z/A–Z/0–9/space; length matches the
+transcript;∆is reported w.r.t. the base model in Table 2.
+Strategy Batch Item Type Banking Insurance
+WER∆(↑)WER∆(↑)
+Original NoisePR O M P T(noise(t),t)6.53 18.6 7.59 18.9
+RandomPR O M P T(random |t|,t) 6.64 17.2 8.10 13.5
+EchoingPR O M P T(t,t) 7.60 5.2 8.32 11.1
+EmptyPR O M P T(∅,t) 6.81 15.1 8.03 14.2
+(B/I/H) as the source domain and SlideSpeech (Ag/Ai/MI) as
+the target domain. Table 4 shows that our text-only adapta-
+tion consistently outperforms prior baselines, reducing linguis-
+tic mismatch, though it remains below the audio-adapted model,
+which additionally benefits from target-domain audio to address
+acoustic mismatch.8
+5.1. Ablation experiments
+We conducted two ablation studies on the DefinedAI target data
+to isolate the contributions of our method’s key components.
+The first study evaluates the impact of including or removing
+different source-side components from the training batches. As
+shown in Table 5, the full mix yields strong and stable per-
+formance; removing projector-induced noise slightly improves
+Banking, while Insurance remains essentially unchanged. No-
+tably, omitting the audio component (σ a = 0) causes a sharp
+increase in WER, possibly due to catastrophic forgetting of the
+speech-text alignment. The second study examines the impor-
+tance of perturbing text-only data from the target domain. Ta-
+ble 6 shows that using syntactic noise as input to the LLM im-
+proves performance more effectively. This indicates that fram-
+ing the task as denoising enables the model to better capture the
+target domain’s lexical and syntactic patterns.
+6. Conclusions
+We presented a novel text-only adaptation approach for LLM-
+based ASR architectures. Our method alternates source audio,
+projector-induced noise, and synthetic noisy text during fine-
+tuning, enabling the model to retain audio understanding, learn
+text denoising, and acquire target-domain knowledge. Exper-
+iments show consistent gains across domains, outperforming
+prior text-only adaptation methods. Future work will explore
+better noise functions and optimalτunder text-rich conditions.
+8In a follow-up work [32], we show that adding a small amount of
+paired speech-text data (approximately 10%) to the training batches is
+enough to close the modality gap of text-only fine-tuning.
+4600
+7. Acknowledgments
+This work was supported by an Idiap Research Institute and
+Uniphore collaboration project. Part of this work was also sup-
+ported by EU Horizon 2020 project ELOQUENCE.
+8. Generative AI Use Disclosure
+Generative AI was used to proofread the paper, fix orthographic
+and grammatical errors, and condense some sections.
+9. References
+[1] A. Goel, S. Ghosh, J. Kim, S. Kumar, Z. Kong, S.-g. Lee, C.-
+H. H. Yang, R. Duraiswami, D. Manocha, R. Valleet al., “Audio
+Flamingo 3: Advancing audio intelligence with fully open large
+audio language models,” preprint arXiv:2507.08128, 2025.
+[2] 

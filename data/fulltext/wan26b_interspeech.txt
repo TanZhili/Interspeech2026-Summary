@@ -1,0 +1,467 @@
+Continuous Time-Varying Emotion Control Zero-Shot Text-To-Speech With
+Emotion Orthogonal LoRA
+Chenchen Wan1, Minchuan Chen2, Yan Shi2, Peng Qi3, Shaojun Wang2, Jing Xiao2
+1 Shanghai Jiao Tong University, China ,2 Ping An Technology, China
+3 Shanghai Jiao Tong University Chongqing Artificial Intelligence Research Institute, China
+wanchch7@sjtu.edu.cn, cmc 1023@163.com, shiyanilj@163.com
+Abstract
+High-quality emotional text-to-speech (TTS) often depends on
+large scale corpora and coarse discrete emotion labels, which
+limits fine-grained and time-varying control in practice. We
+address this by integrating continuous Valence, Arousal, and
+Dominance (V AD) control into a pretrained model via low-rank
+updates inserted into the backbone transformations. Our Emo-
+tion Orthogonal LoRA (EO-LoRA) uses three separate low-
+rank branches aligned to valence, arousal, and dominance, and
+an orthogonality regularizer encourages the branches to cap-
+ture distinct effects. We further introduce Flow-DGPO, a rein-
+forcement learning alignment stage for flow matching TTS that
+improves emotion controllability while preserving intelligibil-
+ity and speaker similarity. Experiments show that our method
+improves continuous and time-varying emotion control while
+maintaining synthesis quality with limited training data.
+Index Terms: emotional text-to-speech, Emotion Orthogonal
+LoRA, reinforcement learning, time-varying emotion control
+1. Introduction
+Emotional expressiveness is an important part of speech com-
+munication. Beyond the words, emotion is conveyed through
+prosody, including pitch movement, energy, speaking rate, and
+subtle voice quality changes. With modern generative text-
+to-speech (TTS) backbones, especially models built on flow
+matching frameworks [1], zero-shot TTS can reach high nat-
+uralness and preserve speaker identity well. However, reli-
+able emotion control is still difficult in practice. Many sys-
+tems [2, 3, 4, 5, 6] rely on discrete emotion categories, which
+are simple but too coarse for describing intensity differences
+and gradual transitions. Reference based prompting is widely
+used in zero-shot TTS [7, 8, 9, 10]. However, the reference
+signal often entangles emotion with speaker traits and content
+prosody, which makes it difficult to adjust emotion without af-
+fecting other attributes. In addition to utterance-level control,
+real speech can show emotion shifts within a single sentence,
+which calls for time-varying emotion control. This setting is
+challenging because the intended emotion changes can be weak-
+ened or excessively smoothed, and the speech can gradually
+lean toward the emotion carried by the prompt speech.
+Recent work explores different choices along these trade-
+offs. For discrete emotion control, IndexTTS2 [11] improves
+expressiveness and studies separating emotion from speaker
+traits, but the control signal is still restricted to a small set
+of emotion categories. Prompt based approaches such as
+EmoV oice [12] use free-form text to describe emotion, which
+increases flexibility, while the results can vary across prompts
+and often require careful data design to stay consistent. To sup-
+port finer control over emotion strength and smooth transitions,
+some methods adopt dimensional emotion representations. In
+particular, Valence, Arousal, and Dominance (V AD) [13] de-
+scribes emotion with three continuous values that reflect pos-
+itivity, activation, and dominance. EmoSphere-TTS [2] pro-
+poses a spherical emotion representation derived from arousal,
+valence, and dominance signals, and uses it to control both emo-
+tion style and intensity without relying on human emotion an-
+notation. For time-varying emotion control, EmoCtrl-TTS [14]
+aligns frame-level V AD trajectories in a zero-shot setting, but it
+relies on large-scale emotional resources. Reinforcement learn-
+ing has recently been introduced to speech generation to better
+balance control and quality. EmoDPO [15] uses direct prefer-
+ence optimization (DPO) [16] to strengthen emotional expres-
+sion, and F5R-TTS [17] applies a GRPO [18] objective to im-
+prove naturalness and speaker similarity in flow matching TTS.
+Despite recent progress, there is still limited work that system-
+atically applies reinforcement learning to enhance emotion con-
+trollability, particularly for time-varying emotion control.
+In this paper, we study continuous and time-varying emo-
+tion control for zero-shot TTS built on a pretrained flow match-
+ing backbone. Low-rank adaptation (LoRA) [19] is a widely
+used way to steer large pretrained models, but it typically ap-
+plies a single low-rank update to each adapted layer and does
+not offer an explicit mechanism to separate different emotion at-
+tributes. In contrast, we inject valence, arousal, and dominance
+signals into the backbone transformations through three aligned
+low-rank update branches, each scaled by its corresponding
+control value at every time step. This design provides a direct
+and interpretable interface for emotional control, and it reduces
+coupling across emotion dimensions by construction. Further,
+we propose Flow-DGPO, a preference optimization alignment
+stage for flow matching TTS. It improves emotion expression
+by comparing multiple sampled candidates and optimizing the
+model toward candidates that better match the target emotion,
+while still preserving intelligibility and speaker similarity. Our
+contributions are summarized as follows:
+• We propose EO-LoRA, which injects three valence, arousal,
+and dominance scaled low-rank update branches into selected
+linear layers of a pretrained flow matching TTS backbone,
+together with an orthogonality regularizer that encourages the
+branches to learn distinct updates and reduces interference
+across emotion dimensions.
+• We propose Flow-DGPO, a preference based alignment stage
+for flow matching TTS that improves emotion controllability
+through candidate comparison and preference optimization,
+while maintaining intelligibility and speaker similarity.
+• Experiments in time-varying and cross-lingual settings show
+consistent gains in emotion controllability with competitive
+speech quality under a limited training data.
+4244
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1798
+Masked
+Masked Masked
+A r e y o u h a p p y ? # # # # # #
+𝑉𝐴𝐷1 𝑉𝐴𝐷2 𝑉𝐴𝐷3 𝑉𝐴𝐷4 ··· ··· ··· ··· ··· 𝑉𝐴𝐷𝑛
+CText Encoder
+DiT Block𝑁 ×
+V AD Sequence
+Text
+Predicted Flow
+𝑳𝒐𝒔𝒔
+ℎ
+ℎ∗
+ℎ𝑡𝑊
+A
+B× 𝑉𝑡
+A
+B× 𝐴𝑡
+A
+B× 𝐷𝑡
+EO-LoRA
+To Generate
+Discarded
+I a g r e e . I a m s a d ! # #
+𝑉𝐴𝐷1 𝑉𝐴𝐷2 𝑉𝐴𝐷3 𝑉𝐴𝐷4 ··· ··· ··· ··· ··· 𝑉𝐴𝐷𝑛
+CText Encoder
+DiT Block + EO-LoRA × 𝑁
+ODE solver
+C Concate
++
++ ℎ𝑡
+∗
+Add
+ℒ𝑜𝑟𝑡ℎ
+Training
+Inference
+Ground Truth
+ Reference Speech
+Reference Text and V AD Sequence  Generated Text and V AD Sequence
+timestep timestep
+Figure 1:Overall architecture of EO-LoRA TTS.Left: training.The model takes noisy speech, a speech prompt, text, and a VAD
+sequence, and predicts the flow for reconstruction. EO-LoRA injects three V/A/D-aligned low-rank branches into selected linear
+layers. The dashed links indicate the orthogonality lossL orth applied between pairs of LoRA branches. Herehdenotes the hidden
+representation, andh t in EO-LoRA refers to thet-th frame ofh.Right: inference.A reference speech segment provides speaker
+identity and reference VAD sequence, and the model generates speech for the generated text under the VAD sequence.
+2. Proposed Methods
+In this section, we present three components. I) EO-LoRA in-
+jects a continuous V AD sequence into selected linear layers us-
+ing three low-rank branches scaled by Valence, Arousal, and
+Dominance at each time step. II) Flow-DGPO is a reinforce-
+ment learning based alignment stage that improves emotion
+controllability while keeping speech quality stable. III) We de-
+scribe the overall training and inference procedure.
+2.1. Emotion Orthogonal LoRA
+Emotion TTS systems often provide emotion through exter-
+nal conditions, such as discrete labels or embeddings extracted
+from prompts. In this work, we incorporate emotion control into
+the backbone transformations. We allocate three separate low-
+rank update branches to Valence, Arousal, and Dominance, so
+each dimension modulates generation through its own learnable
+update and provides a direct and interpretable control signal.
+Low-rank branch formulation.Consider a linear layer
+with pretrained weightW∈R Dinput×Doutput and input hid-
+den states representationh∈R T×D input, whereTis the num-
+ber of mel spectrogram frames, withDinput andD output as the
+input and output feature dimensions. The original transforma-
+tion ish output =hW. Now we freezeWand introduce three
+parallel low-rank branches fork∈{V,A,D}:
+∆Wk =A kBk, A k∈R Dinput×r,B k∈R r×Doutput,(1)
+wherer≪min(D input,D output). Let V AD sequence be
+{(Vt,A t,D t)}T
+t=1. The EO-LoRA forward pass at thetth
+frame is:
+h∗
+t =h tW+
+X
+k∈{V,A,D}
+kt·h t∆Wk,(2)
+each V AD component is used as a scalar to scale its correspond-
+ing low-rank update. This supports both utterance-level con-
+trol (constantV t,A t,D t) and frame-level control (time-varying
+Vt,A t,D t) without changing the backbone.
+Based on ablation experiments, we inject EO-LoRA into
+theValueandOutputprojections in attention blocks and the lin-
+ear layers in feed-forward blocks, which gives stronger emotion
+control while keeping synthesis quality stable compared with
+other insertion choices.
+Orthogonality regularization.Without constraints, differ-
+ent branches can learn redundant or correlated updates, which
+weakens control for each dimension. We therefore regularize
+the effective updates∆W k to be mutually orthogonal:
+Lorth = 1
+|P|
+X
+{i,j}∈P
+⟨∆Wi,∆W j⟩F
+sg(∥∆Wi∥F·∥∆W j∥F ),(3)
+whereP=
+
+{V,A},{V,D},{A,D}
+	
+andsg(·)denotes the
+stop-gradient operator.
+We compute cosine similarity using Frobenius inner prod-
+ucts and norms, and stop-gradients through the denomina-
+tor to avoid unstable scaling. Directly constructing∆W k ∈
+RDinput×Doutput can be expensive. Using∆W k =A kBk, we
+compute Frobenius inner products via an equivalent trace form
+that only involvesr×rmatrices:
+⟨A1B1,A 2B2⟩F = tr((A1B1)⊤(A2B2))
+= tr(B⊤
+1 (A⊤
+1A2)B2)
+= tr((A⊤
+1A2)(B2B⊤
+1 )),
+(4)
+whereA⊤
+1A2 andB 2B⊤
+1 are bothr×r.
+This enables efficient evaluation of⟨∆W i,∆W j⟩F and
+∥∆Wk∥F without materializing∆W k. Finally, we avoid ini-
+tializingB k to zero, since it can cause numerical instability in
+the normalized orthogonality term. Instead, we initializeB k
+with a small-norm random matrix so that the initial update stays
+close to zero while the orthogonality regularizer is effective.
+4245
+2.2. Alignment via Flow-DGPO
+To further improve emotion control while keeping the speech
+quality, we introduce Flow-DGPO, a preference based rein-
+forcement learning stage for flow matching TTS and adapted
+from Direct Group Preference Optimization (DGPO) [20].
+LetL F M(θ;x,t)denote the conditional flow matching loss
+at timetfor samplexunder parametersθ. Given a conditionc
+(text, reference speech, and V AD sequence), we sample a group
+ofGcandidatesG={x 1,...,x G}from the current model and
+compute a scalar rewardr(x i)for each candidate. Following
+GRPO normalization, we compute the advantage for each can-
+didate within the group as
+A(xi) = r(xi)−mean({r(x j)}G
+j=1)
+std({r(xj)}G
+j=1) .(5)
+We then split the group into preferred and non-preferred
+subsets based on the sign of the advantage,
+G+ ={x i :A(x i)>0},G − ={x i :A(x i)≤0},(6)
+and assign an importance weight
+w(xi) =|A(x i)|.(7)
+Flow-DGPO optimizes a preference objective based on the
+flow matching loss margin to a frozen reference modelθ ref:
+LRL(θ) =−EG
+"
+logσ
+ 
+−β·
+X
+x∈G
+δ(x)w(x) ∆ F M(x,t)
+!#
+,
+δ(x) =
+(
++1ifx∈G +,
+−1ifx∈G −,
+(8)
+where∆ F M(x,t) =L F M(θ;x,t)−L F M(θref;x,t),σ(·)de-
+notes the sigmoid function andβcontrols preference strength.
+Intuitively, the objective decreasesL F M for candidates with
+positive advantages and increases it for candidates with non-
+positive advantages, with magnitudes scaled by|A(x)|.
+We use a composite reward to balance emotion, speaker
+similarity, and intelligibility:
+r(x) =λ emo·Emo +λ spk·SIM +λ wer·(1−WER),
+(9)
+whereEmois the similarity between V AD sequence of the can-
+didate and the target V AD sequence,SIMis speaker similarity
+to the reference audio, andWERis word error rate computed
+by an ASR model, withEmo,SIM, andWERnormalized to
+[0,1]. The weightsλ emo,λ spk, andλ wer are hyperparameters.
+2.3. Training and Inference
+Figure 1 illustrates our framework built on a pretrained Dif-
+fusion Transformer (DiT) [21] conditional flow matching TTS
+backbone. As shown on the left, the model takes masked noisy
+speech together with the text prompt and a frame level V AD se-
+quence, and predicts the flow for reconstruction. We train the
+model in two stages. InStage 1, we perform supervised fine
+tuning with V AD conditioning, using the flow matching objec-
+tive together with the EO-LoRA orthogonality regularizer,
+Lstage1 =L F M +λ orthLorth.(10)
+InStage 2, we apply Flow DGPO alignment and optimize the
+model with the reinforcement learning loss in Eq. 8. As shown
+on the right, during inference the model conditions on the target
+text, a reference speech prompt, and a target V AD sequence,
+and generates speech by solving the corresponding ODE.
+3. Experiment
+3.1. Experimental setup
+Data.We train on two emotional corpora, EmoV oice-DB
+[12] and the English subset of ESD [23]. EmoV oice-DB con-
+tains over 20,000 English emotional speech samples (about 40
+hours). ESD provides 10 English speakers with 5 emotion cat-
+egories (Angry, Happy, Sad, Surprise, Neutral), with 350 ut-
+terances per speaker per emotion (about 1,750 utterances and
+1.2 hours per speaker). We evaluate (i) time-varying emo-
+tional transitions on EMO-Change, and (ii) cross-lingual emo-
+tion transfer on JVNV S2ST [24]. For EMO-Change, we follow
+[14] and build prompts from RA VDESS [25] by concatenating
+two utterances that share the same transcript but have differ-
+ent emotions, forming a single prompt with an explicit emotion
+shift. We then synthesize speech from a fixed text and evalu-
+ate whether the output follows the prompt’s emotion transition
+while keeping content and speaker identity. For JVNV S2ST,
+we follow the Japanese-to-English protocol in [14] on JVNV
+[24], where Japanese speech provides the audio prompt and
+the translated English text is used as input, testing cross-lingual
+preservation of emotion and speaker traits.
+Implementation details.We extract frame-level V AD using a
+pretrained wav2vec2-based predictor [26] fine-tuned on MSP-
+PODCAST [27] with a 0.5 s window and 0.30 s hop size, and
+linearly interpolate V AD sequence to match mel frames. Ad-
+ditionally, we linearly normalize the predicted V AD values to
+the range[−0.5,0.5]. We build on the pretrained F5-TTS [22]
+Base checkpoint. EO-LoRA usesr= 16andα= 32and is in-
+serted into attentionValue/Outputprojections and feed-forward
+linear layers, adding about 10M trainable parameters. Training
+has two stages, supervised fine-tuning and Flow-DGPO align-
+ment. Supervised fine-tuning useλ orth = 0.05. Flow-DGPO
+usesβ= 20, group sizeG= 8, 32 sampling steps, and reward
+weightsλ emo = 3,λ spk = 1,λ wer = 1.
+Model for comparison.We compare EO-LoRA with flow
+matching TTS models, including EmoCtrl-TTS [14] and the F5-
+TTS backbone [22]. Since EmoCtrl-TTS is not publicly avail-
+able, we report the results as provided in EmoCtrl-TTS [14]. As
+a baseline, we fine-tune F5-TTS with the V AD sequence embed-
+ded as an additional conditioning stream and fused with stan-
+dard inputs before entering the DiT backbone. For experimen-
+tal consistency, we follow the evaluation protocols in EmoCtrl-
+TTS to construct JVNV S2ST and EMO-Change.
+3.2. Metrics
+Objective metrics.I) WER: computed by Whisper-large-
+v3 [28]; II) speaker similarity (SIM-o): defined as the co-
+sine similarity between WavLM-large speaker embeddings [29]
+of the generated speech and the reference prompt; III) Au-
+toPCP: utterance-level prosody similarity computed by Au-
+toPCP multilingual v2 [30]; IV) Emo SIM: time-varying emo-
+tion similarity as the average frame-level cosine similarity be-
+tween aligned emotion embedding sequences of the generated
+speech and the prompt, where embeddings are extracted by
+emotion2vec [31]; V) Aro-Val SIM: the similarity of arousal
+and valence trajectories as the average frame-level cosine simi-
+larity, where trajectories are extracted by predictor [26].
+Subjective metrics.We conduct MOS tests on naturalness
+(NMOS), speaker similarity (SMOS), and emotion similarity
+(EMOS) to the target. Ratings use a 5-point Likert scale, and
+we report mean scores with95%confidence intervals. We re-
+cruited 20 native English listeners and evaluated 20 utterances.
+4246
+Table 1:Objective evaluation results for various models on JVNV S2ST and EMO-change test sets. Bold highlights the best result, while
+underlined marks the second-best. “w/oL orth” denotes an ablation variant that removes the orthogonality regularizer in EO-LoRA.
+Model Training Data (hours) SIM-o↑WER (%)↓AutoPCP↑Emo SIM↑Aro-Val SIM↑
+JVNV S2ST
+EmoCtrl-TTS [14] LL (60k) + IH-EMO (27k) + LAUGH (460) 0.448 4.4 3.38 0.693 0.647
+EmoCtrl-TTS(+) [14] LL (60k) + IH-EMO (27k) + LAUGH (460)0.497 3.2 3.500.697 0.643
+F5TTS(fine-tuned) [22] EmoV oice-DB (40) + ESD(10) 0.426 8.4 2.83 0.632 0.601
+EO-LoRA w/oL orth EmoV oice-DB (40) + ESD(10) 0.441 4.2 3.01 0.643 0.607
+EO-LoRA EmoV oice-DB (40) + ESD(10) 0.442 4.9 3.27 0.688 0.679
+EO-LoRA + Flow-DGPO EmoV oice-DB (40) + ESD(10) 0.449 4.1 3.370.701 0.692
+EMO-change
+EmoCtrl-TTS [14] LL (60k) + IH-EMO (27k) + LAUGH (460) 0.6710.03.45 0.685 0.822
+EmoCtrl-TTS(+) [14] LL (60k) + IH-EMO (27k) + LAUGH (460) 0.684 0.9 3.44 0.679 0.811
+F5TTS(fine-tuned) [22] EmoV oice-DB (40) + ESD(10) 0.694 7.1 3.17 0.693 0.837
+EO-LoRA w/oL orth EmoV oice-DB (40) + ESD(10) 0.721 0.6 3.31 0.708 0.843
+EO-LoRA EmoV oice-DB (40) + ESD(10) 0.741 0.6 3.51 0.753 0.905
+EO-LoRA + Flow-DGPO EmoV oice-DB (40) + ESD(10)0.7510.2 3.60 0.778 0.914
+Table 2:Subjective MOS on JVNV S2ST and EMO-Change.
+Mean MOS with 95% confidence intervals.
+Model SMOS↑NMOS↑EMOS↑
+JVNV S2ST
+F5-TTS (fine-tuned) 2.11±0.18 2.73±0.16 2.85±0.12
+EO-LoRA 2.66±0.13 3.21±0.14 3.57±0.13
+EO-LoRA + Flow-DGPO2.69±0.16 3.31±0.13 3.63±0.12
+EMO-Change
+F5-TTS (fine-tuned) 3.12±0.14 3.34±0.13 2.82±0.15
+EO-LoRA 3.44±0.12 3.52±0.11 3.41±0.12
+EO-LoRA + Flow-DGPO3.52±0.13 3.58±0.14 3.50±0.12
+3.3. Results and analysis
+Objective evaluation.Table 1 reports objective results on
+JVNV S2ST and EMO-change. Here we only analyze EO-
+LoRA, F5-TTS baseline and EmoCtrl-TTS. On JVNV S2ST,
+EO-LoRA improves over F5-TTS baseline on controllability,
+with AutoPCP increasing from 2.83 to 3.27, Emo SIM from
+0.632 to 0.688, and Aro-Val SIM from 0.601 to 0.679, while
+speaker similarity increases from 0.426 to 0.442 and WER de-
+creases from 8.4% to 4.9%. Compared with EmoCtrl-TTS, EO-
+LoRA is competitive on emotion similarity despite using less
+emotion training data, while a remaining gap in speaker simi-
+larity and WER is expected since the prompt speech is Japanese
+but the backbone is not trained on Japanese data. On EMO-
+change, EO-LoRA improves over F5-TTS baseline more sub-
+stantially, with AutoPCP increasing from 3.17 to 3.51, Aro-Val
+SIM from 0.837 to 0.905, and Emo SIM from 0.693 to 0.753,
+while WER drops from 7.1% to 0.6%. EO-LoRA also com-
+pares favorably to EmoCtrl-TTS on this benchmark: it achieves
+higher AutoPCP, Emo SIM, and Aro-Val SIM, suggesting that
+injecting V AD through internal low-rank modulation is particu-
+larly effective for emotion transitions within an utterance.
+Subjective evaluation.Table 2 shows that listeners report the
+same trends as the objective metrics. Across both JVNV S2ST
+and EMO-change, EO-LoRA improves naturalness, speaker
+similarity, and emotion similarity over F5-TTS, and adding
+Flow-DGPO brings further gains. Overall, EO-LoRA + Flow-
+DGPO achieves the strongest listener preference. Audio sam-
+ples are available online 1.
+1https://wancc-p.github.io/EoLoRA/
+Table 3:Ablation results on EMO-change.q/k/v: Q/K/V pro-
+jections;o: output projection;ff: feed-forward linear layers.
+Model AutoPCP↑Emo SIM↑Aro-Val SIM↑
+EO-LoRA w/ v+o+ff 3.51 0.753 0.905
+EO-LoRA w/ q+k+v+o 3.34 0.692 0.903
+EO-LoRA w/ q+k+v+o+ff 3.39 0.719 0.900
+Ablation on injection locations.Table 3 compares EO-LoRA
+injection choices in DiT blocks. Injecting into v+o+ff gives
+the best overall controllability, achieving the highest AutoPCP
+(3.51) and Emo SIM (0.753), with strong Aro-Val SIM (0.905).
+Injecting into q+k+v+o leads to worse controllability (AutoPCP
+3.34, Emo SIM 0.692), and q+k+v+o+ff only partially recovers
+it (AutoPCP 3.39, Emo SIM 0.719). We also find that configu-
+rations involving q and k exhibit less stable optimization, where
+AutoPCP and Emo SIM tend to deteriorate in later training. We
+therefore use v+o+ff as the default injection choice.
+Effect of the orthogonality regularizer .RemovingL orth
+consistently weakens controllability. For example, on EMO-
+change, Emo SIM drops from 0.753 to 0.708 and Aro-Val SIM
+drops from 0.905 to 0.843, indicating that the orthogonality
+term reduces interference across the V AD branches and stabi-
+lizes per dimension control.
+Effect of reinforcement learning alignment.Flow-DGPO
+consistently improves both controllability and quality without
+an obvious tradeoff. On JVNV S2ST, it improves speaker sim-
+ilarity and reduces WER, while further increasing AutoPCP,
+Emo SIM, and Aro-Val SIM over EO-LoRA. On EMO-change,
+it yields the same pattern, bringing additional gains in speaker
+similarity, intelligibility, and all controllability metrics. Overall,
+the alignment stage strengthens emotion controllability while
+preserving intelligibility and speaker identity.
+4. Conclusion
+In this paper, we proposed EO-LoRA combined with Flow-
+DGPO to enable robust, time-varying emotion control in zero-
+shot TTS. Our approach injects valence, arousal, and dom-
+inance through three aligned low-rank branches and reduces
+interference across them, while Flow-DGPO further improves
+controllability while preserving intelligibility and speaker simi-
+larity. Experiments show consistent gains over strong baselines
+in both objective and subjective metrics. Moving forward, we
+plan to extend this approach to other generative backbones.
+4247
+5. Generative AI Use Disclosure
+We used generative AI tools to assist with English polishing
+and minor editing of the manuscript. All scientific content, ex-
+perimental design, results, and conclusions were produced and
+verified by the authors, who take full responsibility for the final
+paper.

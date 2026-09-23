@@ -1,0 +1,493 @@
+ARTIST: Universal Articulatory Space Modeling for Multilingual
+Indic-to-English Speech-to-Speech Translation
+Khushal Yadav ID 1, Vinayak Abrol ID 2
+1 ECE Department & Infosys Center for AI, IIIT-Delhi, India
+2 CSE Department & Infosys Center for AI, IIIT-Delhi, India
+khushal22249@iiitd.ac.in abrol@iiitd.ac.in
+Abstract
+We present ARTIST, a novel end-to-end framework for multi-
+lingual Indic-to-English Speech-to-Speech Translation (S2ST)
+operating in a universal articulatory space. It utilizes a Con-
+former encoder with intermediate CTC supervision over source
+articulatory features, explicitly aligning diverse acoustic inputs
+with quantized, language-agnostic representations. To map
+these features, we introduce a Convolution-Augmented Dif-
+ferential Transformer decoder designed to capture both local
+phonetic nuances and global context. We demonstrate excep-
+tional cross-lingual transfer across 11 Indic languages, includ-
+ing extreme low-resource settings (10hr/language). For in-
+stance, with only 166M parameters, ARTIST outperforms the
+1.2B parameter SeamlessM4T baseline on BLEU, COMET, and
+chrF. ARTIST also achieves superior VRAM efficiency, estab-
+lishing a high-performance paradigm for scaling direct S2ST to
+resource-constrained environments.
+Index Terms: Speech-to-Speech Translation, Articulatory Rep-
+resentations, Multilingual Transfer, Low-Resource Speech Pro-
+cessing, Vector Quantization, Parameter-Efficient Modeling
+1. Introduction
+Recent progress in end-to-end Speech-to-Speech Translation
+(S2ST) has shifted research from cascaded pipelines toward
+direct waveform-to-waveform modeling [1]. However, con-
+temporary large-scale systems such as SeamlessM4T [2], Au-
+dioPaLM [3], UnitY [4], and the Translatotron [5, 6] rely
+heavily on brute-force parameter scaling (often exceeding 1B
+parameters) and massive quantities of supervised bilingual
+data. While effective for high-resource languages, these ap-
+proaches struggle in linguistically diverse, low-resource set-
+tings. For many Indic languages, where parallel speech cor-
+pora are severely limited, large autoregressive models tend to
+overfit acoustic variance and exhibit severe sequence hallucina-
+tion, particularly on long-form audio. To overcome this data
+bottleneck, we pivot away from conventional acoustic or text-
+derived discrete targets [7]. Instead, we ground our approach in
+the physiological reality of human speech: the vocal tract. By
+modeling speech within a universal articulatory space, we pro-
+vide a strong structural prior that abstracts away language- and
+speaker-specific variability. This enables more effective cross-
+linguistic alignment and addresses challenges related to acous-
+tic variability and coarticulatory effects, forcing cross-lingual
+alignment naturally and enabling robust few-shot transfer even
+under aggressive data constraints.
+We proposeARTIST(ArticulatoryRepresentation
+Transfer forIndicSpeechTranslation), a highly efficient
+166M-parameter multilingual S2ST framework for Indic-to-
+English translation. ARTIST maps source waveforms into
+a tokenized articulatory space using a pre-trained Vector
+Quantized Autoencoder (VQAE). By radically compressing
+the decoder’s target complexity, this bottleneck encourages
+parameter sharing across multiple languages, allowing high-
+resource languages to act as phonetic scaffolds for extremely
+low-resource targets. To capture both local phonetic structure
+and long-range dependencies, ARTIST pairs a Conformer
+encoder with a novel Convolution-Augmented Differential
+Transformer decoder. To explicitly disentangle phonetic
+content from acoustic noise early in the pipeline, we introduce
+intermediate Connectionist Temporal Classification (CTC)
+supervision within the encoder. This aligns intermediate
+acoustic representations directly with source articulatory units.
+Furthermore, our proposed Differential Attention mechanism
+mitigates noise accumulation, granting the model remarkable
+temporal robustness.
+To rigorously evaluate this temporal robustness, we de-
+fine a controlled out-of-distribution protocol using the public
+BhashaAnuvad benchmark [8]. Although ARTIST is trained
+exclusively on short utterances (3-20 seconds), we evaluate
+it out-of-distribution on extended long-form sequences (20-50
+seconds), directly testing robustness to hallucination and atten-
+tion degradation without requiring additional long-form train-
+ing data1. In summary, this work makes the following contribu-
+tions:
+1. Shared Articulatory Latent: A quantized representation
+achieving zero-shot cross-lingual transfer across languages.
+2. Extreme Parameter Efficiency: A 166M-parameter archi-
+tecture that outperforms 1B+ parameter baselines in low-
+resource and memory-constrained settings.
+3. Encoder CTC Supervision: Enforces early phonetic disentan-
+glement and stabilizes cross-lingual mapping.
+4. Robust Long-Form Generalization: An AR decoder that suc-
+cessfully mitigates attention noise and sequence hallucina-
+tion on extended audio.
+2. Related Work
+Traditional cascaded S2ST systems suffer from compounding
+errors and latency [9]. End-to-end architectures [5, 6, 1] and
+discrete acoustic unit frameworks (e.g., UnitY [4], XLS-R [10])
+mitigate these issues by bridging the modality gap, but require
+massive data scales to stabilize cross-lingual representations.
+Other approaches employing phoneme-conditioned V AEs [11]
+or direct waveform prediction [12] similarly struggle in extreme
+low-resource regimes due to language-specific acoustic vari-
+ability. Alternatively, physically grounded representations of-
+fer innate resilience to such noise. Recent monolingual studies
+1https://sites.google.com/view/artist-demo/
+5749
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2384
+like ArticulateX [7] have demonstrated the viability of discrete
+articulatory spaces, while non-autoregressive generators like
+FastSpeech-2 [13] and QGAN [14] enable rapid, high-fidelity
+synthesis. ARTIST uniquely extends these physiological priors
+to a multilingual S2ST setting, utilizing a universal articulatory
+bottleneck to completely bypass the prohibitive data require-
+ments of acoustic-only baselines.
+3. The ARTIST Framework
+In this section, we introduce ARTIST, which bypasses textual
+intermediaries or purely acoustic discrete unit intermediaries
+by directly mapping acoustic signals into a language-agnostic
+articulatory domain. The framework consists of two primary
+stages: (1) Multilingual articulatory space pretraining, where
+we learn a compact, shared language-agnostic latent space via a
+VQAE and (2) training a novel end-to-end S2ST model.
+3.1. Joint Multilingual Articulatory Space Pretraining
+To enforce cross-lingual alignment, source and target ar-
+ticulatory sequencesA src,A tgt ∈ {0,1}T×64 are batch-
+concatenated into a joint inputA joint (Fig. 1). A ResNet-style
+Vector Quantized Autoencoder (VQAE) mapsA joint to con-
+tinuous latentsZ e, which are quantized against a highly con-
+strained codebookE∈R K×D via nearest-neighbor lookup:
+z(i)
+q = arg min ek∈E
+z(i)
+e −e k
+
+2
+. The decoder then re-
+constructs the articulatory space directly fromZ q without in-
+termediate dequantization. This shared bottleneck suppresses
+language-specific idiosyncrasies during training to foster a uni-
+versal phonetic grammar. During inference, it enables decou-
+pled synthesis, decoding target features solely from predicted
+target latents. The VQAE is optimized using masked BCE
+alongside standard VQ embedding and commitment objectives
+(β= 0.25):L=L BCE +∥sg[z e]−e∥ 2
+2 +β∥z e−sg[e]∥ 2
+2.
+Finally, the encoder and codebook are strictly frozen to provide
+stable discrete targets for downstream training.
+3.2. Speech to Articulator (S2A) Training
+At the core of ARTIST is the S2A pipeline, which maps source
+speech directly to the universal articulatory space utilizing a
+dual-innovation architecture: an encoder with early phonetic
+disentanglement and a specialized, noise-resilient decoder.
+•Speech Encoder with Intermediate CTC Disentangle-
+ment:The encoder processes downsampled Mel-filterbank
+sequences through an initial Acoustic Conformer block [15]
+(see Fig. 1b). A persistent challenge in multilingual S2ST
+is the tendency of deep acoustic encoders to entangle back-
+ground noise and language-specific prosody with the un-
+derlying phonetic content. To isolate pure linguistic struc-
+ture early in the pipeline, we inject an intermediate Con-
+nectionist Temporal Classification (CTC) supervision sig-
+nal. Specifically, the hidden representationsHfrom the
+initial acoustic encoder are passed through a Condition-
+ing Block to predict the discrete source articulatory latents,
+Zs ={Z s1,...,Z sT}, which are generated by the frozen
+VQAE. The auxiliary objective is defined as:L CTC =
+−logP CTC (Zs|H).This regularised supervision provides
+a strong structural inductive bias. By explicitly aligning
+lower-layer representations with the source articulatory to-
+kens, the network is forced to distill phonetic content from
+acoustic variability early in the forward pass. As illustrated,
+this conditioned output is then residually added back to the
+Target 
+Articulatory 
+Representation
+ 
+Discrete Units
+Z1 Z2 Zt VQAE 
+Decoder
+A2Mel +
+Vocoder
+Source
+ Language
+Target 
+Language
+Speech to Target
+Language Units
+Feature
+Extractor
+Speech 
+Encoder
+AR
+Decoder
+(a) Inference
+Source & Target Articulatory 
+Representation
+Zt1 Zt2 ZtT
+VQAE 
+Encoder
+AR 
+Decoder
+Speech 
+Encoder
+Zs1 Zs2 ZsT
+CTC Loss
+Attn Loss
+(b) S2A Training
+ 
+ Conformer Block
+CTC Conditioning 
+Conformer Block 
+Conv Subsampling
+Mel-FBank 
+PostLN
+PreLN
+x 6
+x 3
+CTC  FFN
+Softmax
+Projection Layer
+Zs1 Zs2 ZsT
+Rotary Embedding
+FFN
+PreLN
+Differential Self Attention
+Causal Convolutional Module
+PreLN
+Differential Cross Attention
+Causal Convolutional Module
+PostLN
+x 6
+(c) Speech Encoder and AR Decoder
+Figure 1:Overview of ARTIST.
+main pathway before entering the six subsequent Conformer
+blocks. Consequently, these deeper layers are freed from
+low-level acoustic modeling, allowing them to dedicate their
+full representational capacity to complex cross-lingual trans-
+formations. Empirically, this early disentanglement stabilizes
+training and drastically improves data efficiency.
+•AR Decoder with Convolution-Augmented Differential
+Transformer:Following the deep Conformer encoder, the
+shared, language-agnostic representations are passed to a
+novel Convolution-Augmented Differential Transformer de-
+coder. The primary objective of this decoder is to autoregres-
+sively predict the target discrete articulatory latents,Z t =
+{Zt1,...,Z tT}, which are extracted from the target articu-
+latory features via the frozen VQAE pathway (as depicted
+in Fig. 1b). To handle noise accumulation over long au-
+dio sequences and catastrophic hallucination in low-resource
+settings we employ Differential Attention [16], sharpening
+the model’s focus on highly salient acoustic frames. Fur-
+thermore, human articulatory gestures (e.g., bilabial closures,
+velar drops) are governed by physical kinematics and ex-
+hibit strong local temporal continuity. We mitigate subopti-
+mal global attention by interleaving the Conformer Convolu-
+tional module [15] directly within each decoder block, utiliz-
+ing causal padding to maintain strictly autoregressive genera-
+tion. This hybrid design flawlessly marries two complemen-
+tary paradigms: the convolutions explicitly model the local
+temporal continuity of physical speech production, while the
+5750
+Differential Attention preserves a robust, noise-free global
+sequence context. To optimize this AR generation, the de-
+coder is supervised using a standard cross-entropy Attention
+Loss (LAttn) computed against the quantized target tokens.
+The entire S2A pipeline is optimized jointly using a composite
+objective formulated as:L Total =λL Attn +βL CTC.
+3.3. End-to-End S2S Inference and Acoustic Synthesis
+During end-to-end inference, ARTIST maps the source acoustic
+waveform through the Conformer encoder and the Convolution-
+Augmented Differential Transformer decoder to autoregres-
+sively predict a discrete sequence of target tokens (Z t). Op-
+erating exclusively on the target side, these predicted latents
+are directly mapped back into sparse, continuous articula-
+tory representations via the pre-trained VQAE decoder (see
+Fig. 1a).To bridge the gap between these physical represen-
+tations and the continuous acoustic domain, we employ a
+lightweight Articulator-to-MelSpectrogram (A2Mel) Genera-
+tor [17], inspired by FastSpeech-2 which is explicitly reopti-
+mized to ingest sparse articulatory features, bypassing the need
+for text or phoneme generation entirely. Finally, the resulting
+high-fidelity Mel-spectrograms are inverted into raw waveforms
+using a pre-trained HiFi-GAN-V1 vocoder [18].
+4. Experimental Setup
+4.1. Dataset and Evaluation
+We evaluate ARTIST on 11 Indic-to-English directions using
+BhashaAnuvad [8] (comprising IndicV oices-ST, MannKiBaat,
+NPTEL, and WordProject). We apply strict training filters (min-
+ing≥0.6, alignment≥0.8) but relax evaluation thresholds
+(alignment≥0.5) to reflect realistic noise. To test our bottle-
+neck, training volumes are purposefully skewed from moderate-
+resource anchors down to extreme 10-hour scenarios (Table 1).
+Finally, to expose autoregressive hallucination vulnerabilities,
+we enforce a rigorous temporal generalization protocol: models
+are trained exclusively on short clips (3–20s) but evaluated on a
+curated, out-of-distribution test set featuring 1–4 hours of long-
+form audio (20–50s) per language from the IndicV oicesST split
+of the BhashaAnuvad corpus.
+Table 1:Training and test distribution of the curated Bhasha
+Anuvad subset.
+Training Set Test Set
+Language Size (hrs) Avg Len (s) Size (hrs) Avg Len (s)
+Marathi 40.11 8.30 4.00 25.93
+Punjabi 64.98 8.26 4.00 25.97
+Nepali 48.77 8.60 4.00 26.39
+Tamil 140.93 9.05 2.97 25.37
+Telugu 56.93 7.82 4.00 25.36
+Urdu 101.00 8.57 4.00 26.34
+Bengali 71.59 8.07 4.00 25.35
+Gujarati 9.99 8.71 1.15 25.49
+Hindi 355.69 9.96 4.00 26.28
+Kannada 21.00 8.09 3.80 26.41
+Malayalam 33.34 7.61 2.24 25.37
+4.2. Model Configuration and Training Hyperparameters
+ARTIST extracts 64-dim binary articulatory targets via IMS
+Toucan [17]. The structural bottleneck is a fully convolutional
+Table 2:Comparison of ARTIST with SM4T on Indic-to-English
+S2ST across high-resource and low-resource settings.
+Language Model BLEU↑chrF↑COMET↑JES↑
+High Resource
+Hindi SM4T 13.21 32.86 0.654 0.018
+SM4T-v2 13.71 35.17 0.697 0.035
+ARTIST22.14 46.41 0.726 0.419
+Mid Resource
+Urdu SM4T 13.56 31.68 0.627 0.015
+ARTIST22.14 45.79 0.684 1.304
+Tamil SM4T 6.47 23.12 0.546 0.005
+ARTIST17.32 44.28 0.673 0.731
+Punjabi SM4T 14.59 35.90 0.690 0.064
+ARTIST22.50 46.59 0.725 2.061
+Bengali SM4T 8.01 25.05 0.594 0.012
+ARTIST18.26 43.72 0.710 1.518
+Telugu SM4T 6.97 26.56 0.596 0.011
+ARTIST16.05 42.55 0.679 1.678
+Low Resource
+Nepali SM4T 5.84 21.20 0.561 0.042
+ARTIST13.93 39.09 0.703 1.700
+Kannada SM4T 6.50 24.08 0.562 0.018
+ARTIST14.67 41.77 0.673 4.158
+Malayalam SM4T 7.57 23.36 0.571 0.061
+ARTIST18.82 42.49 0.682 3.360
+Gujarati SM4T 13.74 34.27 0.698 0.084
+ARTIST16.91 42.130.69510.065
+Marathi SM4T 9.65 28.82 0.622 0.075
+ARTIST16.33 40.65 0.673 2.423
+VQAE (128-dim latent, three kernel-7 residual blocks) with a
+compressedK= 20discrete codebook. The core S2A pipeline
+maps 80-dim Mel-filterbanks through a 9-block Conformer en-
+coder (Dmodel=512,h=2, Swish, kernel=31) and a 6-block Dif-
+ferential Transformer AR decoder featuring causal Conformer
+modules (kernel=5, causal padding). The decoder’s prediction
+space is constrained to a 33-token vocabulary, encompassing the
+20 articulatory tokens and necessary control characters. The
+model maintains a strict 166M parameter inference footprint:
+core S2A (83M), A2Mel (50M), HiFi-GAN (31M), and frozen
+VQ-AE decoder (2M). Optimization ran on a single H100
+GPU for 53 epochs (batch 32, accumulation 4, clip 3.0) using
+AdamW (lr= 10 −3, weight decay of10−3,β= (0.9,0.98))
+and a 25,000-step Warmup Learning Rate scheduler. The joint
+objective weights are stabilized atλ Attn = 0.8andλ CTC = 0.2.
+5. Experimental Results
+5.1. Translation Performance and Data Efficiency
+The current landscape of end-to-end Speech-to-Speech Trans-
+lation for the Indic language continuum lacks dedicated, open-
+source baselines. To rigorously benchmark ARTIST, we there-
+fore evaluate against the state-of-the-art 1.2B-parameter Seam-
+lessM4T (SM4T) [2]. As a massive-scale, end-to-end archi-
+tecture that also utilizes discrete latent representations, SM4T
+serves as the most formidable and architecturally relevant com-
+parative anchor2. To ensure a strictly fair evaluation, we con-
+2IndicSeamlessM4T [19], fine-tuned on BhashaAnuvad, is a speech-
+to-text (S2T) model and is therefore excluded from this comparison.
+5751
+Table 3:Impact of multilingual training and intermediate CTC
+supervision on Hindi-to-English S2ST.
+Configuration BLEU↑chrF↑COMET↑
+Full ARTIST (Multilin-
+gual + CTC)
+22.14 46.41 0.726
+Late CTC Fusion 19.68 44.53 0.720
+Decoder w/o Conv Mod-
+ule
+19.81 44.56 0.717
+w/o Intermediate CTC
+Supervision
+1.07 13.70 0.396
+ARTIST (Hindi-Mono) 12.95 38.18 0.639
+ducted testing on our custom 20-50s long-sequence test set to
+explicitly probe temporal robustness and hallucination resis-
+tance. Translation quality is quantified using standard BLEU,
+chrF, and COMET metrics. Furthermore, to highlight the ar-
+chitectural advantage of our approach, we introduce a Joint Ef-
+ficiency Score defined asJES= BLEU
+Training Hours×Parameters (Billions).
+As detailed in Table 2, ARTIST consistently outpaces SM4T
+across all performance metrics. In terms of overall structural
+efficiency, ARTIST delivers a staggering 23×to 231×relative
+improvement in JES across all evaluated languages compared to
+the baseline. Remarkably, ARTIST achieves this high-fidelity
+synthesis, evidenced by the precise alignment between our pre-
+dicted and ground-truth spectrograms (see Fig. 2), utilizing less
+than 8% of the baseline’s parameters and a mere fraction of the
+training data.
+High and Mid-Resource Efficacy:Massive models like SM4T
+rely heavily on aggregating primary and mined corpora, of-
+ten requiring upwards of 800 total hours per language to sta-
+bilize acoustic mappings. Conversely, ARTIST achieves supe-
+rior fidelity with strictly limited primary data. In high-resource
+settings like Hindi, ARTIST yields an absolute improvement
+of +8.93 BLEU and +13.55 chrF using only 314 hours, com-
+pared to SM4T’s 584 hours. This efficiency accelerates in mid-
+resource scenarios such as Tamil, where ARTIST delivers a
++10.85 BLEU improvement utilizing roughly 141 hours against
+the baseline’s 905 total hours.
+Extreme Low-Resource Resilience:The inherent vulnerabil-
+ities of massive autoregressive scaling are most severely ex-
+posed under data scarcity. On our out-of-distribution long-
+sequence test set, SM4T frequently suffers from acoustic over-
+fitting and catastrophic hallucinations. For Kannada, the base-
+line achieves only 6.50 BLEU with 289 total hours of data,
+whereas ARTIST achieves 14.67 BLEU with merely 21 hours.
+Most strikingly, in the extremely low-resource setting of Gu-
+jarati, ARTIST achieves superior translation quality (16.91
+BLEU, 0.6950 COMET) utilizing exactly 10 hours of training
+data, sharply contrasting with the 135 hours required by SM4T.
+This vast disparity in data efficiency validates our core hypoth-
+esis. By enforcing a universal physiological structural prior via
+the 20-token articulatory bottleneck, ARTIST effectively filters
+out language-specific acoustic noise. This targeted compres-
+sion enables highly efficient cross-lingual knowledge transfer,
+allowing high-resource anchors to support severely constrained
+languages without the need for massive dataset scaling.
+5.2. Ablation Study
+To rigorously isolate and quantify the empirical contributions
+of our proposed architectural novelties, we conducted a series
+of ablation experiments on the Hindi-to-English pair. As
+(a)
+ (b)
+Figure 2:Mel-spectrogram comparison betweenPrediction:
+‘in moments of conflicts people often sing songs to increase
+their enthusiasm and create a sense of collection’ andGround
+Truth:‘In moments of struggle people often sing songs to in-
+spire each other and to build a sense of collective unity’.
+detailed in Table 3, we evaluated the impact of each core
+component on overall translation fidelity and training stability.
+Cross-Lingual Knowledge Transfer:To validate the efficacy
+of our 20-token articulatory bottleneck as a medium for
+cross-lingual scaffolding, we ablated the multilingual setup
+by training the pipeline exclusively on Hindi. Evaluating this
+monolingual variant on the Hindi test set yielded a severe
+degradation, plummeting from 22.14 to 12.95 BLEU. This em-
+pirically proves that our highly constrained, language-agnostic
+discrete space does not suffer from the capacity competition
+often observed in standard multilingual models. Instead, it
+actively facilitates synergistic knowledge transfer; by learning
+universal physiological representations across 11 diverse lan-
+guages, the model refines its core phonetic grammar, ultimately
+enhancing translation fidelity even for its highest-resource
+anchor.
+Importance of Local Context in Decoding:We ablated the
+Convolutional module within our Convolution-Augmented
+Differential Transformer decoder, reverting it to a standard
+Differential Attention mechanism. This resulted in a noticeable
+drop in translation quality (down to 19.81 BLEU). While
+Differential Attention excels at capturing global context and
+suppressing noise, this degradation confirms that explicit local
+modeling is strictly necessary. The convolutions are required to
+accurately capture the physical, temporal continuity inherent to
+articulatory movements.
+Efficacy of Intermediate CTC Supervision:The intermediate
+CTC conditioning layer serves as a critical structural prior. We
+tested two specific ablations regarding its implementation:
+•Removal of CTC Conditioning:Stripping the intermediate
+CTC supervision entirely resulted in catastrophic training in-
+stability and acoustic collapse, with the BLEU score collaps-
+ing to 1.07. This establishes that early phonetic alignment is
+absolutely mandatory for filtering out background acoustics
+and stabilizing the network in data-scarce environments.
+•Late vs. Early Fusion:We shifted the CTC conditioning
+layer from the early encoder stages to the deeper Conformer
+layers. This late fusion yielded a significant penalty (drop-
+ping BLEU to 19.68). This explicitly demonstrates that forc-
+ing acoustic-to-articulatory alignment early in the network
+using coarse acoustic features is optimal. It successfully
+frees the deeper Conformer layers to dedicate their represen-
+tational capacity entirely to complex cross-lingual mapping
+rather than basic acoustic disentanglement.
+5752
+6. Generative AI Use
+Generative AI was used solely for copy-editing and structural
+refinement of this manuscript prior to submission.
+7. Acknowledgments
+This work is supported by Nebius Research Grant and in part
+by Infosys Foundation via the Infosys Centre for AI, IIITD.

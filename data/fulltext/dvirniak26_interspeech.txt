@@ -1,0 +1,479 @@
+Towards Robust Speech Deepfake Detection via Human-Inspired Reasoning
+Artem Dvirniak1, Evgeny Kushnir2,3,4, Dmitrii Tarasov3,4, Artem Iudin6, Oleg Kiriukhin7, Mikhail
+Pautov2,8, Dmitrii Korzh2,4,6,∗∗, Oleg Y. Rogov2,4,6
+1MIRAI, 2AXXX, 3HSE, 4Applied AI Institute, 5Fusion Brain Lab, AXXX,
+6MTUCI, 7City University of Hong Kong, 8Trusted AI Research Center, RAS
+d.s.korzh@mtuci.ru
+Abstract
+The modern generative audio models can be used by an ad-
+versary in an unlawful manner, specifically, to impersonate
+other people to gain access to private information. To mitigate
+this issue, speech deepfake detection (SDD) methods started to
+evolve. Unfortunately, current SDD methods generally suffer
+from the lack of generalization to new audio domains and gen-
+erators. More than that, they lack interpretability, especially
+human-like reasoning that would naturally explain the attribu-
+tion of a given audio to the bona fide or spoof class and provide
+human-perceptible cues. In this paper, we propose HIR-SDD,
+a novel SDD framework that combines the strengths of Large
+Audio Language Models (LALMs) with the chain-of-thought
+reasoning derived from the novel proposed human-annotated
+dataset. Experimental evaluation demonstrates both the effec-
+tiveness of the proposed method and its ability to provide rea-
+sonable justifications for predictions.
+Index Terms: deepfake detection, voice anti-spoofing, audio
+LLM, reasoning, benchmark
+1. Introduction
+Contests, such as ASVspoof [1, 2], ADD [3, 4], and Singfake [5,
+6] drive the progress in audio and speech deepfake detection
+(SDD) research, providing high-quality deepfake data and fair
+evaluation protocols. SDD and spoofing-aware speaker verifi-
+cation (SASV) research primarily focuses on the architecture
+design, including task-specific front-ends [7], graph-attention
+networks [8], self-supervised (SSL) audio encoders [9, 10], and
+architecture modifications [11, 12] to improve the empirical per-
+formance of the models. Additionally, augmentation strategies
+[13], optimizer choices [14], and representation learning-based
+approaches [15, 16, 17] are also investigated in SDD research.
+Unfortunately, SDD remains challenging due to distribution
+shifts across spoofing methods, speech domains, and transfor-
+mations, as evidenced by results from the aforementioned con-
+tests. A common strategy to improve empirical performance
+is to increase training diversity and model capacity. How-
+ever, SDD systems still fail to generalize to unseen domains,
+highlighting the need for more robust and explainable detec-
+tion approaches. Such tools are particularly important for risk-
+sensitive applications, such as biometrics and banking, yet this
+direction remains underexplored in SDD research.
+Recently, Large Language Models (LLMs) [18, 19]
+and Large Audio Language Models (LALMs), such
+as SALMONN [20], Qwen2-Audio [21], and Audio-
+Flamingo 3 [22], have demonstrated strong reasoning
+capabilities. Chain-of-thought (CoT) [23] and related reason-
+**indicates the corresponding author.
+ing methods [19] often improve performance by extracting
+intermediate rationales. Although CoT mainly acts as an
+empirical mechanism and does not necessarily reflect human
+reasoning, careful training and grounding can produce explana-
+tions that are consistent with the input and useful for analysis.
+Similar ideas have been explored for audio question answering
+and captioning (including music understanding) [24, 25],
+disease detection from speech [26], emotion recognition [27],
+and interpretable audio quality assessment and hard-label
+SDD [28].
+However, reasoning-based approaches remain relatively un-
+common in SDD. One practical limitation is the lack of open-
+source datasets with high-quality human explanations for train-
+ing and evaluation. Moreover, existing LALMs, even state-of-
+the-art, drastically underperform in zero- and few-shot SDD,
+thereby limiting the reliability of their reasoning traces [29].
+To address these gaps, we introduce a human-annotated dataset
+for CoT training and evaluation of SDD models and propose
+HIR-SDD, a human-inspired reasoning framework that com-
+bines hard-label and CoT-supervised fine-tuning, grounding,
+and reinforcement learning (RL) methods.
+Our contributions are summarized as follows:
+• We present 1 a new dataset of human-annotated reasoning
+traces for 41k bona fide and spoof speech samples partially
+curated from existing open-source datasets.
+• We propose a hard-label and CoT pipelines that achieve both
+strong countermeasure and reasoning explainability perfor-
+mance. The source code is available online2.
+• We provide further improvement and evaluation strategies of
+reasoning-capable SDD models.
+2. Related work
+ALLM4ADD [29] is among the first studies to explore large-
+scale LALMs for SDD. The authors report weak zero-shot per-
+formance for Qwen and Qwen2-Audio [21], and then fine-
+tune the models with a simple prompt requesting a binary
+“Real”/“Fake” response for the input speech. Across several
+benchmarks, the resulting systems match or outperform smaller
+state-of-the-art detectors. The study also analyzes training data
+scaling, sensitivity to LoRA [30] rank, and prompt design.
+However, the evaluation in [29] does not include the more re-
+cent ASVspoof 5 benchmark [2]. Moreover, the analysis fo-
+cuses mainly on hard-label classification, leaving the reasoning
+and interpretability capabilities of LALMs largely unexplored.
+In [31], the authors study the robustness of SDD models
+that produce reasoning traces alongside binary decisions. Ex-
+1https://hf.co/datasets/marsianin500/HIR-SDD
+2https://github.com/dkorzh10/HIR-SDD
+2418
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1289
+planations are evaluated along three aspects: perception qual-
+ity (e.g., captioning or recognition fidelity), coherence be-
+tween reasoning and prediction, and robustness under domain
+shift caused by audio transformations and adversarial pertur-
+bations [32]. The results indicate that reasoning traces do not
+consistently improve detection accuracy: well-grounded mod-
+els may benefit, while other LALMs degrade due to halluci-
+nated justifications. The study mainly audits explanation sensi-
+tivity under perturbations rather than improving standard SDD
+evaluation protocols. Experiments are also limited to older gen-
+erative conditions from ASVspoof 19. Step-Audio-R1 [25] ad-
+dresses audio reasoning issues by grounding explanations to
+real acoustic evidence rather than textual hallucinations. The
+approach combines CoT-style supervised fine-tuning (SFT) and
+RLVR [33], followed by Modality-Grounded Reasoning Distil-
+lation (MGRD). MGRD iteratively self-distills partially correct
+CoT traces while excluding batches where traces are fully cor-
+rect or almost entirely incorrect. This process improves per-
+formance across speech, environmental sound, and music tasks.
+However, the method has not been applied to SDD.
+Explainable AI methods for audio are surveyed in [34].
+In [35], an interpretability method for SDD by modifying an
+SSL-based detector and introducing a class-activation-style rep-
+resentation to highlight influential time regions is proposed.
+However, evaluation is limited to ASVspoof 2019, and does not
+provide textual explanations. In [36], a benchmark for time-
+localized, model-agnostic post-hoc explanations in audio clas-
+sification is introduced, using temporally annotated events as
+proxy ground truth. HoliAntiSpoof [37] applies LALMs to
+jointly reason about spoofing mechanisms, temporal localiza-
+tion, and semantic artifacts. While it improves hard-label per-
+formance and interpretability compared to binary classifiers, it
+does not explicitly evaluate the quality of SDD reasoning, re-
+quires specialized re-training and does not provide results on
+ASVspoof5.
+It is worth mentioning that humans also struggle with
+SDD [38]. The study [39] evaluates responses from1200
+annotators and reports73%binary accuracy on detecting
+deepfakes from ASVspoof 21 [40], WaveFake [41], and
+FakeA VCeleb [42]. Annotators also provide free-form expla-
+nations, later grouped into eight cue categories (e.g., prosody,
+liveness, quality). The authors compare these cues with auto-
+mated detectors to analyze when humans outperform machines
+and which cues are reliable. Although the dataset is diverse,
+the public release includes only keywords rather than full ex-
+planations and does not clearly separate binary decisions from
+reasoning comments.
+3. Dataset collection
+3.1. Audio sources
+Audio was primarily collected from several open-source SDD
+datasets in English and Russian, including ASVspoof 5 [2],
+PyAra [43], LibriSecV oc [44], MLAAD [45], DFADD [46],
+and M-AILABS [47]. We also included bona fide speech from
+Golos [48], SOV A [49], and Russian LibriSpeech (RuLS) [50].
+In addition, we incorporated a subset of annotated samples
+from the SpeechEval dataset introduced in SpeechLLM-as-
+Judges [28]. We further generated audio using the open-source
+XTTS-V2 [51] model and several ESpeech [52] models. To di-
+versify and strengthen the test set, we also synthesized several
+thousand samples using proprietary ElevenLabs [53] models,
+approximating real-world conditions.
+0 5000 10000 15000 20000 25000 30000 35000
+Count
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14 Reason ID
+Figure 1:Distribution of obtained reasons from Listing 1.
+3.2. Ethics
+The study and annotation procedure received Institutional Re-
+view Board approval. Annotators were informed about the
+project goals and agreed to participate under these conditions.
+No personally identifiable information (e.g., age, race, gender)
+was collected. Instead, anonymized identifiers were used. The
+annotation platform preserved participant anonymity, and anno-
+tators were compensated per sample, corresponding to approx-
+imately $8–10 per hour. Annotators were required to be native
+speakers of either English or Russian and preferably proficient
+in the other language. No individual was obligated to annotate.
+3.3. Instructions
+Unlike [39], where the questionnaire was designed to avoid
+training annotators, we provided detailed instructions, training
+examples, and feedback on prediction accuracy during labeling,
+including additional training or removal of underperforming an-
+notators. However, annotators were not guided on how to write
+explanations and were not shown the correct labels. Audio sam-
+ples were presented in random order. For each audio sample,
+annotators answered the question:Assess whether the
+audio sample contains original (genuine)
+human speech or synthesized (artificial)
+speech. If “genuine” was selected, annotators provided a
+brief explanation. If “artificial” was selected, they provided
+a free-form explanation and selected relevant reasons from a
+predefined list of14options, as shown in Listing 1.
+Listing 1:Annotation reasons list.
+1yt (1) Lack of fluency or coherence
+2(2) Unnatural pauses
+3(3) Uniform pauses between words throughout
+the audio
+4(4) Unusual intonation patterns
+5(5) Insufficient variation in speaking style
+6(6) Incorrect stress in common words
+7(7) Mispronunciation of common words
+8(8) Unusual or inconsistent accent
+9(9) Atypical voice characteristics
+10(10) Excessively fast speech
+11(11) Incorrect reading of abbreviations
+12(12) Verbalization of typographical errors
+13(13) Word-by-word repetition in cases of
+tautology
+14(14) Other (please specify)
+15Optional comment:
+16______________________________
+Annotators were additionally provided with the following
+recommendations:
+2419
+• If you selected “synthesized” and indicated specific factors
+from the list, please describe in detail where and how these
+cues manifested in the audio.
+• If you are uncertain, explain which aspects appeared suspi-
+cious and which seemed natural.
+• If you selected “genuine”, describe the characteristics that led
+you to perceive the speech as natural (e.g., realistic pauses,
+natural intonation, breathing patterns, expressive variability).
+• Responses should be detailed and well justified. Short state-
+ments such as “it sounds normal” are not acceptable.
+Table 1:Evaluation results onTest-1-HL.
+Model Train
+Set Accuracy Balanced
+Accuracy F1
+Wav2Vec2-
+AASIST
+Train-1-HL 92.3 81.3 76.7
+Train-2-HL 92.9 84.0 76.7
+Train-1-HL
+Train-2-HL 92.3 83.9 76.6
+SALMONN-7b
+Train-1-HL 93.4 89.3 84.5
+Train-2-HL 94.5 88.6 85.7
+Train-1-HL
+Train-2-HL 93.1 83.8 80.4
+Train-2-R 92.9 86.7 81.4
+Train-1-HL
+Train-2-R 92.7 86.5 81.2
+Train-2-R
+Val-1-GRPO 93.6 89.6 85.0
+3.4. Annotations filtering and postprocessing
+For data filtering, the following strategy was applied. First,
+we excluded annotators with classification accuracy below
+75%. Second, samples with incorrect class predictions were
+removed. Finally, we manually inspected 30–50 annotations
+per annotator. Considering their overall accuracy, we catego-
+rized responses as ”high” quality (≥85% accuracy or more)
+or ”medium” quality (≥75% accuracy or more). After filter-
+ing, the dataset contained124,410annotations of41,414audio
+samples (32,045spoof and9,369bona fide) provided by37an-
+notators. The distribution of selected reasons is shown in Fig. 1.
+In total,120,258non-empty comments were collected with an
+average length of12words. Human annotations and question-
+naire selections were translated to English and post-processed
+using Qwen-32B to produce reasoning-like traces. For a fidelity
+check, a random set of100audios was evaluated to verify that
+the rewritten traces align with genuine human annotations.
+3.5. Splits
+The hard-label dataset (without reasoning) was collected from
+the sources described in subsection 3.1, and is denoted as
+Train-1-HL.Val-1-HLis a whole ASVspoof 5 develop-
+ment subset. ForTest-1-HL, we randomly selected20,000
+samples from the ASVspoof 5 evaluation subset, collecting
+15,943spoof and4,057bona fide audio. The reasoning
+dataset was split into train, validation, and test subsets of 114k,
+8k, and 1k samples, respectively. These splits can be used
+for binary classification or CoT training and evaluation, e.g.,
+Train-2-HLandTrain-2-R. We highlight that ASVspoof
+5 splits do not share the same domain and have different non-
+overlapping generators, and comprise more modern generators
+than in WaveFake, FakeA VCeleb, or ASVspoof2021 datasets.
+4. Methodology
+4.1. Binary classification and CoT SFT training
+Despite strong overall performance, LLMs and LALMs often
+show weak zero-shot and few-shot results on new tasks, in-
+cluding SDD [29]. Following this observation, we begin with
+SFT using LoRA applied to all linear projections of the LLM
+backbone. We use SALMONN [20], which combines Whis-
+per [54] and BEATS [55] audio encoders with a Q-Former [56]
+adapter connected to the Vicuna-7B/13B [57] LLM. The model
+receives concatenated audio features and textual instructions
+and is trained with cross-entropy loss on completion tokens only
+(prompt tokens are masked). For comparison, we also evaluate
+a strong conventional Wav2Vec2-AASIST [9] SDD model. For
+hard-label SFT, the model is trained on theTrain-1-HL,
+Train-2-HL, or their combination to output a binary an-
+swer (“Final Answer: Real” or “Final Answer:
+Fake”), resembling ALLM4ADD’s approach. ForCoT SFT,
+the model is trained on theTrain-2-Rto produce structured
+output in the following format:
+<think>...</think>
+<reasons>[...]</reasons>
+<answer>Real/Fake</answer>,
+where<think>holds the free-form reasoning trace,
+<reasons>lists detected cues from the annotation taxonomy
+(Listing 1), and<answer>gives the final binary prediction.
+Two initialization strategies are explored: (i) fine-tuning
+from the base (vanilla) LALM, and (ii) fine-tuning from a hard-
+label SFT checkpoint. In both cases, the model is trained to gen-
+erate the full structured output, including the reasoning trace,
+the list of detected artifact categories, and the binary prediction.
+Incorrectly annotated samples were excluded from CoT due to
+the unreliability.
+SALMONN-7B was fine-tuned using LoRA with rank128,
+α= 256, and dropout0.2. The learning rate started at10 −6
+with a5000-step warm-up, reached10−4, and decayed to10−5.
+Audio was cropped or padded to 10s. GRPO weights were set
+to 0.2/0.7/0.1 for format/class/judge predictions, respectively.
+4.2. GRPO and grounding
+The LALM can generate fluent and structurally valid CoT traces
+that nevertheless do not correspond to the actual audio content
+and can be based on hallucinations or training CoT memoriza-
+tion. To address this issue, we use an audio grounding stage to
+explicitly encourage the model to anchor its<think>traces
+and its<reasons>tags to perceptible acoustic evidence, such
+as Gaussian noise, time masking, and gain adjustments embed-
+ded deterministically in the audio signal. To further improve
+the quality and diversity of CoT, a GRPO [58] was applied. Re-
+ward functions encouraged the model’s correctness, following
+the format (<think>,<reasons>,<answer>tags) and ad-
+justing to human preferences. For the latter, Qwen2.5-32B was
+requested to evaluate each generation on its coverage, relevance,
+logic (coherence with binary prediction) and helpfulness from0
+to10. For each sample, we generated6distinct reasoning traces
+to calculate rewards.
+4.3. Metrics
+For the primary metrics of SDD classification, accuracy, bal-
+anced accuracy, and F1 (positive class is bona fide) were con-
+sidered. Reasoning quality was evaluated using the GPT-5.1
+[59] model over the same criteria set that were used in GRPO:
+2420
+Table 2:Reasoning samples for SALMONN-7B tuned onTrain-2-Rand evaluated onTest-2-R.
+Human Comment Tags Label Model Reasoning Pred. Tags Pred. Label
+I believe the audio is genuine. I heard a non-
+robotic voice. The speech pace varies, speeding
+up and slowing down. There is a natural rhythm
+following the meaning, clear pronunciation, slight
+tone changes, and audible breaths without arti-
+facts.
+– Real I believe the audio is genuine. The voice is non-
+robotic and the pace varies naturally. The rhythm
+sounds lively and human, with logical stress and
+clear pronunciation.
+– Real
+The synthesized speech has high quality and clear
+intelligibility without artifacts. The voice is soft
+and neutral, but the speech rate is slightly fast and
+emotional engagement is limited.
+(5),(10) Fake The speech is too fast and uninterrupted. (1),(2),(10) Fake
+The voice is monotone and the narrator reads the
+sentence without pausing.
+(1),(9) Fake The speech is unnaturally fast; it is difficult for
+a person to speak this quickly without pauses or
+mistakes. Odd pronunciation of “Europe”.
+(1),(2),(9) Fake
+Monotone speech. It’s not entirely clear from the
+context what intonation was originally intended.
+(4),(9) Fake The voice sounds robotic, and the speech is unnat-
+ural and staccato.
+(4),(9) Fake
+A genuine recording for a voice assistant. En-
+vironmental noise is audible (TV in the back-
+ground).
+– Real The speech sounds authentic: natural intona-
+tion, individual pronunciation of sounds, consis-
+tent speaking pace, and background noise consis-
+tent with a television.
+– Real
+recall, relevance, logic, helpfulness, with scores from 0 to 10.
+Sets of reasons (tags) were evaluated using the Jaccard similar-
+ity index. For predicted tags ˆYand ground-truth tagsY, it is
+defined asJ(Y, ˆY) = |Y∩ ˆY|
+|Y∪ ˆY|.
+5. Results and discussion
+SALMONN-7B outperformed conventional Wav2Vec2-
+AASIST in terms of binary classification metrics, as shown in
+Table 1. Moreover, the obtained models demonstrate similar or
+better results compared to the open-source models, presented
+on Speech DF-Arena leaderboard [60] .
+Nonetheless, LALMs can demonstrate weak training sta-
+bility and a drastic overfitting tendency; to mitigate this is-
+sue, the number of training iterations and learning rate might
+be decreased, while dropout and augmentation range are in-
+creased. Training on the combined dataset ofTrain-1-HL
+andTrain-2-HLdoes not improve the results, compared to
+the separately trained checkpoints. Regarding hard-label eval-
+uation of reasoning checkpoints, while reasoning-only SFT un-
+derperformed to the hard-label checkpoints, GRPO tuning im-
+proves the results. The hypothesis that hard-label SFT can
+help the reasoning SFT has not been confirmed. We high-
+light the decent reasoning performance on a set of samples
+fromTest-2-R, which is reflected in Table 2. One can no-
+tice that SALMONN provides reasonable audio-grounded cues,
+such as referring to particular words’ pronunciation and to back-
+ground noises. Among the other findings, it is noticeable that
+grounding does not significantly improve the classification met-
+rics, but diversifies the chain-of-thought traces, while GRPO
+further improves the reasoning. After applying these tech-
+niques to the model, the diversity and informativeness of the an-
+swers it generates, as well as its classification metrics, increase
+(see Table 1). Binary classification Test-1-HL EER is13.2%
+(for SALMONN-7B model) and15.7%(for W2V2-AASIST
+model). CoT final decisions are strongly conditioned on the
+preceding trace, making EER redundant. Despite these results,
+the resulting reasoning models still struggle with modern high-
+fidelity synthesis systems that were not present in the training
+data. LALM’s reasoning often describes deepfake audio as gen-
+uine speech. Nonetheless, one can train a model to output “no
+audible artifacts” on genuine speech, treating bona fide as an
+abstention class.
+Regarding CoT quality evaluation, GRPO does not yield a
+significant improvement in the Jaccard index. Namely, for the
+same audio sample, inter-annotator agreement on selecting each
+individual reason ranged from0.05to0.56in Fleiss’ kappa.
+However, the average pairwise Jaccard similarity between an-
+notators’ selected reason sets was0.78on the test set, which
+might serve as a reference point for the comparison with mod-
+els’ performance. Given the noise in reasoning-tag markup, the
+scores are effectively unchanged:0.6468for the GRPO check-
+point vs.0.6264for the SFT checkpoint.
+In an LLM-as-a-judge evaluation (five runs on1,000rea-
+soning samples), GRPO shows a small but non-significant im-
+provement in reasoning-trace quality: mean score5.74±1.49
+vs.5.12±1.47for SFT. However, the observations suggest that
+without grounding and a GRPO, reasoning becomes poorer, as
+it lacks more audio cues. We note that the judge’s rubric is in-
+tentionally strict, which keeps absolute scores relatively low.
+6. Conclusion
+This work addressed the problem of limited generalization
+and poor interpretability in modern speech deepfake detection
+systems. We introduced a novel human-annotated reasoning
+dataset for the SDD and proposed a HIR-SDD, a framework that
+enables models not only to perform binary spoof detection but
+also to provide human-interpretable explanations grounded in
+perceptual cues. Experimental results demonstrate that the pro-
+posed framework achieves competitive detection performance
+while producing meaningful reasoning traces aligned with hu-
+man annotations. These findings suggest that the incorporation
+of proposed human-inspired reasoning traces can improve both
+transparency and reliability of SDD systems. Future work in-
+cludes improving robustness to unseen generative models and
+domain shifts, as well as refining the stability, quality, and eval-
+uation of reasoning traces produced by LALMs.
+2421
+7. Generative AI use disclosure
+AI models were used only for grammar correction and for text
+refining.
+8. Acknowledgment
+The work was supported by the grant for research centers in
+the field of AI provided by the Ministry of Economic Develop-
+ment of the Russian Federation in accordance with the agree-
+ment 000000C313925P4F0002 and the agreement№139-10-
+2025-033.
+9. References
+[1] M. Todisco, X. Wang, V . Vestman, M. Sahidullah, H. Delgado,
+A. Nautsch, J. Yamagishi, N. Evans, T. Kinnunen, and K. A. Lee,
+“Asvspoof 2019: Future horizons in spoofed and fake audio de-
+tection,”arXiv preprint arXiv:1904.05441, 2019.
+[2] X. Wang, H. Delgado, H. Tak, J.-w. Jung, H.-j. Shim, M. Todis

@@ -1,0 +1,388 @@
+Leveraging Temporal Redundancy via Layer-wise Key-Value Pooling
+Attention for Efficient ASR
+Yi Wu1, Guibin Zheng1,∗∗, Chenhao Jing1, Jiqing Han1, Jiarui Zhang1
+1 Faculty of Computing, Harbin Institute of Technology, China
+yiwu5741@gmail.com, zhengguibin@hit.edu.cn
+Abstract
+Transformer-based models have revolutionized Automatic
+Speech Recognition. However, the quadratic complexity of
+self-attention and feature redundancy necessitate deep stack-
+ing, limiting long-sequence efficiency. To address this, we pro-
+pose Key-Value Pooling Attention (KV-Pooling), which lever-
+ages high temporal redundancy in speech by average pooling
+to compress Key/Value tensors, smoothing feature distribution
+spikes while retaining Query resolution to maintain modeling
+precision. This reduces reliance on network depth. Building
+on this, we introduce KV-Pooling-Zipformer, integrating this
+mechanism into Zipformer by pre-setting differential pooling
+strides based on layer-wise feature abstraction. Compared to
+the native Zipformer, RNN-T experiments show absolute re-
+ductions of 0.2% CER on AISHELL-1 and 0.3% WER on Lib-
+riSpeech. Notably, it improves inference RTF by 10% on an
+AMD EPYC 7763, achieving synergistic gains in accuracy and
+efficiency.
+Index Terms: speech recognition, attention mechanism, Zip-
+former
+1. Introduction
+In recent years, Transformer-based architectures [1], which el-
+egantly integrate Convolutional Neural Networks (CNNs) and
+self-attention mechanisms, have become the mainstream in
+end-to-end Automatic Speech Recognition (ASR) and achieved
+State-of-the-Art (SOTA) performance [2, 3, 4]. However, as
+model sizes scale and processing long speech sequences be-
+comes necessary, the O(T 2) computational complexity of self-
+attention leads to severe memory footprint and inference la-
+tency issues. To alleviate this bottleneck, existing methods
+typically reduce network depth or apply macro-level temporal
+down-sampling [3, 5, 6]. These approaches inevitably sacri-
+fice the original temporal resolution and are prone to temporal
+aliasing. Consequently, directly combining aggressive down-
+sampling with reduced network depth significantly degrades
+recognition accuracy [7].
+Existing attention mechanisms overlook the stark differ-
+ence in information density between text and speech. Unlike
+discrete, semantically dense text, speech exhibits extreme tem-
+poral redundancy, where a single phoneme often spans mul-
+tiple highly similar frames [7, 8]. Standard self-attention re-
+lies on dense, frame-by-frame dot-product interactions. While
+this high temporal resolution enables Queries to precisely lo-
+cate acoustic boundaries, Keys and Values—serving merely as
+contextual references—do not necessitate such fine granularity,
+rendering the full-sequence computation massively redundant.
+**indicates the corresponding author.
+To address this, we propose the Key-Value Pooling (KV-
+Pooling) Attention mechanism. Breaking the equal-length con-
+straint of standard attention, it adopts an asymmetric resolu-
+tion strategy. Specifically, we apply temporal pooling to down-
+sample Keys and Values before computing attention weights.
+This merges adjacent similar frames, cutting complexity from
+O(T 2) to O(T 2/s) (where s is the stride) and smoothing fea-
+ture distribution spikes, while Queries retain original resolution
+to preserve fine-grained details. This approach allows the model
+to focus on salient acoustic representations, significantly reduc-
+ing reliance on network depth and accelerates both training and
+inference while maintaining high accuracy even in shallower ar-
+chitectures.
+We further propose the KV-Pooling-Zipformer architecture
+to implement this plug-and-play mechanism, systematically ad-
+dressing three challenges: 1) A Center Alignment strategy cor-
+rects relative positional encoding shifts caused by length vari-
+ation; 2) A Layer-wise Differential Pooling strategy pre-sets
+larger strides in shallow layers with high adjacent-frame simi-
+larity and redundancy, and gradually narrows them in semantic-
+dense deep layers; 3) A specific causal masking mechanism
+seamlessly supports streaming inference. This synergistic de-
+sign optimizes both efficiency and performance.
+2. Related Work
+In recent years, Transformer-CNN hybrid architectures, such
+as the Conformer [1], have dominated end-to-end Automatic
+Speech Recognition (ASR). However, the O(T 2) computa-
+tional complexity of the self-attention mechanism severely re-
+stricts their deployment in long-sequence and streaming scenar-
+ios. Existing optimization trajectories primarily fall into two
+categories. The first is input down-sampling (e.g., Squeeze-
+former [6]), risks losing fine-grained acoustic information, such
+as phoneme boundaries, due to its coarse-grained compres-
+sion. The second involves linear or sparse attention mecha-
+nisms [9, 10], which often suffer from compromised long-range
+modeling capabilities or difficulties in hardware adaptation.
+Drawing inspiration from Grouped Query Attention
+(GQA) [11] in NLP and the Pyramid Vision Transformer
+(PVT) [12] in CV , recent ASR studies attempt to compress
+Keys and Values in the temporal dimension [13]. However,
+they predominantly employ fixed-stride strategies—neglecting
+layer-wise redundancy variance—and inevitably introduce rel-
+ative positional misalignments. To address this, we propose the
+Key-Value Pooling Attention mechanism, which pairs a hierar-
+chical layer-adaptive pooling strategy with a Center Alignment
+method. This tightly resolves the aforementioned bottlenecks,
+drastically reducing computational overhead while rigorously
+preserving fine-grained acoustic details.
+1749
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2124
+Figure 1: Structure of KV-Pooling Attention.
+3. Proposed Method
+This section first introduces the down-sampling mechanism for
+Key and Value vectors, constructing a generic, plug-and-play
+KV-Pooling Attention module to replace standard attention in
+ASR models. Subsequently, taking Zipformer [3] as an exam-
+ple, we quantify information redundancy by analyzing adjacent-
+element cosine similarity and information entropy across en-
+coder layers. Guided by these metrics, we pre-set layer-
+wise pooling strides to ultimately formulate the KV-Pooling-
+Zipformer encoder model.
+3.1. KV-Pooling Attention
+Given an input sequence X ∈ RT×d, standard self-attention
+linearly projects it into Query ( Q), Key ( K), and Value ( V )
+matrices (Q, K∈ RT×dk , V ∈ RT×dv ) to compute the out-
+put Y = Softmax(QK T /√dk)V . However, computing the
+pairwise correlation strictly requires O(T 2) time complexity,
+causing a severe computational bottleneck for long speech se-
+quences.
+Due to frame overlapping and extended phoneme durations,
+speech representations in ASR inherently exhibit high local
+temporal redundancy. As a result, aggregating adjacent K and
+V vectors incurs negligible information loss. Beyond simple
+compression, this local pooling serves as a crucial structural in-
+ductive bias [8, 14]: it smooths fine-grained feature distribution
+spikes in shallow layers, broadens the context receptive field,
+and steers the model toward capturing global semantic depen-
+dencies. Simultaneously, maintaining the original temporal res-
+olution of Q ensures the precise localization of acoustic bound-
+aries.
+To exploit this, we propose the KV-Pooling Attention
+mechanism (Fig. 1). We compress K and V along the time di-
+mension via pooling with a stride of s, yielding KP∈ Rn×dk
+and VP ∈ Rn×dv , where n =⌈T /s⌉. The modified attention
+is formulated as:
+Figure 2: Illustration of the Center-Aligned Relative Positional
+Encoding strategy given a sequence length T = 6 and pooling
+stride s = 3 . The top panel shows the valid relative distance
+matrix (blue region) in standard attention. The bottom panel
+highlights the specific relative positional embeddings (yellow
+blocks) extracted by mapping the pooled Key indices back to
+their window centers, effectively preserving temporal geometric
+consistency.
+Z = Softmax
+ QK T
+P√dk
+
+VP∈ RT×dv (1)
+By decoupling the temporal resolution of Q and K/V , this
+strategy successfully reduces the attention time complexity to
+O(T 2/s). Although the sequence length of the Key-Value pairs
+is compressed, the uncompressed Query inherently preserves
+the core temporal alignment logic, thereby ensuring high plug-
+and-play compatibility. Furthermore, the smoothing effect of
+local pooling maximizes information retention while mitigating
+feature distribution spikes. Consistent with similar practices in
+NLP and CV [12, 15], this mechanism demonstrates superior
+performance and robustness compared to vanilla attention, par-
+ticularly in memory-constrained scenarios.
+3.2. Center-Aligned Relative Positional Encoding
+Modern ASR architectures [1, 16, 17] predominantly employ
+Relative Positional Encoding (RPE), which fundamentally as-
+sumes identical temporal granularity (frame length) for Queries
+and Keys. However, KV-Pooling reduces the Key/Value tempo-
+ral resolution, creating a granularity mismatch that breaks con-
+ventional index alignment.
+To provide a structural correction for this mismatch, we
+propose a Center Alignment mapping strategy (Fig. 2). For
+a pooled Key at index j (with stride s), we project it back to
+the temporal center of its original acoustic window. The recal-
+ibrated discrete index is computed as j′ =⌊(j + 0 .5)× s⌋.
+The relative distance to a Query at original index i becomes
+i− j′, guiding the dynamic extraction of relative embeddings.
+This strictly preserves the geometric consistency of the attention
+mechanism, ensuring positional information accurately reflects
+true temporal distances despite multi-scale down-sampling.
+1750
+3.3. Causal and Padding Mask Adaptation
+As KV-Pooling reduces Key/Value resolutions, the original
+causal and padding masks become dimensionally incompatible.
+For the causal mask, while relative distances are computed us-
+ing the temporal center, strict causality must be enforced us-
+ing the right boundary of the pooling window. Specifically, a
+pooled key at index j with stride s encapsulates original acous-
+tic frames up to index (j + 1)× s− 1. To strictly prevent any
+future information leakage in streaming scenarios, this pooled
+key is explicitly masked out if the query index i is strictly less
+than this right boundary (i.e., masked if i < (j + 1)× s− 1).
+For the padding mask, we utilize a strict logical reconstruc-
+tion: a pooled token is deemed valid only if all original tokens
+within its corresponding window are unpadded. Any presence
+of padding elements masks the entire pooled position. This ef-
+ficiently eliminates boundary noise, ensuring the model attends
+exclusively to pristine acoustic features.
+3.4. Layer-wise Differential Pooling: Adapting Pooling
+Strides to Inter-Frame Redundancy
+To analyze temporal redundancy, we use Zipformer as a case
+study, configured with down-sampling rates {1, 1, 4, 4, 8, 8,
+8, 2, 2}. Following the experimental methodology in Squeeze-
+former [6], we randomly sample AISHELL-1 dev set segments,
+focusing our analysis on the input features of the first Multi-
+Head Attention (MHA) module per Encoder Block. Figure 3
+depicts the average inter-frame cosine similarity and informa-
+tion entropy (H) of these sequences:
+H =− 1
+T
+X
+t,i
+pt,i log(pt,i), p t,i = exp(xt,i)P
+j exp(xt,j) (2)
+Two key observations emerge from the statistics:
+1) High Temporal Redundancy: Inter-frame similarity de-
+creases in shallow layers (1–5) but rises significantly in deep
+layers (6–9), averaging 0.64. This indicates deep features main-
+tain high temporal redundancy despite semantic abstraction.
+2) Entropy-Informed Compressibility: Entropy, serving as a
+proxy for semantic density, trends inversely to similarity. Shal-
+low layers exhibit low entropy (sparse information), suggesting
+high compressibility. Conversely, deep layers maintain high en-
+tropy despite temporal similarity, implying they encode dense,
+discriminative semantics sensitive to excessive compression.
+These findings establish a qualitative guideline for stride
+selection: layers with high similarity and low entropy toler-
+ate larger strides, whereas high-entropy layers require smaller
+strides to preserve critical semantics. The exact discrete strides
+are architectural hyperparameters, optimized empirically via
+subsequent experiments.
+4. Experiments
+4.1. Experimental Setup
+To comprehensively evaluate the efficacy of the proposed
+method, we conducted systematic experiments on the Mandarin
+AISHELL-1 [18] (178 hours) and English Librispeech [19]
+(960 hours) datasets. For feature extraction, all audio data were
+converted into 80-dimensional Log-Mel spectrograms with a
+10 ms frame shift. The analysis frame length was set to 25 ms
+for AISHELL-1 and 20 ms for Librispeech. During training, we
+employed SpecAugment [20] and speed perturbation [21] (with
+factors of 0.9 and 1.1) for data augmentation.
+Figure 3: Cosine similarity and information entropy of the in-
+puts of each layer of the Zipformer model.
+All experiments were conducted on two NVIDIA RTX
+4090 D GPUs within the Pruned RNN-T [22] framework. For
+strict comparison, we replaced only the encoder. Inference em-
+ploys beam search with a width of 4. Real-Time Factor (RTF)
+is evaluated on a single AMD EPYC 7763 CPU core (batch
+size 1). To exclude initialization overhead, pure inference time
+is averaged over 200 random AISHELL test utterances post-
+warmup.
+We selected three scales of the Zipformer model as our
+backbones (Table 1). When integrating KV-Pooling, the layer-
+wise stride configuration was set to 4, 2, 1, 2. This optimal
+hyperparameter was jointly determined by the theoretical guide-
+lines in 3.4 and empirical validation in our ablation study.
+Table 1: Detailed Hyperparameter Configurations of Baseline
+Models.
+Configuration Zipformer-S Zipformer-M Zipformer-L
+Params 22.87 M 40.49 M 52.17 M
+Encoder Layers {1, 1, 1, 1} { 2, 2, 3, 2, 2} { 2, 2, 3, 2}
+Embed. Dims {192, 256,
+320, 192}
+{192, 192, 256,
+256, 192}
+{256, 512,
+512, 512}
+FFN Dims {256, 256,
+256, 256}
+{512, 768, 1024,
+1024, 768}
+{256, 512,
+768, 512}
+DS Factors {1, 4, 8, 2} { 1, 2, 4, 4, 2} { 1, 4, 8, 2}
+4.2. Results and Analysis
+As shown in Tables 2 and 3, integrating KV-Pooling improves
+inference efficiency (RTF) while generally maintaining or im-
+proving recognition accuracy. On AISHELL-1, our models
+consistently outperform the baselines across all scales. On
+LibriSpeech, the Large (L) model improves on both test sets,
+whereas the Medium (M) and Small (S) models achieve partic-
+ularly notable gains on the more challenging test-other set, with
+minor test-clean regressions. This is expected: KV-Pooling acts
+as a temporal smoothing filter that mitigates feature distribu-
+tion spikes. For highly clean speech, this smoothing may ob-
+scure subtle phonetic details that smaller-capacity models heav-
+ily rely on. Nevertheless, consistent improvements on test-other
+demonstrate that KV-Pooling effectively filters irrelevant acous-
+tic variations, enhancing robustness in complex environments
+alongside computational speedups.
+1751
+To interpret these improvements, we visualize some at-
+tention weight matrices of the Zipformer-L model (Fig. 4).
+Comparing the top (baseline) and bottom (with KV-Pooling)
+rows, the temporal length of Keys (x-axis) is significantly com-
+pressed. Nevertheless, the global diagonal alignment remains
+structurally intact. Furthermore, the modified attention distribu-
+tion exhibits a sharper, more concentrated focus. This visually
+confirms that by filtering out temporal redundancy, KV-Pooling
+helps the model precisely capture crucial acoustic boundaries
+while discarding scattered feature spikes, providing solid repre-
+sentational evidence for the performance gains.
+Table 2: Results of AISHELL-1.
+Model Scale Pooling CER
+(dev/test%) RTF
+L No 6.11/6.58 0.1280
+L Yes 6.00/6.35 0.1121
+M No 6.12/6.57 0.1369
+M Yes 5.90/6.35 0.1244
+S No 7.55/8.10 0.08655
+S Yes 7.28/7.87 0.08449
+Table 3: Results of LibriSpeech.
+Model
+Scale Pooling WER
+(clean/others%) RTF
+L No 3.33/8.32 0.1336
+L Yes 3.30/8.09 0.1268
+M No 3.19/8.54 0.1213
+M Yes 3.35/ 8.26 0.1152
+S No 3.53/9.63 0.09078
+S Yes 3.63/ 9.33 0.08894
+4.3. Ablation Study
+To validate our Layer-wise Differential Pooling strategy
+and pooling operators, we conduct ablation studies on the
+Zipformer-L and Zipformer-S architectures (Table 4). Evalu-
+ated on the AISHELL-1 dataset, we test various pooling meth-
+ods and stride configurations, each mapping to the 4 macro-
+stages defined in Table 1.
+1) Efficacy of Layer-wise Configurations: Compared to the
+stride-{1,1,1,1} baseline, our {4,2,1,2} configuration yields
+optimal CER and RTF. The degradation of the fixed-stride
+({2,2,2,2}) model corroborates our guidelines in 3.4 : while
+redundant shallow layers tolerate aggressive down-sampling,
+compressing high-entropy middle layers impairs accuracy. No-
+tably,{4,2,1,2} also outperforms the monotonic{4,2,1,1}. We
+attribute this to semantic crystallization (Fig. 3): as deep repre-
+sentations converge into highly homogeneous tokens, applying
+a moderate stride (s = 2) at the tail stage introduces no seman-
+tic loss. Instead, it effectively smooths token representations
+and reduces the decoder’s sequence length, achieving the best
+accuracy-speed trade-off.
+2) Impact of Pooling Operators: Replacing Average Pool-
+ing with Convolutional Pooling (Conv {4,2,1,2}) leads to a
+noticeable performance drop (CER rising to 7.85/8.41% on
+Zipformer-S). This confirms our hypothesis: while convolution
+Figure 4: Representative visualizations of attention weights be-
+fore (top) and after (bottom) introducing KV-Pooling.
+Table 4: Results of Ablation Study.
+Model
+Scale Pooling Pooling
+Stride CER(%) RTF
+L None {1,1,1,1} 6.11/6.58 0.1280
+L Avg {4,2,1,2} 6.00/6.35 0.1121
+L Avg {4,2,1,1} 6.10/6.58 0.1144
+L Avg {2,2,2,2} 6.14/6.62 0.1220
+S None {1,1,1,1} 7.55/8.10 0.08655
+S Avg {4,2,1,2} 7.28/7.87 0.08570
+S Avg {4,2,1,4} 7.42/8.01 0.08816
+S Avg {4,2,1,1} 7.32/7.98 0.08493
+S Conv {4,2,1,2} 7.85/8.41 0.08704
+introduces learnable parameters, its overlapping receptive field
+and parameter sensitivity cause severe over-fitting in highly re-
+dundant regions. Empirically, the Conv-pooling model con-
+verged abnormally fast during training, followed by a spike in
+validation loss. In contrast, Average Pooling acts as a strict,
+parameter-free low-pass filter, safely maximizing information
+preservation without introducing optimization instability.
+5. Conclusion
+In this paper, we propose the KV-Pooling Attention mechanism
+to address the quadratic computational bottleneck in ASR by
+decoupling the temporal resolution of Queries from Contexts.
+By integrating a Center-Aligned positional encoding with strict
+causal masking and a Layer-wise Differential Pooling strat-
+egy, our method effectively filters temporal redundancy while
+preserving fine-grained acoustic boundaries. Experiments on
+AISHELL-1 and LibriSpeech demonstrate synergistic improve-
+ments in both recognition accuracy and inference speed. While
+inherently compatible with streaming ASR architectures, ex-
+ploring its full deployment in strict streaming applications re-
+mains a focus for future work.
+1752
+6. Generative AI Use Disclosure
+The authors used generative AI tools (Gemini and ChatGPT)
+solely to improve English grammar and readability of the
+manuscript. All technical content, experimental design, imple-
+mentation, results, and conclusions were produced and verified
+by the authors.

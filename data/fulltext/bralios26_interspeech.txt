@@ -1,0 +1,441 @@
+Elastic Time: Dynamic Frame Rate Bottlenecks for Neural Audio Coding
+Dimitrios Bralios ID 1, Paris Smaragdis ID 2, Minje Kim ID 1
+1 University of Illinois Urbana-Champaign, Urbana, IL, USA
+2 Massachusetts Institute of Technology, Cambridge, MA, USA
+dbralios@illinois.edu, paris@mit.edu, minje@illinois.edu
+Abstract
+Neural audio autoencoders have become a core component
+of compression, feature extraction, and generation. However,
+while existing systems support variable bitrate, the vast ma-
+jority of models still operate at a fixed latent frame-rate, al-
+locating equal temporal budget to regions with very different
+information density, which can result in unnecessarily long se-
+quences. We introduce Elastic Time, a dynamic frame-rate bot-
+tleneck that converts fixed-frame-rate autoencoders to dynamic
+ones. Our method learns a lightweight latent predictor used to
+decide which frames can be skipped and later reconstructed, en-
+abling efficient greedy boundary selection at inference. Experi-
+ments show our method enables deployment-time rate control
+while improving efficiency-quality tradeoffs relative to base-
+lines. Overall, we provide a flexible mechanism for adjusting
+temporal resolution in audio autoencoders, potentially facili-
+tating more efficient downstream modeling for generation and
+long-context tasks.
+Index Terms: neural audio autoencoders, dynamic frame-rate,
+adaptive rate
+1. Introduction
+Advances in neural audio codecs and autoencoders have en-
+abled the compression of audio waveforms into compact latent
+codes, significantly improving storage and transmission effi-
+ciency while maintaining perceptual quality and content fidelity
+[1, 2, 3, 4, 5]. Beyond compression, these learned representa-
+tions have become a core layer for generative audio modeling.
+Discrete codecs yield token sequences that naturally support
+language modeling approaches for audio generation, including
+autoregressive next-token prediction [6, 7, 8, 9] and parallel to-
+ken prediction [10]. Continuous latents [5, 11, 12], in contrast,
+are commonly used as the modeling space for diffusion-based
+generative models [5, 13], though more recently have also been
+the predictands of an autoregressive sequence model [14]. For
+continuous representations, since quantization-based compres-
+sion is impossible, reducing data rate by lowering dimensional-
+ity or frame-rate is more critical than using discrete tokens.
+Unlike compression, where overall bitrate and reconstruc-
+tion quality are the primary evaluation metrics, generative mod-
+els are often bottlenecked by compute and memory, which scale
+with the effective latent sequence length. Language-modeling
+approaches operating on residual vector quantization (RVQ) [2]
+codes can reduce the dependence on the number of codebook
+levels via interleaved codebook patterns [8], depth-wise predic-
+tion heads [9, 14], or parallel prediction of finer levels, but the
+dominant cost remains driven by the token rate and the con-
+text length required for generation. A similar dependence holds
+for latent diffusion [5, 13]. While reducing latent dimension-
+ality (through the channel count) can facilitate modeling [15],
+attention-based diffusion backbones such as diffusion trans-
+formers incur costs that grow with the latent sequence length.
+Consequently, latent sequence length is a key design choice, es-
+pecially for long-context generation [16].
+While variable-bitrate neural codecs and autoencoders ex-
+ist, most prior work adjusts capacity per latent frame. For
+instance, through structured dropout during training, we can
+construct scalable models that work with a varying number of
+residual codebooks [2]. Additionally, works like VRVQ [17]
+enable input-adaptive variable rate by automatically picking
+the number of codebooks used at each time step. In contrast,
+work that enables scalable and/or adaptive latent frame-rate
+is comparatively sparse [18, 19, 20, 21, 22, 17]. Most exist-
+ing work employs external semantic information to guide de-
+cisions. TFC [18] proposes the use of temporal entropy in the
+input waveform as a proxy for frame-rate selection decisions.
+FlexiCodec [19] computes similarity between neighboring pre-
+trained ASR features to produce latent segment boundaries. Dy-
+CAST [20] uses a pretrained character aligner to provide super-
+vision for chunking. CodecSlime [21] allows dynamic frame-
+rate without external supervision via a dynamic programming
+algorithm, but requires a two-stage training setup.
+We introduce Elastic Time, a plug-in Re-Bottleneck mod-
+ule [23] that converts a pretrained fixed-frame-rate audio au-
+toencoder into a dynamic-frame-rate model. We focus on the
+finite-segment, offline autoencoding setting, where the full en-
+coded segment is available before temporal rate allocation. Our
+core technical contribution is a lightweight predictor trained
+to predict future latent frames from past context. We use
+its prediction accuracy as a proxy for temporal redundancy:
+frames predicted accurately can be omitted and reconstructed
+from nearby context. During offline inference, given a user-
+specified average compression factor, our model adaptively se-
+lects segment boundaries in the latent sequence and then real-
+locates temporal rate budget by solving a resource allocation
+problem. We propose an efficient greedy algorithm as well as
+a dynamic programming-based optimization procedure. Cru-
+cially, our method requires no external semantic supervision
+(e.g., foundation model features) during training or inference.
+Our source code is publicly available1.
+Training neural audio autoencoders from scratch is expen-
+sive and requires careful tuning of adversarial/perceptual losses.
+Notably, there is a plethora of pretrained, publicly available
+fixed-rate models. The Re-Bottleneck framework lets us reuse
+these pretrained networks and focus on learning a latent-space
+module that specializes in dynamic temporal allocation while
+preserving the base model’s strong reconstruction ability.
+1https://github.com/dbralios/elastic-time
+4167
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3031
+predictability
+cost
+rollout
+Figure 1:Chunk and dechunk procedures. Chunking retains
+anchor framesy a based on latent predictability. Dechunking
+uses predictorPto expandy a back to full-length sequence ˆy.
+2. Proposed Method
+2.1. Overview
+We assume a pretrained autoencoder with encoderA enc and
+decoderA dec, which maps a multichannel audio waveformx∈
+RCaudio×L of lengthLto a latent sequence and reconstructs it
+back to audio
+z=A enc(x),z∈R C×T, ˆx=A dec(z).(1)
+More compression is achieved whenT≪L, but, in addition
+to that, our goal is to turn this fixed latent frame-rate into a dy-
+namic one, controlled at inference time by a per-sample target
+kept lengthN(equivalently, a kept fractionρ=N/T). To this
+end, we introduce a Re-Bottleneck module with encoderR enc
+and decoderR dec, without modifying the number of latent di-
+mensionsC, that yields
+y=R enc(z),y∈R C×T (2)
+We also introduce a learned latent predictorPthat models latent
+dynamics. This enables achunkprocedure that partitions the
+latent sequence intoNvariable-length segments according to a
+predictability criterion, retaining one “anchor” frame from each
+segment. Then adechunkprocedure produces the full-length
+reconstructed latent sequence ˆy, usingP. We expand on these
+procedures (visualized in Fig. 1) in following Sections. Finally,
+we map back to the autoencoder latent space and reconstruct
+audio:
+ˆz=R dec( ˆy), ˆx=A dec( ˆz).(3)
+2.2. Latent predictor
+We employ a lightweight autoregressive predictorPthat mod-
+els short-term latent dynamics along the temporal axis. Given
+the previous predicted frame ˆyt and an optional recurrent state
+ht,Ppredicts the next latent frame:
+ˆyt+1,h t+1 =P( ˆyt,h t).(4)
+The predictor is used in open-loop mode during dechunking,
+using its previous predictions as inputs (Eq. (9)). This motivates
+training objectives explicitly penalizing multi-step rollout error.
+2.3. Chunking
+The chunking procedure returns chunk boundaries, as shown
+b←chunk(y;N,P),(5)
+0 =b 0 <b 1 <···<b N−1 <b N =T,(6)
+whereb∈N N+1
+0 is the sequence of chunk boundaries and
+a=b 0:N−1 contains the positions of chunk “anchor” frames,
+each of which is the very first frame of the chunk. After chunk-
+ing, only these “anchor” frames are retained, resulting in the
+dynamically decimated subsequencey a∈R C×N . Given seg-
+ment boundaries we compute segment lengthsl∈N N as
+lm =b m+1−b m, m= 0,...,N−1(7)
+2.4. Dechunking
+The dechunking procedure, given the anchor subsequencey a
+along with segment length informationlemploysPto expand
+back to original lengthT,
+ˆy←dechunk(y a,l;P).(8)
+Within each segmentm(with lengthl m >1), we perform
+one autoregressive predictor rollout forl m−1steps, starting
+from the anchor framey am. Concretely, letting ˆyt∈R C de-
+note thet-th latent frame in the prediction-based expanded se-
+quence, we set
+ˆyam←y am,h 0←h init,
+ˆyam+k,h k←P( ˆyam+k−1,h k−1), k=1,...,l m−1,(9)
+whereh k represents the predictor’s recurrent state, andhinit is a
+trainable initial state. That is, each segment is represented by its
+anchor, and the remaining frames are synthesized via predictor
+rollout (with state reset at every segment boundary).
+2.5. Boundary selection
+Chunking is guided by the assumption that latentpredictabil-
+ity implies redundancy: if a segment of latents can be approxi-
+mated from its anchor viaP, then these frames can be dropped.
+Given a target number of anchorsN(kept length), we can then
+formulate the boundary selection problem as a constrained min-
+imization problem of the overall approximation error. We pro-
+vide two solvers: (i) an approximate but efficient greedy proce-
+dure, and (ii) an exact dynamic program (DP), similar in spirit
+to CodecSlime [21] but with a predictability cost derived from
+our learned latent dynamics model.
+2.5.1. Efficient greedy algorithm
+Starting from the finest segmentation (every frame is a po-
+tential anchor), we compute one-step approximation errors for
+right-expandingeach segment usingP: for each boundary po-
+sition, we measure the error incurred by replacing the right-
+neighboring anchor with the predictor output from the seg-
+ment’s current last frame. We then performT−Niterations,
+each time selecting the candidate expansion with the smallest
+incremental cost, executing the expansion (thereby removing
+one frame), and updating only the affected local cost for re-
+placing the next right-neighboring frame. Once a segment has
+been expanded, we set its anchor replacement cost to+∞, so it
+can no longer be replaced. This rule ensures the invariance that
+once an expansion is committed, its local cost that was incurred
+is final and will not change in subsequent iterations. Thus, the
+final accumulated error decomposes as a sum of the chosen in-
+cremental costs. A limitation of this freezing rule is that it can
+restrict the minimum achievable kept lengthN. With a priority
+queue this runs inO(TlogT)time after initializing local costs,
+enabling fast per-sample rate control at inference.
+2.5.2. Exact dynamic programming algorithm
+To formulate the DP solution, we start by defining asegment
+approximation cost. For a candidate segment that starts at index
+4168
+sand has lengthℓ, we roll out the predictor forℓ−1steps
+starting from anchory s and measure cumulative error:
+c(s,ℓ) =
+ℓ−1X
+i=1
+d
+
+ˆy(s)
+s+i,y s+i
+
+,(10)
+where ˆy(s)
+s+i denotes the predictor rollout anchored at indexs,
+andd(·,·)is a latent-space distance (we use MSE in practice).
+LetDP[t,j]be the minimum cost to cover the first
+ttimesteps usingjreplacements. Then, if hyperparameter
+Kmax is the maximum segment length,
+DP[t,j] = min
+1≤ℓ≤Kmax
+DP[t−ℓ,j−ℓ+ 1] +c(t−ℓ,ℓ),(11)
+withDP[0,0] = 0,DP[t,0] = +∞fort>0andDP[0,j] =
++∞forj >0. Backtracking recovers the selected boundaries.
+The time complexity isO(T 2Kmax)given precomputed costs
+c(·,·). Notably, while rows must be processed in increasingt,
+thej-dimension allows parallel evaluation.
+2.6. Training
+We train the Re-Bottleneck componentsR enc,R dec and pre-
+dictorPwhile keeping the base autoencoderAfrozen. Train-
+ing targets two coupled objectives: (i) accurate multi-step latent
+prediction and (ii) preservation of reconstruction quality after
+chunking/dechunking.
+To match open-loop usage, we trainPwith multi-step roll-
+outs. Starting at every indexs∈[0,T−2], we initialize
+ˆy(s)
+s ←y s and roll out Eq. (4) forK roll steps (chosen as a
+hyperparameter). We then define the rollout prediction loss as
+Lroll = 1PKroll
+i=1 (T−i)
+KrollX
+i=1
+T−i−1X
+s=0
+dnorm
+
+ˆy(s)
+s+i,y s+i
+
+,(12)
+whered norm is the target-standard-deviation-normalized MSE.
+We additionally expose the model to the same chunking-
+dechunking transformation used during inference. For a sam-
+pled target kept fractionρ(or kept lengthN=⌊ρT⌋), we
+compute boundariesb=chunk(y;N,P)without backpropa-
+gating through the discrete boundary selection(i.e., treatingb
+as constant), and dechunk to obtain ˆy. On the frames replaced
+during this transformation, we compute an auxiliary prediction
+lossL valid using the same distanced. The full prediction loss
+isL pred =λ rollLroll +λ validLvalid,and is used to train only the
+predictorPparameters.
+We minimize a reconstruction loss through the Re-
+Bottleneck decoder:
+Lrec =d(z,R dec( ˆy)),(13)
+wheredis MSE. We additionally use an adversarial and a fea-
+ture matching objective as done in [23]. This training encour-
+agesPto produce stable rollouts and the Re-Bottleneck recon-
+structions to remain compatible with the frozen autoencoder de-
+coder, while enabling inference-time rate control via greedy/DP
+boundary selection.
+3. Experimental Setup
+In our experiments, we evaluate the reconstruction quality of
+our method across a range of operating points. We consider both
+greedy and DP-based chunking, and examine models trained
+at a fixed kept fractionρ(e.g.,ρ= 0.5) as well asscalable
+models trained over a distribution of kept fractions, e.g.,ρ∼
+U(0.5,0.995). All models are implemented as Re-Bottlenecks
+that augment the bottleneck of a frozen autoencoderA.
+3.1. Baseline methods
+We compare against methods for frame-rate reduction, which
+can be adaptive/non-adaptive and scalable/non-scalable. For a
+fair comparison, we implement all baselines as Re-Bottleneck
+modules using the same base autoencoder, training data, and
+model capacity as our proposed methods, while allowing
+method-specific decimation components.
+•Conv-Downsample. This baseline performs fixed-rate tem-
+poral downsampling using an additional Conv1d layer as the
+final encoderR enc layer, and an additional transpose Conv1d
+as the first layer of the decoderR dec.
+•CodecSlime[21]. We train a Re-Bottleneck in two stages,
+melt and cool. First, in the melt phase we trainR enc,R dec
+to be robust to segments created through frame-averaging.
+Then, in the cool phase, we fine-tuneR dec atρ= 0.5, using
+boundaries produced by the CodecSlime DP algorithm with
+a maximum segment length of4. Unlike Elastic Time, it does
+not utilize a learned predictor.
+•H-Net[24]. A dynamic chunking layer proposed for text,
+whose boundary selection procedure is trained end-to-end. It
+is not scalable since the target compression ratio must be set
+as a loss hyperparameter during training.
+•H-Net-YOTO. To make H-Net scalable, we train a loss-
+conditional version following YOTO [25]. Both the encoder
+Renc and decoderR dec are conditioned on the target kept
+fractionρ, which is sampled from a range. For both H-Net
+models during inference, we tune the boundary probability
+threshold to achieve the exact user-requested rate.
+3.2. Model details
+As the frozen base autoencoderAwe use the publicly available
+Stable Audio Open (SAO) V AE [5]. It is a 156 M parameter
+model that compresses 44.1 kHz stereo audio into latents with
+64 channels at a frame rate of 21.5 Hz. Re-Bottleneck encoder
+Renc and decoderR dec are symmetric ConvNeXt-V2 [26] net-
+works, each with 6 blocks and hidden dimension 1024, resulting
+in 51 M additional parameters. Our predictorPhas 0.5 M pa-
+rameters and consists of 3 GRU layers followed by a SwiGLU-
+FFN [27] block, all placed between linear projections to and
+from a 128 hidden dimension.
+3.3. Training details
+Our training data consists of a4.8k-hour mix of audio and mu-
+sic data, sampled at 44.1 kHz with most files being stereo.
+We use publicly available sources: AudioSet-balanced [28],
+FSD50k [29], BBCSoundEffects [30], RWC [31], Moi-
+sesDB [32] and Jamendo-FMA-captions [33, 34, 35]. To speed
+up training, we pre-encode all of our data, and train on latent
+chunks of size 96, corresponding to≈4.5s. We train for 250k
+steps with batch size 64, taking approximately 48 hours on a
+L40S GPU. We use AdamW [36] (lr= 10 −4, wd= 10 −4) for
+the discriminator, and a combined Muon [37, 38] (lr= 10 −3,
+momentum= 0.95) and AdamW (lr= 10 −4, wd= 10 −4)
+optimizer for the rest of the model. We choseK max = 12and
+Kroll = 5. We setλ roll = 0.4andλ valid = 0.5. The weight
+of the objectiveL rec is set to2.0, while the adversarial objec-
+tive is weighted by0.5and the feature matching one by1.0. All
+models have KL-parameterized bottlenecks with a KL-objective
+weight of0.0001like SAO.
+4169
+Figure 2:Reconstruction quality as a function of latent frame-rate. The x-axis reports the kept fractionρof the 21.5 Hz base latent
+frame-rate, ranging from 10.75 Hz atρ=0.5 to 21.29 Hz atρ=0.99. Top row: mel-spectrogram distance (mel-d,↓). Bottom: FAD (↓).
+3.4. Evaluation & Metrics
+We evaluate on unseen sets from diverse audio domains: instru-
+mental music on SongDescriber [5, 39], sound effects on Au-
+dioCaps (test) [40], Chinese vocal music on MuChin [41], and
+speech on DAPS [42]. Each audio sample is trimmed to a ran-
+dom10s chunk (consistent across eval runs). Reconstruction
+quality is measured by SI-SDR, mel and STFT distances com-
+puted usingauraloss[43]. We report averages over clips.
+We measure distribution-level reconstruction quality by com-
+puting the Fr´echet Audio Distance (FAD) usingfadtk[44].
+4. Results
+We evaluate four main Elastic Time (ET) variants: two greedy-
+based models, one trained at a fixed kept fractionρ= 0.5
+(denotedET-greedy@0.5) and one trained over a rangeρ∼
+U(0.5,0.995)(ET-greedy), and two DP-based models,ET-
+dp@0.5(ρ= 0.5) andET-dp(ρ∼ U(0.5,0.995)). In ad-
+dition, we trainET-dp-widerange, withρ∼U(0.2,0.995)to
+test the impact of training for more aggressive compression.
+Fig. 2 reports mel-d and FAD for ET and the baselines de-
+scribed in Sec. 3.1 across three datasets. Since each dataset cor-
+responds to a different audio domain, we compute FAD using a
+domain-appropriate backbone; values are not directly compara-
+ble across columns. We evaluate at kept ratios corresponding to
+per-sample average rates in the range[10.75,21.29] Hz.
+We first note that greedy and DP chunking perform sim-
+ilarly, suggesting that the efficient greedy procedure captures
+most of the benefit of the exact DP objective in this setting.
+Next, H-Net baselines generally underperform across datasets.
+We hypothesize that this stems from a mismatch between the
+H-Net boundary-selection mechanism, originally designed for
+causal language modeling, and our finite-segment offline au-
+toencoding setting. This observation supports the view that ex-
+plicitly optimizing boundary selection, as in Elastic Time and
+CodecSlime, can ease the burden on the rest of the model by of-
+floading temporal allocation decisions to a dedicated procedure.
+Compared with CodecSlime, ET generally achieves lower
+mel-d and FAD on SongDescriber and DAPS, with the clearest
+gains in FAD. This suggests that the learned predictor provides
+a strong signal for boundary selection choices that better pre-
+serve perceptual quality under rate reduction. However, on Au-
+dioCaps, CodecSlime achieves slightly lower mel-d, while ET
+remains competitive in FAD. One plausible explanation is do-
+main mismatch: around 82% of our training data is music, and
+Table 1:MuChin reconstruction metrics. Cells report mel-d↓/
+STFT-d↓/ SI-SDR↑(dB) at kept fractionsρ∈{0.5,0.7,0.9}.
+Modelρ=0.5ρ=0.7ρ=0.9
+ET-greedy @ 0.5 1.11 / 1.71 / 2.3
+ET-greedy 1.14 / 1.73 / 1.6 1.03 / 1.65 / 3.4 0.95 / 1.58 / 4.6
+ET-dp @ 0.5 1.13 / 1.74 / 2.2
+ET-dp 1.16 / 1.75 / 1.6 1.05 / 1.66 / 3.4 0.96 / 1.59 / 4.7
+ET-dp-widerange 1.12 / 1.70 / 2.2 1.04 / 1.65 / 3.6 0.97 / 1.60 / 4.6
+Conv-Downsample 1.11 / 1.72 / 2.5
+H-Net @ 0.5 1.15 / 1.73 / 1.4
+H-Net-YOTO 1.20 / 1.80 / 0.3 1.05 / 1.66 / 2.9 0.96 / 1.59 / 4.4
+CodecSlime 1.14 / 1.73 / 0.7 1.04 / 1.65 / 2.6 0.96 / 1.59 / 4.3
+the latent dynamics learned byPmay generalize less effectively
+to the sound-effect content in AudioCaps.
+Single-rate ET variants (ET-greedy @ 0.5 and ET-dp @ 0.5)
+improve over their scalable counterparts atρ= 0.5, indicating
+a trade-off between operating-point specialization and rate scal-
+ability. We also find they close the gap to, and in some cases
+surpass, the fixed-rate Conv-Downsample baseline. That is
+notable since boundary-based compression introduces discrete
+boundary decisions instead of relying on a fixed-stride down-
+sampling/upsampling pathway. Our primary goal, however, is
+not to optimize solely forρ= 0.5, but to achieve frame-rate
+scalability while retaining competitive reconstruction quality.
+Finally, Tab. 1 extends the evaluation to MuChin and in-
+cludes STFT-d and SI-SDR metrics. We note ET often improves
+over the dynamic baselines. ET-dp-widerange is competitive at
+ρ= 0.5, likely because training over a wider rate range makes
+it a moderate rather than extreme operating point. However, its
+slightly weaker performance atρ= 0.9suggests a tradeoff.
+5. Conclusion
+We presentedElastic Time(ET), a dynamic latent frame-rate
+mechanism for neural audio autoencoders that enables frame-
+rate scalable models via content-adaptive latent decimation. Im-
+plemented as a Re-Bottleneck plug-in on top of a frozen pre-
+trained autoencoder, ET introduces a lightweight causal latent
+predictor for chunking and dechunking. Across multiple au-
+dio domains and compression levels, ET achieves competitive
+efficiency-quality tradeoffs relative to fixed-rate and prior dy-
+namic chunking baselines, while enabling deployment-time rate
+control without external semantic supervision. More broadly,
+dynamic frame-rate scalability could improve the efficiency of
+downstream generation and long-context audio modeling.
+4170
+6. Acknowledgments
+This work was supported by Electronics and Telecommunica-
+tions Research Institute (ETRI) grant funded by the Korean gov-
+ernment [26ZC1100, Development of Spatial Media Technol-
+ogy and Interaction Technology for Convergence of the Real
+and Virtual World].
+7. Generative AI Use Disclosure
+ChatGPT was used as an editing tool during the preparation of
+this manuscript.

@@ -1,0 +1,453 @@
+DASR-CPO: Reference-Free Contrastive Preference Optimization for
+Correcting Mandarin Semantic Drift in Low-Resource Chinese Dialect ASR
+Tao Zhang1, Haiyang Zhang 1,∗∗
+1 Beijing University of Posts and Telecommunications, China
+zhangtao123@bupt.edu.cn, zhhy@bupt.edu.cn
+Abstract
+Pretrained ASR models such as Whisper-Large-v3 can degrade
+on low-resource Chinese dialects because a Mandarin-dominant
+prior favors frequent homophones. This causes Mandarin se-
+mantic drift: dialect words are transcribed as phonetically simi-
+lar but semantically wrong Mandarin forms, often on entity- or
+keyword-critical spans. LoRA supervised fine-tuning reduces
+character error rate (CER) but does not explicitly suppress these
+competitors. We propose DASR-CPO, a reference-free con-
+trastive preference optimization method that teaches the model
+to prefer dialect-correct spans over mined Mandarin confusions.
+Preference pairs come from data-driven confusion mining with-
+out manual annotation. We localize drift-prone spans by se-
+quence matching and train with a span-level contrastive objec-
+tive using hard negatives. On MagicData Sichuanese (4.53 h),
+DASR-CPO reduces CER from 24.85% to 22.58% and improves
+dialect-entity F1 from 72.82 to 74.15 with zero inference-time
+overhead.
+Index Terms: dialect speech recognition, preference optimiza-
+tion, Whisper adaptation, entity correction
+1. Introduction
+Large-scale pretrained speech models, exemplified by Whis-
+per [ 1], have recently advanced automatic speech recognition
+(ASR) via weakly supervised learning on massive multilin-
+gual corpora. Despite strong robustness on high-resource va-
+rieties such as Standard Mandarin, their performance often de-
+grades when deployed on low-resource Chinese dialects (e.g.,
+Sichuanese), where phonology and lexicon differ from the
+Mandarin-dominated pretraining distribution. While this gap is
+often attributed to acoustic and domain mismatch, we observe a
+more specific and persistent decoding failure mode that directly
+harms semantic fidelity.
+We call this failure mode Mandarin Semantic Drift : for di-
+alect speech, the model produces a phonetically plausible hy-
+pothesis but systematically substitutes dialect lexical items with
+high-frequency Mandarin homophones, yielding semantically
+incorrect transcripts. For instance, dialect entities such as “ 阆
+中” may be decoded as the Mandarin-frequent “ 郎 中”, and
+“巴适” may drift to “ 巴士” (Table 2). This behavior suggests
+that decoding is dominated by an entrenched Mandarin prior:
+dialect-specific words receive insuﬀicient probability mass, and
+search prefers Mandarin tokens that are frequent in pretraining
+even when they contradict the intended dialect semantics. Such
+drift is especially damaging in downstream applications where
+entity correctness matters more than minor character-level edits.
+**indicates the corresponding author.
+Standard adaptation pipelines, including supervised fine-
+tuning (SFT) and parameter-eﬀicient fine-tuning (PEFT) with
+LoRA [2], optimize maximum likelihood of the reference tran-
+script. While effective for reducing overall character error rate
+(CER), likelihood training provides no explicit mechanism to
+penalize the strongest Mandarin-biased competitors for a given
+dialect span. Consequently, the model may increase pθ(y+|x)
+without suﬀiciently decreasing pθ(y−|x); under decoding, these
+high-probability Mandarin confusions can still dominate even
+after adaptation.
+Motivated by preference alignment [ 3, 4], we reframe di-
+alect adaptation as a preference optimization problem: for the
+same audio x, the dialect-correct transcript y+ should be pre-
+ferred over a Mandarin-biased confusion y−. We propose
+DASR-CPO, a resource-eﬀicient dialect alignment framework
+based on reference-free contrastive preference optimization.
+First, we construct preference supervision via confusion min-
+ing, extracting hard-negative Mandarin confusions from model
+hypotheses without manual preference labels. Second, we op-
+timize a span-level objective that explicitly enlarges the mar-
+gin between dialect-correct spans and their strongest Mandarin
+competitors, focusing gradients on drift-prone entities. Finally,
+to address byte-pair encoding (BPE) fragmentation of multi-
+character dialect words, we introduce a full-sequence dynamic
+matching strategy that reliably localizes dialect spans for prefer-
+ence optimization.
+Our contributions are:
+• Problem. We identify and formalize Mandarin Semantic
+Drift as a ranking error on dialect-critical spans in low-
+resource Chinese dialect ASR.
+• Method. We propose DASR-CPO, combining data-driven
+confusion mining with reference-free span-level contrastive
+preference optimization and hard-negative pooling.
+• Span supervision. We introduce full-sequence dynamic
+matching to localize dialect spans under BPE tokeniza-
+tion, enabling stable span-level training without modifying
+inference-time decoding.
+• Results. On MagicData Sichuanese with 4.53 hours of la-
+beled data, DASR-CPO improves both CER and dialect-
+entity metrics over LoRA fine-tuning, with zero inference-
+time overhead.
+2. Related Work
+2.1. Low-resource and dialect ASR
+Low-resource ASR has long been studied via data augmentation
+(e.g., SpecAugment [ 5]), multilingual transfer, semi-/weakly-
+supervised learning, and lexicon-based constraints, where the
+core challenge is the scarcity of labeled speech and the mismatch
+2656
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1228
+Train sample
+Zero-shot decode:
+Align 
+ drift spans 
+  Mine candidates 
+(freq, pinyin , 
+len-match)
+Preference data
+LoRA SFT
+（ cross-entropy ）
+Span-level cpo
+（ hard negative ）
+DASR-CPO
+adapted
+ASR model
+A B C
+Stage1 Stage2
+Figure 1: Overview of DASR-CPO: offline confusion mining,
+preference-pair construction, and span-level CPO training.
+between training and deployment domains. Self-supervised pre-
+training has further improved label eﬀiciency in low-resource
+settings (e.g., wav2vec 2.0 [ 6] and HuBERT [ 7]). For dialectal
+ASR, the mismatch is exacerbated by systematic phonological
+and lexical divergences from the standard variety, often leading
+to persistent confusions on dialect-specific entities and expres-
+sions. Prior dialect adaptation work typically focuses on acous-
+tic or pronunciation variability, e.g., via speaker/phone adapta-
+tion, pronunciation modeling, or dialect-aware acoustic model-
+ing. Recent work also explores multi-dialect end-to-end model-
+ing via dialect tags or mixture-of-experts architectures [ 8, 9].
+In contrast, our analysis emphasizes a decoding-level seman-
+tic failure mode—Mandarin-biased homophone substitutions—
+that can persist even after acoustic adaptation.
+2.2. Foundation models for ASR and adaptation
+Recent foundation ASR models trained on massive multilin-
+gual or web-scale corpora (e.g., Whisper) demonstrate strong
+robustness in high-resource languages but may degrade in low-
+resource dialect settings due to distributional priors in the pre-
+training data [ 1]. A common practice is supervised fine-tuning
+(SFT) on the target domain/dialect to improve recognition qual-
+ity. However, likelihood-based fine-tuning optimizes the gold
+transcript without explicitly penalizing strong competitors (e.g.,
+frequent Mandarin homophones), which can leave stubborn se-
+mantic confusions uncorrected. Our approach complements
+SFT by introducing a contrastive preference signal against
+mined Mandarin confusions to explicitly reshape the ranking on
+drift-prone spans.
+2.3. Parameter-eﬀicient fine-tuning
+Parameter-eﬀicient fine-tuning (PEFT) methods such as
+adapters [10], prefix/prompt tuning, and LoRA enable adapting
+large pretrained models under limited compute and memory
+budgets. LoRA injects low-rank updates into selected weight
+matrices and is widely adopted for eﬀicient adaptation of large
+models [ 2]. In this work, we employ LoRA for the SFT stage
+and further show that preference alignment can be layered on
+top of a PEFT-adapted checkpoint, providing targeted semantic
+rectification without increasing inference-time cost.
+2.4. Contextual biasing and entity correction
+A practical line of work addresses entity errors through con-
+textual biasing or decoding-time constraints. Representative
+approaches include beam-search score boosting and contex-
+tual language models [ 11, 12], deep contextualization with
+contextual-entity encoders [ 13, 14, 15], pronunciation-aware
+contextualization [ 16], and more recent eﬀicient matching or
+bias-control techniques [ 17, 18, 19]. These techniques can be
+effective but often introduce additional decoding complexity, re-
+quire test-time context, or trade general accuracy for entity recall
+when biasing is too strong. We include a loss-reweighting base-
+line (Context Bias) and instead propose a training-time align-
+ment objective that directly contrasts the gold dialect span with
+its Mandarin homophone competitors, yielding semantic correc-
+tion with zero inference-time overhead.
+2.5. Preference optimization and discriminative training
+Preference optimization has recently emerged as an effective
+alignment paradigm, especially in LLMs, where pairwise com-
+parisons (chosen vs. rejected) are used to reshape model prefer-
+ences [3, 4]. In ASR, related ideas appear in sequence-level or
+discriminative criteria that optimize relative hypotheses rather
+than token-wise likelihood (e.g., MMI/sMBR and expected-
+WER/MWER objectives [ 20, 21, 22, 23, 24]) and in methods
+that leverage hard negatives to refine decision boundaries. Mo-
+tivated by these directions, we formulate dialect adaptation as
+a preference alignment problem and adopt reference-free CPO
+to avoid the memory overhead of a frozen reference model
+[4]. Crucially, because ASR tokenization can fragment dialect
+words under BPE, we introducespan-level scoring with dynamic
+matching so that optimization targets the complete semantic unit
+rather than a single token.
+3. Methodology
+We propose DASR-CPO (Dialect Alignment via Semantic Rec-
+tification), consisting of two phases: (1) offline confusion min-
+ing to construct dialect–Mandarin homophone candidates, and
+(2) mixed-objective span-level preference alignment that explic-
+itly reshapes rankings on drift-prone spans.
+3.1. Mandarin Semantic Drift as a ranking error
+Let x ∈ X denote an utterance and y ∈ Y a BPE token se-
+quence. For a dialect utterance, we focus on dialect-critical
+spans (e.g., entities) and their Mandarin homophone competi-
+tors. Mandarin Semantic Drift can be viewed as a local rank-
+ing error: the model assigns higher probability to a Mandarin
+competitor span than to the dialect-correct span under the same
+acoustic evidence. Our goal is to reverse this preference locally
+while preserving general ASR quality.
+3.2. Offline confusion mining and candidate sets
+We build a preference dataset Dpref = {(xi, ypos
+i , Ci)}, where
+ypos
+i is the reference token sequence and Ci = {ri,k}Ki
+k=1 are
+Mandarin confusion candidates for dialect terms appearing in
+ypos
+i . Confusions are mined offline by decoding training ut-
+terances with a baseline model and aligning hypotheses with
+references to extract substitution patterns. We aggregate sub-
+stitutions across the training set, and retain frequent, phonet-
+ically similar competitors using tone-stripped pinyin edit dis-
+tance (e.g., ≤ 2). Specifically, we convert both the reference di-
+alect characters and the hypothesized Mandarin words into their
+2657
+pinyin representations, ignoring tonal markers to account for the
+tonal shifts characteristic of Sichuanese. The edit distance com-
+putation then penalizes phonetic mismatches while allowing for
+common dialectal pronunciation variations. For each dialect
+term type, we keep the top candidates by frequency to form C,
+and attach them to each utterance that contains the correspond-
+ing term. This yields preference supervision without manual
+preference annotation.
+3.3. Full-sequence dynamic matching for span localization
+BPE tokenization can fragment multi-character dialect words
+into variable-length token sequences, and the same surface form
+may map to different token boundaries depending on context. To
+obtain stable span supervision, we localize each dialect term oc-
+currence by full-sequence dynamic matching between the gold
+character string and the detokenized reference. Concretely, we
+match the term at the string level and map it back to token indices
+using the tokenizer’s offsets, producing a set of span locations
+{(t, m)} where t is the start token index andm is the span length
+in tokens. This matching is performed for every occurrence of
+each target term in ypos and enables span-level preference opti-
+mization without assuming a fixed BPE segmentation.
+3.4. Span-level reference-free CPO
+Whole-sentence preference optimization can dilute gradients
+when only a small entity is drifting. We therefore optimize
+a span-level contrastive preference objective using a single
+teacher-forced forward pass on ypos.
+Span scoring. Using logits from teacher forcing on ypos,
+we define a counterfactual span score for any length- m token
+sequence u = (u1, . . . , um) at position t:
+Sspan
+θ (u | x, ypos, t) = 1
+m
+m−1∑
+j=0
+log pθ(uj+1 | x, ypos
+<t+j). (1)
+Hard-negative pooling. For each localized span (t, m), we
+pool the strongest mined competitor:
+S−(x, t, m) = max
+r∈C
+Sspan
+θ (r | x, ypos, t), (2)
+and minimize the contrastive preference loss:
+LCPO(x, t, m) = − log σ
+(
+β
+(
+Sspan
+θ (c | x, ypos, t)−S−(x, t, m)
+))
+,
+(3)
+where σ(·) is the sigmoid function, c denotes the gold dialect
+span tokens, and β controls preference strength. We average
+LCPO(x, t, m) over all matched spans in a batch.
+3.5. Training objective
+To retain general recognition while correcting drift, we optimize
+a mixed objective:
+Ltotal = LSFT(ypos | x) + λ · LCPO, (4)
+where LSFT is standard cross-entropy on the full reference se-
+quence and λ balances global accuracy and drift correction.
+4. Experimental Setup
+4.1. Dataset and Protocol
+We use ASR-CSICHDIACSC, an open-source Sichuan dialect
+conversational speech corpus released on MagicHub by Magic
+Data, which contains 4.53 hours of transcribed dyadic conver-
+sations from 12 pairs (24 speakers).
+Preprocessing. Recordings are segmented into utterances us-
+ing provided timestamps. We resample audio to 16 kHz, dis-
+card segments shorter than 0.5s, remove non-speech tags (e.g.,
+[LAUGHTER]), strip punctuation, and convert Traditional Chi-
+nese to Simplified Chinese. All metrics are computed after ap-
+plying the same normalization to both hypotheses and refer-
+ences.
+Data partitioning. We perform utterance-level random shuf-
+fling with a fixed seed (42) and split the corpus into train/dev/test
+with a ratio of 0.8:0.1:0.1 (approx. 3.62h / 0.45h / 0.45h).
+Speaker-disjointness is not enforced due to the limited number
+of sessions; all methods share the identical split.
+Dialect lexicon. We construct a Sichuanese dialect lexiconLdia
+from the training transcripts by extracting distinct dialect entity
+types (e.g., region-specific lexical variants). The lexicon is used
+for entity-centric evaluation and confusion-focused sampling in
+Stage 2.
+4.2. Evaluation Metrics
+We report Character Error Rate (CER) as the primary metric.
+Using Ldia, we additionally report:
+• Dialect Recall: percentage of gold entity mentions exactly
+matched in the hypothesis.
+• Entity F1: harmonic mean of entity-level precision and re-
+call.
+• Correction Rate (CR): measured on a hard-negative subset
+H defined as the set of entity mentions that are mistranscribed
+by the zero-shot baseline; CR is the fraction of these mentions
+corrected by an adapted model.
+4.3. Model and Training Configuration
+Backbone and LoRA. We use Whisper-Large-v3 (∼1.55B pa-
+rameters). LoRA is applied to query/value projections ( r=32,
+α=64, dropout 0.05). We enable 8-bit loading and gradient
+checkpointing to fit consumer-grade GPUs. Dropout is set to
+0.09 for regularization.
+Stage 1: Supervised Fine-Tuning (SFT). We train for 3 epochs
+with AdamW (LR 1 × 10−3, warmup 100 steps), per-device
+batch size 8, gradient accumulation 2, and mixed precision
+(fp16).
+Stage 2: Preference Alignment (DASR-CPO). Starting from
+the SFT checkpoint, we train for 2 epochs with LR 1 × 10−6,
+CPO temperature β=0.5, and loss weight λ=1.0. We apply: (i)
+confusion-focused sampling (keeping utterances containing tar-
+get entities); (ii) duration filtering (2s–25s); (iii) gradient clip-
+ping (norm 1.0); and (iv) encoder freezing.
+Decoding. All systems use identical decoding with
+the HuggingFace pipeline ( task=transcribe,
+language=chinese), using the backbone’s default
+generation configuration (no external LM, no prompting).
+4.4. Baselines
+We compare against: (1) Zero-shot Whisper; (2) Pure LoRA
+(Stage 1 only); and (3) Context Bias , an SFT variant up-
+weighting dialect tokens by γ ∈ { 1.5, 5.0} in cross-entropy,
+selected on the dev set.
+2658
+Table 1: Overall and entity-centric results on ASR-
+CSICHDIACSC. ∆ is computed w.r.t. Pure LoRA. FP denotes
+false-positive dialect entity mentions predicted by lexicon
+matching (Sec. 4).
+Model CER↓ ∆ Recall↑ ∆ F1↑ ∆ FP↓ ∆
+Zero-shot Whisper 59.07 – – – – – – –
+Pure LoRA (SFT) 24.85 0.00 66.39 0.00 72.82 0.00 39 0
+Context Bias (loss reweight) 23.40 -1.45 65.55 -0.84 72.63 -0.19 39 0
+DASR-CPO (ours) 22.58 -2.27 67.94 +1.55 74.15 +1.33 32 -7
+5. Results and Discussion
+5.1. Main results
+Table 1 reports overall ASR accuracy and entity-centric seman-
+tic metrics. DASR-CPO achieves the lowest CER among our
+baselines (22.58%), improving over Pure LoRA by a modest
+2.27 absolute (about 9.1% relative; 24.85 →22.58).While the
+CER improvement appears moderate, it is crucial to note that
+semantic drift often occurs on keywords that carry the cen-
+tral meaning of the utterance. As such, the gain in Entity F1
+(+1.33) reflects a more significant qualitative improvement in
+the model’s ability to convey the speaker’s intent, effectively
+mitigating the jarring semantic errors that characterize the Man-
+darin baseline. While the absolute reduction in overall CER
+appears modest (24.85% → 22.58%), this is expected: dialect-
+specific entities and keywords constitute only a small fraction
+of the total character count in continuous speech. The stan-
+dard CER metric dilutes the impact of targeted semantic cor-
+rections. Instead, the substantial gains in Entity F1 ( +1.33) and
+the precise reductions in false positive homophones (Table 1)
+more accurately reflect the method’s effectiveness in rectifying
+Mandarin Semantic Drift. These qualitative improvements are
+crucial for downstream semantic fidelity.
+5.2. Entity-level effects
+Compared with Pure LoRA, DASR-CPO improves Dialect Re-
+call (66.39→67.94, +1.55), improves Entity F1 (72.82 →74.15,
++1.33), and reduces false positives (FP 39 →32, -7). In general,
+preference strength (e.g., β, λ) can affect the precision–recall
+balance, so we recommend tuning on the dev set when transfer-
+ring to other dialects or lexicons.
+5.3. Hard-negative correction on Mandarin Semantic Drift
+To directly measure whether we correct the targeted drift, we
+evaluate Correction Rate (CR) on a hard-negative subset H,
+defined as entity mentions that are consistently mistranscribed
+by the zero-shot baseline (Sec. 4). On this subset, DASR-CPO
+improves Correction Rate (CR) compared with likelihood-based
+fine-tuning, demonstrating that span-level preference alignment
+can flip the ranking between a dialect term and its strongest Man-
+darin competitor. Table 2 lists representative mined confusion
+pairs that characterize Mandarin Semantic Drift.
+5.4. Baseline analysis: Context Bias is not suﬀicient
+We include a simple Context Bias baseline that up-weights di-
+alect tokens in the cross-entropy loss. We tune the reweighting
+factor on the dev set with γ ∈ { 1.5, 5.0} and report the best
+setting in Table 1. Although reweighting can increase the like-
+lihood of dialect tokens, it lacks an explicit contrastive signal
+against specific Mandarin homophones, and may degrade gen-
+eral recognition. In contrast, DASR-CPO explicitly optimizes
+Table 2: Representative dialect–Mandarin confusion pairs
+mined from the training data. These minimal pairs are used to
+construct preference candidates C for span-level CPO.
+Dialect term (gold) Mandarin homophone competitors (examples)
+阆中 郎中, 狼中
+伸抖 成头, 深透, 身透
+老汉儿 老孩儿, 老韩儿
+啷个 两个, 那个, 浪个
+啥子 沙子, 瞎子, 傻子
+莫得 没得, 磨得, 墨德
+巴适 巴士, 八十, 拔丝
+安逸 阿姨, 含义, 安怡
+冒菜 毛菜, 猫菜
+the margin between the gold dialect span and the most probable
+Mandarin competitor.
+5.5. Decoding, latency, and limitations
+Decoding. All models use an identical decoding configuration
+via the HuggingFace Whisper pipeline ( task=transcribe,
+language=chinese) with the same generation settings for
+fair comparison. Overhead. DASR-CPO introduces no
+inference-time overheadsince it does not add modules or rescor-
+ing at test time. Limitations. (i) Our train/dev/test split is not
+speaker-disjoint due to the small corpus size, which may overes-
+timate generalization to unseen speakers. (ii) The method relies
+on mined confusion pairs and a lexicon; performance can be sen-
+sitive to lexicon coverage. (iii) The increased FP suggests cali-
+bration is needed to improve precision under ultra-low-resource
+supervision.
+5.6. Conclusion
+In this work, we introduced DASR-CPO, a novel parameter-
+eﬀicient framework designed to mitigate Mandarin Semantic
+Drift in low-resource dialect ASR. By reframing dialect adapta-
+tion as a preference optimization problem, we successfully uti-
+lized mined confusion pairs to construct hard negatives without
+requiring manual preference labeling. Our proposed span-level
+objective and full-sequence dynamic matching strategy ensure
+that the model learns to prioritize dialect-specific lexical items
+over their high-frequency Mandarin homophones. Experimental
+results on the Sichuanese corpus demonstrate that DASR-CPO
+significantly improves entity recognition and overall transcrip-
+tion accuracy compared to standard LoRA fine-tuning and con-
+textual biasing baselines. Importantly, our method introduces
+zero inference-time overhead, making it highly practical for de-
+ployment. Future directions include validating the scalability of
+DASR-CPO across diverse Chinese dialects and investigating its
+eﬀicacy in multilingual code-switching scenarios.
+6. Generative AI Use Disclosure
+We used generative AI tools solely for language editing and pol-
+ishing (e.g., improving grammar, clarity, and conciseness). The
+tools were not used to draft the main technical content of the
+paper, including the problem formulation, method design, ex-
+periments, results, or conclusions. All scientific claims, experi-
+mental procedures, analyses, and interpretations were produced
+and verified by the authors.
+2659

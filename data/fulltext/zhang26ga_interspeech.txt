@@ -1,0 +1,455 @@
+A Dual-Stream Discrete Neural Codec with Fixed-Length Global Speaker
+Tokens and Dynamic Frame Rates for Low-Bitrate Speech Tokenization
+Boyang Zhang1,2, Yechang Huang2, Xuerui Yang2,∗∗, Ziyue Jiang 1
+1Zhejiang University, China
+2StepFun, China
+boyang.zhang@zju.edu.cn, zileanhuang@stepfun.com, yangxuerui@stepfun.com,
+ziyuejiang@zju.edu.cn
+Abstract
+Discrete speech tokens are an effective interface for speech lan-
+guage models (SLMs), yet many codecs are inefficient due to
+high token rates and mix speaker characteristics with content-
+related variation, increasing the modeling burden for down-
+stream SLMs. We propose a low-bitrate dual-stream discrete
+codec comprising (i) a time-varying token stream from a sin-
+gle codebook and (ii) a small set of fixed-length global speaker
+tokens. To reduce redundancy, we introduce similarity-based
+dynamic frame aggregation that merges consecutive frames and
+enables controllable token rates at inference via a single thresh-
+old. An adaptive deaggregation module restores the sequence to
+the base frame rate for waveform reconstruction. Experiments
+demonstrate strong intelligibility and audio quality at low bi-
+trates, with improved bitrate–quality trade-offs over fixed-rate
+baselines while maintaining speaker similarity.
+Index Terms: Speech codecs, low-bitrate coding, speech con-
+version, dynamic frame rate, speech generation
+1. Introduction
+Neural audio codecs (NACs) have become a core component in
+speech language model-based text-to-speech systems, bridging
+continuous waveforms and discrete sequence modeling [1–4].
+Early neural codecs such as SoundStream [5–8] rely on resid-
+ual vector quantization (RVQ) [9] to achieve high-fidelity re-
+construction. However, RVQ typically produces multiple code
+streams, which increases the generation burden for autoregres-
+sive SLMs and introduces complex design.
+To simplify complex modeling design and reduce genera-
+tion latency for SLM, recent single-codebook codecs [10–13]
+compress speech into a single discrete token stream, thereby re-
+ducing the inference burden for speech language models and
+simplifying downstream generation pipelines. However, a com-
+mon limitation of these methods is feature entanglement: lin-
+guistic content and speaker-related acoustic characteristics are
+often encoded in the same token sequence. Consequently,
+downstream SLMs must model both semantic and speaker-
+dependent variations jointly, which increases modeling diffi-
+culty.
+To address this issue, a complementary line of research
+has focused on disentangled speech tokenization. [4, 14, 15]
+promote the factorization of semantic and acoustic information
+within the vector quantization process. Semantic representa-
+tions are typically derived from distilled student semantic en-
+coder or pretrained self-supervised learning(SSL) speech en-
+coder, while acoustic information is encoded by acoustic en-
+coder and RVQ.
+**indicates the corresponding author.
+Parallel to research on semantic-acoustic disentanglement,
+timbre–semantic decoupling codec such as [16–18] has be-
+come particularly prominent, as it pushes speech LMs to fo-
+cus on time-varying features and timbre can be modeled after
+LM generation through a flow-matching decoder [19]. TiCodec
+uses time-invariant continuous speaker embeddings, whereas
+BiCodec [2] further quantizes speaker timbre into a fixed-
+length sequence of global tokens using finite scalar quantiza-
+tion (FSQ) [20], and feeds these global tokens directly into the
+speech language model [2].
+Orthogonal to codec factorization and inspired by the unsu-
+pervised semantic unit discovery at syllable-level [21, 22], dy-
+namic frame-rate NACs [23, 24] are proposed to further re-
+duce token rates by adaptively merging semantically similar
+frames. The core motivation for dynamic-rate codecs is that in
+fixed-frame-rate (FFR) codecs, slowly varying regions such as
+long vowels or silence often consume disproportionately many
+frames despite carrying limited additional semantic informa-
+tion [24]. In contrast, dynamic frame-rate modeling allocates
+fewer tokens to temporally redundant regions while preserving
+finer temporal resolution for rapidly changing speech content.
+In this work, we propose DySTCodec a low-bitrate
+Dynamic dual-StreamToken Codec that reduces the effective
+semantic token rate via dynamic frame aggregation while re-
+taining controllable speaker conditioning with a compact set
+of global speaker tokens. The method most closely related
+to ours is BiCodec. However, DySTCodec differs from it in
+three important aspects: (1) timbre perturbation before seman-
+tic feature extraction, which suppresses speaker leakage ; (2)
+dynamic frame aggregation, which removes temporally redun-
+dant semantic frames and reduces the effective token rate; and
+(3) an adaptive deaggregation module with lightweight refine-
+ment, which restores the base frame rate and mitigates boundary
+artifacts.
+2. Methods
+2.1. Overall
+The architecture of DySTCodec shown in Figure 1 consists of
+six major parts: the global encoding pathway, the semantic en-
+coding pathway, a fusion prenet, a postnet, an adaptive deaggre-
+gation module, and a waveform decoder. The global encoding
+pathway is composed of three components: a speaker encoder, a
+query-based token aggregation module, and finite scalar quanti-
+zation (FSQ). The semantic encoding pathway includes a frozen
+Wav2Vec2.0 encoder, a dynamic frame aggregation module, a
+semantic encoder, and a vector quantization (VQ) module. It
+should be mentioned that we use the termSemantic Encoding
+Pathwayto encode the time-varying content stream that pri-
+marily captures linguistic information and prosodic dynamics,
+4179
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3314
+Figure 1:Architecture and Training Diagram of DySTCodec.
+while suppressing speaker-dependent timbre cues. Thus, “se-
+mantic” in our terminology is not restricted to purely lexical
+content. We use “semantic” as a conventional shorthand for the
+time-varying linguistic–prosodic stream.
+2.2. Global Encoding Pathway
+The global encoding pathway is designed to capture time-
+invariant speaker attributes from the original (unperturbed)
+waveform. We first compute an 80-bin mel-spectrogram and
+feed it into an ECAPA-TDNN encoder 1, producing a variable-
+length sequence of speaker-aware hidden features. To obtain
+a fixed-length representation suitable for discrete conditioning,
+we apply a query token aggregator:M= 32learnable queries
+attend to the encoder outputs via cross-attention and summa-
+rize the variable-length sequence intoMcontinuous global to-
+kens. In parallel, the same pathway also yields a pooled global
+speaker embedding for vector-level conditioning.
+TheMcontinuous global tokens are discretized using finite
+scalar quantization (FSQ). Specifically, we used g = 6scalar
+dimensions withL= 4levels per dimension, resulting in a
+discrete vocabulary size|C g|=L dg = 4 6 = 4096and a per-
+token cost oflog 2|Cg|= 12bits. Because the global stream
+contributes a fixed number of tokens per utterance, its bitrate is
+amortized by utterance durationT:
+Rglob(T) = Mlog 2|Cg|
+T = 32×12
+T .(1)
+Using the measured average duration on LibriSpeech test-
+clean ( ¯T= 7.4s), the global-stream overhead corresponds
+to 384
+7.4 ≈52bps (0.052kbps). We adopt FSQ in the global
+branch to obtain stable discretization of time-invariant speaker
+attributes, which empirically mitigates optimization instability
+and collapse modes that can arise when applying standard VQ
+to globally pooled speaker representations.
+2.3. Semantic Encoding Pathway
+The semantic encoding pathway is designed to suppress
+speaker timbre while preserving the time-varying linguistic and
+prosodic information. To reduce speaker leakage, we apply a
+timbre perturbation algorithm [25] to the original waveform be-
+fore feature extraction. Specifically, the input waveform is first
+time-stretched with a scaling factorβto shift pitch and formant
+characteristics, and its duration is then restored using a pitch-
+preserving tempo operation. This produces a perturbed sig-
+nal that largely preserves content and prosody while weakening
+speaker-dependent timbre cues. During training,βis uniformly
+sampled from[0.8,1.2], following LSCodec [18].
+1https://huggingface.co/Wespeaker/
+wespeaker-ecapa-tdnn512-LM/tree/main
+The perturbed waveform is then fed into a frozen pre-
+trained Wav2Vec2.0 encoder, and we average the hidden states
+from layers 11, 14, and 16 to obtain the semantic feature se-
+quence, following [2]. To reduce temporal redundancy, we
+apply dynamic frame aggregation to the resulting 50 Hz SSL
+features. LetH= [h 1,...,h T ]denote the frame-level fea-
+ture sequence. We compute a similarity score between adjacent
+frames,s t = sim(h t,h t+1), and merge consecutive frames
+whose similarity exceeds a thresholdτ, which partitions the se-
+quence intoKconsecutive segments{S k}K
+k=1. Each segment
+is then represented by average pooling:
+zk = 1
+|Sk|
+X
+t∈Sk
+ht, k= 1,...,K.(2)
+Following [23, 26, 27], we further refine the aggregated se-
+quence using a local-window transformer aggregation module,
+which injects local context into the merged tokens and improves
+transition smoothness. Local attention is adopted for better
+scalability to long utterances and improved generalization be-
+yond the fixed segment lengths seen during training. The re-
+fined sequence is then mapped to continuous semantic latents
+by a learnable semantic encoder, implemented as a V ocos-style
+12-block ConvNeXt encoder without additional temporal re-
+sampling [8]. Finally, the output features of the semantic en-
+coder are discretized by a vector quantizer with codebook size
+8192. The quantizer is initialized with k-means and updated
+with EMA during training.
+2.4. Fusion Prenet and Postnet
+We use a vector-level speaker-conditioning mechanism in the
+fusion prenet. Specifically, the quantized global token sequence
+is converted into a compact global speaker embedding, which is
+then injected into the prenet through adaptive layer normaliza-
+tion.
+Architecturally, the fusion prenet follows the same back-
+bone design as the semantic encoder. It takes the quantized
+semantic token sequence as the main input and incorporates
+speaker information through vector-level conditioning. Given
+the quantized global token sequenceG∈R M×d , we concate-
+nate theMtokens along the feature dimension to form a flat-
+tened representation ˜G∈R M d. A learnable linear projection
+then maps ˜Gto a compact speaker embeddingD∈R d. This
+embedding is used to modulate the hidden activations of the fu-
+sion prenet via adaptive layer normalization, thereby providing
+global speaker information in a fixed-dimensional form.
+The postnet is attached after adaptive frame deaggregation
+to provide auxiliary semantic supervision. It adopts the same
+4180
+V ocos-style design as the semantic encoder, but uses a shallower
+configuration with half the number of ConvNeXt blocks.
+Under this design, the fusion prenet outputs a compressed
+speaker-conditioned latent sequence defined on the aggregated
+frame sequence. This sequence is then passed to the adap-
+tive frame deaggregation module for temporal restoration be-
+fore waveform decoding.
+2.5. Adaptive Frame Deaggregation
+Because the semantic sequence is dynamically aggregated, the
+fused features produced by the fusion prenet are defined on the
+aggregated segment sequence rather than the original frame-
+level timeline (50 Hz) required for waveform reconstruction. To
+resolve this mismatch, the adaptive frame deaggregation mod-
+ule restores a frame-aligned latent sequence using the same seg-
+ment assignments obtained during dynamic frame aggregation.
+Specifically, letY= [y 1,...,y K]denote the fused la-
+tent sequence on the aggregated timeline, where each latent
+yk corresponds to a segmentS k. Deaggregation expands each
+segment-level latent back to all original frames belonging to
+that segment, yielding a restored frame-level sequence ˆY=
+[ˆy1,..., ˆyT ], where
+ˆyt =y k, t∈S k.(3)
+In other words, all frames within the same merged segment
+share the same latent representation after deaggregation. To
+alleviate boundary discontinuities introduced by segment-wise
+expansion, we further apply a lightweight non-causal bottleneck
+transformer to the restored 50 Hz sequence. This module refines
+local transitions, incorporates short-range context, and smooths
+artifacts near segment boundaries, thereby improving waveform
+continuity and perceptual naturalness before waveform decod-
+ing.
+2.6. Waveform Decoder
+The waveform decoder reconstructs the time-domain signal
+from the deaggregated and refined latent features. We use
+a convolutional neural vocoder with progressive transposed-
+convolution upsampling. Concretely, the decoder starts with a
+1D convolutional projection, followed by a stack of four up-
+sampling stages with stride factors[8,5,4,2]. Each stage con-
+sists of a transposed convolution and a lightweight residual re-
+finement block (with multiple dilated residual units) to improve
+local waveform modeling after upsampling. A final1D convo-
+lution followed bytanhmaps the hidden representation to the
+waveform amplitude.
+The overall upsampling factor is8×5×4×2 = 320,
+which matches the frame-hop setting used in our system (i.e.,
+50 Hz latent/frame sequence to 16 kHz waveform samples).
+In implementation, we use weight-normalized convolutions and
+LeakyReLU activations throughout the decoder.
+2.7. Loss Construction
+We train DySTCodec with a joint objective that combines
+waveform reconstruction, semantic feature supervision, vector
+quantization regularization, speaker consistency, and adversar-
+ial learning. The generator loss is defined as
+L=λ melLmel +λ featdistillLfeatdistill +λ vqLvq
++λ advLadv +λ fmLfm +λ spkLspk. (4)
+Here,L mel is a multi-scale mel-spectrogram reconstruction
+loss,L featdistill is an MSE feature distillation loss between
+the postnet predictions and frozen Wav2Vec2.0 features,L vq
+is the semantic quantization loss, andL spk is anL 1 loss be-
+tween teacher and student speaker embeddings. The seman-
+tic codebook is updated with EMA, so we do not use an ad-
+ditional codebook-update loss. We further employ a multi-
+scale STFT discriminator and a multi-period discriminator to
+improve perceptual quality. In practice, we setλ mel = 15,
+λfeatdistill = 1.0,λ vq = 1.0,λ adv = 2.0, andλ fm = 1.0.
+2.8. Experiments Setup
+We train DySTCodec on the 16 kHz LibriSpeech corpus (about
+1,000 hours) [28] using the train-clean-100, train-clean-360,
+and train-other-500 splits. We test our model and baselines on
+the test-clean set. Our model is trained for 300 epochs with a
+batch size of 36 on 8 H800 GPUs. During training, each ut-
+terance is paired with a prompt segment obtained by randomly
+cropping a contiguous span whose duration is uniformly sam-
+pled in the range[1/3,1/2]of the full utterance. Optimization
+is performed with AdamW, withβ 1 = 0.8andβ 2 = 0.9.
+Letr s denote the effective semantic token rate after dy-
+namic aggregation, and let|C s|denote the semantic codebook
+size. The semantic-stream bitrate is defined as
+Rsem =r s log2|Cs|.(5)
+In our system,|C s|= 8192, so each semantic token carries
+log2|Cs|= 13bits. For the fixed-frame-rate (FFR) variant,
+the semantic token rate isr s = 50tokens/s, corresponding to
+the 50 Hz frame rate, which givesR sem = 50×13 = 650
+bps. For a fair comparison, we report thetotalbitrate by adding
+the amortized global-token overhead to the semantic-stream bi-
+trate, i.e.,R tot≈R sem+R glob. On LibriSpeech test-clean, the
+global stream contributes approximately 52 bps when amortized
+by the average utterance duration, resulting inR tot≈702bps
+(0.70kbps) for the 50 Hz semantic stream. We apply the
+same total-bitrate accounting to BiCodec by adding its amor-
+tized global-token overhead, computed under the same conven-
+tion.
+For the dynamic-frame-rate (DFR) variant,rs is reduced by
+adaptive frame merging controlled by the thresholdτ. Specif-
+ically, we computer s as the number of semantic tokens after
+aggregation divided by the utterance duration in seconds. On
+LibriSpeech test-clean, we observe thatτ= 0.90yields an av-
+erage semantic token rate of approximately40tokens/s, while
+τ= 0.84yields approximately25tokens/s.
+We assess DySTCodec from two complementary perspec-
+tives: speech reconstruction and voice conversion results. For
+reconstruction, evaluation is conducted on the LibriSpeech test-
+clean set. We report UTMOS [29], STOI [30], PESQ (wide-
+band) [31], and speaker embedding cosine similarity (SECS).
+For voice conversion, we randomly sample 200 utterances from
+the LibriSpeech test-clean set as source speech and select six
+speakers from VCTK [32] as target speakers. All models are
+evaluated under a cross-dataset voice conversion setting, con-
+verting LibriSpeech test-clean sources to VCTK target speak-
+ers.
+2.9. Baselines and Ablation Results
+Speech reconstruction.Table 1 reports speech reconstruction
+results across codecs under different bitrate regimes and sam-
+pling rates. Since DySTCodec is trained at 16 kHz, we focus
+our analysis on the 16 kHz setting for fair comparison, while
+the 24 kHz result (WavTokenizer only) is included for reference.
+4181
+Table 1:Speech Reconstruction Results. All baselines are at
+16 kHz apart from WavTokenizer; Bitrates are reported as to-
+tal bitrate (semantic stream plus amortized global-token over-
+head).
+Baselines Bitrates WER↓STOI↑PESQ↑UTMOS↑SECS↑
+FACodec 4.8kbps 6.55 0.93 2.48 4.07 0.83
+FlexiCodec (FFR) 3.6kbps 6.36 0.87 2.46 4.21 0.84
+DAC 1kbps 27.26 0.73 1.23 1.29 0.32
+TiCodec 1kbps 11.73 0.70 1.94 3.54 0.84
+SpeechTokenizer 1kbps 6.95 0.77 1.59 3.53 0.36
+WavTokenizer (24k) 0.9kbps 6.58 0.89 2.08 3.94 0.67
+Single-Codec 0.3kbps 6.45 0.84 1.78 3.72 0.68
+LsCodec 0.45kbps 6.23 0.86 2.42 4.08 0.83
+BiCodec 0.7kbps 6.59 0.91 2.49 4.15 0.80
+DySTCodec (FFR) 0.7kbps 6.09 0.92 2.51 4.13 0.85
+DySTCodec (DFR) 0.57kbps 6.12 0.90 2.48 4.10 0.85
+Table 2:V oice Conversion Results. Bitrates are reported as
+total bitrate under the same convention
+Baselines Bitrates WER↓SECS↑F0-PCC↑
+FACodec 4.8 kbps 6.27 0.66 0.77
+TiCodec 1.0 kbps 13.24 0.62 0.74
+BiCodec 0.7 kbps 6.91 0.46 0.39
+LsCodec 0.45 kbps 6.94 0.74 0.68
+DySTCodec (50 Hz FFR) 0.7 kbps 6.82 0.75 0.72
+DySTCodec (40 Hz DFR) 0.57 kbps 7.02 0.73 0.73
+DAC is reproduced at 16 kHz following the official implemen-
+tation.
+In the low-bitrate 16 kHz regime, DySTCodec achieves
+a strong bitrate–quality trade-off with a single-codebook se-
+mantic stream. At the same bitrate as BiCodec (0.7 kbps),
+the fixed-frame-rate (FFR) version of DySTCodec (50 Hz) im-
+proves WER, PESQ (wideband), and SECS while matching
+STOI, indicating better intelligibility, competitive perceptual
+quality, and stronger speaker preservation under the same bi-
+trate convention.
+When equipped with dynamic frame rate (DFR), DyST-
+Codec further reduces the bitrate from 0.7 kbps to 0.57 kbps
+(i.e., from 50 Hz to an average of 40 Hz) while maintaining
+closely comparable performance across objective metrics. Al-
+though the DFR variant shows a slight decrease in STOI, PESQ,
+and UTMOS relative to the FFR version, its WER and SECS re-
+main highly competitive at a substantially lower bitrate. These
+results suggest that the proposed dynamic frame aggregation
+and adaptive deaggregation modules improve compression ef-
+ficiency by removing temporally redundant frames in a content-
+adaptive manner, while preserving overall reconstruction qual-
+ity.
+V oice Conversion Results.Table 2 shows that DySTCodec
+achieves strong speaker transfer at low bitrates. At the same
+bitrate as BiCodec (0.7 kbps), DySTCodec (50 Hz FFR) reduces
+WER from 6.91 to 6.82 while substantially improving speaker
+similarity (SECS) from 0.46 to 0.75 (+0.29). Compared with
+LSCodec at a lower bitrate (0.45 kbps), DySTCodec achieves
+comparable WER (6.82 vs. 6.94) and higher F0-PCC (0.72 vs.
+0.68), indicating better prosody preservation, with a small gain
+in SECS (0.75 vs. 0.74).
+When reducing the total bitrate to 0.57 kbps, the DFR
+variant maintains comparable prosody (F0-PCC 0.73) and high
+speaker similarity (SECS 0.73), at the cost of a slight increase
+in WER (7.02), suggesting a mild intelligibility–compression
+trade-off under more aggressive frame merging.
+Ablation on merging thresholdτ.DySTCodec is trained
+with a variable merging thresholdτ∼ U[0.8,1.0], enabling
+controllable effective frame rates at inference by adjustingτ.
+In our setup,τ= 0.90yields an average rate of 40 Hz and
+Table 3:Ablations on Training Techniques
+Ablation Configuration WER STOI PESQ SECS
+DySTCodec 40 Hz (DFR) Full setting 6.12 0.90 2.48 0.85
+Timbre perturb.
+β∈[0.7,1.3]6.54 0.86 2.51 0.82
+β∈[0.9,1.1]6.37 0.90 2.50 0.85
+None 6.17 0.70 2.63 0.74
+Hard deaggregation. w/o light weight transformer 6.75 0.81 2.01 0.78
+Table 4:Ablation on merging thresholdτin dynamic frame
+aggregation
+Model Merging Threshold WER STOI PESQ UTMOS SECS
+DySTCodec 50 Hz (FFR) – 6.09 0.92 2.51 4.13 0.85
+DySTCodec 40 Hz (DFR) 0.90 6.12 0.90 2.48 4.10 0.85
+DySTCodec 40 Hz (FFR) – 6.84 0.71 2.16 3.88 0.77
+DySTCodec 25Hz (DFR) 0.84 7.23 0.54 1.96 3.33 0.67
+DySTCodec 25Hz (FFR) – 7.11 0.58 2.05 3.38 0.71
+τ= 0.84yields 25 Hz. Table 4 shows that loweringτin-
+creases compression but introduces an expected quality degra-
+dation. Note that in Table 1, the DFR–FFR comparison is not
+rate-matched (50 Hz vs 40 Hz). In contrast, the ablation study
+reports a rate-matched comparison by evaluating DFR against
+an FFR baseline at the same nominal frame rate (40 Hz). At the
+matched nominal rate of 40 Hz, the DFR variant (τ= 0.90)
+substantially outperforms static downsampling (40 Hz FFR),
+with large gains in WER, STOI, PESQ, UTMOS, and SECS,
+demonstrating the advantage of content-adaptive aggregation
+over fixed-rate reduction. When pushing compression further to
+25 Hz (τ= 0.84), both DFR and FFR degrade; DFR remains
+competitive, exhibiting a different trade-off across metrics but
+worse intelligibility and speaker similarity), suggesting that ag-
+gressive merging can distort fine-grained temporal cues.
+Ablations on training techniques.Table 3 shows that
+the full setting achieves the best overall balance (WER 6.12,
+STOI 0.90, PESQ 2.48, SECS 0.85). For timbre perturba-
+tion, both a wider range (β∈[0.7,1.3]) and a narrower range
+(β∈[0.9,1.1]) degrade intelligibility and/or speaker similar-
+ity compared with the full setting (e.g., WER increases to 6.54
+or 6.37, and SECS drops to 0.82 or stays similar). Removing
+perturbation causes a severe drop in STOI (0.90→0.70) and
+SECS (0.85→0.74), indicating substantial speaker leakage and
+degraded reconstruction robustness. Replacing adaptive deag-
+gregation with hard segment-wise expansion (i.e., removing the
+lightweight refinement transformer) consistently hurts all met-
+rics (WER 6.75, PESQ 2.01, SECS 0.78), confirming that the
+bottleneck refinement after deaggregation is critical for smooth-
+ing boundary artifacts and preserving perceptual quality.
+3. Conclusion
+DySTCodec combines similarity-based dynamic frame aggre-
+gation and adaptive deaggregation with lightweight refinement
+to improve token efficiency while preserving reconstruction
+quality. Experiments show strong low-bitrate reconstruction
+and cross-dataset voice conversion performance, and ablations
+confirm the importance of timbre perturbation for reducing
+speaker leakage and refinement for mitigating boundary arti-
+facts.
+4. Generative AI Use Disclosure
+The authors used generative AI tools for language polishing and
+formatting assistance during the preparation of this manuscript.
+All technical content, results, claims, and final text were re-
+viewed and approved by the authors, who take full responsi-
+bility for the work.
+4182
+5. References
+[1] S. Chen, C. Wang, Y . Wuet al., “Neural codec language mod-
+els are zero-shot text to speech synthesizers,”IEEE/ACM Trans.
+ASLP ., vol. 33, pp. 705–718, 2025.
+[2] X. Wang, M. Jiang, Z. Ma, Z. Zhang, S. Liu, L. Li, Z. Liang,
+Q. Z

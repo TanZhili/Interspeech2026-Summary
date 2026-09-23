@@ -1,0 +1,542 @@
+Temporal Transition-Aware Multi-Head Modeling for Partially Spoofed Audio
+Detection and Localization
+Yunsu Kim1,2, Juyeob Lee3, Eunil Park3,4,∗∗
+1Department of Artificial Intelligence, Sungkyunkwan University, Republic of Korea
+2Department of Mechanical & Industrial Engineering, University of Toronto, Canada
+3Department of Applied Artificial Intelligence, Sungkyunkwan University, Republic of Korea
+4Department of Computer Science and Engineering, Jaume I University, Spain
+diakys@g.skku.edu, juyblee@gmail.com, eunilpark@skku.edu
+Abstract
+Partially spoofed audio localization aims to detect short manip-
+ulated spans within an utterance. Most prior work formulates
+the task as binary frame authenticity or boundary detection,
+which overlooks how neighboring frames evolve across manip-
+ulations. In this paper, we argue that directional inter-frame
+changes provide a more reliable localization cue, and propose
+a transition-aware framework that classifies Real to Fake and
+Fake to Real transitions. Our method combines a multi-scale
+GRU backbone for local continuity and long-range flow with a
+multi-head objective: a frame head for authenticity, a transition
+head for adjacent-frame transitions, and a refinement head that
+fuses both signals for temporally coherent predictions. Exper-
+iments on the PartialSpoof Dataset and the PartialEdit-E1/E2
+show state-of-the-art performance, demonstrating the effective-
+ness of temporal-order modeling for partially spoofed audio lo-
+calization at a challenging 20 ms resolution.
+Index Terms: partially spoofed audio, spoof localization, audio
+boundary detection, transition-aware localization
+1. Introduction
+Recent advances in text-to-speech (TTS) [1] and voice conver-
+sion (VC) [2] make it increasingly difficult to distinguish syn-
+thetic speech from genuine human speech. Such highly realis-
+tic synthetic audio poses serious social and economic threats to
+voice security systems [3], and has made speech deepfake de-
+tection a critical research topic [4]. Specifically, recent attacks
+take the form of partial audio spoofing, in which only specific
+segments of a genuine utterance are synthesized or replaced.
+By modifying fine-grained units, such as words, characters, or
+even phonemes, an attacker can precisely alter the semantic
+content of a sentence, deceiving both machine-based systems
+and human listeners [5]. This calls for specialized detection
+approaches capable of identifying subtle and fine-grained ma-
+nipulations within speech signals.
+Beyond simply identifying whether an audio clip con-
+tains spoofed regions, the Partially Spoofed Audio Localization
+(PSAL) task seeks to locate the specific segments that have been
+manipulated, a fine-grained deepfake analysis problem that has
+recently received increasing attention [6]. Several partial audio
+spoofing datasets have been developed for this purpose. One of
+the most widely used benchmarks for PSAL is the PartialSpoof
+Dataset (PSD) [7, 8], which is based on ASVspoof 2019 [9, 10].
+Recent datasets have moved toward more realistic and diverse
+editing scenarios, as exemplified by the PartialEdit dataset [11].
+**indicates the corresponding author.
+10 00 00 1 1 1 1 1 1 0 0 0Frame label
+Binary 
+Boundary Label
+Proposed 
+Directional 
+Transition Label
+01 00 00 0 0 0 0 0 0 0
+01 10 00 0 0 0 0 0 0 0 0
+MLP MLP MLP
+2
+0
+Non-boundary Real ⟶ Fake Fake ⟶ Real
+Figure 1:Our key idea is to explicitly model how ad-
+jacent frames change over time. The proposed transition
+head (MLP block) directly classifies frame-to-frame transitions
+(Real→Fake, Fake→Real, or None), enabling the model to cap-
+ture manipulation boundaries more sharply than frame-wise
+classification alone.
+In contrast to PSD, which contains only a single spoofed region
+per utterance, PartialEdit contains multiple manipulated seg-
+ments within a single utterance, making the localization prob-
+lem more temporally complex. They also differ in how spoofed
+regions are constructed: PSD relies on randomly selected ma-
+nipulation segments, whereas PartialEdit uses an LLM to iden-
+tify word-level manipulation spans.
+Existing approaches to localizing partially spoofed audio
+can be divided into two categories. The first category focuses on
+frame-level inconsistency [12, 13, 14, 15]. These methods as-
+sume that fake frames exhibit statistical irregularities compared
+to real frames, and models are trained to separate the frames
+based on these differences. However, such supervision is of-
+ten limited for partially spoofed audio, because frame-level dif-
+ferences are influenced not only by manipulation artifacts but
+also by intrinsic variability in speech. A single binary loss
+may be insufficient to capture the subtle temporal patterns that
+distinguish manipulated regions from naturally varying gen-
+uine speech. The second category relies on boundary-aware
+strategies that explicitly exploit manipulation boundary infor-
+mation [16, 17, 18]. However, detection becomes challenging
+when an utterance contains multiple manipulated spans or when
+the boundary cues are intentionally smoothed or hidden.
+Despite the advances, prior efforts typically formulate the
+frame authenticity (or boundary) prediction as per-frame (or
+per-boundary) classification tasks. This leaves little room for
+explicitly modeling the temporal dependencies between the
+neighboring frames. Accordingly, as illustrated in Figure 1, we
+hypothesize that jointly modeling pairs of adjacent frames, thus
+capturing their temporal transitions, allows the model to better
+3062
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-474
+distinguish and localize manipulation boundaries than treating
+each frame separately. Guided by this insight, we propose a
+detection framework that leverages the adjacent frame temporal
+dynamics as a primary cue for boundary localization. Our back-
+bone employs a multi-scale gated recurrent unit (MS-GRU) to
+capture the local continuity and temporal dynamics in the frame
+sequence. In addition, we introduce a multi-head loss design
+that jointly trains (i) a frame head for frame-level authenticity
+prediction, (ii) a transition head that classifies adjacent frame
+changes (Real→Fake, Fake→Real, or None), and (iii) a refine-
+ment head that fuses frame scores and transition signals to re-
+fine the final prediction. The transition head encourages the
+model to encode manipulation boundaries more distinctly by
+emphasizing temporal changes across adjacent frames, whereas
+the refinement head integrates both boundary cues and per-
+frame representations to yield a more precise temporally co-
+herent localized output. Through extensive experiments, we
+demonstrate that our approach consistently delivers strong per-
+formance across three partial audio spoofing datasets. In sum-
+mary, the main contributions of this study are as follows:
+• We introduce a transition-aware perspective on PSAL that
+treats temporal changes between adjacent frames as the pri-
+mary cue for localization, going beyond conventional frame-
+wise authenticity or boundary labels.
+• We propose a multi-head learning objective that supervises
+directional transitions and refines frame-level scores into
+temporally coherent localization to realize transition-aware
+perspective.
+• Extensive experiments show that our method achieves
+state-of-the-art localization performance across three PSAL
+Datasets: PartialSpoof Dataset and PartialEdit-E1/E2.
+2. Related Works
+For PSAL, most existing countermeasures (CMs) relied on
+frame-level authenticity as the primary cue for detection [6, 19].
+These systems estimated whether each frame was bona fide
+or spoofed, and then inferred manipulated regions by thresh-
+olding the scores and grouping contiguous high-score frames.
+Early works typically used low-dimensional acoustic features,
+such as MFCC, LFCC, and CQCC, as inputs and combined
+them with classifiers, including LCNN, ResNet, SENet, and
+LSTM, to infer manipulated regions [20, 21]. For instance,
+[22] proposed an LFCC-based SELCNN–BiLSTM multitask
+architecture that strengthened representation learning with a
+CNN front-end while complementing temporal context with
+a BiLSTM module. Building on this line, [23] introduced a
+self-attention–enhanced SELCNN–BiLSTM model that inserts
+a self-attention block between SELCNN and BiLSTM to re-
+fine segment representations, whereas [19] presented a CRNN-
+based framework that jointly captures local acoustic patterns
+and longer-range temporal information.
+As pretrained speech representations became widely
+adopted, front-end embeddings, such as Wav2Vec2 [24] and
+WavLM [25], were increasingly combined with ResNet-,
+LCNN-, or ResBlock-style backbones [16, 26, 27]. This combi-
+nation became one of the dominant approaches in recent PSAL
+systems. The Wav2Vec2–BiLSTM system [28], for instance,
+performed localization by clustering manipulated frames in the
+embedding space. Meanwhile, the multi-granularity fusion
+framework [29] strengthened localization decisions by integrat-
+ing an utterance-level subsystem with a segment-level subsys-
+tem.
+Beyond frame-level authenticity, several methods were pro-
+posed to explicitly emphasize discrepancies between manip-
+ulated and non-manipulated regions in the embedding space.
+TDL [12] enhanced localization cues by introducing an embed-
+ding similarity module that encouraged separability between
+bona fide and spoofed frames. GNCL [13] adopted a dual-
+branch architecture with a CNN branch and a graph-based
+branch and used a consistency loss between them to highlight
+manipulation-related discrepancies for localization. AGO [14]
+mitigated domain shift through a gradient reversal layer and
+adopted an alternating update strategy to jointly exploit region-
+level and boundary-level information for PSAL. PET [15] ex-
+ploited pairwise self-consistency by extracting high-frequency
+components with EWT, constructing frame-wise similarity ma-
+trices, and training an LCNN to regress these self-consistency
+maps. Although these inconsistency-driven approaches allevi-
+ated some limitations of authenticity-based CMs, they still pri-
+marily relied on separating manipulated and non-manipulated
+frames in the embedding space. However, frame-level variation
+is shaped not only by manipulation artifacts but also by intrinsic
+acoustic, phonetic, and prosodic variability in speech. As a re-
+sult, emphasizing embedding discrepancy alone may be insuffi-
+cient to capture the subtle temporal patterns that distinguish ma-
+nipulated regions from naturally varying bona fide speech [30].
+In addition to authenticity- and inconsistency-based mod-
+eling, there was a line of work that explicitly focused on the
+boundaries of spoofed segments. Such boundary-aware ap-
+proaches aimed to capture stitching artifacts at the start and
+end points of spliced regions to reduce the reliance on global
+frame-level authenticity, and empirical analyses showed that
+CMs trained on partially spoofed audio tended to concentrate
+their evidence near these transition regions [31]. A multi-
+task, dual-head architecture with a shared backbone was in-
+troduced in [16], where frame-level spoofing classification and
+boundary detection were jointly optimized, enabling localiza-
+tion by detecting transition points while predicting spoofed
+frames. BAM [17] enhanced partial spoof localization with a
+boundary-aware attention mechanism consisting of a bound-
+ary enhancement module to aggregate intra- and inter-frame
+cues for more discriminative boundary features and a bound-
+ary frame-wise attention module to gate frame-to-frame inter-
+actions guided by predicted boundaries. CFPRF [18] progres-
+sively refined the start and end timestamps of forged segments
+through a coarse-to-fine proposal refinement procedure. How-
+ever, most boundary-driven methods ultimately treated bound-
+aries as point-wise binary labels and supervised CMs to clas-
+sify individual frames or short segments. This formulation did
+not directly encode the manner in which representations should
+change across the boundary region. In contrast, we explicitly
+model adjacent frame transitions (Real→Fake, Fake→Real, or
+None), encouraging the model to learn boundary cues from the
+evolution of representations across neighboring frames.
+3. Proposed Method
+In this section, we describe the proposed framework for the
+PSAL. Figure 2 shows the overall framework. First, we em-
+ploy a pretrained self-supervised learning (SSL) model to ex-
+tract speech features at a 20 ms frame resolution. These speech
+features are fed into MS-GRUs to effectively capture local tem-
+poral continuity across adjacent frames. The resulting hidden
+states are fed into the frame, transition, and refinement heads to
+learn the frame-level authenticity and predict whether each pair
+of adjacent frames corresponds to the manipulation boundary.
+3063
+Waveform 
+XLR-S 
+×L
+LinearBi-GRU
+MS-GRU (Multi Scale GRU) 
+Bi-GRU
+GEGLU
+Gating
+Residual + LN
+Concat
+Linear
+𝐝𝟏
+Conv
+𝐝𝟐 
+Conv
+𝐝𝟑 
+Conv
+GELUGELUGELU
+Linear
+1100 0000 0000 T
+d_model
+Frame
+head
+Transition
+head
+Refinement
+head
+0 1 1 0 0 0 0 0 0000
+𝐋frame
+𝐋trans
+𝐋refine
+𝐡𝐭−𝟏 𝐡𝐭
+Transition 
+head
+Same
+Frame
+(RR, FF)
+Transition
+(R → F)
+Transition
+(F → R)
+Frame 
+head
+Frame 
+head
+R F R F
+Refinement
+head
+Weight Sum
+MS
+GRU 
+Linear 
+proj
+Figure 2:Overall framework of the proposed partially spoofed audio localization method. A pretrained XLS-R front-end first converts
+raw speech into frame-level embeddings, which are processed by the multi-scale GRU (MS-GRU) backbone combining dilated convo-
+lutions and a Bi-GRU. On top of this backbone, a frame head predicts frame-wise authenticity, a transition head models adjacent-frame
+transitions (Real→Fake, Fake→Real, or None), and a refinement head fuses these cues to produce the final localization output.
+3.1. Pretrained Self-Supervised Front-End
+We adopt a pretrained self-supervised speech model,
+Wav2Vec2-based XLS-R-300M [32], as the front-end to
+process raw speech. As the SSL front-end provides repre-
+sentations learned from large-scale unlabeled speech data, it
+encodes richer acoustic and speaking patterns than traditional
+LFCC- or MFCC-based preprocessing. We extract frame-level
+features at a 20 ms resolution using the SSL front-end model.
+The extracted self-supervised speech features are denoted as
+h= (h 1,h 2,...,h T )∈R T×D , whereTandDdenote the
+number of frames and feature dimensions, respectively.
+3.2. Multi-Scale GRU
+The proposed MS-GRU is designed to capture both the local-
+ized variations induced by partial manipulations and the global
+temporal dynamics. To this end, the input sequence is processed
+through two pathways: (i) a 1D convolutional branch that ob-
+serves the signal at multiple temporal scales and (ii) a bidirec-
+tional GRU (Bi-GRU) branch that models the utterance-level
+sequential context. The resulting representations are then dy-
+namically fused at each frame using the GEGLU gating mech-
+anism [33]. Before feeding the frame embeddings into the MS-
+GRU, we apply a linear projection to the frame embeddings to
+map them into the model dimensiondmodel. All subsequent tem-
+poral modeling is performed in an identical dimensional space.
+3.2.1. 1D Convolutional Branch
+In this branch, we useKconvolutional pathways with different
+dilation rates to capture local patterns around each frame. The
+output of thek-th pathway with kernel size3and dilationd k is
+defined as follows:
+˜h(k)
+t =σ
+ 1X
+i=−1
+W (k)
+i ht+idk +b (k)
+!
+.(1)
+Here,σ(·)denotes a nonlinear activation function, such as
+GELU, andW (k)
+i ∈R dmodel×dmodel corresponds to thei-th fil-
+ter coefficient of a dilated 1D convolution with dilationd k. For
+example, when the dilation is set tod k = 3, the correspond-
+ing pathway aggregates information from frames att−3,t,
+andt+ 3, which correspond to±60ms relative to the current
+frame given a 20 ms frame hop. In other words, all pathways
+share the same kernel size; however, by sampling neighboring
+frames at different intervals according todk, they form different
+temporal receptive fields. The multi-scale features are merged
+by a weighted sum with coefficientsα k, obtained by applying
+softmax normalization to learnable logitsu k as follows:
+αk = exp(uk)PK
+j=1 exp(uj)
+, k= 1,...,K,(2)
+whereα k represents the global importance of thek-th dilation
+pathway. The fused feature is then projected tod model dimen-
+sions through linear transformation:
+hconv
+t =W linear
+ KX
+k=1
+αk ˜h(k)
+t
+!
++b linear.(3)
+This allows the model to learn the relative importance of differ-
+ent dilation pathways and to fuse multi-scale information in a
+trainable manner.
+3.2.2. GRU Branch
+In the second branch, we apply a Bi-GRU to the same input se-
+quenceh= (h 1,...,h T )to explicitly model temporal dynam-
+ics and long- and short-term dependencies in the frame order.
+3064
+At each time stept, we concatenate the outputs of the Bi-GRU
+and project them tod model dimensions through a linear layer,
+which is computed as follows:
+hgru
+t =W gru[− →g t;← −g t] +b gru.(4)
+Here,− →g t and← −g t denote the hidden states of the forward and
+backward GRUs, respectively, and[·;·]denotes concatenation
+along the channel dimension. This allows the model to capture
+cues about where the manipulated regions are located within the
+overall utterance and in which temporal direction they evolve.
+3.2.3. Branch Fusion
+The MS-GRU concatenates the two representations obtained
+from the 1D convolutional and Bi-GRU branches and dynam-
+ically fuses them at each frame using a GEGLU-based gating
+mechanism. The final output of MS-GRU is defined by apply-
+ing a residual connection and normalization as follows:
+hMS
+t = LN
+ 
+ht + Dropout
+ 
+GEGLU([hgru
+t ;h conv
+t ])
+
+.(5)
+The GEGLU gate adaptively balances the contributions of the
+two branches, highlighting manipulation-related cues in the
+fused representation while suppressing the irrelevant variations.
+3.3. Loss Function
+We stackLMS-GRU blocks, and the final output is further re-
+fined by applying a feed-forward network and Bi-GRU in par-
+allel to enhance the frame-level representations. We then com-
+bine the two outputs using a weighted average to form the final
+frame-wise featuref t∈R dmodel. Using this feature as input, we
+design a multi-head loss that jointly learns (i) frame-level au-
+thenticity classification, (ii) transition prediction between adja-
+cent frames, and (iii) final authenticity classification that refines
+the two prediction signals.
+3.3.1. Frame Loss
+We feed the final frame-wise featuref t into the frame head to
+produce 2-way logits for bona fide or spoofed at each frame,
+and optimize it with a cross-entropy loss over the valid frames:
+Lframe = 1
+|V|
+X
+t∈V
+CE
+
+zfrm
+t , yt
+
+,(6)
+wherey t∈{0,1}denotes the frame label (0= bona fide,1=
+spoof). This term encourages the model to learn discriminative
+authenticity cues from single-frame representations without ex-
+plicitly relying on neighboring frames. Here,Vdenotes the set
+of valid (non-padded) frame indices.
+3.3.2. Transition Loss
+Partial manipulations typically create junctions where bona
+fide and spoofed segments meet, leading to relatively salient
+changes in the frame representations around these points. To
+learn the boundary cues, the transition head predicts the cor-
+responding transition type using adjacent frame pairs. We de-
+fine three transition labelsb t ∈ {0,1,2}based on the adja-
+cent relationship between frame-level labels: (i) the two frames
+share the same label and thus do not belong to a boundary
+region; (ii) a boundary transition from bona fide to spoofed
+(Real→Fake); and (iii) a boundary transition from spoofed to
+bona fide (Fake→Real). When the first frame has no preceding
+frame, we do not compute a transition prediction fort= 1and
+instead assign a uniform transition distribution.
+bt =
+
+
+
+0ify t−1 =y t,
+1ify t−1 = 0∧y t = 1,
+2ify t−1 = 1∧y t = 0.
+(7)
+The transition head takes the frame representationsf t−1 andf t
+as inputs to construct a pairwise representationϕ t as follows:
+ϕt =
+
+ft−1,f t,|f t−f t−1|,f t⊙f t−1
+
+∈R 4dmodel,(8)
+where[·,·]denotes vector concatenation, and⊙denotes the
+element-wise product. This input is then passed through an
+MLPf tran(·)to produce 3-dimensional transition logits:
+str
+t =f tran(ϕt)∈R 3.(9)
+We train the transition head using a class-weighted cross-
+entropy loss, which is formulated as follows:
+Ltran =
+P
+t∈Pαbt CE(str
+t,b t)P
+t∈Pαbt
+,(10)
+whereα= [α 0,α 1,α 2]∈R 3 is a vector of class-balancing
+weights, andα bt denotes the weight associated with classb t.
+These weights mitigate the dominance of non-boundary pairs,
+andP={t∈V|t >1,t−1∈V}denotes the set of valid
+adjacent-frame pairs. By optimizing this transition loss, the
+model is encouraged to emphasize directional transition cues
+arising from subtle frame-to-frame variations, thereby capturing
+boundary information more sharply than by relying on frame-
+wise authenticity alone.
+3.3.3. Refinement Loss
+The key motivation of the refinement loss is that the two heads
+provide complementary signals: the frame head captures per-
+frame authenticity evidence, whereas the transition head indi-
+cates whether the current frame is likely to be located near a
+boundary where splicing artifacts are concentrated. When the
+frame-level evidence is ambiguous but the boundary probabili-
+ties are high, the refinement head can use the transition cue to
+correct or sharpen the final authenticity prediction. For non-
+boundary regions, it can rely more on frame-level evidence.
+This design encourages the model to jointly exploit authenticity
+and boundary cues for more reliable localization. To this end,
+we use the final frame-wise featureft along with the frame-head
+probabilityp frame
+t and the transition probabilities for the pair
+(t−1,t), namelyp RF
+t (Real→Fake) andp FR
+t (Fake→Real), as
+inputs of the refinement head, which is formulated as follows:
+xt = [ft, pframe
+t , pRF
+t , pFR
+t ]∈R dmodel+3,(11)
+r=f ref(x1:T )∈R T,(12)
+wherer= [r 1,...,r T ]andr t denotes the logit from the re-
+finement head for the frame-level authenticity at timet. We op-
+timize the refinement head using weighted binary cross-entropy
+over valid frames as follows:
+Lref =
+P
+t∈Vwt BCEWithLogits(rt,y t)P
+t∈Vwt
+,(13)
+wherew t is a frame-level weight that emphasizes the ground-
+truth boundaries frames so that boundary regions contribute
+more to the refined supervision.
+3065
+Table 1:Dataset composition by split. PartialEdit-E1 and E2
+follow the identical split configuration.
+DatasetSplit Bona fide Fake
+PartialSpoof
+Train 2,580 22,800
+Dev 2,548 22,296
+Eval 7,355 63,882
+PartialEdit
+Train 8,262 8,262
+Dev 7,915 7,915
+Eval 27,593 27,593
+3.3.4. Overall Loss
+The overall lossLis defined as a combination of the frame loss
+Lframe, transition lossL tran, and refinement lossL ref as follows:
+L=L frame +λ tranLtran +λ refLref,(14)
+whereλ tran andλ ref denote the ratios of the transition and re-
+finement losses, respectively, which determine the contribution
+of each loss.
+4. Experiments
+4.1. Experimental Setting
+4.1.1. Datasets
+To validate the effectiveness of the proposed method, we con-
+duct experiments on three partial audio deepfake datasets: Par-
+tialSpoof Dataset (PSD) [7, 8], PartialEdit-E1, and PartialEdit-
+E2 [11]. For the PSD, we follow the official protocol and
+use the provided train/dev/eval splits for training and evalu-
+ation. For PartialEdit, we construct the data splits in accor-
+dance with the original paper using the speaker partition meta-
+data of ASVspoof 2019. Specifically, we assign 20, 20, and 68
+speakers to the train, dev, and eval sets, respectively, ensuring
+a speaker-disjoint setup in which no speaker appears in more
+than one split. As PartialEdit does not provide bona fide speech
+recordings, we construct the bona fide set using the VCTK
+dataset [34], following the identical speaker-disjoint split pro-
+tocol reported in the original PartialEdit paper. The detailed
+dataset split configurations are summarized in Table 1. All ex-
+periments are conducted at a fine-grained temporal resolution
+of 2

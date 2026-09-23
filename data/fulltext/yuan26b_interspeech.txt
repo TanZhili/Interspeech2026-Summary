@@ -1,0 +1,489 @@
+DelayGSE: A Generative Speech Enhancement Framework with Delayed
+Text-Aware Conditioning
+Xin Yuan ID 1, Junling Lv ID 1, Zezhou Xu ID 2, Xingjun Tan ID 1, Liangliang Li ID 1, Yanqiang Lei ID 1,∗∗
+1 Guangzhou Shiyuan Electronic Technology Company Limited, Guangzhou, China
+2 Shanghai University of Finance and Economics, Shanghai, China
+yuanxin14959@cvte.com, lvjunling@cvte.com, xuzezhou@163.sufe.edu.cn,
+tanxingjun@cvte.com, liliangliang@cvte.com, leiyanqiang@cvte.com
+Abstract
+Recent generative speech enhancement methods based on lan-
+guage and diffusion models achieve strong perceptual qual-
+ity but are more susceptible than discriminative approaches
+to speech-like hallucinations under low SNRs and transient
+noise. We propose DelayGSE, a text-aware generative
+speech enhancement framework built on a multi-codebook lan-
+guage model for denoising, dereverberation, and audio super-
+resolution. DelayGSE conditions on noisy-speech STFT fea-
+tures and Whisper encoder representations, and models multi-
+ple discrete codebooks in a delayed manner to stabilize gen-
+eration. A text-aware mechanism suppresses hallucinations,
+while an importance-aware codebook weighting strategy bal-
+ances perceptual fidelity and semantic consistency. Experi-
+ments demonstrate state-of-the-art performance, with ablations
+showing effective hallucination suppression and a 15.8% rela-
+tive word error rate reduction. Audio samples are available at
+https://delaygse.github.io/.
+Index Terms: generative speech enhancement, text-aware
+modeling, hallucination suppression
+1. Introduction
+Speech enhancement aims to improve the clarity and intelligi-
+bility of speech signals and is fundamental to real-time com-
+munications, entertainment, and human–computer interaction.
+With the rapid progress of deep learning, substantial advances
+have been achieved over the past decades. Early approaches
+mainly relied on masking- or mapping-based strategies, where
+neural networks estimate time–frequency masks or directly map
+noisy speech to clean targets [1]. Later, generative adversarial
+networks (GANs) introduced perceptually driven training ob-
+jectives, yielding more natural-sounding enhanced speech [2].
+Recently, generative models—in particular diffusion mod-
+els and large language model (LLM)–style architectures—have
+reshaped speech synthesis and inspired a new paradigm for
+speech enhancement [3, 4, 5, 6]. Instead of explicitly suppress-
+ing noise or reconstructing waveforms, generative speech en-
+hancement aims to model the underlying distribution of clean
+speech and generate enhanced outputs with both high intelli-
+gibility and perceptual quality. This shift has demonstrated
+the potential to approach studio-level audio quality, often sur-
+passing the perceptual limits of traditional discriminative meth-
+ods [7, 8, 9, 10, 11, 12, 13].
+Existing generative speech enhancement methods can be
+broadly divided into two categories. The first category oper-
+ates in continuous acoustic feature spaces, such as short-time
+Fourier transform (STFT) spectra, and is largely motivated by
+**indicates the corresponding author.
+diffusion and probability flow models developed for image gen-
+eration. These methods treat noisy speech as a corrupted obser-
+vation and learn a reverse generative process that maps noise
+distributions back to clean speech [5, 7, 8]. Representative
+examples include StoRM, which combines discriminative pre-
+dictors with diffusion-based refinement to improve robustness
+under extremely low-SNR conditions [5], and FlowSE, which
+adopts conditional flow matching to learn a continuous trans-
+formation path from noisy to clean speech with only a few sam-
+pling steps, making it attractive for low-latency scenarios [8].
+The second category is based on discrete token modeling,
+inspired by the success of LLMs and neural audio codecs. In
+this formulation, speech enhancement is cast as a conditional
+sequence modeling problem: noisy speech serves as condition-
+ing input, and an autoregressive or masked generative model
+predicts sequences of clean speech tokens that are subsequently
+decoded into waveforms [6, 10, 11, 12, 13]. While these ap-
+proaches often achieve strong perceptual quality, recent studies
+report a consistent degradation in semantic accuracy, with in-
+creased word error rates (WER) compared to the original noisy
+speech, regardless of the specific generative strategy or speech
+representation used [11].
+Despite their perceptual advantages, generative models are
+prone to speech-like hallucinations under low-SNR or transient
+noise, producing fluent but semantically incorrect or unintel-
+ligible speech [11, 14]. To address this limitation, we pro-
+poseDelayGSE, a text-aware generative speech enhancement
+framework based on multi-codebook discrete representations.
+By introducing delayed text supervision, the approach con-
+strains semantic generation while preserving generative flexi-
+bility, improving intelligibility and robustness without sacrific-
+ing perceptual quality. An importance-aware codebook weight-
+ing strategy is further adopted to balance perceptual quality,
+intelligibility, and speaker similarity during training. Textual
+guidance can be optionally applied at inference to improve ro-
+bustness under extremely low-SNR conditions. Moreover, De-
+layGSE supports denoising, dereverberation, and audio super-
+resolution within a unified framework.
+The main contributions of this work are summarized below:
+• A delay-based text-aware generative speech enhancement
+method is presented, which mitigates hallucination artifacts
+by adopting a semantic-before-acoustic generation order.
+• An importance-aware weighting strategy for multi-codebook
+modeling is introduced to balance perceptual quality, intelli-
+gibility, and speaker similarity during training.
+• A unified generative framework for multiple speech restora-
+tion tasks is demonstrated, enabling both speech enhance-
+ment and audio super-resolution within a single model.
+1790
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-232
+Whisper 
+Encoder
+STFT Encoder
+Noise speech (16khz)
+Autoregressive Transformer
+Sequence steps (t)
+Codebooks (n is 4)
+STFT feats
+Concat
+Hidden states    Cross Attention
+RVQ Codec
+Clean speech (44.1khz)
+B
+B
+B
+B P
+P
+P
+P
+P
+P
+P
+P
+P
+PPP E
+E
+E
+E
+S11 S21 S31 S41 S51
+S12 S22 S32 S42
+S13 S23
+S14 S24
+S33
+.....
+.....
+.....
+.....
+St2
+St-1,3 St3
+St4St-2,4 St-1,4
+B .....T1 PADT2
+T : Text Token 
+PAD EPAD
+S : Speech Token PAD EPAD B PE: Begin : End: Pad Text : End Pad Text : Pad
+P
+P
+P
+P
+PADT3 T4 T5 T6
+Figure 1:DelayGSE framework. An STFT acoustic encoder and a pretrained Whisper semantic encoder condition an autoregressive
+Transformer that predicts RVQ tokens. We employ (i) codebook-level delay (stride-1 lower→higher conditioning) and (ii) text-first
+delayed text-aware generation (predict text tokens, delay acoustic tokens byk) to suppress hallucinations. (Shown with 4 codebooks.)
+2. Methods
+2.1. Framework Overview
+Our method builds upon an autoregressive Transformer frame-
+work that models the conditional distribution from degraded to
+clean speech within a discrete audio token space. Fig. 1 pro-
+vides an overview of the proposed DelayGSE architecture.
+Given a degraded waveformx, the target clean speech
+yis first quantized into a sequence of discrete tokensz=
+(z1,...,z T )using a neural audio codec. The model is trained
+to estimate the conditional probability
+pθ(z|x) =
+TY
+t=1
+pθ (zt|z <t,A,S),(1)
+whereA=E STFT(x)denotes acoustic features extracted by
+an STFT encoder consisting of 4 Conformer layers [15], and
+S=E Whisper(x)denotes semantic features obtained from a pre-
+trained Whisper v3 (large) encoder [16].
+The Transformer decoder generates the discrete tokens au-
+toregressively. The acoustic conditionAis injected via con-
+catenation with token embeddings, while the semantic condi-
+tionSis incorporated through cross-attention. After generation,
+the discrete sequencezis converted back into a waveformˆyby
+the codec decoder.
+The following subsections detail the key design choices of
+each component in the proposed framework.
+2.2. Audio Codec
+Audio language models require a front-end codec that com-
+presses continuous waveforms and quantizes them into dis-
+crete tokens suitable for sequence modeling. Neural audio
+codecs (NACs)—end-to-end convolutional autoencoders with
+residual vector quantization (RVQ)—achieve high-fidelity re-
+construction at low bitrates while emitting discrete codebook
+indices [17]. Recent surveys systematically compare discrete
+audio tokenizers across speech, music, and general audio, high-
+lighting the relationship between token quality and downstream
+task performance [18].
+To preserve high-frequency details and enable broader ap-
+plicability, we employ the 44.1 kHz Descript Audio Codec
+(DAC) as the front-end audio representation. In our simulation
+pipeline, all clean speech signals are sampled above 24 kHz,
+with a substantial portion at 44.1 kHz. Operating in this high-
+rate discrete token space allows the proposed framework to
+naturally support both speech enhancement and audio super-
+resolution within a unified generative model.
+Since our codec employs RVQ withLcodebooks, the con-
+ditional factorization can be written as
+pθ(z1:L|x) =
+TY
+t=1
+LY
+ℓ=1
+pθ
+
+z(ℓ)
+t |z <t,1:L,A,S
+
+,(2)
+wherez (ℓ)
+t denotes the token from theℓ-th codebook at stept.
+2.3. Delay Pattern
+Language modeling over discrete tokens derived from neural
+codecs typically employs multi-codebook parallel or hierarchi-
+cal prediction schemes. To model cross-codebook dependen-
+cies effectively within a single-stage autoregressive decoder,
+MusicGen introduces fixed-stride delays across codebooks, en-
+abling higher-level codebooks to be predicted conditional on
+lower-level ones [19]. This delay regime balances inference
+parallelism and output quality, and has been adopted by sub-
+sequent speech generation models such as Parler-TTS [20] and
+V oiceCraft [21].
+A different notion of delay arises in end-to-end spoken dia-
+logue systems. Moshi formulates dialogue as speech-to-speech
+generation, but first predicts time-aligned text tokens as an inter-
+mediate semantic plan (the so-called inner monologue), before
+emitting acoustic tokens [22]. In this formulation, text predic-
+tion is explicitly delayed ahead of acoustic generation, enforc-
+ing a semantic-before-acoustic generation order.
+2.4. Delay-based Modeling
+Motivated by the above delay mechanisms, we incorporate two
+complementary delay strategies into our framework:codebook-
+level delayandtext-first multi-task delay.
+1791
+For the Codebook-level delay, we follow MusicGen [19],
+RVQ codebooks are predicted with a stride-1 offset:
+pθ(z1:L|x) =
+TY
+t=1
+LY
+ℓ=1
+pθ
+ 
+z(ℓ)
+t |z<t,1:L,z t,1:ℓ−1,A,S
+
+.
+(3)
+For the Text-first multi-task delay, inspired by Moshi [22],
+text tokenscare generated first, while speech tokens are de-
+layed byk= 5steps to enforce a “semantic-before-acoustic”
+generation order:
+pθ(c,z 1:L|x) =p θ(c|x)·p θ(z1:L|x,c),(4)
+pθ(z1:L|x,c) =
+TY
+t=1
+LY
+ℓ=1
+pθ
+ 
+z(ℓ)
+t |z<t,1:L,z t,1:ℓ−1,
+c≤t+k,A,S
+
+.
+(5)
+During training, we adopt teacher forcing and minimize the
+cross-entropy loss over the discrete tokens.
+The overall training objective jointly optimizes semantic
+and acoustic predictions through a weighted multi-task loss:
+Ltotal =λ textLtext +
+LX
+ℓ=1
+wℓL(ℓ)
+speech.(6)
+The text prediction loss is defined as:
+Ltext =− 1
+Tc
+TcX
+t=1
+logpθ (c⋆
+t|c ⋆
+<t,A,S).(7)
+For theℓ-th speech codebook, the acoustic prediction loss
+is given by:
+L(ℓ)
+speech =− 1
+T
+TX
+t=1
+logpθ
+
+z(ℓ)⋆
+t
+ z⋆
+<t,1:L,z ⋆
+t,1:ℓ−1,
+c⋆
+≤t+k,A,S
+
+.
+(8)
+Here,(·) ⋆ denotes the ground-truth token, andw ℓ repre-
+sents the loss weight for theℓ-th codebook.
+2.5. Importance-aware Codebook Weighting
+In RVQ, lower-level codebooks tend to play a more critical role
+in speech intelligibility, whereas higher-level codebooks pri-
+marily affect perceptual quality and timbre fidelity [18]. Mo-
+tivated by this observation, we propose anincremental contri-
+butionstrategy to estimate the relative importance of each RVQ
+layer and derive the corresponding loss weightswℓ (Fig. 2).
+Specifically, we randomly sample 100,000 audio clips and
+encode them intoLRVQ layers. We first obtain a baseline score
+by decoding the audio after randomizing all codebook layers.
+Then, starting from the first layer, we progressively preserve the
+ground-truth codes of the firstℓlayers while randomizing the
+remaining layers, and compute the reconstruction scores. The
+importance of theℓ-th codebook is defined as the incremental
+score improvement introduced by retaining this layer. Finally,
+these incremental gains are averaged over the sampled set and
+normalized to produce the training weightswℓ.
+RVQ Encoder & Quantizer
+P
+P
+P
+P
+P P
+RVQ Decoder
+CB1
+CB2
+CB3
+CB4
+Metric (STOI, Sim, MOS)
+�1 �2 �3 �4
+Weights �2−�1
+�3−�2
+�4−�3
+P
+P
+P
+P
+��
+�1−��
+Figure 2:Illustration of estimating the importance of each
+RVQ codebook layer using perceptual quality, intelligibility,
+and speaker similarity metrics (denoted asp), which are then
+used to weight the LLM training loss (CB denotes CodeBook).
+3. Experiments
+3.1. Experiment Setup
+The autoregressive model was initialized from Qwen 2.5
+0.5B [23]. The input noisy speech was sampled at 16 kHz, and
+STFT was computed using a Hann window withnfft = 512and
+hop size 256, followed by a 4-layer Conformer encoder. Train-
+ing used only cross-entropy loss, with the Whisper encoder
+frozen and the STFT encoder jointly trained with the autore-
+gressive model. Optimization employed Adam with a learning
+rate of5×10 −4, 5,000-step warm-up, cosine decay, dynamic
+batching of∼40 s audio per batch, and 300,000 training steps.
+Following Section 2.5, perceptual quality, speaker similar-
+ity, and intelligibility were used to determine the loss weights
+wℓ, yielding [0.30, 0.13, 0.12, 0.10, 0.08, 0.09, 0.09, 0.06,
+0.03]. The text loss weight was set toλ text = 0.3.
+3.2. Datasets and Evaluation metrics
+Our training data was acquired through simulation. As indi-
+cated in Tables 1 and 2, the clean data amount to more than
+30,000 hours, while the noise data total approximately 600
+hours. In addition, we produced 700,000 reverberated samples
+by simulating environments of large, medium, and small meet-
+ing rooms.
+The evaluation set comprised the public datasets DNS Chal-
+lenge [26], VCTK-DEMAND [27], and URGENT 2025 (a sub-
+set containing only Chinese and English) [28], together with an
+internal meeting-room dataset of 258 recordings. The internal
+recordings were captured in several large, medium, and small
+conference rooms at close-talk, 3 m, 5 m, and 8 m distances
+under quiet, steady-state, and transient noise conditions.
+Perceptual quality was evaluated using DNSMOS
+P.808 [29], while intelligibility was measured by the word error
+rate (WER) with the FireRedASR [30]. Speaker similarity
+(SIM) was measured by the cosine similarity between em-
+beddings extracted from the enhanced audio and a registered
+1792
+Table 3:Comparison of Objective Metrics (MOS, WER, SIM) Across Different Models and Datasets (NR = No Reverb, WR = With
+Reverb, RR = Real Recording). MOS scores are evaluated using DNSMOS.
+Internal VCTK-DEMAND DNS Challenge URGENT 2025
+MOS↑WER↓SIM↑ MOS↑WER↓SIM↑ MOS↑ MOS↑ WER↓ SIM↑NR WR RR EN ZH
+Noise 2.484 0.041 0.347 3.037 0.070 0.691 3.138 2.751 3.018 2.742 0.180 0.131 0.697
+GAN-based 3.639 0.096 0.192 3.525 0.0710.668 3.992 3.610 3.636 3.252 0.286 0.513 0.641
+Storm 3.353 0.724 0.131 3.592 0.074 0.632 4.001 3.142 3.494 3.229 0.371 0.572 0.559
+FlowSE 3.255 0.147 0.244 3.564 0.079 0.625 3.960 3.298 3.509 3.167 0.334 0.305 0.598
+LLaSE-G1 3.817 0.411 0.250 3.526 0.121 0.620 4.093 3.951 3.725 3.451 0.353 0.507 0.596
+DGSE-EW 4.007 0.120 0.298 3.728 0.086 0.571 4.172 4.087 3.830 3.650 0.242 0.191 0.562
+DGSE-IW 4.0430.0990.344 3.7380.072 0.607 4.202 4.1463.752 3.746 0.218 0.1560.661
+DGSE-IW+T 4.040 0.063 0.324 3.726 0.066 0.573 4.166 4.117 3.840 3.7720.196 0.143 0.634
+DGSE-IW+TG 4.0340.0430.323 3.732 0.0630.573 No Reference Text 3.771 0.153 0.1040.637
+Table 1:Statistics of Clean Datasets (30,292 hours)
+Data Source Language Duration (h)
+In-house (purchased) Chinese 165.4
+HiFi-TTS [24] English 291.6
+LibriTTS-R [25] English 585.0
+In-house (cleaned) Chinese 29250.0
+clean reference sample [31]. Conventional intrusive metrics
+(e.g., PESQ) were not adopted, as they rely on strict waveform
+alignment and may be unreliable for generative models [8].
+3.3. Results and Analysis
+We compared DelayGSE with three representative open-
+source generative speech enhancement models:StoRM[5],
+FlowSE[8], andLLaSE-G1[12], covering diffusion- and
+LLM-based paradigms. An internally trainedGAN-based
+baseline with a CMGAN-like architecture was also in-
+cluded [32]. In addition, several ablated variants of the pro-
+posedDelayGSEframework were evaluated:
+•DGSE-EW:DelayGSEwithEqual-Weight training, where
+all RVQ codebooks share equal CE loss weights.
+•DGSE-IW:DelayGSEwithImportance-Weight training us-
+ing the scheme in Section 2.5.
+•DGSE-IW+T:DGSE-IWaugmented with delayedText-
+aware supervision.
+•DGSE-IW+TG:DGSE-IW+Twith inference conditioned
+onGround-truth text.
+Table 3 summarizes the objective evaluation results. The
+GAN baseline shows stable performance under noise and re-
+verberation but consistently lags behind LLM-based models in
+perceptual quality, indicating limited fine-grained modeling ca-
+pacity. Diffusion-based methods (StoRM and FlowSE) achieve
+competitive results but degrade noticeably under reverberation,
+leading to inconsistent performance across datasets. LLaSE-G1
+obtains high perceptual scores on several benchmarks, yet in-
+curs substantially higher WER, reflecting a preference for wave-
+form naturalness over linguistic fidelity.
+In contrast, DelayGSE achieves a more balanced perfor-
+mance profile. The importance-weighted variant (DGSE-IW)
+consistently attains the best or near-best perceptual quality and
+timbre similarity while maintaining competitive WER across all
+conditions. Compared with continuous-feature generative mod-
+els, DelayGSE exhibits improved robustness to noise and rever-
+Table 2:Statistics of Noise Datasets (589 hours)
+Data Source Environment Duration (h)
+WHAM [33] Various 20.0
+FSD50K [34] Various 108.3
+In-house recording Conference 461.4
+beration and avoids the intelligibility degradation observed in
+LLM-based waveform generation. This advantage is attributed
+to its discrete, multi-codebook token representation, which bet-
+ter preserves phonetic and lexical information.
+Ablation studies further validate each design choice.
+Importance-aware weighting outperforms equal-weight train-
+ing by accounting for unequal semantic contributions across
+RVQ layers and mitigating gradient conflicts. Delayed text-
+aware supervision reduces WER by 15.8% relative by enforcing
+a semantic-before-acoustic generation order, which constrains
+downstream acoustic prediction and effectively suppresses hal-
+lucinations with minimal perceptual impact. Conditioning on
+ground-truth text at inference yields a larger WER reduction of
+33.1%, representing an upper bound on intelligibility restora-
+tion under severe degradation. Additional tests with random
+text confirm that the model primarily relies on acoustic cues
+when inputs are reliable and selectively leverages textual infor-
+mation only under highly distorted conditions.
+Overall, these results show that DelayGSE achieves a su-
+perior trade-off among perceptual quality, robustness, and in-
+telligibility. By integrating importance-aware weighting and
+delayed text-aware supervision within a discrete generative
+framework, the proposed method effectively bridges robust
+GAN-based baselines and perceptually strong LLM-based ap-
+proaches.
+4. Conclusion
+We present DelayGSE, a generative speech enhancement frame-
+work with delayed text-aware supervision and importance-
+aware codebook weighting. Experiments show that delayed
+text-aware supervision reduces hallucination-like artifacts and
+improves recognition accuracy, while codebook weighting ac-
+celerates convergence and enhances perceptual quality. The
+model also supports optional text conditioning for severely de-
+graded speech. Future work will focus on reducing latency and
+extending the approach to broader multilingual scenarios.
+1793
+5. Generative AI Use Disclosure
+Generative AI tools were used solely for minor grammatical
+proofreading and language polishing of this manuscript. No AI
+tools were used for research, experimental design, data analysis,
+or content generation.

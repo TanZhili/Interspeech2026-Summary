@@ -1,0 +1,422 @@
+Sub-Model Short-Term Memory Convolutions for Keyword Spotting Systems
+on Device
+Paweł Warlewski1, Artur Czeczko1, Artur Szumaczuk1, Grzegorz Stefa´nski2, Szymon Klimaszewski1
+1 Samsung R&D Institute Poland
+2 Samsung AI Center Warsaw
+{p.warlewski2, a.czeczko, a.szumaczuk, g.stefanski, s.klimaszews}@samsung.com
+Abstract
+Keyword Spotting (KWS) is becoming increasingly important
+as voice-controlled devices grow more widespread. While voice
+interaction with smartphones and smart TVs is already com-
+mon, deploying KWS on heavily resource-constrained edge de-
+vices such as wearables remains challenging. These systems
+must meet high accuracy requirements while operating under
+strict constraints on computational power, memory footprint,
+and real-time latency. In this work, we present an application
+of the STMC (Short-Term Memory Convolutions) framework
+to adapt a modular CNN model for online, LSTM-like infer-
+ence. Our approach reduces power consumption and redundant
+computations while maintaining the stability and simplicity of
+training CNNs. We achieve up to 82% and 46% MCPS reduc-
+tion compared to equivalently frequent standard CNN execu-
+tion and vanilla STMC, respectively. The best configuration
+achieves 93.8% accuracy on the 11-class Google Speech Com-
+mands task and 97.1% on the same task with zero-padded data.
+Index Terms: keyword spotting, audio classification, convolu-
+tional neural network, edge device
+1. Introduction
+Keyword Spotting (KWS) is a well-defined task of detecting a
+phrase or a set of phrases within the incoming audio stream.
+The task is becoming increasingly popular thanks to the advent
+of voice-controlled devices, e.g., TVs, smartphones, etc. The
+problem becomes progressively more difficult when available
+resources such as computational power and memory become
+scarce, as in the case of wearable devices. To tackle the heav-
+ily resource-constrained KWS task, the researchers have widely
+adopted CNNs, which are known for their small memory foot-
+print and proven performance across various tasks [1]. A va-
+riety of architectures have been proposed, including ResNet-
+based models [2], custom strided CNNs [3], MatchboxNet [4],
+depthwise separable CNNs [5, 6], or even small MLP networks
+[7]. Recently, the KWS task has also been tackled using trans-
+formers [8, 9], but high computational complexity and memory
+footprints make them inadequate for resource-constrained en-
+vironments, such as wireless earbuds or smartwatches. Recent
+TinyML efforts, such as MCUNet [10], demonstrate the feasi-
+bility of deep learning on microcontrollers under strict memory
+constraints.
+A practical KWS system must perform inference with high
+temporal granularity on a continuous audio stream since the tar-
+get phrases can be very short and may occur at any time in the
+incoming signal. Ensuring a small memory footprint using a
+vanilla CNN requires running the model in a sliding-window
+fashion with a small hop for high granularity. This setting intro-
+duces a lot of redundant calculations and may violate the com-
+putational power restriction. Recently, the Short-Term Memory
+Convolutions (STMC) framework [11] was proposed to tackle
+the issue by buffering intermediate results and reusing them
+when necessary. A slight increase in the memory footprint al-
+lowed the reduction of computational overhead and the trans-
+formation of the CNN into an LSTM-like model. Thanks to ad-
+ditional memory, the STMC CNNs can process input in chunks
+much smaller than the receptive field, which reduces the size of
+the required input buffer to balance the memory footprint. Since
+fully sequential input processing is not required for KWS, fur-
+ther optimizations and footprint reductions are possible.
+The contributions of this paper are as follows: (1) Propose
+a small-footprint CNN architecture that achieves good perfor-
+mance on well-established data. (2) Adopt the CNN architec-
+ture to the online keyword spotting task via extending and op-
+timizing the STMC scheme to further reduce model footprint
+while preserving accuracy.
+2. Method
+This section introduces SM-STMC (Sub-Model Short-Term
+Memory Convolutions), an optimization of STMC that reduces
+redundant computations in online convolutional networks.
+2.1. State Redundancy in the Classical Approach
+STMC introduces temporal memory buffers for each convolu-
+tional and pooling layer. This mechanism caches intermediate
+activations from previous time steps and reuses them in subse-
+quent computations, enabling online CNN inference with negli-
+gible computational overhead. The original motivation for this
+design was frame-synchronous tasks such as speech enhance-
+ment, where producing an output for every incoming frame is
+both necessary and desirable.
+However, when STMC is applied to an architecture con-
+taining pooling layers, the buffering strategy leads to additional
+temporal states whose usefulness depends on the target task. In
+particular, a max-pooling operation with a stride greater than
+one increases the number of internal temporal states by a factor
+equal to the stride. STMC is explicitly designed so that each in-
+coming input frame yields a valid network output, and all states
+produced by the buffering mechanism therefore correspond to
+well-defined CNN computations.
+For classification-style problems, or other tasks where an
+output update is not required at every frame, many of these in-
+termediate temporal states become unnecessary. Although they
+contain valid information and correctly propagate pooled acti-
+vations over time, they do not provide any additional benefit
+when predictions are only consumed at a lower temporal reso-
+lution. In such settings, maintaining all pooled states introduces
+redundancy from the perspective of the downstream task.
+4077
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1343
+This behavior is illustrated in Figure 1, where a pooling
+layer with a stride of 2 produces two alternating temporal states.
+Both states are required to preserve the correct temporal evolu-
+tion of features, but only one may be relevant for producing a
+classification decision at a given evaluation point.
+Figure 1:New states after pooling layer with the stride of 2.
+More generally, for a network withNpooling layers of
+strideS, STMC cycles throughS N internal temporal config-
+urations. All of these states correspond to valid network eval-
+uations and are necessary to support frame-level output gener-
+ation. Nevertheless, in tasks where outputs are only required
+sporadically (e.g., sequence-level classification), many of these
+states do not contribute any additional useful information to
+the final decision and can be viewed as redundant from a task-
+driven perspective.
+2.2. Sub-model Decomposition and State Scheduling
+SM-STMC reduces state redundancy by decomposing the con-
+volutional backbone into a sequence of sub-models, each end-
+ing with either a pooling layer or an original output layer. Each
+sub-model corresponds to an adequate convolutional block and
+is executed independently.
+These sub-models do not share layers or weights. Instead,
+they are connected through memory buffers, as in the original
+formulation. This decomposition preserves the original data
+flow and, if the sub-models are executed consecutively, the orig-
+inal network structure.
+Given the architecture of the model, we can schedule the
+order in which the sub-models are executed. LetNdenote the
+number of pooling layers plus the output layer. At time stept,
+SM-STMC selects the deepest sub-model that should be exe-
+cuted at the current iteration. Letn∈{0,1, . . . , N−1}. The
+index of the final sub-model executed at iterationtis given by:
+n∗ = max
+n
+n|tmod 2 n = 2 n−1
+o
+(1)
+This approach is conceptually related to early-exit methods
+(e.g., BranchyNet [12]), in which the execution path is dictated
+by the current internal state.
+The right side of Figure 2 illustrates this process for a net-
+work with three convolutional blocks.
+Figure 2:Difference between STMC (left) and SM-STMC
+(right).
+In standard STMC (left side of Figure 2), all blocks are ac-
+tive at every time step. In SM-STMC (right side), the execution
+schedule becomes: (1) block 1, (2) block 1→block 2, (3) block
+1, (4) block 1→block 2→block 3.
+2.3. Memory Management and Computational Complexity
+SM-STMC uses the same memory management principles as
+traditional STMC, but excludes memory associated with redun-
+dant states. Execution of the sub-model alters only its corre-
+sponding memory buffers. With this scheme, memory is allo-
+cated and accessed as if only a single temporal state were main-
+tained.
+This approach utilizes the whole network only once every
+2N steps. Intermediate steps execute fractions of the total com-
+putation, substantially reducing the workload. As a result, the
+average number of executed layers per time step is reduced,
+leading to a proportional reduction in operations. This reduc-
+tion scales with network depth, while the latency and alignment
+remain unchanged.
+2.4. Training and Deployment
+STMC and SM-STMC do not require re-training. The convolu-
+tional backbone is trained independently using standard meth-
+ods. During evaluation, STMC is applied as a deterministic
+temporal extension of the trained network. This approach does
+not incorporate any additional weights or parameters.
+SM-STMC is implemented using multiple independent
+sub-models rather than dynamic conditional execution within a
+single model. This design avoids runtime control flow, which is
+unsupported by common deployment frameworks such as Ten-
+sorFlow Lite. As a result, the method ensures compatibility
+with standard conversion pipelines and enables efficient deploy-
+ment, provided that memory management and scheduling are
+implemented on the target device.
+3. Experiments
+This section evaluates the proposed SM-STMC method in terms
+of recognition performance and computational efficiency. We
+compare four approaches: (1) a standard VGG-based (Visual
+Geometry Group) [13] acoustic embedding with an MLP clas-
+sifier, (2) the same VGG model evaluated eight times per sec-
+ond using a sliding-window scheme, (3) standard STMC with
+the same MLP classifier, and (4) the proposed SM-STMC with
+the same classifier.
+In all cases, except the first, we evaluated the classifier eight
+times per second. With the STMC-based approach, we can in-
+voke the classifier after every time bin, but this is not required.
+Instead, we did it every eight frames, resulting in 7.8125 infer-
+ences per second.
+All evaluations were conducted on two different models
+with different numbers of states. The results were also com-
+pared with a conventional LSTM network.
+3.1. Dataset and Experimental Setup
+Training and evaluation were conducted on the Google Speech
+Commands (GSC) [14] dataset, with 10 target classes (“Yes”,
+“No”, “Up”, “Down”, “Left”, “Right”, “On”, “Off’, “Stop”, and
+“Go”), the rest of the classes served as negative class for the
+contrast. Two evaluation sets were used: (1) the standard GSC
+test dataset, where each sample was 1 second long, and (2) a
+modified dataset where 0.5 seconds of silence was added to both
+4078
+the beginning and the end of each sample, resulting in 2 seconds
+of audio. The purpose of the second dataset is to showcase the
+limitations of the offline approach. In such cases, the target
+word may be only partially contained within the input window,
+resulting in incorrect negative prediction.
+The first VGG backbone model has a receptive field of 41
+temporal frames, and the second has a receptive field of 38. In-
+put audio is preprocessed into a Mel spectrogram using a win-
+dow size of 1024 samples and a hop size of 256 samples, result-
+ing in 62.5 temporal bins per second. Frames corresponding to
+one second of audio are then fed as an input to the model. In
+two seconds, this would result in two full input buffers.
+The VGG backbone was trained offline using a standard su-
+pervised training scheme. STMC and SM-STMC are inference-
+time techniques that require no additional retraining, so the
+original set of weights was applied. All approaches use the same
+MLP classifier as well.
+To demonstrate the effectiveness of this method in an on-
+line setting, we evaluate the STMC classifiers eight times per
+second. To match the setup for the vanilla VGG model, we
+evaluated it using a sliding-window scheme at the same tempo-
+ral rate.
+Since STMC and SM-STMC achieve identical recognition
+performance, we report results for only one of them.
+The on-device experiments were run on the ARM Cortex-
+M55 CPU at 196 MHz. Its crucial feature is M-Profile Vector
+Extension (MVE), also called ARM Helium. MVE uses 128-
+bit registers, allowing up to 16 parallel operations in int8 data,
+the type our models are quantized to using standard integer-
+only inference techniques [15]. To further reduce memory con-
+sumption, TensorFlow Lite Micro [16] has been chosen as the
+deployment framework, optimizing MCU inferences using li-
+braries such as CMSIS-NN [17].
+3.2. Parameters
+Table 1 summarizes the number of parameters for each model
+configuration. Embedding consists of multiple convolutional
+blocks, and the parameters for each individual block are re-
+ported. STMC-based methods use additional memory buffers
+with a size depending on the kernel, filters, and mels. In the
+standard STMC, these values are also multiplied by the number
+of states. The size of these temporal memory buffers is reported
+in Table 2. STMC 1 has a total of 4 states, while STMC 2 has a
+total of 8 states. Superscripts 1 and 2 denote the first and second
+backbone configurations, respectively.
+Table 1:Parameters of the backbone’s embedding and classifier.
+Model Emb Cls Total
+SM-STMC1 513 + 1776 + 6496 18443 27228
+SM-STMC2 105 + 816 + 1472 + 12064 18443 32900
+LSTM 20992 6155 27147
+Table 2:Buffer size (int8).
+Model Total buffer size
+STMC1 17184
+SM-STMC1 9280
+STMC2 21632
+SM-STMC2 7520
+3.3. Evaluation Metrics
+We report weighted average precision, recall, and F1-score.
+In the single-label multi-class setting considered here, the
+weighted average recall is equivalent to classification accuracy.
+Due to space constraints, only average metrics are reported. In
+all of the streaming models, we classify embeddings every 8th
+frame, which corresponds to the minimum sequence of frames
+for SM-STMC2. For consistency, the classifiers of the remain-
+ing models are evaluated at the same temporal intervals, result-
+ing in 7.8125 evaluations per second.
+Table 3:Weighted average performance comparison on the
+standard 1 s GSC dataset.
+Model Precision Recall F1-score
+VGG1 (1×1s) 0.9362 0.9278 0.9292
+SM-STMC1 0.9494 0.9382 0.9403
+VGG2 (1×1s) 0.9159 0.9035 0.9055
+SM-STMC2 0.9322 0.9162 0.9188
+LSTM 0.9569 0.9511 0.9521
+Table 4:Weighted average performance comparison on the ex-
+tended 2 s GSC dataset with silence added.
+Model Precision Recall F1-score
+VGG1 (1×1s) 0.8353 0.4981 0.5798
+VGG1 (8×1s) 0.9733 0.9708 0.9712
+SM-STMC1 0.9738 0.9710 0.9715
+VGG2 (1×1s) 0.7790 0.6182 0.6386
+VGG2 (8×1s) 0.9586 0.9524 0.9532
+SM-STMC2 0.9611 0.9552 0.9561
+LSTM 0.9396 0.9196 0.9235
+The VGG models achieve accuracy comparable to the
+STMC-based approaches. However, to obtain identical perfor-
+mance, they would need to be evaluated at every time bin.
+3.4. Results on Standard GSC
+Results on the standard GSC dataset are presented in Table 3.
+The standard VGG model achieves overall lower performance
+than STMC, with a drop of 1.04% 1 in accuracy. This result is
+expected, since the classifier is invoked more frequently in the
+online approach.
+3.5. Results on Extended Inputs
+Table 4 reports results on the 2-second dataset with silence
+padding. This evaluation highlights the limitations of offline
+inference. The standard VGG model failed to correctly classify
+more than half of the samples. This occurs when a keyword
+spans the boundary between two input audio windows (e.g. “do-
+” in the first window and “-wn” in the second), leading to mis-
+classification.
+Figure 3 illustrates this boundary effect using a zero-padded
+example evaluated under different temporal shifts. When the
+keyword is centered within the input frame (temporal shift of
+0.0 s), both architectures produce correct predictions. How-
+ever, when the keyword lies across two frames (shift -0.5 s or
+0.5 s), the VGG model’s accuracy drops substantially, whereas
+the STMC-based model remains stable.
+4079
+The VGG model (evaluated eight times per second) and the
+SM-STMC-based models achieve significantly better results,
+with an accuracy improvement of 3.28% 1 compared to the 1-
+second setting. Improvement comes from the fact that the key-
+word is captured across multiple overlapping windows, increas-
+ing the likelihood that at least one window contains a more fa-
+vorable representation for classification.
+Figure 3:Influence of temporal shift on accuracy. VGG and
+STMC accuracy on a 2-second zero-padded “stop” sample.
+3.6. Computational Cost and Latency
+Computational complexity is measured inmillion cycles per
+second(MCPS) and is reported separately for embedding com-
+putation, classifier evaluation, memory management, and total
+cost, reported in Table 5. For SM-STMC, the embedding stage
+consists of multiple independent sub-models corresponding to
+different convolutional blocks.
+In the case of VGG, evaluating the model eight times per
+second consumes proportionally more MCPS. Despite the fact
+that this approach achieved approximately the same results as
+STMC on 2 seconds of audio, it required almost four times
+more computational cycles for the first backbone model and
+three times more for the second.
+Compared to the standard VGG baseline, STMC increases
+computational cost by a factor of 2.271 for the first model, while
+providing fully online inference. SM-STMC reduces embed-
+ding computation and memory management overhead by re-
+moving redundant states, decreasing this factor to only 1.53 1.
+For the second model, this factor is respectively 2.782 and 1.472.
+Table 5:Computational cost comparison of embedding, classi-
+fier, and memory management in MCPS.
+Model Emb Cls Memory Total
+VGG1 (1×1s) 7.40 0.02 – 7.42
+VGG1 (8×1s) 59.20 0.16 – 59.36
+STMC1 16.12 0.16 0.56 16.84
+SM-STMC1 10.82 0.16 0.39 11.37
+VGG2 (1×1s) 3.66 0.02 – 3.68
+VGG2 (8×1s) 29.28 0.16 – 29.44
+STMC2 9.42 0.16 0.44 10.02
+SM-STMC2 5.12 0.16 0.16 5.44
+LSTM 10.29 0.05 0.01 10.35
+Total detection latency consists of computational delay and
+the temporal alignment of the keyword within the input buffer.
+In a streaming context, predictions are generated every 16 ms.
+To account for the stochastic nature of keyword onset, we report
+the average latency as the midpoint between the best-case (key-
+word ends exactly at a buffer boundary) and worst-case (key-
+word ends just after a boundary) scenarios, plus the specific
+computational overhead of the model. Latency is measured ac-
+cording to each model’s native classification rate, e.g., LSTM
+every frame, while SM-STMC1 every 4th frame.
+For the baseline VGG models, classification occurs once
+per second, leading to a high average latency of approximately
+550–600 ms. In contrast, STMC and LSTM models provide
+frame-synchronous predictions (16 ms granularity), resulting in
+early detection with ”negative” reported latency relative to the
+keyword offset. This is a consequence of the models captur-
+ing the discriminative features of the keyword before the entire
+keyword has been observed.
+Table 6:Computational latency and average latency of the
+models measured from the end of the uttered keyword to its first
+corresponding prediction.
+Model Comp. Latency [ms] Avg Latency [ms]
+VGG1 101 601±500
+STMC1 4 -156±8
+SM-STMC1 10 -146±32
+VGG2 50 550±500
+STMC2 2 -158±8
+SM-STMC2 9 -116±64
+LSTM 5 -167±8
+The SM-STMC approach introduces a controlled trade-
+off: by classifying every 4th frame (SM-STMC 1) or every 8th
+frame (SM-STMC2), the average latency increases compared to
+vanilla STMC able to classify data every frame, but remains
+within the margin of classification time. Furthermore, when
+comparing the time required to process an equivalent duration
+of audio (computationally-wise), SM-STMC 2 is 1.78 and 4.44
+times more efficient than STMC and LSTM, respectively.
+4. Conclusion
+In this work, we proposed SM-STMC, a sub-model decompo-
+sition and scheduling strategy that reduces redundant temporal
+states in online convolutional networks. The method extends
+the original STMC framework by exploiting the task-level re-
+quirement of sparse output generation, thereby eliminating un-
+necessary internal states by using model decomposition and ex-
+ecuting only the required network depth with static scheduling.
+Experimental results on the Google Speech Commands
+dataset demonstrate that SM-STMC preserves the high recog-
+nition performance of CNNs while achieving substantial effi-
+ciency gains. Specifically, we observed an MCPS reduction
+of up to 82% compared to the standard sliding-window base-
+line and a memory footprint reduction of 65% compared to the
+original STMC approach. While the reduced classification fre-
+quency introduces a marginal increase in latency, the result-
+ing values remain well within the requirements for real-time
+human-computer interaction.
+Importantly, SM-STMC requires no retraining and intro-
+duces no additional parameters, making it fully compatible with
+existing pretrained models. The use of static scheduling and
+independent sub-models ensures that the system can be de-
+ployed directly via standard frameworks like TensorFlow Lite
+on resource-constrained edge devices, such as wearables and
+hearables.
+4080
+5. Generative AI Use Disclosure
+LLM (Large Language Model) has been used to polish and to
+find grammar errors in this manuscript. However, it was not
+used to directly write it or to generate code used in this work.

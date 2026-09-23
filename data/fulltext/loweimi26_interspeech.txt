@@ -1,0 +1,518 @@
+To Be Multimodal or Not to Be:
+Query-Adaptive Audio-Visual Person Retrieval via Active Modality Detection
+Erfan Loweimi1,†, Mengjie Qian1, Kate Knill1, Guanfeng Wu2,‡, Chi-Ho Chan3, Abbas Haider2,♢,
+Muhammad Awan3, Josef Kittler3, Hui Wang2, Mark Gales1
+1University of Cambridge, UK; 2Queen’s University Belfast, UK; 3University of Surrey, UK
+†Cisco, UK; ‡Southwest Jiaotong University, China; ♢Teesside University, UK
+eloweimi@cisco.com,{{mq227,kmk1001,mjfg100}@cam, j.kittler@surrey, h.wang@qub}.ac.uk
+Abstract
+When retrieving a person from a video archive by voice and
+face, should the systembe multimodal or not? In real-world
+broadcast archives, unlike curated benchmarks, a target may be
+heard but unseen, seen but unheard, or both. Fusing scores from
+an absent modality injects noise, degrading precision below the
+best unimodal system. We propose a query-adaptive framework
+that detects active modalities via cross-modal score consistency:
+when both modalities are active, files retrieved by one also score
+highly on the other; this agreement breaks down when a modal-
+ity is absent. Classifiers driven by these cross-modal features
+achieve 89% detection accuracy. On the BBC Rewind cor-
+pus (with over 12,000 broadcast videos) the adaptive system
+attains 94.2% P@1, outperforming speaker-only (82.9%), face-
+only (93.4%), and fixed fusion (90.0%), recovering 64% of the
+gap to an oracle with ground-truth modality labels (96.6%).
+Index Terms: Multimodal retrieval, active modality detection,
+speaker embedding, face embedding, query-adaptive fusion
+1. Introduction
+Locating a specific individual across a large-scale video archive
+is critical for journalism, forensics, and media indexing [1, 2,
+3, 4]. Person retrieval can exploit two complementary biomet-
+ric modalities: speaker voice via speaker embeddings [5, 6, 7]
+and facial appearance via face embeddings [8, 9]. When both
+modalities are available, a natural question arises: should the re-
+trievalbe multimodal, i.e., combining voice and face evidence
+or not? Standard benchmarks such as V oxCeleb [10, 11] are
+purpose-built: subjects are carefully selected and each clip is
+curated to ensure the target is both seen and heard. Real-world
+broadcast archives, by contrast, are not collected with any re-
+trieval task in mind. The BBC Rewind corpus [12], for instance,
+comprises decades of journalistic footage (e.g., interviews, par-
+liamentary debates, street reports, voice-over narrations) where
+a person of interest may contribute only their voice, only their
+face, or both, depending entirely on the editorial context.
+Analysis of this corpus in prior work [13, 14] revealed three
+distinctpresence types:
+•Audio-Visual Presence (AVP):the person is both seen and
+heard—the ideal multimodal case;
+•Audio-only Presence (AoP):the person is heard but not visi-
+ble, e.g., a voice-over narrator or off-camera interviewer;
+•Visual-only Presence (VoP):the person is visible but does not
+speak, e.g., appearing in footage without talking to the mic.
+When only one modality is active, the embedding of the absent
+modality encodes anunrelatedidentity. For example, in a V oP
+query, the speaker embedding captures an arbitrary voice rather
+than the target, and fusing this misleading score with the infor-
+mative face score distorts the ranking. This makes fixed-weight
+fusion suboptimal andworsethan the best unimodal system.
+Prior work on audio-visual fusion [15, 16, 17] has largely
+assumed that both modalities are simultaneously informative.
+Baltruˇsaitis et al. [17] surveyed early, late, and hybrid fusion
+strategies, noting that late fusion offers robustness when modal-
+ity quality varies, but did not consider the case where a modal-
+ity is entirely uninformative or absent. Themultimodal video
+search by examples(MVSE) framework [13, 18, 19] demon-
+strated that multimodal fusion outperforms single-modal re-
+trieval on BBC Rewind and that audio quality impacts precision
+more severely than visual quality [18], but assumed both modal-
+ities are always available. Unimodal speaker retrieval was stud-
+ied in [14, 20], benchmarking x-vector [5], ECAPA-TDNN [6],
+and TitaNet [7] embeddings and revealing challenges of noisy
+metadata labels and acoustic diversity of the recordings. None
+of these works address the scenario where one modality may be
+entirely absent or uninformative.
+This paper addresses themodality-absence problem
+through a query-adaptive framework that (1) detects the ac-
+tive modalities for each query by analysing inter-modal con-
+sistency of retrieval score distributions, and (2) adapts the fu-
+sion weight accordingly. The key insight is that cross-modal
+scores—evaluating one modality’s retrieval set through the lens
+of the other—provide a natural diagnostic for modality pres-
+ence: high cross-modal agreement signals that both modali-
+ties are active, while low agreement exposes an absent modal-
+ity. Building on this, our contributions are: a novel feature de-
+sign combining within-modal and cross-modal cosine similarity
+scores for presence-type classification; rigorous evaluation un-
+der multiple cross-validation protocols; and demonstration that
+adaptive fusion significantly outperforms all baselines (89% de-
+tection accuracy, 94.2% P@1, recovering the gap to an oracle).
+The rest of this paper is organised as follows. Section 2
+reviews the MVSE framework, including its speaker and face
+embedding pipelines. Section 3 presents the proposed query-
+adaptive scoring, fusion, and active modality detection. Sec-
+tion 4 describes the experimental setup, and Section 5 presents
+and discusses the results. Finally, Section 6 concludes the paper.
+2. The MVSE Framework
+This work builds upon the Multimodal Video Search by Ex-
+amples (MVSE) framework [13, 18], an EPSRC-funded system
+for content-based retrieval in the BBC Rewind archive—a pub-
+licly available collection of 12,594 video files (409 h) spanning
+1948–1979, covering news footage with diverse acoustic and
+visual conditions [12]. Figure 1 illustrates the MVSE pipeline.
+32
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-790
+ 
+  
+Modality 
+Combination
+Archive
+(Speaker 
+Embedding)
+Speaker 
+Embedding Extraction
+Similarity
+Evaluation
+Retrieval
+Example 
+(Video Query)
+Similarity
+Evaluation
+Archive
+(Face 
+Embedding)
+Face 
+Embedding Extraction
+Scores speaker
+Scores face
+Figure 1:Query-adaptive MVSE framework for multimodal
+person retrieval. The modality combination module analyses
+modality scores to decide whether to be multimodal or not.
+The speaker embedding extraction module begins with
+speaker diarisation via PyAnnote [21, 22] to segment each
+video into per-speaker regions. Speaker embeddings are then
+extracted with a pre-trained ECAPA-TDNN [6] from Speech-
+Brain [23], selected over x-vectors [5] and TitaNet [7] based
+on benchmarking in [14, 20]. The model is trained on V ox-
+Celeb 1&2 [10, 24] (>2,000 h, 7,205 speakers) with AM-
+Softmax loss [25], achieving 0.8% EER on the V oxCeleb test
+set [18]. Segment-level embeddings are aggregated into per-
+speaker representations viaduration-weighted averaging[18,
+20], which assigns higher importance to longer, more informa-
+tive segments, yielding one embedding per speaker per video.
+The face embedding extraction module detects faces per
+frame using the heatmap-assisted detector of [26] and geomet-
+rically normalises them via Umeyama transforms [27]. Face
+embeddings are extracted with a ResNet-400 backbone trained
+on WebFace42M [28]. Non-frontal faces and those smaller than
+45 px are discarded. Cosine-angle clustering groups per-frame
+embeddings into per-identity clusters, yielding one representa-
+tive face embedding per person per video [18].
+All embedding models are usedzero-shot: the noisy
+metadata-derived labels in the corpus make supervised adapta-
+tion unreliable [14, 20]. Given a query video, each module com-
+pares the query embedding against the pre-indexed archive em-
+beddings via cosine similarity, producing a per-modality score
+for every archive file. These scores are then combined through
+score-level fusion, and the top-nfiles are returned.
+Wu et al. [18] extensively analysed BBC Rewind data in the
+context of MVSE project and demonstrated multimodal fusion
+consistently outperforms single-modal retrieval. However, the
+framework treats all modalities equally during fusion, assum-
+ing each is informative for every query. When a person is only
+heard or only seen, the uninformative modality injects noise,
+degrading retrieval. The present work addresses this limitation
+by introducing a modality detection module that determines, per
+query, which modalities are activebeforefusion is applied.
+3. Query-Adaptive Retrieval Framework
+Figure 1 illustrates the proposed extension to the MVSE
+pipeline: amodality combinationmodule that detects which
+modalities are active for a given query and sets the fusion weight
+accordingly, before producing the final ranked list.
+3.1. Scoring and fusion
+Given query embeddingse (q)
+spk ande (q)
+face, the per-modality scores
+for each archive video file IDi are:
+sspk[IDi] = max
+1≤j≤Mi
+cos(e(q)
+spk,e (i,j)
+spk )(1)
+sface[IDi] = max
+1≤k≤Fi
+cos(e(q)
+face,e (i,k)
+face )(2)
+wherecos(·,·)denotes cosine similarity,e (i,j)
+spk ande (i,k)
+face are
+thej-th speaker andk-th face embeddings in the archive filei,
+andM i andF i are the numbers of detected speakers and faces
+in that file. Themaxselects the best-matching identity per file.
+The fused multimodal score (sMM) is:
+sMM[IDi] =λs spk[IDi] + (1−λ)s face[IDi](3)
+whereλ∈[0,1]is the fusion weight controlling the relative
+contribution of each modality. We adopt late (score-level) fu-
+sion for its modularity and because it permits direct control ofλ,
+which is the key parameter in our adaptive framework. Files are
+ranked bys MM in descending order.
+The optimalλisquery-dependent:λ=1for AoP,λ=0for
+V oP, andλ≈0.5for A VP. To understand why a fixedλfails,
+consider a V oP query: the speaker embedding captures an arbi-
+trary voice (not the target), sosspk is drawn from the distribution
+of inter-speaker similarities across the archive. This noise term
+has non-negligible variance, meaning different archive files re-
+ceive different spurious speaker scores, creating rank perturba-
+tions that push the correct file below incorrect ones. The prob-
+lem is symmetric for AoP, where irrelevant face scores contam-
+inate fusion. As shown in Section 5, this effect makes fixed
+fusionworsethan the best unimodal system at P@1.
+3.2. Active modality detection
+The modality detection module classifies each query into{AoP,
+V oP, A VP}and setsλaccordingly (λ=1,0, or0.5).
+3.2.1. Feature design
+For each query, we retrieve the top-nfiles per modality and ex-
+tract features from the resulting score distributions (Figure 2).
+Within-modal scores.LetR n
+s andR n
+f denote the top-n
+archive files retrieved by the speaker and face modalities for
+queryi. The within-modal score vectors are:
+ss =
+
+sspk(i)
+
+i∈Rns
+,s f =
+
+sface(i)
+
+i∈Rn
+f
+(4)
+wheres s∈R n ands f ∈R n are the speaker and face score
+vectors, comprising the cosine similarity scores of the top-nre-
+trieved files for the respective modality, sorted in descending
+order. An active modality typically produces apeakeddistribu-
+tion, in which the top files containing the target person receive
+high similarity scores followed by a sharp drop-off. In contrast,
+an inactive modality yields aflatterdistribution with lower over-
+all magnitude, as the query embedding encodes an unrelated
+identity with no genuine matches. However, the within-modal
+distribution alone is insufficient for reliable detection. Some
+speakers exhibit naturally lower inter-speaker discriminability
+due to acoustic similarity or poor recording conditions, result-
+ing in ambiguous distributions even when the modality is active.
+Cross-modal scores.We evaluate each modality’s scores
+on the retrieval set of theothermodality:
+cs→f =
+
+sface(i)
+
+i∈Rns
+,c f→s =
+
+sspk(i)
+
+i∈Rn
+f
+(5)
+wherec s→f∈R n contains thefacescores of the files retrieved
+by thespeakermodality, andc f→s∈R n contains thespeaker
+scores of the files retrieved by thefacemodality. These capture
+inter-modal consistency: for A VP queries, the files retrieved by
+speaker similarity should also contain the target face (and vice
+versa), yielding high cross-modal scores. For AoP queries, the
+33
+  
+Speaker
+Retrieval
+Get 
+Face
+Scores
+{ID(top-n-Mod1): ScoreMod1}
+{ID(top-n-Mod1): ScoreMod2}
+Modality 1
+(Audio)
+Extract
+&
+Concatenate
+Scores
+Extract
+top-n IDs 
+(Modality 1)
+Face
+Retrieval
+Extract
+top-n IDs
+(Modality 2)
+{ID(top-n-Mod2): ScoreMod2}
+Get 
+Speaker 
+Scores
+Extract
+ Modality 2
+Extract
+ Modality 1
+Archive
+(Embedding 1)
+Archive
+(Embedding 2)
+{ID(top-n-Mod2): ScoreMod1}top-n-Mod1
+top-n-Mod2
+Modality 2
+(Vision)
+Video 
+Query Modality 
+Detection  
+and 
+Retrieval
+Figure 2:Feature extraction for modality detection. Solid lines:
+within-modal scores; dashed lines: cross-modal scores.
+speaker-retrieved files are relevant, but these files need not con-
+tain the target face (since the person is not visually present), so
+cs→f will be low. The pattern is symmetric for V oP.
+This inter-modal consistency is the central discriminative
+signal: as we will see in the experimental results (Table 2),
+adding cross-modal features yields an∼6 percentage point (pp)
+gain in classification accuracy, confirming that within-modal
+score distributions alone are insufficient.
+Summary statistics.The mean and standard deviation of
+each score vector are appended by
+µ= [µ(s s), µ(sf ), µ(cs→f ), µ(cf→s )](6)
+σ= [σ(s s), σ(sf ), σ(cs→f ), σ(cf→s )](7)
+yielding the full feature vectorf∈R 4n+8:
+f= [s s;s f ;c s→f ;c f→s ;µ;σ](8)
+where[·;·]denotes concatenation,µ∈R 4 andσ∈R 4 are
+the means and standard deviations of the four score vectors.
+Table 1 summarises the expected behaviour ofµandσ:
+an active modality yields high mean and low variance (genuine
+matches cluster tightly), whereas an inactive modality yields
+low mean and high variance (scores are drawn from the tail
+of the impostor distribution). These patterns provide a prin-
+cipled basis for the feature design. Rather than hand-crafting
+rules from these expected patterns (e.g., thresholding mean or
+variance), we adopt a data-driven approach: classifiers learn the
+decision boundaries from labelled examples, capturing interac-
+tions across all score vectors and generalising more robustly to
+unseen speakers and conditions.
+The choice ofnreflects a trade-off: largernyields richer
+feature vectors, but the core assumption, that all top-nscores
+correspond to the target person, requires the person to appear
+in at leastnarchive files. If a person appears in fewer thann
+files, the remaining scores belong to impostors, contaminating
+the feature vector. We setn=10as the largest value for which
+this assumption holds across all query speakers.
+3.2.2. Classifiers
+Given the limited labelled query data (523 video files, 21.1
+hours), which reflects the high effort required to label audio-
+visual presence types reliably in real-world broadcast material,
+and the low feature dimensionality (4n+8=48forn=10), we
+employ logistic regression (LogReg), SVMs with linear (SVM-
+L) and RBF (SVM-R) kernels, and decision trees (DT) [29].
+Table 1:Expected score statistics by presence type. An active
+modality produces high mean and low standard deviation (SD);
+an inactive modality exhibits the opposite pattern.
+Mean SD
+Type Spk Face Spk Face
+A VP High High Low Low
+AoP High Low Low High
+V oP Low High High Low
+Table 2:Modality classification accuracy (%) under LoSoCV .
+“Cross” = cross-modal scores; “µ+σ” = summary statistics.
+Features LogReg SVM-L SVM-R DT
+Base 82.3 82.8 82.7 76.7
++ Cross 88.2 88.1 87.9 88.8
++ Cross+µ+σ88.5 88.4 88.2 89.1
+4. Experimental Setup
+The BBC Rewind corpus [12] is a publicly available, in-
+the-wild broadcast archive from Northern Ireland, comprising
+12,594 video files (409 hours) spanning 1948–1979. Unlike
+standard curated academic datasets, BBC Rewind reflects real
+editorial footage, including interviews, debates, voice-overs,
+and crowd scenes, where a person may be seen, heard, both,
+or neither. Person names are obtained by applying named
+entity recognition (NER) [30] to journalist-written synopses,
+yielding∼5,800 distinct names. The archive poses substan-
+tial audio-visual challenges, including variable recording tech-
+nology across decades, background noise and speaker over-
+lap, black-and-white and low-resolution video, motion blur, and
+pose/occlusion, making it a valuable testbed for real-world re-
+trieval and media indexing.
+Our query set comprises 523 video files (21.1 hours) from
+38 prominent politicians. Manual verification [20] identified
+425 audio-visual presence (A VP) queries, 72 visual-only pres-
+ence (V oP; face visible but no speech), and 26 audio-only pres-
+ence (AoP; speech only).
+For retrieval evaluation, we report Precision@K(P@K)
+forK∈{1,3,5,10}[31]. A retrieved file is considered relevant
+if the query person’s name appears in its synopsis, which was
+validated as a reliable proxy for these prominent figures through
+extensive analysis in [20]. For modality detection, we report ac-
+curacy under leave-one-speaker-out cross validation (LoSoCV).
+We focus on LoSoCV instead of vanilla k-fold cross validation,
+as it is the most practically relevant setting and tests whether the
+classifier generalises to entirely unseen speakers.
+5. Results and Discussion
+5.1. Modality classification
+Table 2 reports classification accuracy under LoSoCV . Within-
+modal scores alone achieve∼82%, already well above the
+81.3% majority-class baseline (note A VP accounts for 425/523
+queries). Adding cross-modal scores yields a∼6 pp boost, con-
+firming inter-modal consistency as the dominant discriminative
+signal for modality detection. Summary statistics (µ,σ) pro-
+vide a marginal further gain (<0.5 pp), indicating that the raw
+score vectors already capture the distributional shape informa-
+34
+Table 3:Person retrieval performance (P@K, %). “Fixed”
+usesλ=0.5. “Adaptive” uses modality detection.
+System Features P@1 P@3 P@5 P@10
+Speaker – 82.9 80.7 78.3 74.3
+Face – 93.4 88.6 86.3 81.6
+Fixed – 90.0 88.6 87.0 83.3
+Adaptive Base 92.1 88.8 86.8 82.8
+Adaptive +Cross 94.2 90.4 88.0 84.1
+Adaptive +Cross+µ+σ94.2 90.6 88.2 84.2
+Oracle – 96.6 91.8 89.3 85.2
+tion that mean and standard deviation summarise.
+Performance is remarkably consistent across classifiers
+(within∼1 pp), with the decision tree achieving the best ac-
+curacy of 89.1%. This consistency suggests a relatively clean,
+near-linearly separable classification boundary in the feature
+space—the three presence types occupy distinct regions char-
+acterised by different patterns of cross-modal correlation. The
+high variance across speakers under LoSoCV (standard devi-
+ations of 13–20%) reflects that some speakers appear in more
+challenging conditions (lower SNR, farther from the mic, fewer
+archive files, atypical editorial framing) than others, making
+their presence type harder to classify. Notably, LoSoCV is the
+most stringent protocol: it tests generalisation to speakers en-
+tirely unseen during training, simulating realistic deployment
+where new query identities continually arrive.
+5.2. Retrieval performance
+Table 3 shows retrieval results. We discuss them case by case.
+Unimodal baselines.Face retrieval (93.4% P@1) outper-
+forms speaker retrieval (82.9%) by 10.5 pp. This gap is largely
+driven by the audio modality’s susceptibility to broadcast degra-
+dations, including background noise, reverberation, and over-
+lapping speech. In contrast, cameras can zoom in on the tar-
+get person to isolate the subject, yielding relatively clean facial
+captures even in complex scenes. This asymmetry implies that
+fixed fusion weights are suboptimal, as the relative reliability of
+each modality varies across the archive.
+Fixed fusion degrades P@1.We setλ=0.5to weight both
+modalities equally and avoid systematic bias. Despite this, fixed
+fusion yields a P@1 of 90.0%, falling below the face-only base-
+line (93.4%). This finding highlights the central empirical moti-
+vation of this work: naively enforcing multimodality when one
+modality is absent proves counterproductive, as spurious scores
+from the inactive modality corrupt the ranking.
+Adaptive fusion.The adaptive system achieves 94.2%
+P@1, outperforming all baselines with consistent gains across
+all values ofK. Cross-modal features account for a 2.1 pp im-
+provement over Base features (92.1%→94.2%), mirroring the
+6 pp classification gain in Table 2. This strong correspondence
+confirms that retrieval performance is directly driven by modal-
+ity detection accuracy, as each percentage point of classification
+improvement translates to measurable retrieval gains.
+Oracle.With ground-truth presence-type labels, P@1
+reaches 96.6%. The adaptive system recovers 94.2−90.0
+96.6−90.0 =64%
+of the gap from fixed fusion to the oracle. The remaining gap
+to 100% (3.4 pp) reflects inherent limitations of the underlying
+embedding models and the noisy synopsis-based evaluation.
+Table 4:P@1 (%) by presence type. Fixed:λ=0.5.
+System A VP AoP VoP
+Speaker 86.6 80.8 –
+Face 95.1 – 93.4
+Fixed 93.8 76.9 88.5
+Adaptive95.5 80.8 93.4
+Oracle 96.9 80.8 93.4
+5.3. Per-presence-type analysis
+Table 4 decomposes P@1 by presence type. Fixed fusion de-
+grades AoP by 3.9 pp (from 80.8% to 76.9%) and V oP by 4.9 pp
+(from 93.4% to 88.5%) relative to the respective unimodal base-
+lines. The adaptive system recovers full unimodal performance
+for both types, matching the oracle. This indicates near-perfect
+detection of AoP and V oP queries, which can be attributed to
+the strong discriminative power of cross-modal scores: when
+a modality is entirely absent, there is no correlation between
+the retrieval sets of the two modalities, making the cross-modal
+score vector a reliable indicator.
+For A VP, the adaptive system achieves 95.5%, outperform-
+ing both unimodal systems (86.6% speaker, 95.1% face). The
+0.4 pp gain over face-only demonstrates genuine multimodal
+synergy: speaker information disambiguates visually similar
+faces and compensates for imperfect face detection, such as
+profile views, occlusion, or low resolution in archival footage.
+Conversely, face information helps when speaker embeddings
+are degraded by background noise, overlapping speech, or dis-
+tance from the mic. The modest gain over face-only (0.4 pp)
+is consistent with the unimodal asymmetry, as face embeddings
+already capture most of the discriminative signal for this corpus.
+Error analysis.The remaining 1.4 pp gap between the
+adaptive system and the oracle (95.5% vs. 96.9% on A VP) arises
+from misclassified queries. Two types of misclassification can
+occur: (a) AoP/V oP queries misclassified as A VP, where the in-
+active modality contaminates fusion; and (b) A VP queries mis-
+classified as AoP/V oP, where a useful modality is discarded.
+Type (a) is more harmful: it incurs a 3.9–4.9 pp penalty per
+affected query, whereas type (b) merely reduces the system to
+its strong face-only or speaker-only baseline.
+This asymmetry explains the system’s robustness. Even
+with∼89% detection accuracy, adaptive fusion yields sub-
+stantial gains because correctly routing single-modality queries
+avoids large noise injection penalties, while the cost of missed
+multimodal opportunities remains comparatively small.
+6. Conclusions
+We presented a query-adaptive framework that answers the
+question“to be multimodal or not to be”for audio-visual per-
+son retrieval in uncurated broadcast archives. By detecting ac-
+tive modalities through cross-modal score consistency analysis,
+namely the agreement between one modality’s retrieval set and
+the other’s scores, the system achieves 94.2% P@1 on BBC
+Rewind, outperforming all of the unimodal baselines and fixed
+fusion. The core finding is twofold: blind multimodal fusion
+can be counterproductive when one modality is absent, and
+cross-modal consistency provides a simple yet effective diag-

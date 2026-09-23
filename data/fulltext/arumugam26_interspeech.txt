@@ -1,0 +1,203 @@
+A Human-in-the-Loop Multi-Agent Companion for Real-Time Entity
+Extraction and SLU-Driven ASR Error Correction
+Shiva Shankar Arumugam, Ameyaditya Achar J, Aashraya Sachdeva
+Observe.AI, India
+{shiva.shankar,ameyaditya.achar,aashraya.sachdeva}@observe.ai
+Abstract
+Contact-center agents handle thousands of entity-rich voice in-
+teractions per day, where a misrecognised customer name, ac-
+count identifier, or domain term cascades into wrong CRM en-
+tries and additional manual rework. We demonstrate MACE
+(Multi-Agent Companion Environment), a closed-loop archi-
+tecture in which a real-timecompanion– an AI overlay that runs
+alongside the live agent and surfaces extracted named entities as
+proactive suggestions for in-place confirmation – routes every
+UI correction back into the ASR stack as either a contextual-
+biasing entryBor, once recurrent, a post-ASR substitution rule
+R, with no acoustic retraining and no a-priori entity list. On the
+English ContextASR-Bench benchmark with Whisper-large-v3,
+the loop reduces NE-WER by17.1%and EditRate by18.6%
+over a no-biasing baseline, closing23.6%of the gap to an ora-
+cle that is given the entity list in advance.
+Index Terms: contextual biasing, human-in-the-loop, multi-
+agent systems, named entity recognition, ASR error correction,
+demonstration
+1. Introduction
+Contact-center traffic is dense in named entities – customer
+identifiers, product SKUs, drug names, policy numbers, proper
+nouns – that must reach a CRM accurately and in real time.
+Streaming ASR persistently misrecognises these tail-frequency
+terms [1, 2], and the downstream extraction stage propagates the
+error to the interface the human agent is monitoring during the
+live call. That interface is what we term acompanion: a real-
+time AI overlay that runs alongside the agent, extracts named
+entities from the conversation, and surfaces them as proactive
+suggestions for in-place confirmation or correction [3]. Each
+correction is the cleanest possible supervision signal – a human
+verifying a specific machine prediction against the audio they
+just heard – yet it is seldom recycled back into the ASR or ex-
+traction stack. We close that loop: every companion-UI correc-
+tion becomes either a contextual biasing entryBconsumed by
+the next ASR call or, once recurrent, a post-ASR substitution
+ruleR[4, 5]. No acoustic retraining and no a-priori vocabu-
+lary; the system bootstraps its own domain dictionary from the
+agent’s edits.
+The contribution is twofold. First, a multi-agent architec-
+ture in which a dedicated reflection sub-agent autonomously
+converts companion-UI corrections into biasing updates and
+post-ASR substitution rules, dispatched off the audio path so
+live transcription latency is unaffected. Second, an empirical
+demonstration on ContextASR-Bench [2] with Whisper-large-
+v3 in which the loop reduces NE-WER by17.1%and Edi-
+tRate by18.6%over the no-biasing baseline, closing23.6%
+and22.0%of the gap to oracle biasing.
+ASR +
+biasingB k
+Word corr.
+rulesR k
+Transcript
+distributor
+Extraction
+sub-agent
+Companion
+UI
+Reflection
+sub-agent
+ˆTi
+˜Ti ˆEi
+∆i
+Bk+1
+Rk+1
+Audioa i
+Figure 1:Closed-loop architecture. Solid arrows: per-dialogue
+forward path. Dashed arrows: inter-batch feedback from the
+reflection sub-agent updatingBandR.
+2. Theoretical background
+Figure 1 shows the data flow. Audioa i is transcribed by a
+streaming ASR engine biased byB, the raw transcript passes
+through a post-ASR word-correction stage governed byR, a
+transcript distributor broadcasts each finalised customer turn to
+an extraction sub-agent, suggested entities surface on the com-
+panion UI for the human agent who is on the live call with
+the customer and receives real-time proactive suggestions there,
+and every correction of a misrecognised named entity from that
+interface is captured off the audio path by a reflection sub-agent
+that updatesBandRfor the next call.
+LetD={d 1,...,d N}be a sequence of dialogues with
+audioa i, ground-truth transcriptT ∗
+i , and ground-truth entity
+setE ∗
+i ;Bis the biasing list (entity strings provided as key-
+word hints to the ASR) andRthe post-ASR rule set (substi-
+tution pairsp→q). The forward path is ˆTi = ASR(a i;B),
+˜Ti = WordCorr( ˆTi;R), ˆEi = Extract( ˜Ti). An edit in the
+companion UI produces a delta set∆ i pairing eachˆe∈ ˆEi
+with its ground-truthe ∗ ∈ E∗
+i whereˆe̸=e ∗, classified by
+the reflection sub-agent as ASR misrecognition, extraction hal-
+lucination, or extraction omission. Two operators consume∆ i:
+NewBias(∆i)returns the corrected entity strings{e∗}for mis-
+recognitions and omissions (they become biasing entries on
+the next call), andNewRules(∆ i)returns substitution pairs
+(si →e ∗)for misrecognitions whose surface patterns i has
+already been observed in at leastτdistinct dialogues (one-off
+alignment artefacts are suppressed). PartitioningDintoKse-
+quential batchesB 1,...,B K withB 0 =R 0 =∅, the inter-
+6437
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+
+batch update is
+Bk =B k−1∪
+[
+di∈Bk
+NewBias(∆i),
+Rk =R k−1∪
+[
+di∈Bk
+NewRules(∆i).
+(1)
+The central claim is that NE-WER(B k)and EditRate(B k)are
+non-increasing ink.
+3. Workflow and integration
+The loop deploys into a real-time voice pipeline serving live
+customer calls with three additive properties: the reflection up-
+date is dispatched off the audio path so live transcription latency
+is unaffected;BandRare persisted in a key-value store con-
+sulted at the start of every new call and scoped per companion
+agent (no cross-tenant leakage); and a reflection consumer ob-
+serves edit events to bootstrapBdynamically while committed
+substitution rules can additionally be injected into the running
+word-correction stage for the same call’s next transcript frame.
+4. Experiment methodology and results
+4.1. Dataset
+We evaluate on the English ContextASR-Dialogue split of
+ContextASR-Bench [2]: 5,273 multi-speaker dialogues with
+∼63,000named-entity mentions across10+domains,9to
+21entities per dialogue (mean12), TTS-synthesised under a
+phoneme-error-rate quality gate, dominated by person names,
+work titles, and technical terms (categories where streaming
+ASR commonly fails).
+4.2. Methodology
+A single sweep over the same audio produces three conditions
+on a shared denominator:No Biasing(B=R=∅),Oracle Bi-
+asing(B=E ∗
+i , an upper bound that knows the entity list in ad-
+vance), andMACE Adaptive(BandRgrowing per batch under
+the reflection rule). Dialogues are shuffled with seed 42 and
+partitioned intoK=100sequential batches; updates committed
+during batchkbecome visible only to batchk+1, mirroring the
+next-call semantic of the deployed loop. A deterministic sur-
+rogate extractor (substring match plus SequenceMatcher fuzzy
+fallback at similarity≥0.7) proxies the LLM extraction sub-
+agent so that thousands of dialogues can be replayed without
+per-call LLM cost; an oracle editor against the ground-truth en-
+tity list emits the∆ i deltas, and the reflection routine [5] up-
+datesBandRvia Eq. 1 with recurrence thresholdτ=2, the
+minimum cross-dialogue repeat count required forNewRules
+to promote a substitution from candidate to committed rule (gat-
+ing against one-off fuzzy-alignment artefacts).
+4.3. Metrics, capacity caps and statistical analysis
+NE-WER= (S e +D e +I e)/Ne restricts WER to named-
+entity spans;EditRateis the fraction of extracted entities still
+requiring agent correction in the companion UI.|B|is software-
+capped at500(Whisper’s448-token prompt fits≈70–100ef-
+fective entries);|R|≤200caps regex false-positive firings.
+We score each metric on every one ofN=32batches (≈52
+dialogues each), giving32per-batch numbers per condition.
+Their average is the reported mean¯x, and the standard devia-
+tionσis their spread; a smallσmeans the gain is consistent
+across the different dialogue mixes that fall into each batch,
+not a one-batch artefact. The95%confidence interval comes
+from a paired bootstrap: we take the32per-batch improvements
+dk =x MACE
+k −x base
+k , resample them with replacement10,000
+times, average each resample, and report the2.5to97.5per-
+centile band as¯x±δ, the range a rerun on similar data would
+land in95%of the time. Pairing matters because both condi-
+tions transcribe identical audio per batch, so the differenced k
+removes dialogue-mix variance from the comparison and the
+spread of{d k}reflects only the effect of biasing and rules.
+4.4. Results
+Figure 2 aggregates results overN=32batches (≈1,664
+dialogues) on Whisper-large-v3 (T4 GPU).MACE Adap-
+tivereaches NE-WER0.147±0.004(σ=0.012) and EditRate
+0.247±0.006(σ=0.016), versus theNo Biasingbaselines of
+0.178±0.005(σ=0.014) and0.304±0.006(σ=0.016); the
+95%CIs of MACE Adaptive and No Biasing do not overlap on
+either metric, so the17.1%reduction in NE-WER and18.6%
+in EditRate sit comfortably outside batch-level variance, clos-
+ing23.6%and22.0%of the gap toOracle Biasing. Both feed-
+back channels saturate within28batches (|B|at batch3,|R|
+at batch28); the remaining batches are i.i.d. evaluations under
+the frozen(B∗,R∗)steady state, so the cumulative mean is an
+unbiased estimator of the full-dataset performance.
+Figure 2:MACE on ContextASR-Bench English, Whisper-
+large-v3.Top:NE-WER and EditRate overN=32batches with
+95%CIs.Bottom:|B|saturates at500by batch3,|R|at200
+by batch28.
+5. Generative AI Use Disclosure
+Generative AI tools were used solely for editing and polishing
+the manuscript only. All authors have critically reviewed, veri-
+fied, and are fully accountable for the entire content.

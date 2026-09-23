@@ -1,0 +1,549 @@
+Beyond WER: A Paired Acoustic Stress Test for Ambient Clinical Scribes
+Xiao-Hang Jiang1, Han-Jie Guo1, Ying-Si Liang1, Yang Ai1,∗∗, Zhen-Hua Ling1, Lei Jiang2,
+Zhi-Yang He2
+1 University of Science and Technology of China, China
+2 iFLYTEK Co., Ltd., China
+{jiang xiaohang, ghj2001, lys24204125}@mail.ustc.edu.cn,
+{yangai, zhling}@ustc.edu.cn,{leijiang19, zyhe}@iflytek.com
+Abstract
+Ambient clinical scribes increasingly combine Automatic
+Speech Recognition with Large Language Models to automate
+documentation. However, traditional metrics like Word Error
+Rate mask systemic safety degradation. We present a paired
+acoustic stress test to isolate the causal impact of noise on
+clinical reasoning. For the same dialogues, we inject diverse
+noise types while keeping the downstream model configuration
+frozen. Crucially, we uncover a dangerous disconnect between
+signal fidelity and clinical safety. Stationary ambient noise in-
+creased the Word Error Rate by a negligible 0.71 percentage
+points yet nearly doubled the rate of unsafe outputs. Our anal-
+ysis reveals that minor acoustic perturbations can invert clin-
+ical meaning without substantially inflating error rates. Fur-
+thermore, we demonstrate a lightweight mitigation strategy that
+mitigates safety degradation under noisy conditions without re-
+quiring model fine tuning.
+Index Terms: clinical speech processing, large language mod-
+els, error propagation, patient safety
+1. Introduction
+Ambient clinical scribes, which cascade Automatic Speech
+Recognition (ASR) with Large Language Models (LLMs), are
+rapidly transforming healthcare documentation [1, 2, 3, 4].
+By unobtrusively recording clinician–patient dialogues and au-
+tomating the generation of structured notes and decision sup-
+port, these pipelines promise to alleviate severe documentation
+burdens and physician burnout [5, 6]. However, this shift fun-
+damentally reallocates the burden of safety from human veri-
+fication to algorithmic reliability. Cascading architectures are
+inherently vulnerable to error propagation: a seemingly minor
+misrecognition at the acoustic front-end can cascade into the
+LLM, precipitating severe diagnostic or triage errors [7, 8]. Un-
+like human scribes, model errors can be fast, scalable, and de-
+ceptively well-formatted, introducing a high risk of silent fail-
+ures that bypass standard clinical checks [9].
+Traditionally, the robustness of the ASR front-end is evalu-
+ated using Word Error Rate (WER). Yet, recent literature high-
+lights a critical misalignment: WER is fundamentally unaware
+of clinical semantics [10, 11]. The relationship between acous-
+tic fidelity and downstream clinical integrity is highly non-
+linear. A single token perturbation—such as flipping a negation,
+altering a medication dosage, or swapping units (e.g.,hoursvs.
+days)—can have a catastrophic clinical impact, whereas drop-
+ping conversational fillers is benign [12]. By treating all token
+errors as equally severe, aggregate transcript-level metrics cre-
+ate anillusion of accuracy. They may suggest a system is ro-
+**indicates the corresponding author.
+Figure 1:Overview of the paired acoustic stress test for clinical
+scribe pipelines.
+bust while masking safety-critical semantic drift [13, 14]. Con-
+sequently, the field lacks a systematic framework to answer a
+critical question:howandwhydo specific acoustic distortions
+drive downstream safety degradation?
+To bridge this gap, we propose apaired acoustic stress test
+designed to evaluate the robustness degradation of ASR→LLM
+clinical pipelines under realistic noise. Our core setup isolates
+the acoustic variable: if the exact same medical dialogue is
+heard under different noise conditions, does the clinical con-
+clusion survive? For a given dialogue, we inject diverse back-
+ground noises (e.g., multi-speaker babble, ambient clinic noise)
+at varying Signal-to-Noise Ratios (SNRs) to alter the ASR in-
+put [15, 16]. Crucially, we keep the downstream LLM’s con-
+figuration strictly frozen. This within-encounter design controls
+for case mix and generation stochasticity, allowing us to cleanly
+isolate the paired attribution of acoustic perturbations on down-
+stream clinical reasoning [17].
+Building on this controlled evaluation, this work shifts the
+paradigm from transcript exactness to clinical invariance. We
+introduce a novel taxonomy that explicitly links cause-side error
+trigger features (e.g., negation flips, number/unit inconsisten-
+cies, and non-speech pollution) to result-side safety endpoints
+(e.g., unexpected triage drift or omitted red flags). Table 1
+provides concrete paired examples that motivate our cause-side
+trigger features and result-side safety endpoints. By systemat-
+ically quantifying these degradation mechanisms, we demon-
+strate that specific semantic distortions, rather than aggregate
+WER, are the primary predictors of downstream safety failures.
+Ultimately, this framework suggests how ambient noise either
+structurally collapses or semantically traps LLM reasoning, ex-
+posing critical vulnerabilities in current clinical speech-to-text
+pipelines.
+2. Proposed Method
+2.1. Overview
+As shown in Fig. 1, we design acontrolled, paired acoustic
+stress testto systematically attribute downstream clinical errors
+5516
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-606
+Table 1:Paired cause→effect examples of ASR-induced safety degradation.
+ASR Error Type (Cause) Paired Transcript Example (Clean vs. Noisy) Downstream LLM Impact (Effect)
+Non-speech pollution
+(background
+hallucination)
+Clean:“P:I’ve had this dull ache in my right ankle...”
+Noisy:“...ache in my right ankle.
+Have you noticed blood in your stool at all? I take Metformin.”
+Spurious claim injection:Unsupported
+symptoms/medications are added to the structured
+note, which can inflate severity and introduce false
+red-flag mentions, increasing over-triage risk.
+Critical number / unit
+conflict
+(functional capacity
+distortion)
+Clean:“P:I can walk about3 or 4 flights of stairs before feeling
+breathless.”
+Noisy:“I can walk aboutthree or four steps before feeling
+breathless.”
+Severity amplification:A small number–unit swap
+converts mild limitation into near-complete exertional
+intolerance, shifting extracted functional status and
+potentially flipping triage and recommendations.
+Negation loss / flip
+(semantic polarity shift)
+Clean:“P:It looks a little red and tender, but Idon’t see that larger
+circular rash.”
+Noisy:“It looks a little red and tender, but I[omitted] see that
+larger circular rash.”
+False positive finding:Dropping a single negation
+reverses a clinically meaningful statement, causing
+the structured note to record a symptom that was
+explicitly denied and altering downstream reasoning.
+Temporal distortion
+(acuity shift)
+Clean:“P:The pain has been really intense for the lasttwo hours .”
+Noisy:“The pain has been really intense for the lasttwo days .”
+Acuity misinterpretation:Time-scale corruption
+changes perceived onset/acuity and can downgrade
+urgency, contributing to under-triage risk and missing
+time-sensitive evaluation.
+to upstream acoustic artifacts. Formally, our evaluation pipeline
+processes an audio signal through an ASR front-end to gener-
+ate a transcriptx, which is subsequently mapped into a struc-
+tured clinical objecty= LLM θ(I,S,x;ϕ), whereθdenotes
+the fixed model parameters,Iis the system instruction prompt,
+Sis the fixed output schema/constraint specification, andϕde-
+notes the decoding configuration.
+Under our within-case design, each underlying clinical di-
+alogue yields a clean baseline audio alongside multiple per-
+turbed counterparts. Crucially, we hold the downstream config-
+uration fixed across all paired conditions, using identicalI,S,
+andϕ(with deterministic decoding). This protocol disentangles
+acoustic sensitivity from generation stochasticity, ensuring that
+observed semantic drift inyis attributable to the noise-induced
+perturbations inx.
+2.2. The OSCE Evaluation Framework
+To ensure clinical relevance without compromising patient pri-
+vacy, our framework leverages the Objective Structured Clini-
+cal Examination (OSCE) format[18]. OSCE is a widely used
+methodology in medical education where clinicians interact
+with standardized patients (actors) to simulate specific patholo-
+gies [19]. Beyond privacy compliance, this format is critical
+for safety benchmarking because scenarios are engineered to
+contain dense, specific safety cues (e.g., red flags, allergies)
+embedded within standard clinical workflows. Unlike unstruc-
+tured ”in-the-wild” recordings where ground truth is often am-
+biguous, OSCE scenarios provide a deterministic reference, al-
+lowing us to rigorously quantify the omission of safety-critical
+claims under acoustic stress.
+2.3. Acoustic Interference Taxonomy
+To model realistic healthcare environments, we categorize
+acoustic artifacts into two distinct failure modes based on their
+stationarity and semantic content:
+1.Stationary Ambient Interference:Continuous, non-vocal
+background noise (e.g., HV AC hum, medical equipment
+drone) typical of consultation rooms. This primarily degrades
+ASR via spectral masking.
+2.Non-Stationary Semantic Interference:Overlapping hu-
+man speech (e.g., multi-speaker babble in waiting rooms).
+This poses a severe safety risk as background voices actively
+compete with the primary dialogue [20], potentially inducing
+”hallucinated” medical entities (e.g., extracting a medication
+name spoken by a background speaker).
+2.4. Condition Construction
+To construct the paired evaluation set, all clean audio recordings
+are downmixed to mono, amplitude-normalized, and resampled
+to the same sample rate. For each clinical dialogue, we deter-
+ministically sample a continuous noise segment from a target
+acoustic corpus to match the dialogue’s duration. We then mix
+the clean speech with the sampled noise at varying Signal-to-
+Noise Ratios (SNRs) by applying standard RMS-based energy
+scaling [21], which is computed solely over non-silent speech
+segments to prevent long-pause bias. This procedure yields a
+robust dataset where every clean baseline transcript has paired
+perturbed counterparts, strictly controlling for patient history
+and clinical case mix.
+3. Experiment
+3.1. Dataset Setup
+Clinical Corpus.We instantiate our OSCE framework using
+the open-source dataset by Fareez et al. [22]. This corpus com-
+prises272English encounters (approximately 52 hours), cov-
+ering a diverse case mix of five specialties: respiratory, car-
+diovascular, gastrointestinal, musculoskeletal, and dermatolog-
+ical. All recordings are devoid of Protected Health Information
+(PHI).
+Noise Sources.We employ two standard benchmarks to rep-
+resent our acoustic taxonomy: (1)DEMAND[16] (Office,
+Cafeteria, Trafficsubsets) represents Stationary Ambient In-
+terference. (2)MUSAN[15] (Speechsubset) represents Non-
+Stationary Semantic Interference. We evaluate at SNRs of
+{15,10,5}dB to simulate environments ranging from quiet
+clinics to chaotic emergency departments.
+3.2. Pipeline Configuration
+ASR Front-End.We employ WHISPER-LARGE-V3 [23] for
+transcription. To mitigate decoding stochasticity and isolate
+acoustic artifacts as the primary driver of variation, we enforce
+deterministic greedy decoding (temperature=0) with a fixed 30-
+second window.
+Clinical Structuring.We utilize QWEN3-235B-A22B-
+INSTRUCT-2507 [24] (via an official API service) to map
+ASR transcripts into structured JSON documentation. To en-
+force output fidelity, the system instruction imposes evidence-
+grounded constraints: safety-critical assertions (e.g., allergies)
+5517
+must cite verbatim source spans to mitigate hallucination, and
+decision outputs are restricted to a fixed taxonomy (e.g., a 3-
+point triage scale) to enable rigorous quantitative comparison
+across conditions.
+3.3. Evaluation Paradigm
+Clinical safety evaluation relies on the correctness ofactionable
+semanticsrather than surface-form text overlap (e.g., ROUGE).
+To rigorously benchmark safety, we establish a clinician-
+audited gold reference via a model-assisted, human-verified
+workflow [25].
+For allN=272encounters, we first employed GPT-5.2
+[26] (via an official API service) to decompose the clean hu-
+man transcripts into a set of atomic clinical facts (e.g., specific
+symptoms, medication status, timeframes). Crucially, these
+candidate claims underwent a physician audit, where clinical
+experts corrected hallucinations and supplemented omitted de-
+tails to ensure high clinical validity. This process yielded a
+ground-truth set of semantic units for each encounter. All down-
+stream metrics compare the model’s structured output against
+this physician-verified reference, isolating genuine semantic
+safety drift from benign phrasing variations.
+3.4. Metrics
+3.4.1. Upstream Signal Fidelity (Cause-Side)
+Word Error Rate (WER) & Insertion Rate (InsRate).Let
+Dbe the evaluation dialogue set, indexed byi, with|D|=M.
+For each dialoguei, letr i be the human reference transcript,
+a(0)
+i the ASR transcript from clean audio (clean-ASR base-
+line), anda (c)
+i the ASR transcript under noisy conditionc.
+LetS (c)
+i ,D (c)
+i ,I (c)
+i be the Levenshtein counts of substitutions,
+deletions, and insertions when aligninga (c)
+i tori, and letNi be
+the number of words inri. We report micro-averaged rates over
+tokens:
+WER(c) = 100·
+P
+i∈D
+
+S(c)
+i +D (c)
+i +I (c)
+i
+
+P
+i∈DNi
+.(1)
+InsRate(c) = 100·
+P
+i∈DI (c)
+iP
+i∈DNi
+.(2)
+InsRate is a lightweight proxy for additive transcript artifacts
+(e.g., repetitions, filler-like insertions, or noise-induced ex-
+tra words), capturing general over-generation beyond substitu-
+tions/deletions.
+Negation Error Rate (NegErr).LetN(r i,a (c)
+i )∈{0,1}in-
+dicate whether any clinically relevant entity in dialogueiex-
+hibits a negation-status mismatch betweenr i anda (c)
+i (e.g.,no
+fevervs.fever).
+NegErr(c) = 100
+M
+X
+i∈D
+N(ri,a (c)
+i ).(3)
+3.4.2. Downstream Robustness & Safety (Result-Side)
+Notation and evaluation scope.For each dialogueiand con-
+ditionc, the downstream pipeline produces a structured output
+that includes (i) an ordinal triage label and (ii) a set of atomic
+clinical claims / safety flags. In our evaluation, these fields are
+present for every dialogue under every condition; therefore, all
+downstream metrics below are computed on the full setD(no
+instance filtering).
+Paired Triage Match (Invariance).Lett (0)
+i ,t (c)
+i , andt (gold)
+i
+be the triage labels predicted from the clean baseline, noisy
+conditionc, and the gold reference, respectively. We measure
+paired invariance as agreement with the clean baseline:
+TriageMatch(c) = 1
+M
+X
+i∈D
+1
+h
+t(c)
+i =t (0)
+i
+i
+.(4)
+Under-Triage Rate (Risk).Letord(t)map a triage label to
+an ordinal severity rank (larger = more urgent). DefineU (c)
+i =
+1
+h
+ord(t(c)
+i )<ord(t (gold)
+i )
+i
+, where1[·]is the indicator func-
+tion. We report the rate ofnewunder-triage cases induced by
+noise:
+UnderTriage(c) = 100
+M
+X
+i∈D
+1
+h
+U (c)
+i = 1∧U (0)
+i = 0
+i
+.(5)
+Safety-Critical Error Rate (SCER).LetG (c)
+i be the set of ex-
+tracted safety flags under conditionc,G (gold)
+i the gold flags, and
+Gcrit the predefined safety-critical subset. Define noise-induced
+criticalfalse-positiveflags:
+∆G(c)
+i =
+
+G(c)
+i \G (gold)
+i
+
+∩G crit.
+SCER measures whether noise introduces anynewcritical false-
+positive flags relative to the clean baseline:
+SCER(c) = 100
+M
+X
+i∈D
+1
+h∆G(c)
+i \∆G (0)
+i
+>0
+i
+.(6)
+SCER targets noise-induced hallucinations (false positives),
+while safety risks arising from omissions (false negatives) are
+reflected by the complementaryUnderTriagemetric and the
+holisticUnsafe Rate.
+Error Propagation Rate (ErrProp).LetC (c)
+i andC (gold)
+i
+be the sets of atomic claims under conditioncand gold ref-
+erence. Let△denote symmetric difference. Define claim error
+setErr (c)
+i =C (c)
+i △C (gold)
+i and newly introduced claim errors
+∆Err(c)
+i =
+Err(c)
+i \Err (0)
+i
+. LetE (c)
+i =S (c)
+i +D (c)
+i +I (c)
+i
+be the ASR word-error count under conditioncand∆E (c)
+i =
+max
+
+0,E (c)
+i −E (0)
+i
+
+be additional ASR errors induced by
+noise. Then:
+ErrProp(c) = 100·
+P
+i∈D ∆Err(c)
+i
+P
+i∈D ∆E(c)
+i
+.(7)
+When the denominator is zero (i.e., no additional ASR errors
+relative to the baseline), we defineErrProp(c) = 0for re-
+porting. ErrProp quantifies the marginal yield ofnewgold-
+referenced claim errors per additional ASR word errors.
+3.4.3. Graded Clinical Consistency Scoring
+We use GPT-5.2 as a deterministic rubric-based judge, follow-
+ing G-Eval [27], to assess clinical consistency between each
+generated note and the clinician-audited gold reference. The
+judge is instructed to focus on clinically meaningful deviations
+(i.e., claim-level errors) rather than stylistic similarity; semanti-
+cally equivalent paraphrases are not penalized.
+We adopt a clinically grounded 1–5 rubric:
+•5 (Clinically Equivalent):No clinically meaningful devia-
+tions from gold on all safety-critical claims (e.g., red flags,
+triage-relevant cues, numbers/units/time, contraindications).
+5518
+Table 2:Main results of the paired acoustic stress test.
+Condition WER↓InsRate↓NegErr↓ErrProp↓TriageMatch↑SCER↓UnderTriage↓Mean Score↑Unsafe↓
+(%) (%) (%) (new-err/100∆ASR errs) (%) (%) (%) (1–5 Scale) (%)
+Reference (clean-ASR) 16.54 2.99 19.12 – 100.00 0.00 0.00 4.62 13.60
+Non-Stationary Semantic Interference (MUSAN Speech)
+15 dB 21.16 4.74 34.93 68.49 91.91 75.37 2.21 3.92 66.91
+10 dB 30.00 8.29 37.50 25.31 91.54 83.46 3.31 3.74 78.68
+5 dB 54.68 14.55 51.10 10.53 81.99 92.28 7.72 3.41 91.54
+Stationary Ambient Interference (DEMAND Office, Cafeteria, Traffic)
+15 dB 17.25 2.48 20.22 272.83 93.01 44.12 3.31 4.45 27.21
+10 dB 18.02 2.30 26.10 172.96 92.65 46.32 2.94 4.43 25.74
+5 dB 20.63 2.31 39.71 77.93 91.54 66.18 3.31 4.23 40.44
+Mitigation Study (Agent-Based Framework)
+Semantic 5 dB 54.68 14.55 51.10 10.62 86.03 83.82 2.57 3.71 70.96
+Ambient 5 dB 20.63 2.31 39.71 78.82 92.28 51.84 1.10 4.36 33.46
+•4 (Minor Non-critical Deviations):Minor omissions or in-
+accuracies that do not affect clinical risk assessment or im-
+mediate decisions; safety-critical claims remain correct.
+•3 (Potentially Actionable Ambiguity):Missing or unclear
+information that may require clarification, but does not con-
+stitute a clear high-risk error given available evidence.
+•2 (High-risk Deviation):At least one major error relative
+to gold that can plausibly increase risk (e.g., omission of a
+documented red flag, incorrect number/unit/time, or incorrect
+triage-relevant interpretation).
+•1 (Critical Failure):Safety-critical hallucination or a de-
+viation that could directly lead to dangerous under-triage or
+harmful action.
+Lets (c)
+i ∈ {1,...,5}be the judge score for dialoguei
+under conditionc. We reportMean Score 1
+M
+P
+i∈Ds(c)
+i and
+Unsafe Rate 100
+M
+P
+i∈D 1[s(c)
+i ≤2].
+3.5. Mitigation: Evidence-Grounded Hybrid Agent
+To reduce noise-induced hallucinations at severe SNR
+(5 dB), we introduce a lightweightevidence-grounded auditing
+pipeline implemented with QWEN3-235B-A22B-INSTRUCT-
+2507 backbone. The agent operates via two roles using adual-
+view context(raw transcript for evidence, cleaned view for rea-
+soning).Draft (Extractor)generates the structured JSON and
+attachesverbatimevidence quotes infield evidencefor
+safety-relevant fields.Guard (Verifier)audits the draft against
+the raw transcript; it is constrained toremoveunsupported con-
+tent, preferring abstention when evidence is missing.
+We further apply a deterministicsymbolic evidence filter:
+(i) any quoted evidence that is not an exact substring of the
+raw transcript is discarded; and (ii) high-stakes fields are set
+tonullif no surviving evidence remains. We use temperature
+= 0. This design deliberately trades completeness for traceabil-
+ity, targeting reductions in safety-critical “never-event” errors
+(Unsafe/SCER) under heavy acoustic corruption.
+3.6. Results and Analysis
+Table 2 summarizes the paired acoustic stress test across 272
+OSCE-style dialogues. Holding the downstream pipeline fixed,
+we characterize failure modes across upstream ASR distortion,
+downstream invariance, and safety degradation. Two key obser-
+vations emerge: (i) transcript fidelity is a weak proxy for clini-
+cal safety, as the clean-ASR baseline yields a non-trivial Unsafe
+Rate; and (ii) noise type strongly shapes downstream errors.
+Upstream distortion signatures.Non-stationary semantic in-
+terference (MUSAN) produces an insertion-heavy transcript
+profile, with InsRate rising sharply as SNR decreases. Con-
+versely, stationary ambient noise (DEMAND) minimally im-
+pacts surface metrics (WER, InsRate) but substantially degrades
+NegErr. This pattern is consistent with failures being driven by
+high-leverage semantic cues (e.g., negations), reinforcing that
+WER alone cannot anticipate safety outcomes.
+Safety degradation without invariance breaks.Under se-
+mantic interference, degradation is overt: invariance drops and
+safety failures become pervasive. In contrast, ambient inter-
+ference exhibits a silent failure mode: despite relatively sta-
+ble triage outputs, safety violations increase markedly. This
+gap highlights that self-consistency does not imply correctness;
+clinically meaningful errors can accumulate heavily even while
+the system remains stable with respect to its clean-ASR output.
+High-leverage error propagation.A notable spike occurs un-
+der mild ambient noise, indicating an unusually high marginal
+claim-error yield per additional ASR error. As SNR decreases,
+ErrProp declines numerically as lower-impact word errors in-
+flate the denominator. Although absolute safety risks gener-
+ally trend upward with stronger noise, minor non-monotonic
+fluctuations under ambient interference are consistent with the
+effect depending on which critical utterances are acoustically
+perturbed, rather than being a purely linear function of SNR.
+Overall, small transcript perturbations can be disproportionately
+consequential at the claim level.
+Mitigation via evidence-grounding.Deploying theEvidence-
+Grounded Hybrid Agentunder severe 5 dB conditions im-
+proves safety across both noise regimes. By enforcing ver-
+batim constraints, the agent reduces high-risk outcomes while
+leaving overall ErrProp largely unchanged. This sustained Er-
+rProp alongside reduced Unsafe and SCER rates indicates the
+symbolic filter disproportionately prunes unsupported, safety-
+critical “never-event” content via evidence-based abstention,
+while leaving benign claim variations relatively unaffected.
+4. Conclusion
+We presented a paired counterfactual noise stress test for
+ASR→LLM clinical scribe pipelines, isolating how controlled
+acoustic perturbations propagate into downstream clinical-
+claim drift. Across realistic noise families, we find that safety-
+relevant errors can increase even when transcript-level fidelity
+changes appear modest, highlighting that WER alone is an in-
+adequate proxy for end-to-end clinical safety. Different noise
+profiles induce distinct distortion patterns and downstream fail-
+ure modes, motivating claim-aware evaluation. Finally, our
+lightweight hybrid agent shows that symbolic evidence con-
+straints can reduce high-risk hallucinations under severe acous-
+tic corruption.
+5519
+5. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used
+ChatGPT 5.2 to polish the language and improve the flow of
+the text. After using this tool, the authors reviewed and edited
+the content as needed and take full responsibility for the final
+version of the manuscript.

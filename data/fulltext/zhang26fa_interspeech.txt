@@ -1,0 +1,484 @@
+MPA-KWS: Multi-Modal Phoneme-Level Alignment for Streaming
+Open-V ocabulary Keyword Spotting
+Jue Zhang, Guibin Zheng∗∗, Jiarui Zhang, Jiqing Han, Chenhao Jing
+Faculty of Computing, Harbin Institute of Technology, China
+zjue1879@gmail.com, zhengguibin@hit.edu.cn jqhan@hit.edu.cn
+Abstract
+For open-vocabulary keyword spotting, phoneme-level align-
+ment has been introduced to improve the performance on acous-
+tically confusable words. However, most existing studies utilize
+non-streaming methods, which are unsuitable for streaming sce-
+narios. Recent methods achieve streaming phoneme alignment
+via connectionist temporal classification (CTC) algorithms, but
+they are limited to text-only enrollment. To address these issues,
+we propose a novel streaming multimodal open-vocabulary key-
+word spotting method based on phoneme-level alignment. This
+method achieves fine-grained modeling with training-inference
+consistency through the W-CTC forced alignment algorithm
+and multimodal phoneme-level contrastive learning. Addition-
+ally, we propose a data augmentation method based on CTC
+beam-search to dynamically mine hard negative samples. Ex-
+periments on the LibriPhrase dataset demonstrate that the pro-
+posed method achieves the best results.
+Index Terms: open-vocabulary keyword spotting, contrastive
+learning, W-CTC, multi-modal
+1. Introduction
+Open-vocabulary keyword spotting [1, 2, 3] enhances human-
+computer interaction by detecting user-defined keywords with-
+out retraining. Compared to audio enrollment-based approaches
+[4, 5, 6], text enrollment-based methods [1, 2, 3] offer greater
+stability and convenience by mapping audio and text into a uni-
+fied latent space. However, discriminating acoustically similar
+confusing words remains a critical challenge.
+Recent studies indicate that keyword spotting methods em-
+ploying phoneme-level alignment [7, 8, 9, 10, 11, 12, 13, 14]
+achieve superior results on confusing words compared to meth-
+ods learning solely at the utterance level. This improvement is
+attributed to the retention of more fine-grained discriminative
+speech information. Techniques including self-attention mech-
+anisms [1, 7], cross-attention mechanisms [9], DSP algorithms
+[10, 11], and the Montreal forced aligner [12] have been applied
+to obtain phoneme-level alignments. However, these alignment
+methods depend on full-sequence information and generally ex-
+hibit high time complexity, making them difficult to apply in
+streaming scenarios. Several recent approaches [13, 14] intro-
+duce streaming phoneme alignment strategies based on CTC.
+These strategies support frame-by-frame computation with low
+time complexity and are suitable for streaming execution. Nev-
+ertheless, these methods are limited to text-only enrollment and
+cannot further enhance performance through modality fusion.
+Building upon phoneme-level alignment, phoneme-level
+contrastive learning is utilized to further close the modality gap
+**indicates the corresponding author.
+between audio and text. For instance, the InfoNCE loss is ap-
+plied to phoneme-level contrastive learning to align phonemes
+across modalities and enhance audio consistency [12, 15].
+However, when performing contrastive learning between au-
+dio and text, the text representation is deterministic, whereas
+the audio representation varies due to changing acoustic en-
+vironments. The InfoNCE loss fails to fully exploit this in-
+herent asymmetry. Furthermore, these methods employ differ-
+ent phoneme alignment strategies during contrastive learning
+and actual inference. This discrepancy can lead to a training-
+inference mismatch and ultimately degrade the final perfor-
+mance.
+To address these issues, we utilize the W-CTC forced align-
+ment [16] to uniformly process the support audio and the query
+audio. The alignment results are used to aggregate phoneme-
+level acoustic embeddings. We conduct contrastive learning
+across both audio pairs and audio-text pairs to narrow the
+modality gap. Considering the intrinsic differences between au-
+dio and text, we apply an asymmetric proxy loss for the cross-
+modal matching. To improve model performance on confusing
+words, we additionally propose a hard negative sample mining
+method. Moreover, a cross-attention bias module is incorpo-
+rated to inject keyword priors into the acoustic encoder without
+additional latency. Our main contributions can be summarized
+as follows:
+• We propose MPA-KWS, a streaming open-vocabulary key-
+word spotting framework that supports both text-only and
+text-audio enrollment.
+• We introduce a CTC beam-search-based data augmentation
+method that leverages the acoustic encoder’s recognition bias
+to dynamically generate hard negative samples.
+• We design a phoneme-level contrastive learning framework
+that incorporates asymmetric proxy loss for cross-modal
+alignment and symmetric InfoNCE loss for intra-modal
+alignment.
+2. Methods
+An overview of the proposed method is illustrated in Figure 1.
+In the following, we describe each component of MPA-KWS
+along with the training and inference procedures.
+2.1. Feature Extractor
+1) Text Feature Extractor:Given the keyword text, we convert
+it into a phoneme sequence via a pre-trained g2p model [17].
+This sequence is encoded using a learnable embedding dictio-
+nary and a single-layer BiLSTM. A subsequent linear projection
+yields the phoneme-level embeddingE phn
+ST ∈R Lp×d, with se-
+quence lengthL p and feature dimensiond.
+21
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2485
+Text 
+Encoder
+Query Audio
+“Cat”
+Support Text
+“Cat”
+Support Audio
+“Cat”
+G2P
+Model
+Text
+Projection
+“ * K AE1 T * ”
+T
+*
+AE1
+K
+* 𝐿𝑃𝐴𝐴
+𝐿𝑃𝐴𝑇
+Concat
+GRU
+𝐸𝐴
+𝐹rame 𝐸𝑆𝐴
+𝑃ℎ𝑛
+𝐸𝑄𝐴
+𝑃ℎ𝑛
+𝐸𝑆𝑇
+𝑃ℎ𝑛
+W-CTC forced alignment 
+Verifier
+0/1
+𝐿𝑈𝐴𝑇
+Concat
+Acoustic
+Encoder
+Bias
+Module
+Audio 
+Projection
+CTC 
+Projection
+GRU
+FC
+softmax
+Figure 1:The overall architecture of the proposed method. It consists of five modules: an audio feature extractor, a text feature
+extractor, a W-CTC forced alignment module, a phoneme-level contrastive learning module, and a verifier. The dashed line denotes the
+computation flow for the support audio, which is executed solely during text-audio enrollment, ”*” represents wildcard token.
+2) Acoustic Feature Extractor:For both the support audio
+and query audio, we extract 80-dimensional log-Mel filterbank
+features and feed them into a shared acoustic encoder. The en-
+coder is implemented as a Conv1dNet [18] equipped with causal
+squeeze-and-excitation modules [19]. It operates at a downsam-
+pling rate of 4 to satisfy the low-latency constraints of streaming
+inference.
+Inspired by [8], we introduce a bias module based on multi-
+head cross-attention to bridge the modality gap between audio
+and text. The output of the acoustic encoder serves as the query,
+while the text embeddingE phn
+ST provides the keys and values.
+The biased representationO f rame
+A is formulated as:
+Oframe
+A =Softmax
+QK T
+√dk
+
+V, O frame
+A ∈R LF×d (1)
+whereL F denotes the number of downsampled frames.
+The bias module injects keyword phoneme context as prior
+information into the acoustic representation. Since the support
+text embeddings are precomputed, the attention can be executed
+frame-by-frame without additional latency.
+The biased representation is passed into two branches: a
+CTC branch that projects to frame-level phoneme probabilities
+for forced alignment, and an audio projection branch that pro-
+duces the final acoustic embeddingsE f rame
+A ∈R LF×d.
+2.2. Alignment via W-CTC
+To align the continuous audio stream with the discrete text
+phonemes, we employ the W-CTC forced alignment framework
+[13, 16]. This algorithm appends wildcard tokens to both ends
+of the text, permitting the target sequence to begin or terminate
+alignment at arbitrary time steps.
+Based on the log-probability matrix generated by the pro-
+jection layer, we apply the W-CTC forced alignment to derive
+a binary alignment matrixA∈ {0,1} Lp×LF . An element
+Ai,t = 1indicates that thet-th audio frame aligns with the
+i-th keyword phoneme. Deviating from [13], we discard frames
+aligned to the blank token during this alignment process.
+To aggregate phoneme-level acoustic embeddings, we uti-
+lize the probability distribution as confidence weights for ag-
+gregation. Assuming the target keyword phoneme sequence
+isK= (k 1,k 2,...,k Lp ), the corresponding phoneme-level
+acoustic embeddingE phn
+A (i)∈R d for thei-th phonemek i
+is formulated as:
+Ephn
+A (i) =
+PLF
+t=1Ai,t·P ki,t·E f rame
+A (t)PLF
+t=1Ai,t
+(2)
+whereP ki,t represents the softmax probability regarding the
+target phonemek i at thet-th frame. The denominatorPLF
+t=1Ai,t denotes the actual number of frames aligned to this
+phoneme and serves as a normalization factor.
+Using Eq. (2), we compute the phoneme-level support au-
+dio embeddingE phn
+SA ∈R Lp×d and query audio embedding
+Ephn
+QA ∈R Lp×d.
+2.3. Phoneme-Level Contrastive Learning
+As illustrated in Figure 1, we design a phoneme-level con-
+trastive learning module to finely align audio and text features
+within a shared latent space. Notably, the contrastive loss is
+computed exclusively on positive sample pairs to prevent in-
+valid forced alignments.
+For the audio-text contrastive learning, we consider that
+while the acoustic embeddings of a given keyword vary across
+different speakers and acoustic environments, its text embed-
+ding remains unique and serves as a noise-free invariant refer-
+ence. Given this inherent asymmetry, we employ Asymmetric
+Proxy (AsyP) loss [20], which utilizes the text representation
+as a proxy and applies asymmetric similarity functions condi-
+tioned on the modality of the anchor.
+1) Text-Audio Contrastive Learning:To expand the pool of
+negative samples, we sample across the entire batch. For a given
+batch, we concatenate and flatten all constituent phonemes to
+form a sequence of lengthN. The query audio (or support au-
+dio) embeddingsE phn
+A and the support text embeddingsE phn
+ST
+are flattened following the same order, where the representa-
+tions corresponding to thei-th phoneme are denoted asE phn
+A,i
+andE phn
+ST ,i, respectively. The loss is defined as:
+LP AT = 1
+N
+NX
+i=1
+ 
+1
+α ELSEj∈Piα(λ−sim(E phn
+ST ,i,E phn
+A,j ))
++MSP k∈Niβ(sim(E phn
+A,i ,E phn
+ST ,k)−λ)
+!
+(3)
+Here,P i ={j|y j =y i}denotes the set of positive in-
+dices, andN i ={k|y k ̸=y i}denotes the set of negative
+22
+indices. The operators ELSE and MSP refer to the Extended-
+LogSumExp function [21] and the Mean-Softplus function [22],
+respectively. The parameterλrepresents the margin, whileα
+andβserve as scaling hyperparameters for the positive and neg-
+ative terms. Through this asymmetric optimization process, we
+effectively mitigate the challenges proposed by modality het-
+erogeneity.
+2) Audio-Audio Contrastive Learning:Regarding intra-
+modality matching, we utilize a symmetric InfoNCE loss to
+maximize mutual information. Similar to the audio-text match-
+ing strategy, negative samples are drawn from the entire batch.
+The loss is defined as:
+LNCE(X,Y) =− 1
+N
+NX
+i=1
+log exp(sim(Xi,Y i)/τ)PN
+j=1 exp(sim(Xi,Y j)/τ)
+LP AA = 1
+2
+
+LNCE(Ephn
+QA,E phn
+SA ) +L NCE(Ephn
+SA ,E phn
+QA )
+
+(4)
+Here,τacts as a temperature hyperparameter, and sim(·,·)
+denotes the cosine similarity function. This objective encour-
+ages the model to capture the acoustic consistency of identical
+phonemes across diverse acoustic environments.
+2.4. Training
+2.4.1. Multi-Task Learning
+The verifier receives the aligned embeddings from the con-
+trastive learning module and explicitly computes the match-
+ing features for audio-audio and audio-text pairs. For any two
+given sequencesE 1 andE 2, we construct an interaction fea-
+tureF= [E 1,E 2,E 1−E 2,E 1⊙E 2][23], where⊙denotes
+element-wise multiplication. These matching features are fed
+into two separate bidirectional gated recurrent unit networks.
+The final hidden states of these networks are concatenated and
+passed through a fully connected classifier to produce the fi-
+nal logits, which are subsequently used to calculate the binary
+cross-entropy lossL U AT.
+During the training phase, we initially pre-train the acous-
+tic encoder independently using the CTC loss. The entire model
+then undergoes end-to-end training utilizing a multi-task learn-
+ing approach. The total loss function is defined as:
+LM P A =λ P ATLP AT +λ P AALP AA +λ U ATLU AT (5)
+whereλ P AT ,λ P AA, andλ U AT act as hyperparameters regu-
+lating the respective loss weights.
+To accommodate text-only enrollment scenarios where sup-
+port audio is absent, we simulate this condition during training
+by masking the support audio with a 50% probability. Under
+this condition, the audio-audio contrastive learning is bypassed,
+and the output of the gated recurrent unit network responsible
+for processing the audio-audio matching features is explicitly
+set to a zero tensor.
+2.4.2. CTC Beam Search-based Data Augmentation
+To enhance discrimination against acoustically similar confus-
+ing words, we propose a dynamic data augmentation method
+based on CTC beam search. Given a keyword audio sample
+with ground-truth phoneme labely true, we apply beam search
+with beam widthKon the frame-level phoneme probability
+distribution produced by the acoustic encoder. After remov-
+ing blank tokens and merging repeated phonemes, we obtain
+Table 1:Results of different methods on LibriPhrase.
+Modality Params Method AUC(%)↑EER(%)↓
+LPH LPE LPH LPE
+T 0.7M CMCD [2] 73.58 96.70 32.90 8.42
+T 3.6M CED [11] 92.70 99.84 14.40 1.70
+T 15M AdaKWS-Tiny [3] 93.75 99.80 13.47 1.61
+T 3.6M W-CTC [13] 95.93 99.95 10.21 0.91
+TA 3.9M MM-KWS [7] 96.25 99.95 9.30 0.68
+TA N/A PLCL [12] 96.59 99.97 8.47 0.57
+T 4.0MMPA 96.04 99.95 9.53 0.77
+TA 4.0MMPA 97.30 99.98 8.21 0.45
+an N-best hypothesis listH={ˆy (1),ˆy(2),...,ˆy(K)}. By ex-
+cluding sequences matching the ground truth, we construct a
+hard negative label setH neg ={ˆy(j) ∈H|ˆy (j) ̸=y true},
+which naturally captures pronunciation patterns most suscepti-
+ble to misrecognition. These negative labels are paired with the
+corresponding audio as challenging support text inputs during
+training. Since the hard negatives are derived from the model’s
+own decoding, they adapt dynamically to its current optimiza-
+tion state. This augmentation is exclusively activated when the
+support audio is masked, preventing mismatches between the
+support audio and support text.
+2.5. Streaming Inference
+Prior to inference, support text embeddings are computed and
+cached. Similarly, for text-audio enrollment, W-CTC forced
+alignment and feature aggregation are pre-computed on the sup-
+port audio.
+While the forced alignment is computed offline over com-
+plete speech segments during training, we adopt a sliding win-
+dow decoding strategy during inference to maintain streaming
+capabilities, similar to [13]. Specifically, for each input win-
+dow of sizeW, the end index of the alignment is determined
+by the position yielding the highest forward score for the fi-
+nal phoneme of the keyword. A backtracking operation from
+this end index produces the alignment matrix for the current
+window. The time complexity of this alignment process is
+O(W×L p), which is acceptable for streaming inference since
+bothWandL p are small.
+Once the local alignment results are extracted, the query
+audio embeddings are computed by Eq. (2). These aggregated
+embeddings, alongside the cached support audio and text em-
+beddings, are fed into the verifier to determine the final proba-
+bility of the keyword presence.
+Since text and support audio embeddings are cached prior
+to inference, the complexity is dominated by acoustic feature
+extraction, forced alignment, and verifier matching. Frame-by-
+frame cross-attention avoids global dependencies, the sliding
+window constrains alignment complexity, and the verifier incurs
+minimal overhead as inputs are compressed toLp. This synergy
+makes real-time processing feasible on resource-constrained de-
+vices.
+3. Experiments
+3.1. Dataset
+For model training and evaluation, we utilize the LibriPhrase
+dataset [2], which consists of phrases containing 1 to 4 words
+extracted from LibriSpeech. The training set of LibriPhrase is
+sourced from the train-clean-360 and train-clean-100 subsets,
+23
+Table 2:Results of ablation study.
+Modality Method AUC(%)↑EER(%)↓
+LPH LPE LPH LPE
+T MPA 96.04 99.95 9.53 0.77
+TA MPA 97.30 99.98 8.21 0.45
+TA InfoNCE-Only 96.30 99.96 9.04 0.61
+TA w/o Bias Module 96.02 99.95 9.52 0.65
+TA w/o phoneme-loss 94.85 99.88 11.87 1.13
+TA w/o data augmentation 94.03 99.83 12.52 1.42
+while the test set is derived from the train-other-500 subset.
+The test set is further categorized into LibriPhrase-Hard (LPH)
+and LibriPhrase-Easy (LP E) based on edit distances. Specif-
+ically, LibriPhrase comprises audio-text pairs of anchor words
+and contrastive words. The text of the anchor word serves as
+the support text, the audio of the anchor word acts as the sup-
+port audio, and the audio of the contrastive word is utilized as
+the query audio.
+3.2. Implementation Details
+The model is implemented using the PyTorch framework. The
+Conv1dNet acoustic encoder comprises 18 causal convolutional
+layers with 300 channels and employs depthwise separable con-
+volutions alongside DoubleSwish activation functions. The text
+encoder features a single-layer BiLSTM with a hidden dimen-
+sion of 128. The bias module is configured with 4 attention
+heads. The acoustic and text embedding dimensionsdare
+uniformly set to 256. The verifier employs two single-layer
+BiGRU, preceded by a 256-dimensional bottleneck projection
+layer. The total number of trainable parameters in the model is
+4.03 M.
+SpecAugment [24] is applied with frequency and time
+masking on the log-Mel filterbanks, while CTC beam search-
+based data augmentation is employed on the text inputs. Using
+the AdamW optimizer (initial learning rate5×10−4, weight de-
+cay 0.05, batch size 500), we set the contrastive learning hyper-
+parameters asτ= 0.04,λ= 0.85,α= 20.0, andβ= 10.0,
+with loss weightsλ P AT = 0.1,λ P AA = 0.1, andλ U AT = 1.
+3.3. Performance of MPA
+Table 1 presents the performance of various models on the
+LPH andLP E datasets, utilizing the area under the curve
+(AUC) and equal error rate (EER) as evaluation metrics. For
+text-only enrollment mode, our proposed model outperforms
+the streaming baseline [13], which similarly employs W-CTC
+forced alignment. On the most challenging LibriPhrase-Hard
+dataset, our text-only model achieves an AUC of 96.04% and
+an EER of 9.53%, surpassing the majority of existing sys-
+tems. For text-audio enrollment mode, the performance further
+improves, exceeding the current state-of-the-art PLCL method
+[12] and achieving optimal results. Notably, the Whisper-Tiny
+encoder employed in [12] possesses a significantly larger pa-
+rameter scale compared to our acoustic encoder.
+3.4. Ablation Study
+Table 2 details the ablation study results. Replacing the AsyP
+loss with InfoNCE loss during audio-text contrastive learning
+leads to a performance degradation, verifying the necessity
+of adopting an asymmetric proxy loss for cross-modal match-
+ing. Removing the text bias module increases the EER on
+Figure 2:Visualized cosine similarity maps. (a-c): Positive
+sample for ”costumes”. (d-f): Hard negative sample (support:
+”beautifully”, query: ”beautiful”). (g-i): Easy negative sam-
+ple (support: ”acclamations”, query: ”potent”). The negative
+query audio is force-aligned against the support text.
+the LibriPhrase-Hard set from 8.21% to 9.52%, indicating that
+injecting text priors at an early stage of acoustic feature ex-
+traction effectively guides the encoder. When the phoneme-
+level contrastive loss is entirely eliminated, the EER on the
+LibriPhrase-Hard set rises sharply to 11.87%, suggesting that
+explicit phoneme-level metric learning is crucial for distin-
+guishing easily confused words. Finally, discarding the confus-
+ing word data augmentation results in a severe drop in model
+performance, with the EER reaching 12.52%.
+3.5. Visual Analysis
+Figure 2 illustrates the model’s alignment capabilities by visu-
+alizing a positive, a hard negative, and an easy negative pair. We
+present the cosine similarity matrices for phoneme-level audio
+embeddings and text embeddings, along with their CTC prob-
+abilities. The positive examples clearly exhibit a diagonal pat-
+tern, whereas hard negatives display such a structure only par-
+tially, and easy negatives show no such pattern at all.
+4. Conclusions
+In this work, we proposed MPA-KWS, a streaming multi-
+modal open-vocabulary keyword spotting framework based on
+phoneme-level alignment. By employing W-CTC forced align-
+ment, our method unifies the processing of text and audio en-
+rollments while maintaining training-inference consistency. We
+effectively close the audio-text modality gap through a novel
+phoneme-level contrastive learning framework utilizing asym-
+metric and symmetric proxy losses. Additionally, a dynamic
+CTC beam-search data augmentation strategy is introduced to
+tackle the challenge of acoustically confusable words. Exper-
+iments on LibriPhrase demonstrated that MPA-KWS achieves
+state-of-the-art performance with only 4.0M parameters, and
+ablation studies validated the contribution of each proposed
+component.
+24
+5. Generative AI Use Disclosure
+The authors used generative AI tools (Gemini and Claude)
+solely to improve English grammar and readability of the
+manuscript. All technical content, experimental design, imple-
+mentation, results, and conclusions were produced and verified
+by the authors.

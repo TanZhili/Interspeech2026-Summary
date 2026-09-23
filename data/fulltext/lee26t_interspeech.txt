@@ -1,0 +1,403 @@
+Progressive Alignment Objectives for Aligner-Encoder based ASR
+Jaeyoung Lee1, Masato Mimura1, Takafumi Moriya1
+1 NTT, Inc., Japan
+jae.lee@ntt.com
+Abstract
+Aligner-Encoders are recently proposed seq2seq end-to-end
+ASR models that replace decoder attention by predicting the u-
+th token directly from the u-th encoder position, so the encoder
+must learn the alignment internally without cross-attention or
+a transducer lattice. In practice, this alignment often forms
+abruptly in the upper layers, making training sensitive and brit-
+tle on long utterances. We propose InterAligner, which adds
+an intermediate Aligner objective so alignment can form pro-
+gressively across depth, together with an intermediate CTC loss
+(InterCTC) to stabilize optimization. On LibriSpeech with a
+17-layer Conformer, a final-only Aligner reaches 5.0/7.8 WER
+(test-clean/other). InterCTC improves to 3.4/6.0, and Inter-
+Aligner further reduces WER to 3.1/5.6 with the largest gains
+on long utterances.
+Index Terms: Aligner-encoders, Speech recognition
+1. Introduction
+Learning a monotonic alignment between acoustic frames and
+output tokens remains central to end-to-end (E2E) automatic
+speech recognition (ASR). Classical E2E formulations differ
+primarily in how they represent alignment: Connectionist Tem-
+poral Classification (CTC) [1] marginalizes over monotonic
+paths with dynamic programming, RNN-Transducer (RNN-
+T) [2] extends this idea with a joint acoustic-label lattice,
+and attention-based encoder-decoders (AED) learn alignments
+implicitly through cross-attention [3]. While modern en-
+coders such as the Conformer [4] have strengthened all three
+paradigms, alignment learning can still dominate optimization
+difficulty and robustness, especially for long utterances.
+Beyond these established paradigms, some recent
+sequence-to-sequence (seq2seq) ASR frameworks aim to
+reduce reliance on implicit, unconstrained cross-attention
+alignments by introducing monotonic inductive bias or struc-
+tured emission mechanisms. Hybrid objectives that combine
+AED training with auxiliary monotonic losses such as CTC can
+improve stability and convergence [5]. Separately, Continuous
+Integrate-and-Fire (CIF) [6] introduces a soft monotonic emis-
+sion process that aggregates frame-level representations into
+token-level segments by dynamically “integrating” evidence
+until a threshold triggers output. Collectively, these works
+illustrate complementary ways of injecting monotonic bias
+via auxiliary losses or explicit emission mechanisms, and
+suggest that architectures where alignment must form within
+the network (e.g., within encoder self-attention) may benefit
+from additional monotonic guidance at intermediate depth.
+Aligner-Encoders [7] offer a recent alternative that makes
+alignment explicit inside encoder self-attention, enabling
+lightweight decoding while remaining competitive with strong
+AED baselines. However, Aligner-Encoders exhibit a dis-
+tinctive training dynamic: clear diagonal alignment emerges
+abruptly only in a small number of top layers of a 17-layer en-
+coder [7]. This creates a late-layer alignment bottleneck, where
+the model must transition from largely unaligned acoustic rep-
+resentations to near-monotonic alignment within just a few lay-
+ers. In particular, for long utterances, a large mismatch between
+encoder-frame counts and token length makes alignment diffi-
+cult and markedly degrades recognition performance [7].
+We proposeInterAligner, which encourages alignment
+to form progressively across depth by adding an intermediate
+Aligner objective at an upper-intermediate layer using a longer,
+finer-grained target sequence, followed by the final Aligner ob-
+jective at the last layer with a shorter, coarser tokenization. We
+additionally attach an early-layer intermediate CTC loss (In-
+terCTC), building on intermediate CTC supervision [8] and
+CTC-assisted training [5]. Our method creates a curriculum
+over alignment difficulty and is related to hierarchical/multi-
+granularity supervision [9, 10, 11], but specifically targets align-
+ment emergence within encoder self-attention.
+This work (i) establishes InterCTC as an effective optimiza-
+tion aid for Aligner-Encoders and (ii) introduces InterAligner to
+encourage progressive alignment formation across depth. We
+show consistent accuracy gains from both components on Lib-
+riSpeech and Common V oice English, and provide complemen-
+tary evidence through long-utterance analysis and attention vi-
+sualizations.
+2. Related Work
+2.1. Aligner-Encoders and alignment-explicit transduction
+E2E ASR research has repeatedly revisited the question of how
+to represent and learn monotonic audio-text alignment reli-
+ably [12]. Beyond CTC and RNN-T, several alignment-explicit
+transduction frameworks have been proposed to reduce reliance
+on unconstrained soft attention, including the Recurrent Neural
+Aligner (RNA) [13] and self-attention based transducer variants
+[14, 15, 16]. Relatedly, self-attention can be augmented with an
+explicit alignment mechanism for latency-controlled recogni-
+tion [17], and label-synchronous transducers further emphasize
+label-level (not frame-level) representation and emission [18].
+Stooke et al. proposedAligner-Encoders, which expose
+audio-text alignment within encoder self-attention and en-
+able lightweight decoding while remaining competitive with
+attention-based encoder-decoders (AED) under a shared Con-
+former backbone [7]. A key observation in Aligner-Encoders
+is that clear diagonal alignment structure typically becomes
+prominent only in the upper layers of deep encoders [7]. Our
+work builds directly on this setting and addresses the resulting
+depth bottleneck by distributing alignment supervision across
+6191
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2132
+(a) Aligner-Encoder (Stooke et al., 2024) (b) InterAligner (ours)
+Final Aligner
+InterAligner
+InterCTC
+Speech frames
+ (coarser & shorter) tokens
+ (finer & longer) tokens
+Figure 1:InterAligner augments Aligner-Encoders with auxiliary monotonic supervision at intermediate depth, by providing early
+monotonic guidance on a longer sequence with a finer token granularity.
+Encoder
+Predictor
+Joiner
+. .
+. .
+. .
+Discarded
++ + +
+ text tokens
+ speech frames
+. .
+. . . .
+Figure 2:Aligner-encoder architecture. The joiner and pre-
+dictor modules operate autoregressively onUspeech frames;
+speech after that is discarded.
+depth so that alignment can form more gradually, improving ro-
+bustness particularly for long utterances.
+2.2. Monotonic bias and intermediate supervision
+Monotonicity is commonly encouraged via auxiliary CTC ob-
+jectives in AED training [5, 19] and joint decoding [20]. Struc-
+tured monotonic attention and related mechanisms further con-
+strain alignment for streaming/robustness [21, 22, 23, 24, 6],
+motivated by analyses of attention alignment behavior [25]. In-
+termediate/deep supervision improves optimization in deep en-
+coders [8, 26]; we evaluate InterCTC in Aligner-Encoders and
+introduce an intermediate Aligner objective to directly guide
+self-attention alignment formation.
+2.3. Hierarchical and multi-granularity supervision
+Hierarchical supervision attaches losses at multiple depths
+and/or label granularities [9, 27, 10, 11, 28]. InterAligner is
+closest in spirit to this line of hierarchical/multi-granularity su-
+pervision, but is tailored to Aligner-Encoders: we apply an
+intermediateAlignerloss on a longer, finer-grained target be-
+fore the final Aligner loss, encouraging monotonic alignment to
+emerge progressively within encoder self-attention.
+3. Methodology
+3.1. Aligner-Encoders
+We follow the Aligner-Encoder formulation of [7] (see Fig-
+ure 2). LetX= (x 1,...,x T )denote an input acoustic fea-
+ture sequence of lengthT. Lety= (y 1,...,y U )be the out-
+put token sequence of lengthU, where we append an end-of-
+sequence token⟨eos⟩(and include it inU). Aligner-Encoders
+assumeU≤T ′, whereT ′ is the encoder output length after
+subsampling.
+An encoder networkf enc mapsXto an acoustic embed-
+ding sequence
+H=f enc(X) = (h 1,...,h T ′ ),(1)
+and a prediction networkf pred produces a text embedding se-
+quence conditioned on the token history:
+gu =f pred(gu−1,y u−1), u= 1,...,U.(2)
+We sety 0 =⟨sos⟩and initializeg 0 (e.g., all zeros). In our
+implementation,f pred is a one-layer LSTM over token embed-
+dings.
+A joiner networkf joint combines the paired acoustic/text
+embeddings to produce logits over the vocabulary:
+zu =f joint(hu,g u),(3)
+P(y u|X,y <u) = softmax(z u).(4)
+Throughout the paper,f joint is a feed-forward joiner:
+˜zu = tanh(W hhu +Wggu +b),z u =W o ˜zu +bo,(5)
+followed bysoftmax(·)in Eq. (4). The defining restriction of
+Aligner-Encoders is the one-to-one pairing(h u,g u)in Eq. (4),
+rather than a fullT′×Ulattice as in RNN-T.
+Training minimizes the negative log-likelihood of the label
+sequence:
+Lfinal(θ) =−
+UX
+u=1
+logP(y u|X,y <u;θ).(6)
+6192
+Table 1:Main LibriSpeech results (WERs %) on test sets.
+System test-clean test-other
+Final Aligner only (Stooke et al.) 4.8 6.5
+Final Aligner only (ours) 5.0 7.8
++ InterCTC 3.4 6.0
++ InterAligner 3.1 5.6
+Table 2:Common Voice (16.1) English results (WERs %).
+System test
+Final Aligner only 12.4
++ InterCTC 11.2
++ InterAligner 10.9
+WithT ′ ≥U, the loss is applied only up tou=Uand the
+remaining encoder frames are ignored, requiring the encoder to
+move label-relevant information into its firstUoutputs.
+At inference time, givenh 1,...,h T ′, decoding proceeds
+sequentially over encoder frames and emits one token per frame
+until⟨eos⟩is produced, as in standard AED. Letˆy u denote the
+token emitted at stepu. Starting fromˆy 0 =⟨sos⟩and stateg 0,
+foru= 1,2,...,T ′ we compute
+gu =f pred(gu−1,ˆyu−1),(7)
+pu(·) = softmax(f joint(hu,g u)),(8)
+where we selectˆyu fromp u(·)using greedy decoding or beam
+search, and stop whenˆyu =⟨eos⟩.
+3.2. InterAligner and InterCTC
+InterAligner augments the baseline Aligner-Encoder objective
+with two intermediate losses, as illustrated in Fig. 1(b). Let
+H(ℓ) = (h (ℓ)
+1 ,...,h (ℓ)
+T ′ )denote the encoder sequence after
+layerℓ(ℓ= 1,...,L), withH (L)≡H.
+InterCTC attaches an intermediate CTC lossL ctc at layer
+ℓctc (we useℓ ctc = 12). InterAligner attaches an intermediate
+Aligner loss at layerℓ int (we useℓ int = 15in the main results)
+using an intermediate token sequence
+yint = (y int
+1 ,...,y int
+Uint),(9)
+derived from the same transcript with a finer tokenization, typ-
+ically yieldingU int > U. The InterAligner head uses a sepa-
+rate predictor and joiner from the final Aligner (no parameter
+sharing). We ensureU int≤T ′ so that the one-to-one pairing
+in Aligner-Encoders is well-defined. Using the same predic-
+tor–joiner factorization as Eqs. (2)–(4), but applied toH (ℓint)
+andy int
+<u, the intermediate Aligner loss is
+Lint(θ) =−
+UintX
+u=1
+logP int
+
+yint
+u |X,y int
+<u;θ
+
+.(10)
+These objectives are intended to shape alignment forma-
+tion in stages: InterCTC encourages token-predictive represen-
+tations early in the encoder, InterAligner encourages alignment
+to a longer, finer-grained sequence at intermediate depth, and
+the final Aligner lossL final (Eq. (6)) encourages refinement to
+the shorter, coarser target at the top layer.
+The overall training objective is
+L(θ) =λ finalLfinal(θ) +λ intLint(θ) +λ ctcLctc(θ).(11)
+Table 3:WERs (%) by utterance duration on LibriSpeech test.
+Split System<17s 17–21s>21s All
+clean
+Final Aligner only 3.2 5.7 23.4 5.0
++ InterCTC 2.3 2.3 17.0 3.4
++ InterAligner 2.4 2.9 11.6 3.1
+other
+Final Aligner only 7.0 8.2 24.0 7.8
++ InterCTC 5.4 5.3 18.0 6.0
++ InterAligner 5.2 5.5 13.5 5.6
+4. Experimental Evaluations
+4.1. Models and Datasets
+We evaluate on LibriSpeech 960h and report WER on test-clean
+and test-other. We additionally evaluate on Common V oice 16.1
+English, where punctuation is removed in both train and test.
+All systems use the same 17-layer Conformer-L encoder
+(overall model∼118M parameters). Unless otherwise noted,
+the final Aligner head is attached at layer 17, InterAligner at
+layer 15, and InterCTC at layer 12. For a fair comparison with
+[7], we set the beam width to 6. For LibriSpeech, we train for
+100 epochs and report results with model averaging over the 10
+best checkpoints. For Common V oice, we train for 50 epochs
+with the same 10-best averaging. The effective batch size is
+set to∼2 hours of audio in all settings. For reference, Table 1
+includes the final-only Aligner WER reported in Stooke et al.
+[7]. Reproducing that number is challenging under a limited
+training budget, which motivates adding intermediate objectives
+(InterCTC, InterAligner) to stabilize training.
+We use standard Transformer warmup/decay with 20k
+warmup steps. Peak learning rate is found optimal when
+0.0020 for settings that do not use any target vocabulary size
+≤256, and 0.0025 otherwise. The CTC weight is fixed to
+λctc = 0.1in all experiments. For InterAligner systems, we
+tune(λ final,λ int)and report the best-performing weights; abla-
+tions include explicit values.
+We compare progressively augmented systems: a final-only
+Aligner, the same model with InterCTC, and the full Inter-
+Aligner configuration (InterCTC + InterAligner). All tokeniza-
+tion uses Byte Pair Encoding (BPE) [29]. Unless stated oth-
+erwise, the number of tokens in the vocabulary for the final
+Aligner is 1024, InterAligner uses 256, and InterCTC matches
+the tokenization of the Aligner objective at the nearest higher
+layer (1024 in the InterCTC setting; 256 in InterAligner).
+4.2. Results
+Table 1 reports the main LibriSpeech results. InterCTC yields
+a large improvement over the final-only Aligner baseline, and
+adding InterAligner provides a further gain. We observe
+the same trend on Common V oice English (Table 2) as on
+LibriSpeech: adding InterCTC improves over the final-only
+Aligner, and adding InterAligner yields further gains. Final-
+only Aligner obtains 12.4% WER, adding InterCTC improves
+to 11.2%, and adding InterAligner further reduces WER to
+10.9% on the final head. We also verified with statistical sig-
+nificance testing that the WER reductions from InterCTC and
+from adding InterAligner are significant at the 1% level.
+Table 3 reports WER stratified by utterance duration. While
+the InterAligner system matches the InterCTC baseline on short
+and medium segments, it substantially improves performance
+on long utterances (>21s), reducing WER from 17.0 to 11.6
+on test-clean and from 18.0 to 13.5 on test-other. These gains
+6193
+Table 4:Effect of matching InterAligner/InterCTC targets and
+loss-weight sensitivity. Left: target BPE vocabulary sizes for the
+final Aligner (final), InterAligner (inter), and InterCTC. Right:
+WERs (%) on LibriSpeech test sets.
+Target BPE Weights test clean / other
+final inter CTC λfinal/λint final inter
+1024 256 256 0.5 / 1.0 3.1/5.6 3.0/5.5
+1024 256 256 1.0 / 0.5 3.1/ 5.8 5.7 / 7.0
+1024 256 1024 1.0 / 0.5 3.2 / 5.8 4.0 / 6.1
+Table 5:Ablation results on tokenization choices. Left: target
+BPE vocabulary sizes. Right: WERs (%) on LibriSpeech test
+sets. “–” denotes that the corresponding objective is not used.
+Target BPE test clean / other
+final inter CTC final inter
+1024 1024 1024 3.7 / 6.3 3.8 / 6.3
+1024 256 256 3.1 / 5.8 5.7 / 7.0
+1024 64 64 3.0/5.75.7 / 6.8
+256 – 256 5.0 / 6.4 –
+support our motivation that distributing alignment supervision
+across depth makes Aligner-Encoders more robust when the
+model must learn alignment over longer contexts.
+We next analyze ablations that isolate the roles of inter-
+mediate tokenization, hierarchical supervision, and auxiliary-
+objective design. Table 4 evaluates whether the intermediate
+CTC target should match the InterAligner target, and how sen-
+sitive performance is to the loss weights, withλ ctc = 0.1for
+all rows. Using the same intermediate vocabulary size for Inter-
+Aligner and InterCTC consistently outperforms using a larger
+InterCTC vocabulary (i.e., matching 256/256 vs. mismatching
+256/1024). The results also show that the relative weighting of
+the final and intermediate Aligner losses matters: emphasizing
+the intermediate Aligner loss(λ final,λ int) = (0.5,1.0)is best
+in the matched setting, while(1.0,0.5)degrades the intermedi-
+ate head and slightly worsens the final head. Interestingly, un-
+der the optimal weighting the intermediate head attains slightly
+lower WER than the final head (3.0/5.5 vs. 3.1/5.6). All main
+results are reported using decoding from the final head.
+Table 5 varies the target vocabulary sizes used for the inter-
+mediate objectives, with(λ final,λ int,λ ctc) = (1.0,0.5,0.1),
+except for the last row, where(λ final,λ int,λ ctc) =
+(1.0,0,0.1). Using smaller intermediate vocabularies (256 or
+64) yields strong performance, whereas using the same inter-
+mediate vocabulary as the final Aligner (1024) degrades WER,
+indicating that intermediate granularity substantially affects the
+difficulty of the implicit alignment problem. The results also
+indicate that reducing vocabulary size alone is insufficient: re-
+moving InterAligner and training only with 256 (final=256,
+CTC=256) performs much worse than the hierarchical configu-
+ration, suggesting that the gains arise from progressive supervi-
+sion rather than tokenization alone.
+Table 6 examines the placement of the InterAligner objec-
+tive, with(λ final,λ int,λ ctc) = (0.5,1.0,0.1)and an interme-
+diate vocabulary size of 256 for both InterAligner and Inter-
+CTC. The best results are obtained at layer 15, whereas attach-
+ing InterAligner at layer 16 substantially degrades performance.
+One interpretation is that at least two layers are needed to con-
+vert the intermediate alignment into the final alignment, con-
+sistent with the findings in [7] where alignment is reported to
+Figure 3:Averaged (8-head) encoder self-attention maps for
+InterAligner on a LibriSpeech utterance (U int = 11,U=
+9), illustrating progressive alignment emergence across layers
+(T′→U int in layer 14,U int→Uin layer 16).
+Table 6:Effect of InterAligner layer placement for Inter-
+Aligner+InterCTC, reporting WER (%) on test clean / other.
+InterAligner layer final inter
+16th 3.8 / 5.9 3.5 / 5.8
+15th3.1/5.6 3.0/5.5
+13th 3.5 / 6.4 3.3 / 5.9
+emerge across 2 upper layers.
+4.3. Attention Visualization
+Figure 3 shows averaged (8-head) encoder self-attention maps
+for a representative LibriSpeech utterance (Uint = 11,U= 9).
+Alignment does not emerge in the lower layers shown (11-12),
+but appears progressively in the upper encoder layers. At layer
+14, attention concentrates into a sharp monotonic band consis-
+tent withT ′→U int alignment. By layer 16, a second sharp
+diagonal pattern is observed at the coarser final granularity,
+consistent withU int→U. These patterns support our claim
+that InterAligner encourages staged alignment formation across
+depth rather than directT′→Ualignment in the top layers.
+5. Conclusion
+We proposed InterAligner, which augments Aligner-Encoders
+with progressive alignment supervision by adding an interme-
+diate Aligner objective, together with an intermediate CTC loss
+(InterCTC) for optimization stability. Across LibriSpeech and
+Common V oice English, InterAligner consistently improves
+over a final-only Aligner and over InterCTC alone, with the
+largest gains on long utterances. Attention visualizations sup-
+port the intended emergence of progressive alignment across
+depth. Future work will study progressive objectives for
+streaming and long-form recognition and their interaction with
+language-model integration.
+6194
+6. Generative AI Use Disclosure
+We used generative AI tools to assist with code development
+and manuscript editing; all generated content was reviewed and
+validated by the authors.

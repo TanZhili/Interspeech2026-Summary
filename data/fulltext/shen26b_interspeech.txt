@@ -1,0 +1,416 @@
+LaS-LCA: Layer-Selected Latent Cross-Attention Adapters and
+Margin-Mixup for Robust Cross-Lingual Speaker Verification
+Xu Shen1,∗, Yihao Zhao1,∗, Xinwei Wu2, Hao Liang 1, Yujie Zhu2, Yujin Wang2, Wei Liu1,2,
+Gongping Huang 2, Shoji Makino 1,∗∗
+1 Waseda University, Japan
+2 School of Electronic Information, Wuhan University, Wuhan, Hubei 430072, China
+shenxu@ruri.waseda.jp, yihaozhao@akane.waseda.jp, s.makino@waseda.jp
+Abstract
+Cross-lingual speaker verification suffers from significant per-
+formance degradation due to language mismatch. To effectively
+maintain stable speaker recognition across diverse languages,
+we propose layer-selected latent cross-attention adapters (LaS-
+LCA), a novel framework designed to adapt frozen large-
+scale pre-trained models. Specifically, we strategically select
+backbone layers to isolate speaker traits from linguistic noise.
+Within the adapter, shared latent cross-attention and convolu-
+tional modeling distill multi-layer features into a consistent,
+language-independent latent space. To further mitigate overfit-
+ting on limited cross-lingual data, we additionally incorporate
+an embedding-level margin-mixup strategy during the training
+phase. Experimental results on the TidyV oiceX benchmark
+demonstrate that LaS-LCA achieves an EER of 1.40%, signif-
+icantly outperforming baseline models and exhibiting superior
+robustness across diverse linguistic conditions.
+Index Terms: Speech verification, language mismatch, adapter,
+margin-mixup
+1. Introduction
+Speaker verification (SV) aims to determine whether an enroll-
+ment utterance and a test utterance belong to the same identity.
+Earlier systems typically relied on statistical modeling, whereas
+modern SV systems learn discriminative speaker embeddings
+with deep neural networks. The X-Vectors framework popu-
+larized a DNN-based embedding extractor that maps variable-
+length utterances into fixed-dimensional embeddings via statis-
+tics pooling and speaker classification training [1, 2]. Build-
+ing on this paradigm, CNN/ResNet-based encoders trained on
+large-scale in-the-wild corpora such as V oxCeleb [3, 4] have
+significantly enhanced robustness.
+However, as model architectures evolve in complexity, the
+demand for large-scale labeled datasets has become a bot-
+tleneck [5]. To address this challenge, recent research has
+shifted to utilizing self-supervised learning (SSL) models pre-
+trained on unlabeled data. Serving as powerful front-end en-
+coders, these pre-trained models (such as WavLM [6] and
+w2v-BERT [7]) can extract rich, general-purpose acoustic fea-
+tures. Subsequently, a back-end model is employed to aggre-
+gate the extracted features to yield a robust speaker embed-
+ding [8, 9, 10]. In this paradigm, the pre-trained SSL encoder
+is typically frozen or partially fine-tuned, while a task-specific
+back-end is trained to aggregate frame-level representations into
+utterance-level speaker embeddings [11, 12].
+*These authors contributed equally.
+**indicates the corresponding author.
+While SSL-based SV has demonstrated strong performance
+on V oxCeleb benchmarks [13], V oxCeleb is predominantly
+English-centric and may not fully reflect multilingual and cross-
+lingual evaluation conditions [14]. In cross-lingual speaker
+verification, the enrollment and test utterances may be spo-
+ken in different languages, a condition commonly referred to
+as language mismatch [15, 16, 17]. To facilitate evaluation
+under language mismatch, the TidyV oice2026 Challenge intro-
+duces Tidy-X [18], a novel benchmark tailored for robust cross-
+lingual speaker verification. This benchmark aims to foster the
+development of language-independent technologies that remain
+accurate regardless of the language spoken.
+In this paper, we proposeLayer-SelectedLatentCross-
+AttentionAdapters (LaS-LCA), a novel framework that adapts
+frozen large-scale pre-trained models for robust cross-lingual
+speaker verification. To mitigate the language mismatch
+problem, our approach incorporates three key contributions.
+First, inspired by the Partial Multi-Scale Feature Aggregation
+(PMFA) strategy [8], we employ a strategic layer selection
+(LaS) mechanism. Rather than aggregating all representations
+from the w2v-BERT 2.0 backbone [10], our experiments on
+the adopted w2v-BERT 2.0 backbone show that using layers
+19–24 gives the best performance among the evaluated contigu-
+ous layer groups. Second, we propose a lightweight adapter ar-
+chitecture that integrates shared latent cross-attention with local
+convolutional modeling. By querying multi-layer backbone fea-
+tures against a unified, learnable latent array, LaS-LCA acts as a
+structural bottleneck to distill speaker-relevant cues into a con-
+sistent latent space. This unified feature is further refined by a
+convolutional feed-forward block within each adapter to capture
+local spectro-temporal dependencies, thereby improving robust-
+ness against language variability. Third, to enhance generaliza-
+tion and mitigate overfitting on the limited Tidy-X benchmark,
+we incorporate an embedding-level margin-mixup [19] strategy.
+By interpolating latent embeddings, this technique effectively
+regularizes the decision boundary, ensuring robustness in cross-
+lingual speaker verification.
+2. Methods
+In this section, we present the Layer-Selected Latent Cross-
+Attention Adapter (LaS-LCA) with margin-mixup training
+strategy (Fig. 1), a framework designed to adapt large-scale pre-
+trained SSL models for cross-lingual speaker verification.
+2.1. Pre-trained Model: w2v-BERT 2.0
+We adopt w2v-BERT 2.0 [20] as the front-end backbone. Pre-
+trained on a massive corpus of 4.5 million hours of speech
+spanning 143 languages, the model yields robust, high-level
+6947
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1255
+Figure 1:Architecture of the proposed LaS-LCA framework.
+representations that are advantageous for cross-lingual verifi-
+cation. As hierarchical features within w2v-BERT 2.0 encode
+rich acoustic and linguistic nuances [10], we leverage these pre-
+trained layers to extract highly discriminative features from in-
+put utterances.
+2.2. Layer Selection
+Although SSL models provide rich acoustic representations,
+they are primarily designed as general-purpose encoders rather
+than specialized extractors for speaker embeddings. Conse-
+quently, the extracted representations contain a complex mix-
+ture of speaker-discriminative traits and identity-irrelevant in-
+formation. While the layer-wise evolution of SSL represen-
+tations has been extensively studied [21, 22, 23], its specific
+impact on cross-lingual speaker verification remains under-
+explored. Simply integrating all layers via concatenation or av-
+eraging tends to introduce substantial redundant information,
+leading to performance degradation.
+To address this, we adopt a selective-layer strategy [8] that
+evaluates contiguous layer segments to identify an appropriate
+feature group for speaker verification. Specifically, given an
+SSL encoder withLlayers, we consider a candidate set of con-
+tiguous layer segments
+S={L a:b|1≤a≤b≤L,b−a+ 1∈F},(1)
+whereL a:b ={a,a+ 1,...,b}andFspecifies the allowable
+segment lengths (e.g., fixed-length blocks).
+2.3. Latent Cross-Attention Adapters
+To efficiently adapt the high-dimensional representations (D=
+1024) from the frozen w2v-BERT 2.0 backbone, we introduce
+a lightweight adapter architecture. This design combines global
+latent array [24], with robust local spectro-temporal modeling
+derived from the Feature Transform Adapter (FTA) [25].
+2.3.1. Global Latent Array
+We define a global, learnable latent arrayA∈R Narr×Darr
+as a structural bottleneck, whereN arr specifies the fixed num-
+ber of latent tokens andD arr represents the hidden dimension
+of the adapter. Crucially, this latent arrayAissharedacross
+all selected backbone layers inS, forcing the model to map
+diverse hierarchical features into a unified speaker space [24].
+For a given backbone layer outputX, we apply a dimension-
+reduction projectionW down to generate Queries (Q (l)), while
+the shared latent arrayAserves as both Keys (K) and Values
+(V). This operation effectively filters variable-length linguistic
+content while preserving global speaker characteristics [25].
+Q(l) =X (l)Wdown,∀l∈S,(2)
+K=A W K,V=A W V,(3)
+whereW down ∈R D×Darr is a dimension-reduction projec-
+tion, andW K,W V ∈R Darr×Darr are learnable weights. The
+cross-attention operation for layerlis then formulated as:
+Attn(X(l),A) =Softmax
+ Q(l)K⊤
+√Darr
+
+V.(4)
+In this formulation,KandVremain invariant across differ-
+ent layersl∈ Swithin the same forward pass. This design
+enables the mapping of diverse hierarchical features from dif-
+ferent layers into a unified speaker latent space. By usingAas
+the shared basis for attention, the mechanism effectively filters
+out variable-length linguistic content while preserving global
+speaker characteristics for robust cross-lingual verification.
+2.3.2. Feature Transform Aggregation
+Following latent cross-attention, we replace the point-wise FFN
+with a convolutional feature aggregation block to model short-
+range temporal context, in the spirit of convolutional feature
+adapters that integrate local patterns via 1D convolutions [25].
+As illustrated in Fig. 1, the attention outputH∈R T×D arr ,
+whereTdenotes the sequence length in time frames, is pro-
+cessed through anExpand-Convolve-Projectstructure. Unlike
+standard point-wise FFNs, our module applies 1D convolutions
+within the expanded feature space to capture local temporal
+context. Formally, the process is decomposed as follows:
+Z=LN(H)W exp,(5)
+H′ =Conv 1D (σ(Conv 1D(Z)))W proj +H,(6)
+6948
+where LN denotes Layer Normalization andW exp ∈
+RDarr×2Darr projects the normalized features into a higher-
+dimensional space. The sequenceZis then processed by two
+1D convolutional layers (Conv1D) and ReLU activationσ, cap-
+turing local spectral-temporal correlations. Finally,W proj ∈
+R2Darr×Darr projects the features back to the original dimen-
+sion, followed by a residual connection.
+2.4. Embedding-level Margin-Mixup
+To mitigate overfitting on the limited Tidy-X partition [18], we
+adopt mixup [26] as an effective regularizer. Different from
+input-level mixup that mixes waveforms to model speaker over-
+lap [19], we perform mixup in the speakerembeddingspace,
+which can be viewed as a hidden-space interpolation strategy
+in the spirit of manifold mixup [27]. Specifically, given two
+embeddingse i ande j from different speakers with one-hot
+labelsy i andy j, we construct ˜e=λe i + (1−λ)e j and
+˜y=λy i + (1−λ)y j, whereλ∼Beta(α,α). Since ArcFace
+losses assume a single target [28], we follow margin-mixup [19]
+to interpolate the angular margin itself. Letθ p denote the angle
+between the normalized embedding ˜eand the normalized class
+weightw p, given bycosθ p =w⊤
+p ˜e. We apply scaled margins
+to the two mixed targets:
+ˆθp =
+
+
+
+θp +λm, p=i,
+θp + (1−λ)m, p=j,
+θp,otherwise.
+(7)
+Consequently, the margin-mixup objective is defined as:
+L=−λlog
+exp
+
+scos( ˆθi)
+
+PC
+p=1 exp
+
+scos( ˆθp)
+
+−(1−λ) log
+exp
+
+scos( ˆθj)
+
+PC
+p=1 exp
+
+scos( ˆθp)
+.
+(8)
+Here,Cis the speaker count andsis the scale factor.
+3. Experimental Setup
+3.1. Dataset
+The experiments are conducted using the TidyV oiceX dataset, a
+partition of the Mozilla Common V oice corpus. We utilize the
+TidyV oiceX training and development partitions. The dataset
+contains 4,474 speakers across 40 languages, totaling 457 hours
+of audio. Specifically, the training set comprises 370 hours of
+data from 3,666 speakers, while the development set includes
+87 hours from 808 speakers. Both subsets cover the same 40
+languages, providing a multilingual environment for model op-
+timization and hyperparameter tuning. For evaluation, we adopt
+the TidyV oice 2026 trial lists [29]:tv26eval-A, which pairs
+seen-language enrollment with unseen-language test utterances,
+andtv26 eval-U, where both enrollment and test utterances
+consist of 38 unseen languages.
+3.2. Model configuration
+All experiments are implemented using the WeSpeaker frame-
+work [30]. To enhance system robustness, three data augmenta-
+tion techniques are applied across all models: additive noise
+from the MUSAN dataset [31], reverberation from the RIRs
+dataset [32], and speed perturbation [33] by scaling the audio
+speed to 0.9 and 1.1 times the original rate. For baseline sys-
+tems, we follow the standard WeSpeaker pipeline, where each
+speech sample is randomly cropped into 2-second segments.
+Acoustic features are extracted as 80-dimensional filter banks
+(FBanks) using a25ms window and10ms frame shift.
+The backbone of the proposed system is the Meta-released
+w2v-BERT 2.0 model, utilizing pre-trained weights further op-
+timized on V oxCeleb2 and V oxBlink2 via the Adapter MFA
+framework [10]. To match the architecture’s input require-
+ments, adjacent 80-dimensional FBanks are concatenated into
+160-dimensional vectors. The 1024-dimensional representa-
+tions output by the backbone are projected to 128 dimensions,
+which then interact with a latent array of size64×128through
+a cross-attention mechanism.
+During the training phase, the weights of the w2v-BERT
+2.0 backbone are frozen, and only the parameters of the adapter
+are updated. Models are trained for 30 epochs using the Addi-
+tive Angular Margin Softmax (AAM-Softmax) loss with a mar-
+gin of 0.2 and a scaling factor of 32. For the embedding-level
+margin-mixup strategy, the mixup operation is applied with a
+probability of 0.5, and the interpolation weightλis sampled
+from aBeta(α,α)distribution withα= 0.2. All experiments
+are conducted on a single NVIDIA RTX 5090 GPU.
+4. Results and Discussion
+4.1. Performance analysis
+Table 1 presents a comparison between the proposed sys-
+tems and the TidyV oiceX baseline. All configurations em-
+ploying the w2v-BERT 2.0 frontend produce lower EER and
+MinDCF values than the SimAM-ResNet34 (ASP) baseline,
+which records an EER of 3.07%. This indicates that large-
+scale self-supervised (SSL) representations offer improved ro-
+bustness for cross-lingual speaker verification compared to con-
+ventional supervised models.
+The choice of backbone initialization is critical for down-
+stream performance. Initializing w2v-BERT 2.0 with weights
+pre-trained on speaker-specific corpora (V oxBlink2 and V ox-
+Celeb2) yielded a substantial performance gain over SSL
+weights, reducing the EER from approximately 2.1% to 1.6%.
+This suggests that speaker-discriminative priors encoded in the
+backbone provide a performance advantage that cannot be fully
+compensated by the adapter alone during fine-tuning.
+Regarding adapter variations, the proposed LaS-LCA
+achieved the lowest EER when combined with embedding-level
+margin-mixup (EER 1.40%, MinDCF 0.66). The latent cross-
+attention mechanism performed on par with the MFA baseline,
+while adding 1D convolution modules yielded further improve-
+ments. These results suggest that augmenting global attention
+with localized spectro-temporal processing can be beneficial for
+speaker verification across varied languages.
+4.2. Ablation Study
+Table 2 examines the effects of layer selection and upstream
+supervision, showing the SV init (speaker-aware) encoder con-
+sistently surpasses the SSL init variant across all configurations.
+For instance, selecting layers 19–24 yielded an EER of 1.46%
+for the SV init encoder compared to 1.80% for the SSL init one,
+demonstrating that incorporating large-scale speaker supervi-
+sion during pre-training provides measurable gains. Simulta-
+neously, layer-wise performance patterns indicate that deeper
+Conformer layers carry significantly more speaker-relevant in-
+formation; specifically, selecting the top layers (19–24) outper-
+6949
+Table 1:Performance comparison on the TidyV oiceX development set.LaS-LCAdenotes our layer-selected latent cross-attention
+adapter . The primary metric is EER (%) and the secondary metric is MinDCF .
+Frontend System Pre-training Data Fine-tuning Data EER (%) MinDCF
+SimAM-ResNet34 [34] ASP (baseline) V oxBlink2 +
+V oxCeleb2 TidyV oiceX Train 3.07 0.82
+w2v-BERT 2.0
+Adapter MFA
+Original SSL TidyV oiceX Train
+2.11 0.73
+LCA (layers 1–24, w/o Conv1D) 2.06 0.72
+LCA (layers 1–24) 2.13 0.73
+w2v-BERT 2.0
+Adapter MFA
+V oxBlink2 +
+V oxCeleb2 TidyV oiceX Train
+1.64 0.68
+LCA (layers 1–24, w/o Conv1D) 1.63 0.68
+LCA (layers 1–24) 1.59 0.68
+LaS-LCA (layers 19–24) 1.46 0.66
+LaS-LCA (layers 19–24, mixup) 1.40 0.66
+Table 2:Layer selection ablation on w2v-BERT 2.0 using the
+LCA adapter . 1–24 corresponds to using all Conformer lay-
+ers. “SSL init encoder” uses standard SSL pre-training; “SV
+init encoder” is initialized from speaker-aware pre-training on
+V oxBlink2 and V oxCeleb2 after SSL pre-training
+Layer SV init encoder SSL init encoder
+EER (%) MinDCF EER (%) MinDCF
+1–24 1.59 0.68 2.06 0.72
+1–6 2.35 0.74 2.44 0.75
+7–12 2.42 0.78 2.63 0.76
+13–18 2.05 0.74 2.26 0.74
+19–241.46 0.66 1.80 0.67
+1–12 2.27 0.73 2.33 0.74
+7–18 2.15 0.75 2.22 0.73
+13–24 1.63 0.69 1.96 0.70
+Table 3:Fine-grained layer selection within the top blocks (SV
+init encoder). Selecting fewer top layers does not further im-
+prove performance over using layers 19–24.
+Selected Layers #Layers EER (%) MinDCF
+19–24 61.46 0.66
+21–24 4 1.56 0.68
+23–24 2 2.14 0.76
+Table 4:Ablation on the Conv1D module, CNN kernel size, and
+embedding-level margin-mixup. All results use the SV init w2v-
+BERT 2.0 encoder with selected layers 19–24.
+Setting Kernel EER (%) MinDCF
+LaS-LCA (w/o mixup)k=31.46 0.66
+LaS-LCA (w/o mixup)k=51.440.65
+LaS-LCA (w/o mixup)k=71.54 0.67
+LaS-LCA (w/o mixup)k=91.48 0.66
+LaS-LCA (+ mixup)k=31.400.66
+LaS-LCA (+ mixup)k=51.45 0.66
+forms the full set (1–24). This suggests that including lower
+layers introduces features less relevant to identity verification, a
+finding further supported by the degraded performance of shal-
+low layer sets, which capture acoustic or phonetic content rather
+than discriminative speaker traits.
+In Table 3, we investigate a fine-grained ablation of layer
+selections within the top block. The 6-layer configuration
+(19–24) yielded the highest performance, whereas reducing the
+selection to 4 or 2 layers resulted in degraded accuracy. We con-
+clude that 6 layers represent a strategic compromise: it provides
+a rich context to extract nuanced speaker characteristics while
+keeping the adapter’s parameter budget efficient for training.
+Table 4 reports results for kernel size and margin-mixup.
+For the non-mixup setting, a kernel size of 5 yielded the lowest
+MinDCF (0.65) and competitive EER (1.44%). When mixup
+is applied, the EER decreases further to 1.40% for kernel size
+3. These differences suggest that moderate temporal receptive
+fields are sufficient for local modeling and that embedding-level
+mixup offers complementary gains.
+4.3. TidyVoice 2026 Challenge Evaluation
+On the official TidyV oice 2026 Challenge evaluation leader-
+board, our system achieved 3.70% EER / 0.278 minDCF
+ontv26 eval-Aand 6.41% EER / 0.329 minDCF on
+tv26 eval-U. For reference, the official baseline reported
+9.06% EER / 0.658 minDCF ontv26 eval-Aand 11.60%
+EER / 0.607 minDCF ontv26 eval-U.
+5. Conclusions
+In this paper, we proposed LaS-LCA, a novel framework de-
+signed to mitigate language mismatch in cross-lingual speaker
+verification. Our study demonstrates that rather than utiliz-
+ing the entire depth of a pre-trained SSL model, focusing on
+specific upper-layer representations provides a cleaner signal
+for speaker identity. To effectively process these features, we
+employed a shared latent cross-attention mechanism with local
+convolutional refinement, mapping diverse multilingual inputs
+into a consistent, language-independent embedding space. This
+architectural design is further complemented by an embedding-
+level margin-mixup strategy, which enhances the model’s ro-
+bustness against limited data diversity. Achieving an EER
+of 1.40% on the TidyV oiceX benchmark, our results suggest
+that layer selection and adapter-based aggregation can improve
+cross-lingual speaker verification with a frozen SSL backbone.
+6950
+6. Generative AI Use Disclosure
+During the preparation of this work, the authors used Chat-
+GPT and Gemini solely for the purpose of editing and polishing
+the English phrasing of the manuscript. No significant content,
+ideas, or results were generated by AI. All authors thoroughly
+reviewed the text and assume full responsibility and account-
+ability for the final content of the paper.

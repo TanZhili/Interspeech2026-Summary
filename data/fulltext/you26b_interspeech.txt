@@ -1,0 +1,452 @@
+Bidirectional Retention Network-based Segmentation Model for Speaker 
+Diarization 
+Jian You1, Xiangfeng Li1, Tengfei Zhou1, Erwan Zerhouni1 
+1 Cisco Systems 
+jianyou@cisco.com 
+ 
+Abstract 
+End-to-end neural diarization with vector clustering (EEND -
+VC) has emerged as a robust solution for real -world 
+applications due to its ability to handle overlapped speech and 
+an arbitrary number of speakers.  Existing EEND -VC 
+segmentation back ends typically employ recurrent neural 
+networks (RNNs), attention-based architectures, or Mamba . In 
+this paper, we propose a novel segmentation model that 
+integrates a WavLM -based front end with a bidirectional 
+Retention Network (BiRetNet) back end. RetNet provides dual 
+parallel and recurrent formulations with favorable 
+computational scaling with respect to sequence length, 
+motivating its use as a promising segmentation bac k end for 
+speaker diarization. We evaluate the potential of BiRetNet by 
+benchmarking it against established RNN, attention, and 
+Mamba-based variants. Experimental results demonstrate that 
+the proposed model outperforms these baselines, achieving  
+state-of-the-art performance on two widely used diarization 
+datasets. 
+Index Terms : sp eaker diarization , EEND-VC, bidirectional 
+retention network, WavLM 
+1. Introduction 
+Speaker diarization is the essential task of determining “ who 
+spoke when”  within a multi -speaker audio recording.  It 
+partitions an audio recording into time -stamped regions and 
+assigning each region a speaker label.  
+Traditional diarization pipelines perform speech activity 
+detection, extract speaker embeddings for short segments (e.g., 
+i-vectors [1] or x-vectors [2]), and group them with clustering 
+such as agglomerative hierarchical clustering  [3] or Bayesian 
+HMM [4] variants. These cascaded systems are robust and 
+naturally support long recordings and an unknown number of 
+speakers, yet they struggle to model overlapped speech. End-
+to-end neural diarization (EEND) instead predicts frame -level 
+activity for multiple spea kers directly with a single network, 
+handling overlap by design. However, EEND typically assumes 
+a fixed maximum speaker count, generalizes poorly beyond it, 
+and incurs high memory cost when processing long sequences 
+during training and inference. 
+EEND with vector clustering [5, 6] (EEND-VC) reconciles 
+these trade -offs by running an EEND model on overlapping 
+short windows to obtain local, permutation-ambiguous speaker-
+activity tracks, then extracting per-track embeddings and 
+clustering them to derive consistent global speaker identities. A 
+stitching stage aggregates overlapping window predictions into 
+a full -recording diarization. Because the neural model only 
+needs to operate on short chunks, computation and memory 
+scale gracefully to hours -long audio, while clustering enables 
+an arbitrary number of speakers. Compared with fully end-to-
+end EEND, EEND-VC better handles long-form recordings and 
+speaker count s, without sacrificing overlap awareness in 
+practical deployments. Target-speaker voice activity detection 
+(TS-VAD) [7] is another effective diarization paradigm that 
+estimates each target speaker’s activity conditioned on speaker 
+profiles, whereas this work follows the EEND -VC route and 
+focuses on improving its local segmentation backbone. 
+In a typical EEND-VC pipeline, exemplified by the widely 
+used Pyannote [8] framework, the EEND segmentation model 
+can be viewed as comprising a front end and a back end module. 
+The front end converts raw speech waveforms into frame-level 
+acoustic representations, using either signal processing based 
+features (e.g., Fbank), learnable waveform front ends (e.g., 
+SincNet [9]), or self-supervised pretrained speech encoders 
+such as WavLM  [10]. These features are subsequently 
+processed by the back end, which models speaker activity over 
+time. Common back end architectures include recurrent neural 
+networks (RNNs), such as bidirectional long short -term 
+memory (BiLSTM) networks  [8], as well as attention -based 
+models, including Transformer  [5] and Conformer [11]. More 
+recently, the Mamba  [12] architecture, based on state -space 
+models, has emerged as a promising alternative back end 
+backbone for speaker diarization [13]. 
+In recent years, Retention Networks [14] (RetNet) have 
+emerged as a compelling alternative to Transformer-style self -
+attention for sequence modeling, introducing a retention 
+mechanism that bridges the inductive bias of recurrence with 
+attention-like global dependency modeling while maintaining 
+competitive performance. A key property of retention is its dual 
+form (parallel and recurrent), which further enables a 
+chunkwise recurrent implementation, allowing GPU -friendly 
+parallel training while enabling RNN -style state updates at 
+inference. In particular, the recurrent formulation maintains a 
+compact, fixed- size state at inference and does not rely on 
+attention-style key-value caching. For long-context settings, the 
+chunkwise recurrent form encodes local windows in parallel 
+and propagates cross -window information through recurrent 
+summarization, yielding linear complexity with respect to 
+sequence length. These architectural properties suggest that 
+RetNet is well-suited for long-context modeling in diarization 
+back ends. 
+In this work, we adopt the EEND -VC framework and 
+implement it within the Pyannote pipeline.  We introduce a 
+novel EEND segmentation model that combines a WavLM -
+based front end with a bidirectional Retention Network 
+(BiRetNet) back end.  For the proposed model, training is 
+conducted in two stages: we first optimize the segmentation 
+model while keeping the pre-trained WavLM parameters fixed, 
+and then optionally unfreeze WavLM to jointly fine -tune the 
+system in a second stage . Furthermore, we conduct a 
+comprehensive ablation study on the RetNet architecture, 
+evaluating the influence of block depth and recurrent chunk 
+size. We additionally provide a controlled efficiency study 
+reporting real-time factor (RTF) and peak runtime memory 
+across window durations.  Experimental results demonstrate 
+that the proposed method surpasses established back  ends, 
+including LSTM, Attention, and Mamba , across diverse 
+datasets, ultimately achieving state-of-the-art performance on 
+two widely used diarization corpora. The model source code is 
+available at : github.com/frankyoujian/BiRetNet-
+Diarization. 
+2. Related Work 
+Recently, Ret Net have shown considerable promise in audio 
+tasks due to its linear computational complexity and ability to 
+4189
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1032
+model long-range dependencies [15]. In speech enhancement, 
+retention-based architectures have improved signal quality 
+under adverse conditions [16, 17]. For speaker diarization, [18] 
+proposed RetNet-EEND, replacing the Transformer encoder in 
+EEND-EDA with a RetNet backbone, and [1 9] introduced 
+LS-EEND by substituting the Conformer’s masked 
+self-attention with Retention.  Although the EEND systems in 
+[18] and [19] achieve competitive performance, they still inherit 
+the fundamental bottlenecks  of the EEND paradigm : a fixed 
+maximum speaker  count and substantial memory overhead 
+when processing long-form recordings. 
+To better capture global context, bidirectional RetNets have 
+been adapted for computer vision [20] and multimodal learning 
+[21], where they facilitate the fusion of spatial and linguistic 
+features. However, to the best of our knowledge, our research 
+represents the first endeavor to investigate the  utility of 
+bidirectional RetNet for the EEND-VC system. 
+3. Proposed Method  
+3.1. BiRetNet-based Segmentation Model 
+The proposed BiRetNet -based segmentation model is 
+illustrated in Figure 1. In the following, we first introduce the 
+Retention Network, followed by a detailed description of the 
+proposed segmentation model. 
+3.1.1. Retention Network 
+The Retention Network (RetNet) replaces the standard self-
+attention mechanism with a multi-scale retention  module. 
+Unlike Transformers, RetNet is built upon a dual form that 
+enables three distinct computation paradigms:  parallel, 
+recurrent, and chunkwise recurrent . We refer readers to the 
+original RetNet paper [14] for the full theoretical derivation and 
+implementation details; here, we focus on the functional 
+representations relevant to our segmentation back end.  Given 
+an input  sequence 𝑋𝑋 ∈ ℝ|𝑥𝑥|×𝑑𝑑model , it is first projected into 
+queries (𝑄𝑄), keys (𝐾𝐾), and values (𝑉𝑉): 
+𝑄𝑄 = 𝑋𝑋𝑊𝑊𝑄𝑄,   𝐾𝐾 = 𝑋𝑋𝑊𝑊𝐾𝐾,   𝑉𝑉 = 𝑋𝑋𝑊𝑊𝑉𝑉 (1) 
+where 𝑊𝑊𝑄𝑄 , 𝑊𝑊𝐾𝐾 , 𝑊𝑊𝑉𝑉  are learnable weights. These projections 
+are utilized across the three paradigms: 
+Parallel Representation: As shown in Figure 2(a), this form is 
+primarily used for efficient training on GPUs. It utilizes a causal 
+mask matrix 𝐷𝐷 that incorporates exponential decay  𝛾𝛾 based on 
+relative distance: 
+Retention(𝑋𝑋) = (𝑄𝑄𝐾𝐾⊤⨀𝐷𝐷)𝑉𝑉 (2) 
+where 𝐷𝐷𝑛𝑛𝑛𝑛 = 𝛾𝛾𝑛𝑛−𝑛𝑛 for 𝑛𝑛 ≥ 𝑚𝑚, and 0 otherwise. 
+Recurrent Representation : For inference, RetNet can be 
+expressed as a linear recurrence, enabling O (1) state updates 
+without KV -caching. As presented in Figure 2(b), it is 
+formulated as: 
+𝑆𝑆𝑛𝑛 = 𝛾𝛾𝑆𝑆𝑛𝑛−1 + 𝐾𝐾𝑛𝑛⊤𝑉𝑉𝑛𝑛 (3) 
+Retention(𝑋𝑋𝑛𝑛) = 𝑄𝑄𝑛𝑛𝑆𝑆𝑛𝑛 (4) 
+where 𝑆𝑆𝑛𝑛 is the fixed-size recurrent state at time 𝑛𝑛.  
+Chunkwise Recurrent Representation: This hybrid approach 
+divides the sequence into chunks, using parallel computation 
+within chunks and recurrent updates across them to handle long 
+audio recordings efficiently.  
+3.1.2. Proposed Segmentation Model 
+In this paper, we employ the BiRet Net to replace the BiLSTM 
+module in Pyannote  segmentation model. As illustrated in 
+Figure 1, t he BiRetNet  comprises dual parallel Retention  
+blocks, one of which processes a temporally reversed feature 
+sequence. These outputs are subsequently  added with the 
+original input, effectively instantiating a residual skip 
+connection. For the diarization task, we adopt the chunkwise 
+recurrent representation of Retention. By segmenting an audio 
+sequence of length L into chunks of length B, the model enables 
+parallel intra -chunk computation while  maintaining cross -
+chunk dependencies via fixed- size recurrent state updates. 
+Consequently, with B  as a fixed hyperparameter, the system 
+achieves linear time complexity relative to the total sequence 
+length. 
+We refer to the official RetNet 1 python implementation to 
+build up the Retention block in Figure 1. Concretely, the 
+Retention bloc k utilizes a four- head Retention module  and a  
+position-wise feed-forward network with hidden size 1024. Pre-
+LayerNorm and residual connections are employed to stabilize 
+training. The Retention computation operates in chunkwise 
+recurrent mode with a chunk size of 100 frames . Notably, to 
+maintain consistent speaker embeddings across the entire audio 
+stream, we follow [19] and set the decay factor 𝛾𝛾 to 1, thereby 
+eliminating temporal information decay. Finally, four BiRetNet 
+blocks are stacked sequentially to process the input features. 
+3.2. Diarization Pipeline 
+The Pyannote diarization pipeline is typically composed of a 
+local EEND segmentation model , a speaker embedding 
+extractor and a clustering module. 
+3.2.1. Local EEND Segmentation Model 
+In the Pyannote framework, the EEND component is primarily 
+composed of a SincNet front end followed by four Bi LSTM 
+layers. Our proposed approach largely adheres to the Pyannote 
+processing pipeline, with one key modification: the local EEND 
+segmentation model  is replaced by a model built upon a 
+WavLM-based front end and a BiRet Net-based back end, as 
+illustrated in Figure 1. In accordance with the strategy 
+introduced in SUPERB [22], the representations extracted from 
+all WavLM layers are combined through a learnable weighted 
+sum at each time frame to form a unified feature representation. 
+These fused WavLM features are subsequently projected 
+through a linear layer and normalized vi a layer normalization 
+before being fed into back end . Finally, a linear projection 
+        
+                 (a)                                          (b) 
+Figure 2: Dual form of RetNet. “GN” stands for GroupNorm. 
+(a) is parallel representation. (b) is recurrent representation. 
+ 
+Figure 1: Proposed BiRetNet-based segmentation model. 
+____________________________________________________________________________________________________  
+          1 https://github.com/microsoft/torchscale/blob/ 
+main/torchscale/architecture/retnet.py 
+           
+ 
+4190
+followed by a softmax operation is applied to produce the 
+classification outputs.  The multiclass classification is 
+performed in the powerset space [23] . Under the powerset 
+formulation, a separate class is assigned to non-speech, to each 
+individual speaker, and to every distinct pair of simultaneously 
+active speakers. Training is done using the powerset loss [23]. 
+In all experiments, we use the publicly available pre-trained 
+WavLM Base+ model, which produces 768-dimensional frame-
+level representations. Given 16 -kHz audio stream, WavLM 
+outputs approximately 50 frames per second; therefore, a chunk 
+size of 100 frames represents a 2s window.  The resulting 
+WavLM representations are then passed through a linear 
+projection that reduces their dimensionality from 768 to 256, 
+producing features that serve as the input to back end. 
+3.2.2. Speaker Embedding Extractor and Clustering 
+For speaker embedding extractor, we use ResNet34-LM2 which 
+was trained using WeSpeaker toolkit [24] on the VoxCeleb2 
+dataset [ 25]. Speaker embeddings are computed exclusively 
+from single  speaker audio segments, with automatically 
+detected overlapping speech regions (as inferred by the local 
+segmentation model) discarded prior to extraction.  For 
+clustering approach, the VBx clustering [4] is applied on the 
+aforementioned embeddings. The clustering parameters are 
+optimized in experiments.  After each local active speaker has 
+been mapped to a corresponding global cluster, the final global 
+speaker diarization output can be assembled. 
+4. Experiments 
+4.1. Datasets 
+We train all models on a compound dataset which is composed 
+of the training partitions of the AMI-SDM (AMI)  [26], 
+AISHELL-4 (AIS-4) [27], AliMeeting  far (AliM) [28], 
+NOTSOFAR-1 (NSF) [29], MSDWild  Few (MSD) [30], 
+VoxConverse v0.3 (VoxC) [31], RAMC [32], LibriConvo [33], 
+CallHome [34] and a synthetic dataset. For  CallHome, we use 
+part13 for training. The total duration of training dataset is 952  
+hours. For recordings captured with multichannel microphone 
+arrays, we retain only the first channel  for use. Following the 
+recipe presented in [ 35], t he synthetic dataset is created by 
+simulating speech mixtures using LibriSpeech [ 36]. 
+Background noise from MUSAN [37] and simulated room 
+impulse response [38] are applied to the synthetic mixtures . 
+DIHARD III [39] is excluded from the compound training set 
+and used solely for out-of-domain evaluation and post-domain-
+adaptation evaluation. 
+4.2. Configurations 
+For training, each audio recording is partitioned into fixed-
+length 10-second segments. Following the settings in [23], we 
+use N=4 (maximum speakers per segment) and K=2 (maximum 
+concurrent speakers per frame) for powerset models, which can 
+cover at least 97% of the data.  Training is performed in two 
+stages. In the first stage, the WavLM parameters are kept 
+frozen. All models are trained for 100 epochs with a batch size 
+of 128 using the AdamW  [40] optimizer with default 
+hyperparameters and an initial learning rate of 1e-3. We employ 
+a ReduceLROnPlateau scheduler that halves the learning rate 
+after 10 epochs without improvement. In the second stage, the 
+WavLM parameters are unfrozen to jointly fine-tune the entire 
+system. Owing to memory constraints, the batch size is reduced 
+from 128 to 64. The initial learning rate is decreased from 1e-3 
+to 1e-5, and the scheduler patience is adjusted from 10 to 8. 
+During this stage, models are trained for up to 60 epochs . 
+Domain adaptation is done per dataset, which relies on the 
+corresponding training and development sets. For domain 
+adaptation, early stopping is employed with a patience of 10 
+epochs and a constant learning rate of 1e-5. 
+The DiariZen 4 framework based on Pyannote pipeline is 
+utilized for inference. The final model is derived by averaging  
+the last 15 checkpoints. Hyperparameters are optimized through 
+Optuna [41] on development subset  of each dataset . The 
+hyperparameter search is performed for 300 iterations. More 
+specifically, four hyperparameters are tuned:  the intra-speaker 
+gap-bridging threshold Δ, the clustering threshold δ, and the 
+acoustic scaling factor 𝐹𝐹𝐴𝐴 and speaker regularization coefficient 
+𝐹𝐹𝐵𝐵 in the VBx algorithm. System performance is assessed using 
+the diarization error rate (DER) without collars. In addition, we 
+report the macro-averaged DER  to provide a comprehensive 
+measure of overall performance and cross-dataset robustness. 
+4.3. Results and Discussion 
+4.3.1. Overall Comparison 
+All systems are compared on the evaluation sets of the seven 
+datasets listed in Table I, and the overall performance of 
+different methods is presented  therein. The LSTM back  end is 
+implemented following [44], the attention -based back  end is 
+built upon  the Transformer encoder blocks  in [5], and the 
+Mamba back  end code is adopted from [1 3]. For fair 
+architectural comparison, all back end variants are evaluated 
+under the Stage I setting (WavLM frozen). Stage II fine-tuning 
+is applied only to the proposed BiRetNet to assess the additional 
+effect of joint front end adaptation. 
+Under the  WavLM frozen setting  with no domain 
+adaptation, the BiRetNet system (S4) consistently outperforms 
+the LSTM ( S1), Attention ( S2), and Mamba ( S3) baselines 
+across most evaluation sets.  In particular, S4 improves the in-
+domain macro average to 15.8% compared with 17.3–17.9% 
+(S1–S2) and 16. 2% (S3), while achieving the second-best 
+MSD DER (18.4%). Mamba serves as a strong baseline; 
+nevertheless, S4 surpasses it on all datasets except 
+VoxConverse and attains a superior macro-averaged DER.  ________________________________________ ________________________________________ ____________________                                                    
+          2 https://huggingface.co/Wespeaker/wespeaker-
+voxceleb-resnet34-LM 
+          3 https://github.com/BUTSpeechFIT/VBx/tree/ 
+master/data/CALLHOME/lists 
+ 
+           
+ 
+Table 1: DER comparison to Jan. 2026 SOTA. The lowest and second lowest DER is bolded and underlined, respectively. 
+ID System WavLM 
+Finetuned 
+Num. 
+Param. AIS-4 AliM AMI MSD NSF VoxC In-domain 
+Macro Avg. DH3 
+S1 LSTM ✗ 95.9M 11.9 18.4 18.9 20.7 24.2 9.9 17.3 21.9 
+S2 Attention ✗ 102.5M 11.9 18.7 20.4 21.0 25.7 9.9 17.9 21.6 
+S3 Mamba ✗ 101.7M 11.4 17.1 17.8 18.9 22.3 9.5 16.2 20.8 
+S4 BiRetNet 
+✗ 102.9M 11.0 16.1 17.4 18.4 21.9 9.9 15.8 20.5 
+S5 +Domain adapted 10.3 15.7 17.1 18.7 21.7 8.6 15.3 16.0 
+S6 BiRetNet 
+✓ 102.9M 10.9 16.4 16.9 18.5 22.1 9.6 15.7 20.4 
+S7 +Domain adapted 9.9 15.2 16.7 18.7 21.5 8.5 15.0 15.6 
+ SOTA - - 9.9 
+[42] 
+12.5 
+[43] 
+14.2 
+[42] 
+17.0 
+[42] 
+18.4 
+[42] 
+8.7 
+[42] 13.5 14.6 
+[42] 
+ 
+____________________________________________________________________________________________________  
+            4 https://github.com/BUTSpeechFIT/DiariZen 
+ 
+ 
+           
+ 
+4191
+We further examine the effect of joint front end fine-tuning. 
+Fine-tuning WavLM alone (S6) yields modest, and sometimes 
+mixed, improvements relative to S4 , suggesting that 
+representation adaptation alone provides limited benefit. When 
+combined with domain adaptation, the resulting system (S7) 
+achieves the strongest overall performance, reaching a 15.0% 
+macro average and achieving SOTA results on AISHELL -4 
+(9.9%) and VoxConverse (8.5%). Incorporating domain 
+adaptation provides consistent incremental gains, particularly 
+on DIHARD III, where improvements of approximately 4.5 
+DER points are observed.  Because short pauses are annotated 
+as speech rather than silence in VoxConverse, we follow [42] 
+and set Δ = 0.5 s for all systems during VoxConverse 
+evaluation, which indeed improves DER. 
+4.3.2. Effect of Model Size 
+The WavLM -based front end contains 94.3M parameters. 
+Excluding this, the proposed BiRetNet back end (8.6M) is 
+larger than the LSTM (1.6M) and Mamba (7.4M) baselines. To 
+ensure BiRetNet’s gains are not due to an unfair parameter 
+advantage, we evaluated two reduced configurations. First, by 
+decreasing the back end blocks from 4 to 3, a 6.5M -parameter 
+BiRetNet achieves a 1 5.9% in -domain average DER, 
+outperforming the larger Mamba baseline (16. 2%). Second, 
+reducing the back end to 1.4M parameters by decreasing feature 
+dimensionality to 64 yields a 16.5% in -domain average DER. 
+This remains superior to the LSTM system despite a smaller 
+parameter budget. 
+4.3.3. Ablation Studies 
+Figure 3 exhibits the DER results of the BiRetNet block number 
+ablation study. The four-block configuration achieves the best 
+overall performance, consistently producing the lowest DER 
+across datasets. Increasing the depth to five blocks often 
+degrades performance  (e.g., DER on AliMeeting rises from 
+16.1% to 16.7% ), indicating that additional complexity offers 
+limited benefit and may introduce optimization overhead. 
+Missed detections and speaker confusion remain  the dominant 
+error sources. The highest DER occurs  on NOTSOFAR -1 
+(~22%), reflecting its high speaker density and challenging 
+acoustic variability. In particular, the severe speaker confusion 
+on NOTSOFAR-1 corresponds to its large maximum speaker 
+count (N=7), highlighting the difficulty of resolving 
+overlapping speech in dense scenarios. In contrast, the model 
+performs most effectively on VoxConverse and AISHELL -4, 
+where DER remains stable at approximately 10–11%. 
+Figure 4 presents the DER result s of RetNet chunk size 
+ablation study. The result illustrates that a chunk size of 100 
+generally achieves the lowest DER across most corpora.  This 
+empirical performance aligns with the underlying 
+conversational dynamics. Specifically, we find  that 92% of 
+speaker turn intervals in the AliMeeting dataset occur within 2s. 
+This observation suggests that a 2s window can cover most turn 
+transitions, enabling the model to capture speaker transitions 
+effectively without the information loss  seen at a 1s window 
+(chunk size=50). While a larger 5s window (chunk size=250) 
+may slightly improve missed detection in certain contexts, it 
+often introduces higher speaker confusion and false alarms by 
+aggregating over-extended temporal data, thereby validating 
+the 2s window  (chunk size=100) as the ideal balance for 
+maintaining local precision. 
+4.3.4. Computational Efficiency Analysis 
+To assess computational efficiency, we measure real -time 
+factor (RTF) and peak runtime memory during segmentation 
+inference. Experiments are run on one hour of audio recordings 
+from AliMeeting using an AMD Ryzen 9 5950X 16-core CPU 
+@ 3.4 GHz, single -threaded, with batch size 1 and a 
+sliding-window step ratio of 0.1. All systems are evaluated in a 
+unified CPU‑only setting without GPU acceleration, using 
+standard PyTorch execution to ensure a consistent comparison 
+environment. RTF is defined as the ratio between segmentation 
+model processing time and audio duration. 
+As illustrated in Table 2,  BiRetNet exhibits stable runtime 
+and modest memory growth as window duration increases, 
+consistent with the intended scaling behavior of chunkwise 
+recurrent retention. Its RTF remains around 1.5, while memory 
+increases modestly from 611 MB to 680 MB.  BiRetNet also 
+consistently uses less memory than the other back ends at all 
+windows. In contrast, the attention-based model  exhibits 
+sharply increasing memory, from 722 MB (10 s) to 2334 

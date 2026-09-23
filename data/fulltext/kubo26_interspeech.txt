@@ -1,0 +1,457 @@
+Building Tailored Speech Recognizers for Japanese Speaking Assessment
+Yotaro Kubo, Richard Sproat, Chihiro Taguchi, Llion Jones
+Sakana AI, Japan
+{yotarokubo,rws,chihirotaguchi,llion}@sakana.ai
+Abstract
+This paper presents methods for building speech recognizers
+tailored for Japanese speaking assessment tasks. Speciﬁcally,
+we build a speech recognizer that outputs phonemic labels with
+accent markers. Although Japanese is resource-rich, there is
+only a small amount of data for training models to produce ac-
+curate phonemic transcriptions that include accent marks. We
+propose two methods to mitigate data sparsity. First, a multitask
+training scheme introduces auxiliary loss functions to estimate
+orthographic text labels and pitch patterns of the input signal,
+so that utterances with only orthographic annotations can be
+leveraged in training. The second fuses two estimators, one
+over phonetic alphabet strings, and the other over text token
+sequences. To combine these estimates we develop a novel al-
+gorithm based on the ﬁnite-state transducer framework. Our
+results indicate that the use of multitask learning and fusion
+is effective for building an accurate phonemic recognizer. We
+show that this approach is advantageous compared to the use
+of generic multilingual recognizers. The relative advantages of
+the proposed methods were also compared. Our proposed meth-
+ods reduced the average of mora-label error rates from 12.3%
+to 7.1% over the CSJ core evaluation sets.
+Index Terms: Automatic speech recognition, phonemic tran-
+scription, pitch-accented language, speaking assessment.
+1. Introduction
+Automatic speech recognition (ASR) technology has been
+evolving to enable the mapping of speech signals to canonical
+textual representations under a variety of conditions. In typical
+ASR systems, speaker errors, such as incorrect accent positions,
+mispronunciations, ﬁllers, and hesitations, are intentionally dis-
+carded. Although many applications prefer such canonical out-
+put over phonetically accurate transcriptions, in areas like lan-
+guage education, this normalization effect is a limitation since
+it hinders accurate evaluation of users’ speaking proﬁciency.
+There have been several attempts to build universal pho-
+netic transcribers, with a particular focus on extending ASR
+to low-resource languages [ 1, 2, 3]. While multilingual mod-
+els are potentially applicable to speaking skill assessment, as-
+sessing language-speciﬁc phenomena, such as pitch accent, is
+also essential for educational purposes. In this paper, we fo-
+cus on phonemic transcription of Japanese, including pitch ac-
+cent markers, to build a speech recognizer tailored for Japanese
+speaking assessment. Considering the complexity and irregular-
+ity of Japanese pitch accent rules [4, 5], this presents a challenge
+that cannot be solved only by multilingual phonetic recognizers.
+The training of phonetically accurate recognizers often suf-
+fers from the limited availability of accurate phonetic or phone-
+mic transcriptions. Although Japanese is a relatively resource-
+Speech Encoder 
+Causal Transformer 
+Phonetic Alphabet (PA) 
+Sequences 
+fo Classes 
+Text Tokens (TTs) 
+Refined PA 
+Sequences 
+TT-to-PA 
+Lattice Fusion 
+Lexicon 
+Figure 1: Proposed architecture of our PA recognizer . White
+boxes are neural nets, gray boxes are rule-based processes.
+rich language, the largest multi-speaker dataset with hand-
+annotated pitch accent is, to the best of our knowledge, the
+“core” subset of the Corpus of Spontaneous Japanese (CSJ) [ 6],
+containing only 45 hours of speech.
+Prior work by [ 7] developed a phonemic recognizer condi-
+tioned on the outputs of external speech recognizers. Although
+their method did not include a built-in ASR component, there
+are several similarities to our proposal. Their system performs
+both implicit conditioning, employing text tokens as an aux-
+iliary input, and explicit conditioning using text information
+as constraints on decoding. Unlike their implicit conditioning
+method, our approach does not require reliable text labels be-
+cause it solves text and phonetic alphabet (PA) recognition si-
+multaneously in a multitask learning framework. Further, as
+discussed in the following section, one can view our decoding
+method as an extension of their explicit conditioning method
+that can ﬂexibly introduce text constraints. For a conventional
+ASR task, [ 8] proposes an iterative reﬁnement method in order
+to estimate PA and text token sequences jointly. However, this
+method does not estimate accent location and does not use a
+dictionary to enhance accuracy in small data scenarios.
+The technical contributions in this paper are twofold: First,
+a task design effective for pitch-accent recognition; second,
+a decoding method that decodes an optimal PA sequence ro-
+bustly by considering both text tokens and PA estimation re-
+sults. These novel methods are implemented in a streamable
+ASR model, and comparative experiments were conducted to
+conﬁrm their effectiveness. Fig. 1 illustrates the methods. The
+next three sections describe the components in the ﬁgure.
+2. System Design
+2.1. Connectionist Temporal Classiﬁcation
+Conventionally, language models are integrated into ASR sys-
+tems in order to improve the output quality leveraging the fre-
+quencies of phrases and words. However, since one of our goals
+is to detect errors in speech that manifest as infrequent ﬂuctua-
+tions in token sequences, such corrections by language models
+may conﬂict with this objective.
+Connectionist Temporal Classiﬁcation (CTC) can be a so-
+2078
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1672
+lution to this problem. Unlike other ASR architectures, such
+as RNN-T [ 9] and LAS [ 10], a CTC model does not include
+a module for capturing mutual dependency within the output
+sequences. Therefore, it is expected that CTC models are in-
+capable of correcting erroneous utterances into canonical ones.
+While it has been reported that even CTC can implicitly learn
+an internal language model [ 11, 12], CTC is still considered the
+best choice if error correction needs to be minimized.
+2.2. Corpus of Spontaneous Japanese (CSJ)
+For our purposes, a training set annotated with PAs and accent
+markers is required. The transcription in the dataset must be
+faithful to the original speech, including errors. CSJ includes
+manual annotations for such speech variation. On this dataset,
+one can train a recognizer that can detect such errors represented
+in PAs. A subset of CSJ (called “core”) provides mora-wise
+phonemic annotations in katakana and the perceived location of
+accent; 1 however, this subset is only a small fraction of the en-
+tire dataset, consisting of only 23,683 training utterances, or less
+than 6% of the entire CSJ training dataset. Although Japanese is
+considered to be a resource-rich language, given the sparsity of
+accent-annotated datasets, it is still not straightforward to build
+an accurate recognizer out of the available data. The next sec-
+tions describe practical remedies for this limitation.
+3. Multitask learning
+The sparsity of phonetic labels with accent information is the
+central challenge in developing speech recognizers tailored for
+Japanese speaking assessment. The ﬁrst remedy we employ is
+multitask learning. Orthographic transcription is cheaper to ob-
+tain compared to phonemic annotation, especially if the phone-
+mic annotation also requires accent annotation. Since text tran-
+scriptions and phonemic annotations are expected to be mu-
+tually dependent, solving two tasks simultaneously can help
+learning a common representation of speech.
+On the other hand, estimated pitch information is also cheap
+to obtain via a high-quality fundamental frequency ( fo ) extrac-
+tion algorithm. Since Japanese has lexical pitch accent, pitch
+information is also expected to be highly correlated with the
+target labels. Thus, in this paper, we train a transformer with
+three estimation tasks: one for PAs, one for text tokens (TTs),
+and one for estimated fo classes.
+3.1. Encoder Description
+To maximize downstream utility, the proposed model is de-
+signed to be streamable. In order to ensure this, we adopt a
+streamable speech encoder and a causal transformer. For the
+speech encoder, we adopt the Mimi [ 14] model pretrained with
+7 million hours of multilingual (mostly English) datasets [ 15].
+Since our model does not require discrete inputs, the quantiza-
+tion and down-sampling modules are removed from Mimi.
+Our transformer model is based on Llama-2 [ 16]. Although
+Llama-2 was originally proposed for auto-regressive decoder-
+only modeling, our method adopts this architecture for making
+an encoder-only CTC model. Model parameters are randomly
+initialized. The embedding dimensionality is set to 512, the
+number of layers to 24, and the number of attention heads to
+8. To overcome overﬁtting, dropout with probability of 0.2 is
+1Japanese is a mora-timed language, a mora being a prosodic unit
+corresponding to a short vowel (V) or a single post-vocalic consonant
+(C). Each mora ideally occupies about the same amount of time, though
+see [13] for a detailed review of the situation for Japanese.
+applied to the input embeddings from the Mimi encoder and the
+attention probabilities in each self-attention layer.
+3.2. Phonetic Alphabet and Text Token Tasks
+Our PA tokenizer assumes a katakana transcription of the ut-
+terance. If an accent is placed on a mora, this is denoted by
+appending an apostrophe to the mora label (e.g. Ωϡ /kjW/ with
+accent is denoted as Ωϡ’). The long-vowel marker ( ʔ) is re-
+placed by a copy of the preceding vowel. For example, the Ωϡ
+ʔ /kjW:/ is replaced by Ωϡ΢ /kjW W /. Similarly, Ωϡ’ ʔ
+is replaced by Ωϡ’ ΢. We collected all tokens from the CSJ
+core training set, resulting in 243 unique output tokens. Text to-
+kens (TTs) are character-based. We collected all Unicode points
+from the CSJ training dataset (core and non-core) after NFKC
+normalization, resulting in 2,309 distinct tokens.
+We use two CTC estimators for PAs and TTs, each con-
+taining a fully-connected layer for computing logits of the CTC
+label distribution—i.e. the TT or PA token plus a “blank” token
+indicating absence of the corresponding output label.
+3.3. fo Classiﬁer Task
+The objective of the fo classiﬁer task is to ensure that pitch
+information is propagated through the transformer, allowing the
+model to estimate fo contours. For each utterance, the Harvest
+algorithm [17] is applied to estimate fo each 10 ms. Since pitch
+accent is based not on the pitch itself, but rather its trajectory,
+the task is designed to estimate predeﬁned classes that indicate
+if fo is going up or down.
+For deﬁning classes over fo patterns, we compared the av-
+erage log- fo of three consecutive windows. Speciﬁcally, us-
+ing the center time stamp of the n-th frame, tn, we deﬁne the
+left, central and right windows as Ln = [ tn − 3w, tn − w),
+Cn = [ tn − w, tn + w), and Rn = [ tn + w, tn + 3w), re-
+spectively, where w is the half-window length, set to 20 ms.
+Let V (S) denote voicedness of a window S ∈ { Ln, Cn, Rn}.
+V (S) = voiced iff all pitch estimation timestamps in S have
+valid frequency estimates; otherwise, V (S) = unvoiced. The
+average of log- fo , P (S), is computed only when V (S) =
+voiced.
+There are four possible combinations of V (Ln) and
+V (Rn). When V (Ln) = V (Rn) = voiced, the class is
+further split according to whether P (Ln) < P (Rn). Thus,
+the patterns of left and right windows are categorized into ﬁve
+classes, which are further divided by the voicedness of the cen-
+tral window, V (Cn). As a result, each frame is classiﬁed into
+one of ten classes based on the estimated fo trajectory.
+A fully connected layer is introduced to estimate logits for
+the fo classes. The training loss is enhanced by adding a term
+representing the cross-entropy loss of this class estimator.
+4. Lattice Fusion
+To increase the accuracy of the PA recognizer in the face of
+data sparsity, our method consolidates estimation results of TT
+and PA recognition by combining well-known ﬁnite-state trans-
+ducer (FST) operations. Whereas ﬁnite-state acceptors (FSA)
+represent probabilistic distributions over sequences, FSTs rep-
+resent probabilistic mappings between sequences. We use
+FSAs—“lattices”—to represent distributions over PA and TT
+sequences. The TT lattice is converted to a second PA lattice
+using an FST constructed from a pronunciation dictionary. Fi-
+nally, the most plausible PA sequence from the union of the two
+PA lattices is extracted. We term this procedure “lattice fusion”.
+2079
+!
+a
+e
+!
+a
+i
+!
+e
+u
+! !:ε 
+a
+a:a 
+e
+e:e 
+i
+i:i 
+!:ε 
+a:ε 
+e:e 
+i:i 
+!:ε 
+a:a 
+e:ε 
+i:i 
+!:ε 
+a:a 
+e:e 
+i:ε 
+(a) CTC confusion network 
+(b) CTC blank remover 
+…
+Figure 2: FST representation of (a) CTC outputs and (b) blank
+ϕ removal. F or brevity, only phonemes /a, i, e/ andϕ are shown.
+4.1. Lattice Construction from CTC outputs
+Let Y ∈ RT ×K be an array of log probabilities of each class in
+CTC output layer, including the special blank symbol ϕ, where
+yt,k denotes the log-probability of label k emitted at time t. For
+each utterance, a confusion network over the CTC labels can be
+constructed as in Fig. 2 (a). In confusion networks, each non-
+ﬁnal state represents the timestamp t and outgoing arcs from
+state t are deﬁned for each possible k. The arc labeled as k from
+state t is designed to have a weight representing the negative log
+probability as w = −yt,k. Let S P be the confusion network
+constructed by this procedure.
+The CTC output labels must be post-processed by remov-
+ing same-label repetitions and blank ϕ symbols. This post-
+processing can be represented as a transducer as in Fig. 2 (b).
+By applying the composition operator to the confusion net-
+work S P and the CTC postprocessing FST BP, and projecting
+the FST to the output labels, the lattice LP that represents a
+probability distribution over all possible PA sequences can be
+computed. For computational efﬁciency, we further applied a
+lattice pruning method and further optimization for maximiz-
+ing the efﬁciency of the subsequent procedures, as follows:
+LP = Opt( πo(S P ◦ B P)). Here, ◦ denotes the composition
+operator on FSTs, πo projects an FST to its output labels, and
+Opt is an optimization procedure that prunes, removes ϵ, de-
+terminizes, and minimizes [ 18] the input, in this order, over
+the log semiring. Following the procedure, a compact repre-
+sentation of PA distribution can be obtained from the output
+log-probabilities of the PA-CTC task. We can similarly obtain
+TT sequence distributions from log-probabilities in the TT-CTC
+task. Let S T be the confusion network constructed in the same
+way from the TT log-probabilities. Following the above proce-
+dure, a lattice for TTs LT can be obtained.
+4.2. Conversion from TT lattice to PA lattice
+Our TT-to-PA FST is based on UniDic [ 19]. Of 876,803 Uni-
+Dic entries, 873,647 were selected by discarding entries with
+null pronunciations or unknown PAs. Lexicon FST construc-
+tion followed [ 18]. Using the TT-to-PA converter represented
+as an FST, a lattice representing distribution over PA sequences
+can also be obtained by converting the TT lattice to a PA lattice.
+This conversion can be done via FST composition. Let D be
+an TT-to-PA FST, a PA lattice induced by the TT lattice can be
+computed as: L′T2P = Opt(πO(LT ◦ D)). Furthermore, since
+the dictionary D does not provide relative probabilities when a
+word has multiple pronunciation, it is necessary to accumulate
+PA weights toL′T2P. The PA probability can be taken from LP.
+The pronunciation-weighted lattice obtained in this way can be
+expressed as: LT2P = Norm(LP ◦ L′T2P). Here, Norm is the
+normalization operator that normalizes the weights of outgoing
+arcs for each state to satisfy the sum-to-one constraint.
+The explicit conditioning method proposed in [ 7] is equiv-
+alent to selecting the most plausible path from LT2P obtained
+as above. Unlike the explicit conditioning method, our method
+aims at robust decoding by fusing the estimation results from
+LT2P and LP. Fusing the two estimators can simply be per-
+formed by the union operator followed by optimization. The
+union lattice ˆL can be computed as: ˆL = Opt( LP ⊎ L T2P),
+where ⊎ denotes the FST union operator. ˆL corresponds to
+the average of the two probabilistic distributions represented by
+LP and LT2P. The ﬁnal recognition results can be obtained by
+computing the shortest path over the union lattice.
+5. Experiments
+5.1. Experimental Setup
+For analyzing the performances of the proposed systems, we
+compared three variants of the method: the full proposed
+method (MT+LF), a variant without lattice fusion (MT), and
+a variant with neither lattice fusion nor multitask learning (PA-
+only). Further, instead of lattice fusion, we implemented ex-
+plicit conditioning [ 7] using our recognizers TT and PA output
+results (MT+Cond.). For LF systems, the MT+LF system com-
+puted the TT lattices using the TT outputs of the MT model. We
+additionally compared LF method with other sources of TT lat-
+tices. Whisper, and our “TT-only” variant were used as external
+TT lattice sources. For LF with Whisper, the lattice was con-
+structed to have only a single path corresponding to the recog-
+nition result from Whisper. As side results, we also compare
+character error rates (CERs) of the MT model, Whisper, and
+our model without PA and fo outputs (TT-only).
+For training, the CSJ dataset is augmented with speed per-
+turbation [20] followed by a time-domain variant of SpecAug-
+ment [21]. For speed perturbation, 20% of samples were mod-
+iﬁed to have 90% rate, and another 20% of samples were mod-
+iﬁed to have 110% rate. The time-domain SpecAugment is de-
+veloped to apply masking as in the original SpecAugment but
+in the raw-waveform domain. This variant implements time-
+masking on the raw waveform, and the spectral masking on the
+(full utterance) discrete Fourier transform domain. The hyper-
+parameters for SpecAugment were set as follows: The number
+of time-domain masks was 10, the number of frequency-domain
+masks was 2, the maximum length of time-domain masks was
+0.05T where T is the length of the input utterance, and the max-
+imum length of frequency domain mask was 0.3F , where F is
+the bandwidth of the input signal in mel. The task weights were
+preliminarily set to 0.3, 0.6, and 0.1 for the PA, TT, and fo
+tasks respectively. Those values are chosen from our expec-
+tation on; (1) fo task is less correlated with the primary task
+of phonemic transcription, and (2) the TT task is particularly
+important because it’s training data is approximately ten times
+larger than that of the primary task. The task weights were not
+further tuned. The learning rate is scheduled using 40k steps
+cosine scheduler (1k linear warmup steps) with a peak rate of
+5e-4. The batch size was set to 128. All weights except for ones
+in ”Speech Encoder” were optimized during training.
+As baseline systems, we adapted Whisper [ 22]
+(whisper-1 model from OpenAI) and Multipa [ 3]. Since
+neither system is able to output our target PA directly, we made
+adapters that produce multiple PA outputs corresponding to the
+Whisper output text, or Multipa output IPAs. The minimum
+error rates among all possible outputs from the adapter were
+used as a ﬁnal metric for the systems with such adapters. For
+2080
+Table 1: Mora-label (PA) error rates [%]. ( † = the best output
+is chosen from multiple hypotheses. See main text for details.)
+eval1 eval2 eval3 JSUT
+accent err. 3 3 3 3
+Whisper† 20.6 24.3 15.1 19.7 13.5 16.5 2.8 6.8
+Multipa† 17.2 – 19.8 – 18.3 – 16.2 –
+PA-only 7.2 11.5 7.6 11.9 7.9 13.5 6.6 13.2
+MT 4.4 7.3 4.9 7.8 5.0 9.1 5.8 9.9
++Cond 4.3 7.3 5.2 8.2 5.0 9.3 6.1 10.3
++LF 4.1 7.0 4.8 7.7 4.9 9.1 6.1 10.3
+MT+LF with external ASR models
+w/ Whisper 4.3 7.2 4.8 7.6 4.6 8.8 2.1 6.4
+w/ TT-only 3.1 6.0 4.1 7.1 4.1 8.3 4.3 8.6
+Table 2: Character error rates [%] of text transcription (TT).
+eval1 eval2 eval3 JSUT
+Whisper 18.9 17.2 15.1 8.3
+TT-only 4.6 5.4 5.6 17.8
+MT 6.3 6.8 7.8 22.6
+the Whisper adapter, since our adapter is based on UniDic, the
+adapter can also output PAs with accent markers based on the
+accent annotation given for each word in UniDic.
+For evaluation, two datasets with accent annotations were
+employed. Since our model training is dependent on CSJ, core
+subsets of CSJ evaluation sets were used as our primary eval-
+uation sets (CSJ eval1/ eval2/ eval3). In addition to CSJ, “ba-
+sic5000” from the JSUT corpora was used [ 23]. This dataset
+(JSUT) contains read utterances from a single speaker. CSJ’s
+spontaneous and multi-speaker properties align more to our ob-
+jective; however, JSUT is also important for probing the behav-
+ior of our methods in out-of-domain settings.
+5.2. Discussion
+Tables 1 and 2 show the mora-label error rates (MLERs) and
+CERs of the systems, respectively. MLERs were computed both
+with and without accent errors. We observed that the generic
+multilingual speech recognizer (Whisper) was not suitable for
+our phonemic transcription task. Even though our ﬁnal metrics
+for Whisper were optimistic, computed by choosing the opti-
+mal pronunciations based on the reference labels, the results on
+the CSJ evaluation sets were not competitive with our tailored
+model. As discussed previously, this is due to the normalization
+effect from the language model. Table 2 shows that Whisper
+was also not competitive in CER. This was because CSJ utter-
+ances contain a lot of speaker errors, which Whisper tended to
+ignore. On the other hand, for JSUT, since this dataset contains
+read speech without speaker errors, Whisper worked almost per-
+fectly. In that case, if we could choose the pronunciation of each
+Table 3: Mora-label error rates [%] of each task combination.
+“noncore” means that the noncore subset was used in training.
+noncore eval1 eval2 eval3 JSUT
+PA-only – 11.5 11.9 13.5 13.2
+PA + TT – 11.1 11.0 12.9 12.8
+PA + TT 4 7.7 8.1 9.5 10.1
+PA + fo – 11.8 11.9 14.0 13.7
+PA + fo 4 11.8 12.4 13.9 12.5
+PA + TT + fo (MT) 4 7.3 7.8 9.1 9.9
+word optimally, the MLER can be very low (6.8%).
+The Multipa results showed the difﬁculty of mapping pho-
+netic transcriptions to language-speciﬁc phonemic transcrip-
+tions. Spontaneous speech exhibits wide variation in its pho-
+netic realization, making it difﬁcult to recover the phonemic la-
+bels as accurately as native speakers do. This shows that the
+generic multilingual phonetic transcriber is also not relevant for
+obtaining phonemic transcriptions.
+Comparing PA-only and MT, we showed that training with
+the noncore subset was important. Our method can success-
+fully leverage the noncore subset, which lacks accent annota-
+tions. Improvements made by MT are transferrable to the out-
+of-domain JSUT task, where MLERs went from 13.2% to 9.9%.
+From the results of the decoding methods (“MT+Cond” and
+“MT+LF”), it was shown that the lattice fusion was effective.
+The outputs of “MT+Cond” suggested that explicit condition-
+ing is fragile if the recognizer cannot recognize textual repre-
+sentation of errors. We observed that neither decoding method
+was effective in the JSUT task, due to the inaccuracy of TT
+outputs used to compute TT lattices (see Table 2). This issue
+was mitigated by introducing an external speech recognizer as
+a source of TT lattices. As shown in Table 1, “MT+LF with
+Whisper” achieved the best result for the JSUT task. Similarly,
+since our “TT-only” model was better than Whisper for CSJ
+tasks, “MT+LF with TT-only” showed the best results for the
+CSJ tasks. Thus, we conﬁrmed that “MT+LF” approach could
+further be enhanced if we had an accurate TT recognizer.
+To further analyze how each task contributes to multi-
+task training, we conducted comparative experiments over each
+combination of auxiliary task. Per Table 3, most of the advan-
+tage of multitask training is attributable to the TT task. The fo
+task was ineffective if only an auxiliary task (PA+ fo rows), but
+fo yields a considerable gain when comb

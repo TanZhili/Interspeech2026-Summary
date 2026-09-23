@@ -1,0 +1,190 @@
+Listening to Motion in Space: Vision-Grounded Event-wise Video-to-Audio
+Generation and Rendering
+Hyeonwoo Park ID 1,∗, Dayeon Ku ID 2,∗, Hong Kook Kim ID 1,2,3
+1 Dept. of AI Convergence, 2 Dept. of EECS,
+Gwangju Institute of Science and Technology, Gwangju 61005, Republic of Korea
+3 AunionAI Co., Ltd., Gwangju 61005, Republic of Korea
+hyeonwoo@gm.gist.ac.kr, dayeonku@gm.gist.ac.kr, hongkook@gist.ac.kr
+Abstract
+We present VisionSFX, a real-time, vision-grounded video-
+to-audio (V2A) workflow that generates editable, binaurally-
+rendered audio from silent video. Conventional V2A systems
+output a single mono mixture of all sources, which precludes
+the per-source editing and spatial control routinely required
+in film post-production, game engines, and AR/VR. End-to-
+end binaural systems can produce spatialized output but rely
+on large paired video–binaural training corpora. VisionSFX
+adopts a training-free route. A vision-language model first de-
+composes the scene into discrete sound events. Each event is
+generated independently by a pretrained V2A model within its
+own temporal window, while ambience is produced separately
+by a video-agnostic text-to-audio model. The resulting tracks
+are then spatialized post-hoc using optical-flow centroids with
+ego-motion correction, monocular depth, and binaural render-
+ing. The pipeline requires no training, fine-tuning, or paired
+binaural data. Because each source is generated and stored sep-
+arately, editing one—through re-prompting, repositioning, or
+timeline injection—leaves all others unchanged. At the booth,
+visitors upload a video clip and watch a per-source timeline
+populate within approximately one minute. They then drag
+sources around in 3D space, rewrite their prompts, or inject new
+events, with each change reflected on headphones in real time.
+Index Terms: video-to-audio, event-wise generation, binaural
+rendering, vision-language model, real-time demonstration
+1. Introduction
+Real-world scenes contain multiple sound sources, and pro-
+fessional audio workflows—in game engines, film post-
+production, and AR/VR—require access to each source indi-
+vidually. However, most video-to-audio (V2A) models, such
+as MMAudio [1] and FoleyCrafter [2], output a single mono
+waveform that mixes all sources. To remedy this limitation, a
+step-by-step V2A method [3] generates per-event tracks using
+a trained negative audio guidance module that augments a pre-
+trained V2A backbone. Nevertheless, the quality is still limited
+depending on playback environments since the generated audio
+is mono. In parallel, several end-to-end V2A methods [4, 5]
+generate stereo or binaural audio directly but commit to a fixed
+output format determined by their training data. In addition,
+substantial training data were required to model the end-to-end
+V2A; for instance, ViSAudio [4] required constructing a dedi-
+cated 97K-pair video-binaural corpus for this purpose.
+In contrast, we propose a fundamentally different ap-
+proach that combines off-the-shelf pretrained models (a vision-
+language model (VLM), a V2A generator, and monocular
+*These authors contributed equally.
+Figure 1:A pipeline of the proposed VisionSFX workflow.
+depth) with classical optical flow and head-related transfer func-
+tion (HRTF) rendering, requiring no training, fine-tuning, or
+paired binaural data. Each source is generated independently
+by a parallel model call within its own temporal window, ensur-
+ing edit independence, and stored as a binaural audio signal.
+We demonstrate VisionSFX, a real-time V2A workflow
+with depth-aware binaural audio rendering. VisionSFX exe-
+cutes the full pipeline—scene decomposition, per-source gener-
+ation, HRTF spatialization, and live editing—on two NVIDIA
+DGX Spark GPUs. Visitors can upload their videos for a hands-
+on experience: within approximately 1–2 min, the workflow
+populates a per-source timeline, after which individual sources
+can be re-prompted, repositioned in 3D space, or mixed in
+real time. We expect this demonstration will inspire visitors
+and spark discussion on the future directions of compositional,
+spatially-aware video-to-audio generation.
+2. System Overview
+Figure 1 illustrates a block diagram of the VisionSFX pipeline
+for vision-grounded event-wise V2A generation and rendering.
+2.1. Event-wise Scene Decomposition
+First, videoVis analyzed using the VLM, Gemma 4-VL
+(31B parameters) [6], to detect and describe audio-related
+events, resulting in an event listE={(t on
+i ,t off
+i ,p i,v i)N
+i=1},
+wheret on
+i andt off
+i denote the onset and offset time of thei-th
+source. Each source is labeled with thei-th promptp i that de-
+scribes what itsoundslike (e.g., “basketball bounce on hard-
+wood”) rather than what itlookslike. A one-source, one-event
+rule groups continuous sounds (e.g., rain) into long-duration
+events, while short-duration repeated events (e.g., bounces) re-
+main unchanged. In parallel, the VLM provides an ambient
+promptp amb for consistent ambiance across the video. The event
+list, with a segmented videov i per event, is passed to thePer-
+Source Generationmodule in Fig. 1.
+2.2. Per-Source Audio Generation
+To generate audio per event, a V2A model (MMAudio large-
+44k-v2 [1]) takesv i andp i, and generates audio from the
+padded crop of 5 s long, centered at 1
+2 (toff
+i +t on
+i ). The out-
+868
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+
+put audio is windowed to take the interval of[ton
+i −τ 1,t off
+i +τ 2]
+(τ1=23ms,τ 2=232ms), where audio signals at the boundaries
+are faded with a raised-cosine envelope (τ 1-length attack,τ 2-
+length release).
+For an ambient sound, we initially generated audio by as-
+signing the event interval to the full video length. However,
+MMAudio produced a mixture of sounds from all the detected
+events and the actual ambience. Instead, we adopt a video-
+agnostic text-to-audio model, TangoFlux [7], to generate am-
+bient sound for the 0th audio track. We set the inference hyper-
+parameters for TangoFlux (diffusion steps=25; CFG rate=4.5)
+and MMAudio (CFG rate=4.5).
+2.3. Audio Rendering
+To localize audio in each track, we first apply the Dense
+Farneb¨ack optical flow [8] to compute time-varying coordinates
+of thei-th event,F i(x,y,t). As video may be recorded with a
+moving camera, ego motion is subtracted to obtain ˜Fi=Fi−µi,
+whereµ i is the frame-wise median ofF i. Then, the(x,y)po-
+sition of each source is defined as the centroid,c i ∈[0,1] 2,
+that is computed from ˜Fi to align objects with their audio. To
+determine thez-position, a monocular depth map (Depth Any-
+thing 3 [9]) sampled atc i yields a scale-shift-invariant relative
+depthd i∈[0,1]. Finally, azimuthθ i and elevationφ i are de-
+rived fromc i andd i and used to localize each audio by apply-
+ing the HRTF [10]. Ambient sound is converted from mono
+to stereo using a Hilbert decorrelator to remove interaural level
+cues.
+For playback, the stereo ambient sounda L,R(t)and lo-
+calized binaural event sourcesb L,R
+i (t)form the primary out-
+put. The audible mix is computed asm(t) = tanh(a L,R(t) +PN
+i=1bL,R
+i (t)). The audio can be re-rendered for different for-
+mats without regeneration. Given that each source is gener-
+ated independently, edits by re-prompting or repositioning af-
+fect only that source, leaving all others on disk unchanged.
+3. Demonstration
+The booth includes a dual-screen laptop, headphones for bin-
+aural playback, and a LAN router connecting the laptop to the
+NVIDIA DGX Spark under the table. We present the UI (Fig.
+2) so visitors can experience VisionSFX through the following
+steps.
+Step 1: Upload.The visitor uploads a video via theUpload
+Videobutton. If the video already contains audio, our workflow
+strips it and retains it as a reference for comparison with the
+generated audio.
+Step 2: V2A Generation.The full pipeline—event-wise
+scene decomposition, per-source audio generation, and HRTF
+rendering—runs automatically. Within approximately 1 min for
+a 10 s clip, the timeline is populated with independently gener-
+ated sources.
+Step 3: Audio Editing.After generation, visitors can explore
+the following editing features:
+•Prompt editing:Clicking a source shows its auto-generated
+text prompt, which can be rewritten; pressingGenregener-
+ates only that source.
+•Timeline injection:Dragging across an empty region on the
+timeline creates a new sound event for that span.
+•Spatial controls:Azimuth and elevation sliders reposition
+a source laterally, while the top-down depth view adjusts its
+perceived distance, all in real time (≈0.3 s).
+Figure 2:Screenshot of the VisionSFX workflow: 1⃝naviga-
+tion and transport bar with Upload and Render buttons; 2⃝
+video source; 3⃝prompt editor; 4⃝spatial controls; 5⃝source
+list with check/solo toggles; 6⃝per-source timeline with wave-
+forms; 7⃝per-source volume faders.
+Step 4: Rendering.TheRenderbutton opens an export dialog
+with multiple output modes: audio-only mix, audio–video mix,
+or separate per-source track files. Several codecs and container
+formats are available.
+Key takeaway.Visitors will experience three properties first-
+hand: (i) editing one source leaves all others unchanged;
+(ii) repositioning a source in 3D space is instantaneous as no
+audio is regenerated; and (iii) binaural rendering produces spa-
+tial depth that a mono waveform cannot convey.
+4. Acknowledgements
+This work was partly supported by the Technology Devel-
+opment Programs (RS-2025-21432982, RS-2025-25454727)
+funded by Korea MSS and MOTIE, and by the ‘Science and
+Technology Opens the Future of the Region’ program funded
+by MSIT and Gwangju Metropolitan City in 2026.
+5. Generative AI Use Disclosure
+Claude Opus 4.6 (Anthropic) was used for English-language re-
+finement, with all output reviewed by the authors.

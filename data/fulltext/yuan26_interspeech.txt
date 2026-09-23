@@ -1,0 +1,472 @@
+STSR: High-Fidelity Speech Super-Resolution via Spectral-Transient Context
+Modeling
+Jiajun Yuan1, Xiaochen Wang1,∗∗, Yulin Wu2, Chenhao Hu3, Xueyang Lv3
+1 National Engineering Research Center for Multimedia Software, School of Computer Science,
+Wuhan University, Wuhan, China
+2 School of Artificial Intelligence, Jianghan University, Wuhan, China
+3 Xiaomi Corporation, Beijing, China
+yjj2002@whu.edu.cn, clowang@whu.edu.cn, wuyulin@jhun.edu.cn, huchenhao@xiaomi.com,
+lvxueyang@xiaomi.com
+Abstract
+Speech super-resolution (SR) requires a delicate balance be-
+tween preserving global harmonic coherence and sharp local
+transients. While diffusion-based models achieve impressive
+fidelity, their computational demands limit practical use; con-
+versely, efficient time-domain architectures often struggle to
+capture the long-range spectral dependencies essential for pre-
+cise harmonic alignment. We introduce STSR, an end-to-end
+MDCT-domain framework designed to bridge this gap. STSR
+leverages a Spectral-Contextual Attention mechanism with hi-
+erarchical windowing to aggregate non-local context, ensuring
+consistent harmonic restoration up to 48 kHz. To prevent the
+loss of transient clarity in compressed spectral representations,
+we incorporate a sparse-aware regularization strategy. Experi-
+mental results demonstrate that STSR surpasses state-of-the-art
+baselines in both perceptual quality and zero-shot generaliza-
+tion, establishing a robust, real-time paradigm for high-fidelity
+speech restoration. Samples can be found online1.
+Index Terms: speech super-resolution, spectral-transient
+aware, MDCT, generative adversarial networks
+1. Introduction
+Speech super-resolution (SR), or bandwidth extension (BWE),
+reconstructs wideband spectra from bandwidth-limited inputs.
+This task is pivotal for enhancing intelligibility in telecommuni-
+cations and extending the bandwidth of legacy recordings [1,2].
+Prior discriminative deep learning models [3, 4] primarily
+formulate SR as a deterministic regression task. While these
+methods successfully recover low-frequency envelopes, their
+reliance on minimizing sample-wise L1 or L2 distances causes
+a regression-to-the-mean effect. This yields over-smoothed
+high-frequency spectra lacking acoustic crispness, particularly
+at 48 kHz.
+To synthesize realistic spectral textures, recent research has
+embraced generative modeling. Generative restoration frame-
+works like V oiceFixer and AudioSR [1, 5, 6] address joint de-
+noising and super-resolution, while often imposing prohibitive
+computational overhead. While recent flow matching models
+like FLowHigh [7] achieve efficient single-step inference, they
+typically rely on heavy cascaded vocoders (e.g., BigVGAN)
+for waveform reconstruction, resulting in substantial parameter
+overhead and potential feature mismatch.
+Driven by the need for efficiency, recent efforts have shifted
+toward end-to-end architectures to maximize computational
+1https://stsr-speech-demo.vercel.app
+throughput and circumvent error accumulation. Representative
+models, such as the time-domain state-space framework Wave-
+U-Mamba [8–13] and the unified Transformer–convolution ar-
+chitecture HiFi-SR [14], offer a distinct advantage: they enable
+rapid inference and eliminate the feature mismatch inherent in
+two-stage pipelines like NVSR [15]. However, while operating
+exclusively in the waveform domain effectively captures tem-
+poral evolution, it lacks an explicit representation of frequency
+structures. Consequently, time-domain modeling alone strug-
+gles to capture the non-local vertical correlations between low-
+frequency fundamentals and their distant high-band harmonics,
+a limitation that significantly constrains reconstruction fidelity
+at 48 kHz.
+An alternative paradigm performs vocoder-free SR di-
+rectly in the Modified Discrete Cosine Transform (MDCT)
+domain. By bypassing magnitude-to-waveform conversion,
+this approach circumvents the artifacts typical of two-stage
+pipelines. Despite these structural merits, current MDCT-based
+solutions like mdctGAN [16, 17] remain suboptimal. Their re-
+liance on standard convolutional kernels restricts modeling to
+local spectral neighborhoods, hindering the maintenance of har-
+monic consistency across the wideband spectrum. Moreover,
+the heavy-tailed nature of MDCT coefficients necessitates ag-
+gressive range compression (e.g., arcsinh) for training stability;
+unfortunately, this preprocessing acts as non-linear smoothing
+that obliterates fragile transient energy, creating an inherent rep-
+resentation conflict standard CNNs cannot resolve.
+In this paper, we present STSR, a unified MDCT-domain
+framework designed to reconcile long-range spectral consis-
+tency with transient fidelity. We treat the spectrogram as a
+structured representation and employ a hierarchical window at-
+tention mechanism to explicitly model spectral anisotropy and
+cross-band harmonic correlations. To offset information loss in-
+duced by spectral compression, we introduce a representation-
+driven regularization strategy that enforces transient constraints
+and preserves acoustic sharpness. Finally, a high-frequency-
+focused hybrid discriminator concentrates adversarial pressure
+on synthesized spectra while maintaining global temporal co-
+herence, enabling real-time single-channel upsampling with ro-
+bust zero-shot generalization.
+Our main contributions are as follows:
+1. A spectral–transient aware MDCT framework that jointly ad-
+dresses envelope reconstruction and transient preservation;
+2. A spectral-context attention mechanism that explicitly cap-
+tures non-local dependencies along the frequency axis;
+3. A high-band-focused hybrid discriminator that concentrates
+adversarial pressure on generated frequencies without desta-
+4475
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-27
+Shallow 
+Feature 
+Low-res 
+Audio
+MDCT 
+High-res 
+Audio
+IMDCTDeep 
+Feature
+Generator
+MBD
+MSD
+Discriminator
+Training-loss
+Arcsinh
+Inverse Arcsinh MPD
+Spectral-Contextual Attention Module
+Hierarchical Spectral Interaction Block
+window 1
+window n
+… Repeat 
+N Times
+Deep Feature
+EncoderStage
+EncoderStage
+EncoderStage
+DecoderStage
+DecoderStage
+DecoderStage
+H-SAB
+Figure 1:Overall architecture of STSR.
+bilizing the low-frequency base;
+4. A representation-driven regularization strategy tailored to
+compressed MDCT representations, significantly mitigating
+transient over-smoothing.
+2. Method
+STSR operates in the signed MDCT domain. Unlike magni-
+tude spectrograms, MDCT coefficients encapsulate energy and
+phase via signed values. To handle negative values, we employ
+a pseudo-logarithmic mapping commonly used in high-fidelity
+audio synthesis [16]. We leverage the inverse hyperbolic sine
+(arcsinh), approximating logarithmic scaling for high ampli-
+tudes while maintaining linearity near the origin. Operationally,
+the MDCT coefficientsXare scaled by a gain factorg(where
+g=800) and transformed via base-10 pseudo-logarithmic com-
+pression:
+S= arcsinh(g·X)
+ln(10) ,
+X= sinh(S·ln(10))
+g .
+(1)
+This transformation effectively regularizes the heavy-tailed dis-
+tribution of spectral data while ensuring perfect invertibility,
+thereby facilitating robust waveform reconstruction.
+2.1. Spectral Branch (Generator)
+Althougharcsinhcompression facilitates training stability, it
+inherently attenuates fine-grained spectral details and tran-
+sient cues. Standard convolutional generators often fail to
+recover these degraded components, as their representation
+power is fundamentally constrained by the locality of their
+receptive fields. Drawing upon recent advances in attention-
+based restoration [18–20], we propose a Hierarchical Spectral-
+Contextual Attention mechanism explicitly tailored to the spec-
+tral anisotropy of speech.
+Since global self-attention across the entire spectrogram is
+precluded by prohibitive computational complexity, we imple-
+ment Spectral Interaction Blocks that leverage windowed self-
+attention. This design partitions the frequency axis into local
+windows to capture localized harmonic structures, including
+fundamental frequencies and their immediate partials. To facili-
+tate information flow across these boundaries, a shifted-window
+mechanism is employed in alternating layers. This strategy en-
+ables the modeling of long-range spectro-temporal evolutions—
+such as formant transitions—that are essential for speech SR yet
+remain elusive for conventional CNNs.
+We architect a compact U-Net using these attention blocks,
+incorporating skip connections to preserve low-level spectral
+features. Additionally, a global residual path is integrated to
+bias the model toward explicitly learning high-frequency resid-
+uals. The resulting architecture constitutes a unified, single-
+stage vocoder-free framework that effectively reconciles local
+transient sharpness with global harmonic consistency.
+2.2. Hybrid Discriminator
+The discriminator architecture is pivotal in synthesizing high-
+fidelity waveforms. We leverage the Multi-Period (MPD) and
+Multi-Scale (MSD) discriminators from HiFi-GAN [21] to en-
+force temporal coherence and suppress phase artifacts. While
+these time-domain modules effectively capture periodic struc-
+tures and global patterns, they exhibit limited sensitivity to
+fine-grained spectral artifacts within the reconstructed high-
+frequency regime.
+To rectify this, we introduce a High-Band Multi-Band Dis-
+criminator (HB-MBD) that operates directly on MDCT magni-
+tudes. Given that the low-frequency band is provided as ground-
+truth input, subjecting this region to adversarial pressure can in-
+duce spectral degradation or optimization instability. We there-
+fore delineate frequency boundaries based on sampling rates
+to isolate the reconstruction target: letf hi andf lo denote the
+Nyquist frequencies of the target high-resolution output and the
+low-resolution input, respectively.
+To preserve the integrity of the low-band, discriminative fo-
+cus is restricted to the interval[f lo,f hi). Specifically, parallel
+PatchGAN heads are deployed across distinct sub-bands uni-
+formly distributed within this range, complemented by a full-
+band head to ensure global spectral consistency. This config-
+uration confines adversarial feedback to the synthesized com-
+ponents, preventing the model from compromising low-band fi-
+delity for high-band hallucination. The resulting optimization
+yields crisper harmonics and fricatives without destabilizing the
+fundamental frequencies.
+2.3. Training Objectives
+STSR is optimized via a composite objective function designed
+to reconcile the trade-off between perceptual fidelity and spec-
+tral precision.
+Adversarial Loss.To synthesize realistic waveforms, we
+leverage the Least Squares GAN (LS-GAN) formulation [22].
+The discriminator ensembleDcomprises time-domain mod-
+4476
+LR
+ NVSR
+ mdctGAN
+ SwinSRGAN
+ Target
+Proposed
+Figure 2:Spectrogram comparison (16kHz→48kHz). STSR exhibits sharper harmonic structures, more complete high-band energy,
+and clearer transients with fewer artifacts, surpassing prior models in both detail and fidelity.
+ules (MPD and MSD) and the proposed frequency-domain HB-
+MBD, denoted asD wav andD spec, respectively. Given the
+ground-truth audioyand the low-resolution inputx, the gener-
+atorGand discriminatorsDengage in the following minimax
+game:
+Ladv(D) =E y[(1−D(y)) 2] +E x[D(G(x))2]
+Ladv(G) =E x[(1−D(G(x))) 2]
+(2)
+The total adversarial objective is formulated as a weighted sum
+across all discriminator sub-units in both the time and frequency
+domains.
+Feature Matching Loss.We incorporate feature matching
+loss to stabilize the adversarial landscape and facilitate high-
+fidelity synthesis [21]. This loss minimizes theL 1 distance be-
+tween internal feature maps of the discriminators for real and
+synthesized samples:
+Lf m(G) =
+KX
+k=1
+LkX
+l=1
+1
+Nl
+D(l)
+k (y)−D (l)
+k (G(x))
+
+1
+(3)
+whereKdenotes the number of discriminators,L k is the layer
+count for thek-th discriminator, andN l is the number of ele-
+ments within thel-th feature map.
+Transient Constraint (Sparse-Aware Loss).While stan-
+dardL 1 reconstruction losses treat spectral bins uniformly,
+MDCT coefficients are inherently sparse, characterized by high-
+energy harmonics and transient peaks set against a near-zero
+background. Althougharcsinhcompression is essential for nu-
+merical stability, it inevitably compresses the dynamic range,
+which may amplify background artifacts and blur transient
+boundaries. A naive globalL 1 objective fails to differenti-
+ate these regimes, often yielding over-smoothed reconstructions
+where transient attacks lose their acoustic crispness.
+To rectify this, we propose a content-adaptive sparse loss
+that decouples signal reconstruction from noise suppression.
+We formulate a dynamic soft mask derived from the ground-
+truth energy profile. LetSand ˆSrepresent the compressed
+signed MDCT coefficients of the ground truthyand the predic-
+tionG(x), respectively. A content weight mapw c is computed
+via a sigmoid function centered on the spectral envelope:
+wc =σ(α·(|S|−τ))
+ws = 1−w c
+(4)
+whereσdenotes the sigmoid function andαmodulates the tran-
+sition steepness. Rather than utilizing a fixed threshold,τis dy-
+namically determined as the 0.8-quantile of|S|for each utter-
+ance, ensuring robust performance across diverse volume levels
+and recording environments.
+The resulting objective combines two complementary
+terms:
+Lsparse(G) =
+wc⊙(S− ˆS)
+
+1| {z }
+Signal Fidelity
++λs
+ws⊙ ˆS
+
+1| {z }
+Sparsity Regularization
+(5)
+The former prioritizes active spectral regions (harmonics and
+transients), enforcing fidelity where energy is prominent. The
+latter penalizes spurious activations in background regions,
+effectively suppressing GAN-induced artifacts in sparse fre-
+quency bins. By re-weighting the optimization landscape, this
+strategy counteracts compression-induced smoothing and re-
+stores the natural sparsity of the speech signal.
+Total Objective.The global loss function integrates these
+terms with a multi-resolution STFT lossL stf t [23] to ensure
+stable convergence:
+LG =λ (t)
+adv(Lwav
+adv +L spec
+adv ) +λ f mLf m
++λ stf tLstf t +λ sparseLsparse
+(6)
+To maintain optimization stability in the MDCT domain, a lin-
+ear warm-up schedule is applied to the adversarial weightλ(t)
+adv,
+allowing the generator to capture fundamental spectral struc-
+tures prior to full adversarial refinement.
+3. Experiments
+3.1. Datasets
+STSR was trained and evaluated on the VCTK corpus [24],
+which contains 44 hours of 48 kHz recordings from 110 En-
+glish speakers. To ensure data integrity, we utilized themic1
+channel and excluded speakersp280andp315following es-
+tablished protocols. The remaining data were partitioned into
+100 speakers for training and 8 for evaluation. To assess cross-
+domain robustness, we performed zero-shot evaluation on the
+HiFi-TTS dataset [25], which contains high-fidelity 44.1 kHz
+recordings. To maintain pipeline consistency, these recordings
+were resampled to 48 kHz prior to processing.
+3.2. Evaluation Metrics
+We evaluated performance using Log-Spectral Distance
+(LSD) [26]. LetSand ˜Sdenote the magnitude spectrograms of
+the ground-truth and synthesized speech signals, respectively.
+The LSD is defined as:
+LSD(S, ˜S) = 1
+T
+TX
+t=1
+vuut 1
+F
+FX
+f=1
+
+log10
+S(t,f) 2
+˜S(t,f) 2
+2
+(7)
+whereTandFrepresent the number of time frames and fre-
+quency bins, respectively. As a frequency-domain metric, LSD
+quantifies the logarithmic divergence between spectra in deci-
+bels. Lower LSD values reflect superior perceptual fidelity, with
+a value of zero signifying identical spectral profiles. Compara-
+tive results against baseline systems, including FLowHigh [7],
+NVSR [15], HiFi-SR [14], and mdctGAN [16], are summarized
+in Table 1.
+For subjective evaluation, we conducted a Mean Opinion
+Score (MOS) listening test. Listeners were asked to rate the
+4477
+Table 1:Objective evaluation results. We report LSD (↓) and ViSQOL (↑) across different input bandwidths. ’Voc. ’ denotes the usage
+of a vocoder. The best results are bolded.
+4→48 kHz 8→48 kHz 16→48 kHz 24→48 kHz
+Model V oc. Params LSD↓ViSQOL↑LSD↓ViSQOL↑LSD↓ViSQOL↑LSD↓ViSQOL↑A VG LSD
+Unprocessed - - 6.08 - 5.15 - 4.85 - 3.84 - 4.98
+FLowHigh✓147.4M 0.97 3.38 0.84 3.53 0.75 3.80 0.67 4.27 0.81
+NVSR✓99.0M 0.98 2.95 0.91 3.05 0.81 3.26 0.70 3.66 0.85
+HiFi-SR✓101.0M 0.95 2.35 0.86 2.47 0.77 2.60 0.68 3.20 0.82
+mdctGAN×101.0M 1.09 2.55 0.93 2.69 0.83 2.83 0.71 3.48 0.89
+STSR×66.2M0.95 3.42 0.84 3.65 0.73 4.14 0.65 4.34 0.79
+(w/o HB-MBD)×- 0.99 3.22 0.86 3.45 0.77 3.72 0.71 4.12 0.83
+(w/o Sparse)×- 0.98 3.30 0.85 3.50 0.74 3.85 0.69 4.18 0.81
+(CNNs only)×- 1.13 2.45 0.97 2.60 0.87 2.75 0.75 3.35 0.93
+Table 2:Cross-dataset generalization on HiFi-TTS (LSD).
+Model 4kHz 8kHz 16kHz 24kHz A VG
+NVSR 1.39 1.23 0.93 0.82 1.09
+mdctGAN 1.411.210.95 0.84 1.10
+STSR 1.331.210.89 0.78 1.05
+Table 3:MOS subjective evaluation results with 95% confi-
+dence intervals.
+Model MOS
+mdctGAN4.05±0.06
+FLowHigh4.00±0.06
+NVSR4.15±0.07
+HiFi-SR4.10±0.07
+STSR4.20±0.06
+Ground Truth4.25±0.06
+quality of the synthesized speech on a 5-point scale (1: Bad, 5:
+Excellent). The results are shown in Table 3.
+3.3. Implementation Details
+STSR was trained on one NVIDIA A100 GPU for 200k iter-
+ations (batch size 16). To mitigate overfitting to fixed spec-
+tral cutoffs, low-resolution inputs were synthesized on-the-fly:
+during each iteration, a cutoff frequencyr∈[4,32]kHz was
+stochastically sampled, followed by low-pass filtering, down-
+sampling, and subsequent upsampling back to 48 kHz. This
+dynamic degradation strategy compels the model to reconstruct
+diverse spectral bands from 48,460-sample audio segments.
+The framework utilizes a four-stage hierarchical encoder-
+decoder architecture optimized to balance model capacity with
+computational efficiency. Encoder stages were configured with
+depths of{2,2,8,2}, while the number of attention heads
+scaled from 4 to 32 to facilitate robust multi-scale dependency
+modeling. Input MDCT coefficients were computed using a
+1024-sample window and a 512-sample hop length, utilizing a
+Kaiser-Bessel Derived (KBD) window (α=6) with anarcsinh
+gain ofg=800. Optimization was conducted via the AdamW
+optimizer (β1=0.8,β 2=0.99, weight decay0.01) with an ini-
+tial learning rate of2×10 −4 and an exponential decay factor of
+0.999per epoch. Adversarial weightsλ (t)
+wav andλ (t)
+spec under-
+went a linear warm-up over the initial 20k iterations to stabilize
+the nascent training phase.
+4. Results and Discussion
+Table 1 summarizes objective performance on the VCTK test
+set. STSR attains an average LSD of 0.79, consistently sur-
+passing the regression-based NVSR (0.85). Compared to
+FLowHigh [7], STSR avoids feature mismatch of cascaded
+vocoders through single-stage consistency, achieving superior
+fidelity (0.79 vs. 0.81) with 55% fewer parameters (66.2M
+vs. 147.4M). These results suggest that our MDCT-domain at-
+tention mechanism more effectively captures the fine-grained
+harmonic structures essential for high-fidelity restoration while
+maintaining a more compact architecture.
+Ablation studies underscore the efficacy of each proposed
+module (Table 1). Excising the HB-MBD increases the aver-
+age LSD to 0.83, confirming that frequency-domain adversar-
+ial feedback is pivotal for refining high-band textures. Simi-
+larly, omitting the Transient Constraint degrades the score to
+0.81, validating that sparsity-aware regularization effectively
+mitigates the smoothing artifacts induced byarcsinhcompres-
+sion. Furthermore, replacing the spectral-contextual attention
+with standard convolutions (CNNs only) degrades the LSD to
+0.93, highlighting the critical role of long-range dependency
+modeling.
+To evaluate generalization, VCTK-trained models were
+tested directly on the unseen HiFi-TTS dataset [25] without
+fine-tuning. As shown in Table 2, STSR yields a superior av-
+erage LSD of 1.05, outperforming both NVSR (1.09) and md-
+ctGAN (1.10). This consistent performance across distribution
+shifts indicates that STSR learns robust, generalized spectro-
+temporal dependencies.
+Subjectively, MOS listening tests (Table 3) reveal a dis-
+tinct preference for STSR over the baselines. This prefer-
+ence is most pronounced at 16 kHz input bandwidths—a crit-
+ical threshold where fundamental frequencies are preserved but
+high-frequency harmonics are entirely absent—confirming that
+STSR delivers perceptually crisper audio.
+5. Conclusions
+We presented STSR, a MDCT-domain framework designed
+to reconcile global harmonic coherence with local transient
+sharpness. Our architecture integrates a hierarchical spectral-
+contextual attention mechanism to capture long-range depen-
+dencies and a sparse-aware regularization strategy to counteract
+compression-induced smoothing. Experimental results demon-
+strate that STSR surpasses state-of-the-art baselines in both ob-
+jective metrics and perceptual quality, while exhibiting robust
+zero-shot generalization.
+4478
+6. Acknowledgements
+This work was supported by the National Natural Science Foun-
+dation of China under Grant No. 62271358.
+7. Generative AI Use Disclosure
+During the preparation of this work, generative AI tools were
+used for editing and polishing the manuscript, but not for pro-
+ducing a significant part of the manuscript. All co-authors are
+responsible and accountable for the work and content of this
+paper.

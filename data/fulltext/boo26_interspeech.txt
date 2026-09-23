@@ -1,0 +1,490 @@
+Referee: Reference-aware Audiovisual Deepfake Detection
+Hyemin Boo1,∗, Eunsang Lee1,∗, Jiyoung Lee1,∗∗
+1 Division of Artificial Intelligence & Software, Ewha Womans University
+hyeminb@ewha.ac.kr, leeeunsang@ewha.ac.kr, lee.jiyoung@ewha.ac.kr
+Abstract
+Deepfakes have rapidly posed serious threats from advanced
+generative models, yet audiovisual deepfake detection ap-
+proaches still struggle to generalize to unseen manipulation
+methods. We propose a novel reference-aware audiovisual
+deepfake detection method, called Referee, to capture fine-
+grained identity discrepancies. Referee employs identity bot-
+tleneck and matching modules to model the relational consis-
+tency of speaker-specific cues captured by a single one-shot
+example as a biometric anchor. Extensive experiments on
+FakeA VCeleb, FaceForensics++, and KoDF demonstrate that
+Referee achieves state-of-the-art results on cross-dataset and
+cross-language evaluation protocols. These results highlight
+that explicitly correlating reference-based biometric priors is a
+key frontier for achieving reliable audiovisual forensics. The
+code is available at https://github.com/ewha-mmai/
+referee.
+Index Terms: deepfake detection, speaker verification
+1. Introduction
+Rapid advances in generative AI allow models [1, 2, 3] to syn-
+thesize high-fidelity multimodal content, including video and
+audio. Despite its creative potential, this capability poses sig-
+nificant risks of misuse and societal harm, exemplified bydeep-
+fake [4] that convincingly imitate humans. Deepfake detection
+aims to distinguish genuine (i.e., real) or spoof (i.e., fake) con-
+tent. Prior vision-based approaches have focused on image-
+based artifacts, including shape distortion [5, 6], boundary ar-
+tifacts [7, 8, 9], or frequency anomalies [10, 11]. Alterna-
+tively, audio-based methods [12, 13] have targeted discrimina-
+tive spectral patterns to identify synthetic speech. Although
+these methods have shown promising performance, the syn-
+thetic content is generated with higher fidelity, making uni-
+modal detection strategies less reliable.
+In contrast, audiovisual deepfake detection [14, 15, 16, 17]
+has exploited the natural correspondence between facial move-
+ments and speech. These methods have investigated dynamic
+motion patterns [18, 19], such as lip synchronization and tempo-
+ral transitions, to capture manipulation cues. However, because
+these approaches rely on fine-grained visual cues within the lip
+area, they remain vulnerable to partial lip occlusions caused by
+hands, microphones, or head poses. Furthermore, their effec-
+tiveness diminishes significantly in low-resolution conditions
+where such subtle spatial details are heavily degraded.
+When evaluating video authenticity, humans do not fixate
+on lip motion in isolation; instead, they holistically integrate di-
+verse cues, e.g., tone of voice, facial appearance, and identity
+*These authors contributed equally.
+**indicates the corresponding author.
+coherence. Prior identity-based methods like ID-Reveal [20]
+and ICT-Ref [21] rely on visual-only comparisons, often em-
+ploying proxy tasks with heavy generative models or simple
+mask-based transformation. Such reliance can cause these mod-
+els to overfit to low-level synthesis artifacts rather than captur-
+ing identity features. POI-Forensics [22] incorporates audiovi-
+sual data with na¨ıve feature-level concatenation for contrastive
+learning, which precludes meaningful crossmodal exchange.
+This structural limitation not only prevents the model from cap-
+turing intricate cross-modal dependencies but also necessitates
+excessively long reference footage ( e.g., over five minutes per
+identity), rendering it impractical for real-world deployment.
+In this paper, we introduce Referee, a novel frame-
+work that jointly captures speaker identity inconsistency and
+audiovisual desynchronization for robust deepfake detection.
+Referee presents an identity bottleneck module (IDB) with
+learnable identity queries to encode audiovisual sequences into
+a unified identity representative feature. Identity queries ob-
+tained from both reference and target content are subsequently
+aligned through cross-attention to verify speaker identity. This
+process is optimized by our ID matching loss to ensure that
+the models can capture speaker-specific cues rather than su-
+perficial artifacts. The fused identity representation is then at-
+tached to the audiovisual feature, enabling the system to rea-
+son jointly about two critical aspects: (1) whether lip-speech
+synchronization is consistent over time, and (2) whether ei-
+ther or both modalities have been manipulated in a way that
+violates identity integrity. Finally, the model integrates these
+signals to classify the content as real or fake. Extensive ex-
+periments show Referee effectively surpasses current state-
+of-the-art works [17, 23, 24] on FakeA VCeleb [25], Face-
+Forensics++ [26], and KoDF [27]. It also demonstrates that
+Referee is inherently more resilient to the rapid progress of
+generative models and better equipped to handle unseen types
+of deepfakes. To sum up, our contributions are:
+• We propose Referee, a reference-aware deepfake detection
+method that leverages audiovisual correspondence in both
+identity- and temporal-levels.
+• Referee employs a novel identity bottleneck module with
+learnable queries and a cross-identity matching mechanism,
+enabling robust reasoning for audiovisual integrity.
+• Extensive experiments on FakeA VCeleb, FaceForensics++,
+KoDF demonstrate that our Referee achieves state-of-the-
+art performance on both unseen forgery manipulations and
+cross-lingual evaluation.
+2434
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1246
+Feed Forward
+Cross-Attention
+Self-A3en4on
+Reference
+Target
+IdenCty
+Classiﬁer
+Deepfake
+Classifier
+Learnable
+Queries,!,-
+Self-A3en4on
+Cross-Attention
+Feed ForwardVideo
+Encoder
+Audio
+Encoder
+x L
+Layer
+Norm
+Mul4-head
+Cross-A3en4on
+LayerNorm
+Feed Forward
+[CLS]
+AV-Transformer
+K, V
+!!
+Layer
+Norm
+"" #"
+hhhID ID
+[CLS]
+Video
+Encoder
+Audio
+Encoder
+K, V
+hhh
+Identitybottleneck (IDB)
+x M
+x L ID matching module
+hhh
+hhh
+$'('
+$)*+
+%,-
+'(' %,-
+)*+
+&%,-
+'('
+Identitybottleneck (IDB)
+Figure 1: The overall framework of Referee. Identity queries are extracted by the IDB and conditionally refined in the ID matching
+module relative to the reference. These reference-aware queries, alongside target features, are processed by the AV-Transformer for
+deepfake classification, while the average-pooled reference-aware queries are used for identity classification.
+2. Method
+2.1. Motivation and overview
+Most prior approaches [14, 15, 16, 17] for audiovisual deep-
+fake detection have shown impressive performance while con-
+centrating on correct synchronization between audio and video
+streams. However, there are several challenges: (1) meth-
+ods relying on synchronization are inherently tied to lip-sync
+manipulation methodologies, making it difficult to generalize
+to unseen forgeries. (2) These methods also remain vulnera-
+ble under occlusion, low resolution, or degraded signals. To
+solve these limitations, we propose Referee to detect forgery
+with speaker identity information. We claim that cross-modal
+biometric cues [28, 29], such as verifying the correspondence
+between the speaker’s voice and facial appearance, provide a
+strong basis for deepfake detection.
+Given a target and reference video including audio,
+Referee detects subtle identity inconsistencies within the
+same individual. The proposed method mainly consists of three
+parts; first, we propose an identity bottleneck module, IDB, to
+capture the cross-modal identity cues into learnable ID queries.
+Secondly, identity matching layers learn to check the consis-
+tency of speaker identity with the compressed ID query tokens,
+where the target tokens are re-aligned from the perspective of
+the reference identity. Finally, the refined ID query is concate-
+nated with the audiovisual feature, and jointly learned within
+the A V-Transformer to classify the video as real or fake. The
+overall framework is illustrated in Fig. 1.
+2.2. Audiovisual feature extraction
+Given an input video and its corresponding audio, our frame-
+work first extracts modality-specific representations. To lever-
+age robust temporal alignment, our visual and audio encoders
+are built on pretrained audiovisual encoders [30]. The input
+streams are divided into Nseg fixed-length segments, each with
+a duration of T seconds. For each segment, the encoders
+yield segment-level token embeddings, Fv ∈ R(Nseg·Tv )×D and
+Fa ∈ R(Nseg·Ta)×D, where Tv and Ta denote the number of
+visual and audio tokens per segment, and D is the feature di-
+mension. To facilitate cross-modal interaction, the visual and
+audio sequences are concatenated to form a joint representa-
+tion for both the target and reference samples. With a learnable
+modality-separation token Fmod, the joint audiovisual sequences
+are constructed:
+F TGT = [F TGT
+v ; Fmod; F TGT
+a ], F REF = [F REF
+v ; Fmod; F REF
+a ].
+(1)
+2.3. Identity bottleneck (IDB)
+A fundamental challenge in robust identity (ID) compression
+is that speaker identity is often inherently entangled with tran-
+sient factors like speech content, facial expression, and head
+poses. To isolate identity-relevant signals from these confound-
+ing variables, we introduce a new ID bottleneck (IDB). Our IDB
+employs a set of Nq learnable queries [31, 32], QID ∈ RNq ×D,
+to extract and summarize cross-modal identity cues. Crucially,
+we employ a weight-sharing scheme for the IDB across both
+target and reference branches. The module consists of L identi-
+cal transformer blocks, each composed of a self-attention layer,
+a cross-attention layer, and a feed-forward network. To stabilize
+learning and encode relative positions, each query is initialized
+with a learnable positional embedding.
+Based on the cross-attention mechanism, the learnable
+queries ( QID) interact with the joint audiovisual feature se-
+quences (F ∗) in each transformer block, where the latter serve
+as the Key (K) and Value (V ). This yields two distinct sets of
+identity tokens: T TGT
+ID = IDB(QID, F TGT) from the target fea-
+tures, and T REF
+ID = IDB(QID, F REF) from the reference features.
+Through this process, the queries adaptively attend to identity-
+salient regions within the audiovisual sequence while ignoring
+transient factors.
+2.4. Matching cross-modal biometrics
+Our ID matching module is designed to evaluate cross-modal
+biometrics by quantifying the consistency between the target
+and reference samples. While the preceding IDB extracts in-
+dividual biometric signatures, this module performs a cross-
+sample alignment to detect identity mismatches. We employ
+M stacked cross-attention blocks where the target tokens ( i.e.,
+T TGT
+ID ) serve as the Query, and the reference tokens ( i.e., T REF
+ID )
+act as the Key and Value. This matching process generates
+reference-aware identity tokens, ¯T TGT
+ID , which not only retain
+the intrinsic identity characteristics of the target but also embed
+information about similarities and discrepancies with the refer-
+ence. As a result, even subtle inconsistencies between the two
+2435
+Table 1: Cross-dataset performance comparison on FF++. †
+denotes the reimplemented results based on their official code.
+‡ tests on the publicly available trained weights.
+Method Modality w/ Ref. Train set AUC AP
+Xception [26]† V ✗ FakeA VCeleb 59.48 76.60
+ID-Reveal [20]‡ V ✓ V oxCeleb2 81.28 88.19
+A V AD [33]‡ A V ✗ LRS2/LRS3 67.01 88.70
+POI-Forensics [22]‡ A V ✓ V oxCeleb2 51.33 84.75
+Referee A V ✓ FakeA VCeleb 79.78 91.00
+identities can be amplified and clearly manifested in the final
+representation.
+To ensure the ID matching module prioritizes identity-
+relevant cues, we design an auxiliary identity verification task to
+discern whether the target and reference samples originate from
+the same individual. Specifically, the reference-aware identity
+tokens ¯T TGT
+ID are transformed into a global identity feature via
+average pooling, which is then fed into an MLP head to pre-
+dict the identity matching logit, ˆYID. This process is super-
+vised by an identity matching loss LID, implemented as a bi-
+nary cross-entropy between the prediction and the ground-truth
+label YID ∈ {0, 1}. Crucially, any forged content, regardless of
+its intended target, is treated as a distinct identity from the ref-
+erence speaker. Therefore, a pair is assigned YID=1 exclusively
+when both samples originate from distinct, authentic recordings
+of the same individual. This auxiliary objective encourages the
+matching module to learn features that are not only conducive
+to the final deepfake detection task but also explicitly optimized
+for robust cross-modal identity verification.
+2.5. Audiovisual deepfake detection
+Referee performs deepfake detection by jointly leveraging
+fine-grained audiovisual correspondence cues and identity con-
+sistency information between the target and the reference. Sub-
+sequently, ¯T TGT
+ID are concatenated with the [CLS] token T[CLS]
+and the target audiovisual features F TGT:
+XTGT = [T[CLS]; ¯T TGT
+ID ; F TGT]. (2)
+The resulting sequence XTGT is passed through joint audiovi-
+sual transformer blocks (shortly, A V-Transformer), which inte-
+grate temporal audiovisual factors ( e.g., artifacts, synchroniza-
+tion cues) with identity-centric cues. Finally, the refined rep-
+resentation of the [CLS] token from the last transformer layer
+is fed into a deepfake classifier to produce the final deepfake
+prediction.
+The final training objective, Lall, is composed of a deepfake
+classification loss LRF and the identity matching loss LID:
+Lall = LRF + LID, (3)
+where LRF denotes the standard cross-entropy loss for distin-
+guishing real from forged content. By jointly optimizing these
+tasks, the model not only learns to detect generic manipulation
+artifacts but also develops a robust identity-discriminative capa-
+bility, which in turn serves as a powerful prior for high-fidelity
+deepfake detection.
+3. Experiments
+3.1. Datasets
+We train Referee on FakeA VCeleb [25], which includes both
+audio and visual manipulations. Visual manipulations were cre-
+ated using FaceSwap [1], FSGAN [38], and Wav2Lip [39],
+Table 2: Cross-dataset performance comparison on KoDF . ‡
+denotes results evaluated using publicly available pretrained
+weights.
+Method Modality w/ Ref. Train set AUC AP
+Xception [26] V ✗ FakeA VCeleb 77.7 76.9
+LipForensics [34] V ✗ FakeA VCeleb 86.6 89.5
+FTCN [35] V ✗ FakeA VCeleb 68.1 66.8
+ID-Reveal [20]‡ V ✓ V oxCeleb2 62.4 63.9
+RealForensics [36] V ✗ FakeA VCeleb 93.6 95.7
+A V-DFD [16] A V ✗ FakeA VCeleb 82.1 79.6
+A V AD [33] A V ✗ LRS2/LRS3 86.9 87.6
+POI-Forensics [22]‡ A V ✓ V oxCeleb2 70.5 64.9
+A VFF [17] A V ✗ FakeA VCeleb 95.5 93.1
+FRADE [23] A V ✗ FakeA VCeleb 92.4 -
+ICSA V [24] A V ✗ LRS2 99.2 98.6
+FoVB [37] A V ✗ FakeA VCeleb 94.3 -
+Referee A V ✓ FakeA VCeleb 99.4 99.4
+while audio manipulations were generated with SV2TTS [2].
+The dataset provides deepfake videos with only visual ma-
+nipulation, only audio manipulation, or manipulations in both
+modalities. We further sourced 37k real videos corresponding
+to the same 500 identities from V oxCeleb2 [40] to use as ref-
+erence videos. Following prior works [19, 17], FakeA VCeleb
+is split 70% for training, and 30% for a test set. To as-
+sess cross-dataset generalization, we evaluate on FaceForen-
+sics++ (FF++) [26], encompassing five manipulation meth-
+ods [41, 1, 42, 43, 44] ranging from face-swapping to expres-
+sion manipulation. Evaluation is conducted on the official test
+split for videos where audio tracks could be reliably extracted.
+For zero-shot cross-lingual evaluation, we utilize KoDF [27], a
+Korean speech deepfake dataset manipulated with six different
+techniques [1, 45, 38, 46, 47, 39]. Following [33, 17], we ran-
+domly sampled 100 real and 100 audio-driven manipulated fake
+videos for evaluation, except manipulation techniques already
+employed in FakeA VCeleb.
+3.2. Implementation details
+Audiovisual encoder is initialized on Synchformer [30] pre-
+trained on LRS3 [48]. Videos are sampled at 25 fps, while
+audio is sampled at 16 kHz and converted into 128-channel mel-
+spectrograms with 25 ms windows and a 10 ms hop. From each
+video, we extract a sequence of 8 overlapping segments with
+a duration of 0.64s (16 frames). The model is optimized by
+Adam with an initial learning rate of 1e-5, following a cosine
+annealing scheduler with a linear warmup that decays to 1e-6.
+To account for class imbalance, weighted sampling is applied
+during training.
+3.3. Evaluation protocols
+For both training and evaluation, reference videos are sampled
+from real videos of the same identity as the target. Importantly,
+the real videos used for reference sampling are strictly disjoint
+between training and evaluation to ensure rigorous evaluation
+and prevent data leakage. During evaluation, each target video
+is partitioned into 2.88s windows with a 5% temporal overlap.
+A single 3s segment is randomly sampled from the reference
+video and consistently paired with all target windows. The final
+video-level prediction is determined by averaging the softmax
+probabilities across all windows.
+Following standard protocols [15, 17], we report accuracy
+(ACC), average precision (AP), and the area under the ROC
+2436
+Table 3: Intra-dataset comparison of different unimodal (V) and
+multimodal (AV) methods on FakeAVCeleb.
+Method Modality ACC AUC
+Xception [26] V 67.9 70.5
+LipForensics [34] V 80.1 82.4
+FTCN [35] V 64.9 84.0
+CViT [49] V 69.7 71.8
+RealForensics [36] V 89.9 94.6
+VFD [50] A V 81.5 86.1
+A V oiD-DF [19] A V 83.7 89.2
+A VFF [17] A V 98.6 99.1
+FRADE [23] A V 98.6 99.8
+CAD [51] A V 99.0 99.6
+FoVB [37] A V 98.5 99.7
+Referee A V 99.2 99.7
+Table 4: Effectiveness of the identity matching design.
+Method ACC AUC AP
+Referee 99.24 99.71 99.99
+w/o reference identity query 99.03 99.33 99.98
+w/o identity matching loss 99.09 99.69 99.99
+curve (AUC). Given the extreme class imbalance in datasets
+like FakeA VCeleb (500 real vs. 21,066 fake videos), we pri-
+oritize AUC and AP as they provide threshold-independent as-
+sessments of model robustness.
+3.4. Results
+Cross-dataset. We evaluate the generalization capability in a
+cross-dataset setting by testing on unseen datasets without any
+finetuning. As reported in Table 1, our Referee achieves the
+highest AP and competitive AUC, demonstrating that our model
+effectively generalized across unseen manipulation types and
+domain distribution shifts. Notably, while several reference-
+based approaches [22, 20] rely on the massive V oxCeleb2 [40]
+dataset containing over 1 million utterances to train their iden-
+tity encoders, Referee is trained using only 14k authentic
+clips. Despite this significant disparity in data scale, our frame-
+work effectively learns to capture robust biometric signatures,
+demonstrating that million-scale external datasets are not a pre-
+requisite for learning universal identity priors. This resilience
+is further evidenced in the cross-lingual evaluation in Table 2,
+where our method surpasses previous SoTAs [37, 24] by achiev-
+ing 99.41% AUC and 99.47% AP. Especially, we observe that
+the performance of existing reference-based models degrades
+significantly when encountering cross-lingual scenarios. By an-
+choring the detection process to cross-modal consistency rather
+than low-level pixel anomalies, our approach maintains high
+discriminative power even when encountering zero-shot lin-
+guistic contexts and unseen forgery techniques.
+Intra-dataset. Table 3 shows that our method achieves supe-
+rior improvements over visual-only and audiovisual baselines.
+Compared to RealForensics [36], the strongest visual model,
+our approach achieves gains of 9.3%p in ACC and 5.1%p in
+AUC, demonstrating the limitation of relying solely on visual
+cues. Consistent with the superior performance of current au-
+diovisual detectors [37, 51] over unimodal approaches, our
+Referee achieves the highest accuracy in intra-dataset eval-
+uation. Explicitly modeling biometric consistency enables our
+approach to detect subtle discrepancies overlooked by existing
+Table 5: Performance varying the number of identity query to-
+kens, and cross-attention layers in AV-Transformer.
+# Query Tokens CA Layers ACC AUC AP
+4 1 99.06 98.90 99.96
+4 2 99.15 98.96 99.96
+6 2 99.24 99.71 99.99
+Table 6: Robustness analysis under spatial perturbation (ran-
+dom crop) and varying reference clip length on FakeAVCeleb.
+Input noise ACC AUC AP
+70% Random Crop 98.99 99.62 99.99
+90% Random Crop 99.18 99.65 99.99
+1 sec. Ref. clip 98.92 99.71 99.99
+2 sec. Ref. clip 99.12 99.71 99.99
+3 sec. Ref. clip 99.24 99.71 99.99
+fusion-based methods [37, 51].
+Ablation study. We note that all ablation studies were con-
+ducted on FakeA VCeleb [25]. Table 4 examines the effective-
+ness of the core components in Referee. The removal of the
+reference identity query leads to a noticeable drop, as exclud-
+ing identity loss results in a slight decline in robustness. These
+findings confirm that both our structural design and identity-
+aware supervision are essential for achieving optimal perfor-
+mance. Moreover, Table 5 reports the performance varying the
+number of query tokens and cross-attention (CA) layers in A V-
+Transformer while keeping the IDB layers at two. Increasing
+the number of CA layers improves performance across all met-
+rics. While increasing the number of layers and queries fur-
+ther improves performance, we observe a clear trade-off with
+computational cost. This suggests that our chosen configuration
+strikes a favorable balance between accuracy and efficiency.
+Analysis. Although FakeA VCeleb [25] and FaceForen-
+sics++ [26] are constructed from YouTube videos and already
+incorporate real-world degradations like noise, compression ar-
+tifacts, and varying resolutions, we further evaluate robustness
+under spatial and temporal perturbations to simulate practical
+scenarios. As shown in Table 6, performance remains sta-
+ble even under 70% and 90% spatial cropping, indicating that
+the model does not rely on specific facial regions. Notably,
+Referee demonstrates remarkable stability to limited tempo-
+ral information, achieving 99.71% AUC with just a 1-second
+reference clip. Overall, these results confirm that Referee is
+robust to spatial perturbations and variations in reference length,
+supporting its applicability in realistic deployment scenarios.
+4. Conclusion
+This study demonstrates that a reference-guided detection
+framework, Referee, provides a more generic solution for
+deepfake detection than conventional artifact-based approaches.
+Referee effectively identifies forgeries by detecting structural
+and biometric inconsistencies within the target stream. Our ex-
+periments show that this reference-to-target cross-modal mod-
+eling allows the model to remain invariant across different lan-
+guages and manipulation types, achieving state-of-the-art re-
+sults without relying on million-scale external datasets. Con-
+clusively, by shifting the focus from ephemeral artifacts to ex-
+plicit cross-modal feature correlation, our work establishes a
+robust and data-efficient defense against increasingly sophisti-
+cated digital manipulations.
+2437
+5. Generative AI Use Disclosure
+Generative AI tools were used only for improving language
+clarity and grammar. All scientific contributions and interpreta-
+tions are entirely the work of the authors.
+6. Acknowledgements
+This research was supported by Global - Learning & Academic
+research institution for Master’s·PhD students, and Postdocs(G-
+LAMP) Program of the National Research Foundation of Ko-
+rea(NRF) grant funded by the Ministry of Education(No. RS-
+2025-25442252).

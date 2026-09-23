@@ -1,0 +1,465 @@
+Learning to Wait: Real Streaming Speech-to-Text Translation with an LLM
+Shucong Zhang ID 1,∗, Titouan Parcollet ID 1,∗, Rogier C. van Dalen ID 1,∗
+1 Samsung, AI Center-Cambridge, United Kingdom
+{s1.zhang,t.parcollet,r.vandalen}@samsung.com
+Abstract
+A streaming speech-to-text translation system outputs tokens as
+the audio comes in. The state of the art for streaming speech
+translation with an LLM is Bestow. Bestow’s wait policy is
+fixed: it outputs tokens at a fixed cadence irrespective of the
+contents of the audio. On a test set, it often seems to perform
+well, but not in the real world. If no speech is heard imme-
+diately after the microphone is opened, then the fixed policy
+will force tokens out and produce hallucinations; if the speaker
+speaks fast, the system will fall behind. This paper instead pro-
+poses a wait policy that learns when to wait for more audio and
+when to emit tokens. On a test set, the model that uses this pol-
+icy achieve better quality and/or better latency. Moreover, it is
+not susceptible to hallucinations for real-world data.
+Index Terms: speech translation, streaming translation
+1. Introduction
+Automatic speech-to-text translation has in recent years become
+good enough for practical use. Recently, it has become pos-
+sible to integrate a pre-trained large language model (LLM),
+which brings many helpful textual capabilities. In deployment
+of speech-to-text translation, e.g. in a system helping with con-
+versations or automatic subtitling, it is often necessary for the
+system to stream its output as the input audio comes in.
+However, the wait policy, the module that decides when to
+wait and when to emit tokens, in current LLM-based speech-to-
+text translation systems is a “wait-kpolicy” (e.g. [1]). For trans-
+lating text, a wait-kpolicy means to wait forkwords of input
+and then start generating one word of output for each word in
+the input. When translating speech, this type of policy, instead
+of counting input words, counts chunks of audio. On standard
+test sets, which usually have short utterances that are consis-
+tently segmented, this may seem to work. But in the real world,
+the effects of this type of fixed policy are undesirable.
+If the microphone is opened a few seconds before the
+speaker starts, the system will start by hallucinating output. If
+the speaker is slow or hesitates, the system will also produce
+unnecessary or hallucinated tokens. If the speaker is fast, the
+system will fall further and further behind, and start leaving out
+translations for some phrases. These are all bad failure modes.
+Section 2 will therefore propose a learnable wait policy. It
+is a function both of the audio heard so far, and of the text gener-
+ated so far. Training minimises a multi-task objective. Section
+2 will explain how, since at training time both the time align-
+ment and the target text are known, this can be implemented
+efficiently.
+*These authors contributed equally.
+Section 3 will discuss the experimental set-up. In par-
+ticular, it will introduce SilFleurs, the Fleurs test set with si-
+lence prepended to every utterance. This straightforward-to-
+reproduce test set exposes one of the flaws in using a fixed pol-
+icy in speech-to-text translation. The results of experiments, in
+Section 4, will show that the new wait policy yields a better
+latency-quality trade-off, but mostly that the performance es-
+sentially does not change when adding silence to the test set.
+1.1. Existing Work on Speech-to-Text Translation
+Traditional speech-to-text translation systems had acascaded
+architecture, where the best hypothesis from a speech recog-
+niser was piped into a text-to-text translation system [2]. Then,
+with the advent of encoder-decoder systems for text-to-text ma-
+chine translation [3], it became possible to swap the text tokens
+for speech tokens [4, 5, 6]. These systems are attractive for
+a few reasons. They avoid compounding errors in the speech
+recognition and the translation. Also, the non-textual informa-
+tion in the audio [7] could improve the translations.
+Recently, large language models (LLMs) have become pop-
+ular. Pretrained LLMs can often already perform text-based
+tasks, which makes it more straightforward, by conditioning
+them on speech input, to teach them speech recognition [8], or,
+relevant to this paper, speech-to-text translation [9, 10, 1].
+Whether the translation integrates an LLM or not, stream-
+ing translation provides an additional challenge. Since output
+must be generated before the end of an utterance, the system
+must decide when to wait for more audio and when there is
+enough information to output tokens. This task is performed by
+a “wait policy” [4]. A “wait-kpolicy”, which outputs one word
+for each input word, may be useful in a cascaded system [11],
+where words can be counted. If, on the other hand, the input is
+speech, a wait-kpolicy outputs a token for each chunk of audio
+[1]. However, in the real world, there is no reason for the speed
+of the speech to match the wait-kpolicy’s assumption.
+Therefore, this paper will propose to introduce a learned
+wait policy for LLM-based speech translation. This has been
+done for cascaded systems and encoder-decoder systems [4, 6,
+5, 12]. However, for LLM-based systems, the state of the art is
+still to use a fixed policy [1].
+One type of learned wait policy is continuous integrate-
+and-fire [13]. This type of wait policy has not been used with
+SpeechLLM, but there is a problem with continuous integrate-
+and-fire: it is not conditioned on the tokens output so far. Its
+task is therefore to decide when tokens should be emitted with-
+out knowing the identity of these tokens. Since this is a funda-
+mental flaw of continuous integrate-and-fire, this paper will not
+consider it.
+5312
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1323
+a1
+ a2
+ a3
+ Audio
+Speech encoder
+e1
+ e2
+ e3
+w0
+start
+w1
+ w2
+Conditioning
+network
+LLM
+This
+ is
+Wait policy
+W
+ W
+ E
+ E
+w0 · · ·
+ wu
+Tokens
+e1 . . .
+ et
+Encoded audio
+Self-attention
+k v q
+Cross-attention
+k v q
+h1,u
+Cross-attention
+k v q
+h2,u
+Wait
+Emit
+RMS Norm
+Attention
+RMS Norm
+Feed-forward
+k v q
+(a)The internal structure of
+the attention layer, which takes
+key/value vectors and query vec-
+tors.
+(b)The structure of the proposed wait policy.
+At each step, the output is conditioned on the
+encoded audioe 1...t up to timet, and the cur-
+rent token historyw 0...u.
+(c)The way the LLM’s output is conditioned on the speech
+input is by the “Conditioning network”, which uses cross-
+attention. To keep the pre-trained LLM, cross-attention lay-
+ers are inserted before the LLM.
+Figure 1:The structure of the proposed system. Left: the attention layer. Middle: the wait policy. Right: the complete system.
+2. Learning when to Emit: the Wait Policy
+The architecture proposed in this paper is shown in figure 1c.
+It is derived from Bestow [1], with which it has in common
+that there is a speech encoder, a large language model (LLM),
+and a conditioning network before the LLM. The conditioning
+network gives the LLM access to the speech input without hav-
+ing to change the first layers of the LLM from self-attention
+to cross-attention. It is built from a self-attention layer that
+takes the tokensw, a cross-attention that attends to the en-
+coded speechE, another self-attention layer and another cross-
+attention layer.
+Instead of using the “wait policy” in figure 1c, standard Be-
+stow uses a fixed policy to decide on the timing of tokens. Be-
+stow’s “wait-k” policy waits forkaudio chunks, and then forces
+out a token every chunk. When tested on a test set, the perfor-
+mance might look good enough. Most test sets have relatively
+short utterances, surrounded by a consistent amount of silence.
+The real world is different. Users may turn on the microphone
+well before starting to speak, causing the original Bestow to
+hallucinate. They may also speak for a few minutes (unlike the
+evaluation data), and speak quickly, so that the original Bestow
+with its fixed cadence falls irretrievably behind, or slowly, so
+again tokens must be hallucinated.
+Instead, this paper proposes a learned wait policy, which de-
+cides when to wait for more audio and when to emit a token. Its
+input is the audio up to the current time, and the tokens emitted
+so far. At each step, the wait policy outputs a two-dimensional
+probability distribution over the next actionθ: “wait”W, or
+“emit”E. If the search algorithm decides to emit, the LLM is
+run to generate the next token and inputs it to the wait policy. If
+the search algorithm decides to wait, it waits for the next audio
+chunk and runs the wait policy again.
+2.1. Decoding
+At the current stepiin search, the wait policy’s actions so far
+can be written asθ 1...θ i. Writing the current time ast(θ 1:i)
+(the number ofWactions plus one), the audio seen so far is
+a1,...,a t(θ1:i). Similarly, write the number of words gener-
+ated asu(θ 1:i)(the number ofEactions), and the words output
+so far arew 1,...,w u(θ1:i). The output of the wait policy is
+then a distribution overθ i+1 that depends on the history of au-
+dio, and tokens:
+P(θi+1|a1:t(θ1:i),w 1:u(θ1:i))(1a)
+Ifθi+1 =W, a new audio chunk is added to the input, and the
+process repeats. Ifθ i+1 =E, the word to be emitted is chosen
+from the LLM:
+P(wi+1|a1:t(θ1:i),θ 1:i+1,w 1:u(θ1:i)),(1b)
+which depends on the complete history (including, through ex-
+isting keys and values, the history of wait policy actions).
+Figure 1b zooms in on the wait policy that implements
+equation (1a) during search: it is producing an output for a
+single time steptand a single point in the token sequence
+u. It starts with self-attention on the tokens emitted so far.
+Then, it cross-attends to the encoded audio. The figure shows
+just the hidden vectors for token indexugoing into the cross-
+attention block. Figure 1a shows the detailed structure of the
+self-attention and the cross-attention layers. Both self- and
+cross-attention blocks have pre-normalization residual connec-
+tion after self-attention and after the feed forward network. In-
+puts to each block are normalised.
+2.2. Training
+During training, unlike in (1), it is not necessary to interleave
+evaluating the wait policy and the LLM, since both the complete
+reference alignmentΘ ={θ 1,...θ T+U }and the complete tar-
+get word sequencew={w 0,...,w U }are available. Instead,
+the wait policy is trained on all steps in the alignment at once,
+and the LLM is trained on all tokens in the word sequence at
+once. The two losses are summed to form the overall loss.
+To compute the wait policy loss, the self-attention layers
+in Figure 1b simply receive all tokens, with a “causal” atten-
+tion mask, so each token only attends to the history. The cross-
+attention layers, however, are a function of not only the words,
+but also the audio up to the current step. The reference align-
+ment hasT+Usteps, which means that the wait policy, and
+5313
+therefore the cross-attention layers, must be evaluated atT+U
+pairs of(t,u), sometimes withtrepeated, sometimesu. The
+first cross-attention layer therefore takes the output of the last
+self-attention layer with vectors repeated according to the se-
+quence ofu’s, and with a cross-attention mask given by the se-
+quence oft’s.
+3. Experimental Set-Up
+This section describes the model design (section 3.1), the met-
+rics (section 3.2), and the sets for training, evaluation and test
+(section 3.3) used to compare the different streaming and offline
+speech translation systems.
+3.1. Models
+This article investigates two families of models: Bestow, from
+which our system is derived, and a concatenated baseline. Start-
+ing from the proposed system, four main components must be
+defined: the speech encoder, the wait policy, a large language
+model and the conditioning network linking the LLM inputs to
+the speech encoder output.
+Speech encoder .Features are extracted using a Conformer
+model made of 22 layers for a total of 300M of trainable pa-
+rameters. Prior to the Conformer, a two-layered 2D CNN
+is employed to downsample the Mel Filterbanks from a fre-
+quency of 100 frames per seconds to 25 frames per second.
+The obtained features are then downsampled once again af-
+ter the Conformer encoder to 12.5 frames per second using
+a simple concatenation of consecutive frames. This architec-
+ture is first pre-trained using self-supervised learning follow-
+ing the BEST-RQ approach [14] and dynamic chunk training
+[15] on the Loquacious dataset [16]. Then, it is fine-tuned on
+the translation task once plugged to the rest of the system.
+The wait policyis a modified Transformer decoder. It starts
+with two linear projections and normalisation ensuring that
+the speech and text embeddings have the same feature di-
+mension. Input tokens are then passed into a RoPE [17] self-
+attention layer of size 768 and a two-layered feed-forward
+network with GeLU non-linearity of size 1,024. The ex-
+panded sequence is further forwarded to two blocks contain-
+ing a cross attention layer and a two-layered feed-forward
+network with GeLU non-linearity. Text and speech embed-
+dings are queries and keys respectively. The wait policy has
+30M parameters. The wait policy is trained from scratch
+with the translation task. For training, the expansion of the
+queries, i.e. input text embeddings, described in section 2.2 to
+obtain all the relevant combination of(t,u)is then applied.
+The LLMis an in-house LLM with 3B parameters. Its param-
+eters are frozen and LoRA of rank 8 is applied to all dense
+layers during fine-tuning on the translation task.
+The conditioning networkadds 2 new Transformer decoder
+layers at the start of the LLM. These layers use cross-
+attention to process speech embeddings, thereby condition-
+ing the text embeddings on the speech input before feed-
+ing it to the LLM. The network architecture consists of two
+repetitions of the following sequence: normalization, self-
+attention, cross-attention, and a feed-forward network, with
+pre-normalization residual connections at each step. Posi-
+tional encoding is implemented using RoPE [17]. Each layer
+has 8 attention heads and a dimension size of 1,536. One
+project layer is added at each end of the conditioning net-
+work to first reduce the embedding size from 3,072 to 1,536,
+and then to upscale it back to 3,072. The network is trained
+from scratch with causal masking, treating tokens as queries
+and speech embeddings as keys. A special “end-of-speech”
+embedding is added to the speech embedding sequence to let
+the LLM know out the end of the audio stream.
+The concatenated baseline uses the same speech encoder
+and LLM and concatenates the prompt, the speech embeddings,
+and by the translation tokens. The Bestow model with a fixed,
+“wait-k”, policy, always emits its first token after 1280 ms. The
+audio chunk length is 640 ms. We add the dynamic wait policy
+named AlignAtt. [18] as a baseline. Briefly, AlignAtt decides
+to wait or emit depending on the argmax of the cross-attention
+score between the current token and the speech embeddings.
+This is just a different decoding algorithm applied to the Be-
+stow model trained with a fixed policy. In our experiment, the
+window size defined in [18] is set to 32. All Bestow models
+are trained with the Adam optimiser for 180,000 steps on the
+CoLiMu dataset (section 3.3) with a batch size of total duration
+600 seconds on four A100 GPUs. The concatenated baseline
+is trained for 120,000 steps. All models are implemented and
+trained with SpeechBrain [19].
+3.2. Metrics
+The metrics to understand the performance of the translation
+systems in this paper are both the translation quality and the
+latency. Translation quality is measured by the COMET score
+[20] with the“wmt22-comet-da”model. The COMET scores
+assign a translation quality and accuracy score between 0 and 1
+(higher is better) given a reference translation, a reference tran-
+scription and the predicted translation.
+To evaluate the streaming, the averagelogical latencyis
+used. This metric is similar to average lagging [11] computed
+using time instead of tokens like [12]. The logical emission time
+is the point in the audio when the model has enough information
+to emit the token. This is like the “NCA” metric in [12]. This
+value is averaged over all tokens emitted for the test set, rather
+than just the ones emitted before the end of the audio, to allow a
+comparison with non-streaming offline systems. Like [11, 12],
+the reference, is an impossible imaginary system that generates
+tokens evenly spread throughout the audio.
+3.3. Datasets
+Two language directions are considered: English to Korean and
+English to French. Speech-to-text translation training is done
+with a concatenation of three datasets: LibriSpeech [21], Com-
+monV oicev14.0[22], and MuST-C [23], resulting in roughly
+3,700 hours of audio. For LibriSpeech and CommonV oice,
+target text translations are automatically obtained with GPT-4
+[24] for English to Korean and QWEN-14B [25] for English to
+French, by prompting a translation task from the English tran-
+scriptions. Target alignments for the wait policy are generated
+in two steps: (1) English speech to English text and time stamps
+with the Nvidia NeMo Neural Forced Aligner; (2) and English
+text to target text by prompting QWEN-14B to output matching
+phrases. The timing in the speech of each English token is then
+automatically matched to each target phrase.
+Evaluation is performed with the Korean and French vali-
+dation and test sets of Fleurs [26]. An extra set, named “Sil-
+Fleurs”, is created to highlight the catastrophic failure of Be-
+stow in the presence of pauses and noises. SilFleurs is obtained
+by prepending 5 seconds of “noise-free-sound-0683” from the
+Musan dataset [27] at −20 dB to the test set of Fleurs.
+5314
+Table 1:English→French: comparison of streaming transla-
+tion with wait policy with the baselines. SilFleurs is Fleurs with
+5 s of low-level noise prepended to show the effect of opening
+the microphone before the speech starts.
+Model Wait Fleurs test SilFleurs
+policy COMET Latency COMET
+Concat. Offline 0.821 5.20 s 0.821
+Bestow 0.782 5.20 s 0.781
+Bestow Fixed 0.767 3.57 s 0.593
+Bestow AlignAtt. 0.754 2.56 s 0.650
+Bestow Learned 0.767 1.72 s 0.745
+Table 2:English→Korean: comparison of streaming transla-
+tion with wait policy with the baselines. SilFleurs is Fleurs with
+5 s of low-level noise prepended to show the effect of opening
+the microphone before the speech starts.
+Model Wait Fleurs test SilFleurs
+policy COMET Latency COMET
+Concat. Offline 0.889 5.20 s 0.882
+Bestow 0.881 5.20 s 0.882
+Bestow Fixed 0.814 2.59 s 0.486
+Bestow AlignAtt. 0.840 2.60 s 0.675
+Bestow Learned 0.820 2.37 s 0.820
+4. Experimental Results
+This section will compare translation systems on both quality
+and latency (section 3.2) on the Fleurs test sets. Two language
+pairs will be used: one with two related languages, English to
+French, and a pair of unrelated languages, English to Korean.
+First, consider translating English to French, in Ta-
+ble 1. The “concatenated” offline system is sometimes called
+“decoder-only”: the encoded speech is fed as tokens into the
+context window of the LLM. It provides the best translation
+quality (COMET score), but it does not stream. The latency
+is essentially half the average length of the utterances in Fleurs,
+weighted by the number of tokens. Bestow in offline mode, i.e.
+conditioning the LLM on speech with cross-attention instead
+of speech tokens in the LLM context, reduces quality slightly,
+but of course yields the same latency. While the concatenated
+system is not much affected by the addition of silence from Sil-
+Fleurs, the offline Bestow suffers a slight degradation in trans-
+lation quality, from 0.833 to 0.810. Latency measurements on
+SilFleurs are not given as they would simply be equal to the
+standard Fleurs test set latencies shifted by the duration of the
+added silence. The reported latency of 5.20s does not look bad,
+but would be much worse on longer utterances.
+Moving on to the streaming systems, the state-of-the-art
+Bestow with a fixed wait policy reduces the quality, but it does
+also reduce the latency from 5.20 s to 3.57 s. It waits for 1.28 s,
+and then outputs a token every 640 ms. However, when silence
+is added to the beginning of the test utterance (SilFleurs), the
+fixed wait policy forces the system to hallucinate text, which
+drastically reduces the quality: the COMET score drops from
+0.767 to 0.593. On the other hand, by replacing the fixed wait
+policy by a learned one, as this paper proposes, translation qual-
+ity only drops slightly from 0.767 to 0.745 on SilFleurs while
+Quality: COMET score
+0.5 0.6 0.7 0.8 0.9System, wait policy
+Concatenated, ofﬂine
+Bestow, ofﬂine
+Bestow, ﬁxed
+Bestow, learned
+Fleurs
+SilFleurs
+Figure 2:English→Korean: the effect on the translation per-
+formance of evaluating on Fleurs vs SilFleurs, i.e. of prepend-
+ing 5 s of silence to the evaluation audio files. The offline sys-
+tems are essentially unaffected. The Bestow systems with fixed
+chunk size start hallucinating after 1.28 s, which ruins the the
+translation quality. Bestow with a learning wait policy, pro-
+posed in this work, is unaffected by the additional silence.
+retaining the same COMET score on the standard Fleurs test set,
+but the latency does reduce significantly from 3.57 s to 1.72 s.
+While being more robust to silences and pauses, the proposed
+approach translates sooner than the fixed streaming Bestow.
+Table 2 shows the same comparison for English to Korean,
+and Figure 2 highlights the effect of adding silence to the be-
+ginning of the test utterances (SilFleurs). For the streaming
+systems, the story is very similar to English to French. How-
+ever, since Korean and English are more different than French
+and English, the learned wait policy more often waits for a com-
+plete phrase to finish, and therefore has a higher latency.1 What
+is immediately obvious is that one system fails catastrophically
+on SilFleurs: Bestow with a fixed wait policy. For streaming
+translation, then, the learned wait policy from this paper is far
+superior to the state-of-the-art fixed wait policy from [1].
+One objection could be that it would be straightforward
+to make Bestow with a fixed wait policy work on SilFleurs,
+by introducing a “silence” token in the training data. How-
+ever, SilFleurs is just a trivially reproducible test set that high-
+lights a general problem with a fixed wait policy. In the real
+world, speakers might speak slowly with many ‘err‘”s, which
+will cause hallucinations. Or speakers might speak faster, and
+since real-world utterances are likely longer than 10 seconds,
+the system might fall behind. In contrast, the learned wait policy
+proposed in this paper entirely resolves the general issue. From
+the identical COMET scores on both Fleurs and SilFleurs, it is
+clear that during pauses or silences, the policy makes correct
+decisions about whether to wait or emit tokens.
+5. Conclusion
+This paper has proposed a learned wait policy for the Bestow
+architecture for streaming speech-to-text translation. Bestow
+originally used a “wait-k” wait policy, a fixed policy that out-
+puts tokens at a fixed cadence, which is likely to be wrong for
+real-life data. The wait policy in this paper, on the other hand,
+learns when to wait and when to emit tokens. The experiments
+have shown that this wait policy reaches significantly lower la-
+tencies while preserving the translation quality. Additionally, it
+also shows that as soon as silence is prepended to utterances,
+Bestow with a fixed wait policy fails dramatically while this pa-
+per’s learned wait policy retains the same translation quality.
+1That the system with fixed wait policy has a different latency is due
+to the number of output tokens.
+5315
+6. Generative AI Use Disclosure
+Generative AI was used to finish some sentences.

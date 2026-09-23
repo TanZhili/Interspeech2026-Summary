@@ -1,0 +1,446 @@
+Towards Efficient Simultaneous Inverse Text Normalization with Pretrained
+Text-to-Text Language Model and Read–Tag–Write Policy
+Kiet Anh Hoang ID 1,∗,∗∗, Khanh Le ID 1,∗, Bao Nguyen ID 1, Linh Pham ID 1, Dung Vo ID 1,
+Thai Tran ID 1, Mai Nguyen1, Tri Nguyen ID 1, Vu Le1
+1 UNEY , Switzerland
+kiet.ha@uney.com, khanh.ld@uney.com
+Abstract
+Streaming Inverse Text Normalization (ITN) is vital for
+converting spoken-form outputs from streaming Automatic
+Speech Recognition into formatted written text. Existing
+streaming ITN methods rely on hybrid systems combining neu-
+ral tagging with expert-crafted finite-state transducer rules, lim-
+iting scalability across domains and languages. While end-
+to-end models offer superior scalability by learning directly
+from data, standard encoder-decoder architectures are inher-
+ently non-streaming due to global attention. In this paper, we
+propose an efficient streaming end-to-end ITN system, adapt-
+ing a pretrained text-to-text model to leverage its robust linguis-
+tic knowledge. To enable streaming, we introduce architectural
+adaptations, a specialized training strategy, a Read–Tag–Write
+decoding policy, and inference optimizations. Experiments
+on Vietnamese datasets show accuracy comparable to non-
+streaming baselines, outperforming hybrid methods while sat-
+isfying real-time latency requirements.
+Index Terms: inverse text normalization, speech recognition,
+streaming, end-to-end
+1. Introduction
+Inverse Text Normalization (ITN) converts spoken-form tran-
+scriptions produced by Automatic Speech Recognition (ASR)
+systems into readable written-form representations [1]. While
+ASR models typically train on verbalized labels to maintain
+phonetic alignment with audio, their outputs often lack read-
+ability and impair downstream tasks such as machine transla-
+tion and natural language understanding. ITN addresses this
+by restoring punctuation, applying capitalization, and perform-
+ing phrase-level transformations, including semiotic and pho-
+netic phrases [2]. For example, it converts expressions like “one
+point two dollars” to “$1.20”. While spoken and written forms
+are frequently identical, certain structured phrases differ sub-
+stantially and require contextual reasoning to resolve ambigui-
+ties. This makes ITN inherently context-dependent and neces-
+sitates robust contextual representations to ensure accurate dis-
+ambiguation across diverse linguistic patterns [3].
+Recent advances in ITN have focused on end-to-end ap-
+proaches, which achieve strong performance across languages
+and domains [1] by implicitly learning patterns from data,
+thereby offering greater scalability and enabling effective model
+compression [3]. These methods primarily use sequence-to-
+sequence (seq2seq) architectures to map spoken-form inputs di-
+rectly to written-form outputs [1, 2, 4, 5, 6]. However, standard
+seq2seq models often produce unrecoverable hallucination er-
+rors, yielding fluent yet semantically incorrect results that alter
+*These authors contributed equally.
+**indicates the corresponding author.
+original meaning [1]. Additionally, processing full sentences
+increases computational cost and risks unnecessary changes to
+unchanged tokens [2]. Hybrid methods alleviate these problems
+by combining neural tagging models with finite-state transducer
+(FST) rules [7, 8, 9]. They excel at preserving unmodified
+text but depend on expert-crafted FST grammars and extensive
+inside-outside-beginning (IOB) tag annotation for each ITN cat-
+egory. This dependence limits scalability and performance im-
+provement due to the substantial manual effort required for IOB
+labeling and FST rule creation [3]. Pretrained language mod-
+els [1, 6] and data-driven techniques [5, 10] have also been ex-
+plored to address data scarcity, improve generalization, and en-
+hance ITN performance across diverse languages and domains.
+Despite advances in offline ITN, simultaneous or streaming
+ITN remains underexplored yet essential for real-time applica-
+tions such as live ASR, meeting transcription, and speech trans-
+lation, where formatted text must be displayed instantaneously
+to preserve conversational flow. Industrial systems often rely on
+cascaded architectures, applying incremental punctuation and
+casing models as post-processing steps [7, 8]. While these
+modular pipelines provide stability, they struggle with com-
+plex semiotic ambiguities that require joint modeling of capi-
+talization, punctuation, and structural transformations. Pioneer-
+ing work in this area [3] introduced a hybrid streaming solu-
+tion employing a chunk-based Transformer [11] tagger to detect
+ITN categories in incoming ASR tokens, followed by category-
+specific FSTs for targeted conversion. A subsequent study [12]
+adapted a pretrained language model with dynamic, context-
+aware processing to handle variable ASR chunk sizes and ac-
+cumulated tokens, achieving low latency and accuracy compa-
+rable to non-streaming ITN on a limited dataset. However, cur-
+rent streaming methods rely exclusively on hybrid architectures
+and inherit limited scalability due to the need for manual FST
+rule development and extensive IOB labeling. While seq2seq
+models offer greater scalability, they cannot operate in a stream-
+ing fashion because their encoder-decoder architectures rely on
+global cross-attention, which prevents incremental processing.
+To adapt offline seq2seq models for streaming inference,
+the field of Simultaneous Machine Translation (SiMT) has
+introduced various techniques to enable incremental process-
+ing [13]. A core component of SiMT is the read-write policy,
+which decides whether to wait for new source tokens (READ) or
+generate target tokens (WRITE) to balance quality and latency.
+For instance, the wait-kpolicy [14, 15, 16] enforces a fixed lag
+by alternatingWRITE/READoperations after an initialk-token
+delay, while monotonic attention mechanisms [17] restrict at-
+tention to left-to-right alignments. Other adaptive strategies in-
+volve learned thresholds for dynamic read-write decisions [18],
+Hidden Markov Transformers for simultaneous generation [19],
+or leveraging large language models as policy-makers [20].
+660
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1060
+Figure 1:Overview of the proposed streaming end-to-end ITN framework using the Read–Tag–Write policy. The streaming encoder
+utilizes Dynamic Right Context masking to process incoming chunks of spoken-form tokens, while a joint tagger predicts{B, I, O}
+labels. Verbatim tokens (O) are passed through instantly to minimize latency. Upon the completion of a normalization span, the
+autoregressive decoder is selectively triggered, generating normalized text by cross-attending to the relevant encoder hidden states
+(H0:m) and conditioning on the written-form prefixˆypre.
+However, while effective for translation, these strategies intro-
+duce redundant computation for ITN. In SiMT, the reordering
+problem represents a primary conflict between translation qual-
+ity and real-time latency. Unlike SiMT, which requires global
+structural restructuring, ITN is characterized by local transfor-
+mations that maintain the original word order. Because ASR
+outputs are largely verbatim, the fixed lags and generative over-
+head typical of SiMT policies may be counterproductive for
+ITN. Consequently, the applicability of complex SiMT schedul-
+ing to the localized domain of ITN remains unexplored.
+In this paper, we propose, to the best of our knowledge, the
+first streaming end-to-end ITN model. Our approach achieves
+accuracy comparable to non-streaming end-to-end baselines,
+outperforms streaming hybrid methods, and eliminates the need
+for manual FST rules and IOB labeling. Our experiments are
+conducted on Vietnamese, a challenging language for ITN due
+to its complex morphological nuances and frequent phonetic
+borrowing. By relying strictly on standard text-to-text foun-
+dations rather than language-specific heuristics, our approach
+ensures cross-linguistic generalization and is compatible with
+any seq2seq architecture. Our main contributions include:
+•A recipe for making pretrained seq2seq models truly
+streamable:We present a practical set of techniques: archi-
+tectural changes, a streaming-aware multi-task objective, and
+a novel data augmentation technique. That together enable
+end-to-end ITN with strict left-to-right processing.
+•An efficient Read–Tag–Write decoding policy with KV
+Caching and Copy–Paste Strategy:We introduce a si-
+multaneous inference procedure that (i) passes through non-
+normalized tokens with minimal delay and (ii) triggers gen-
+eration only upon completing a normalization span, further
+accelerated by KV caching and a Copy–Paste strategy that
+keeps historical context and removes redundant computation.
+•Comprehensive empirical evaluation:We rigorously eval-
+uate our approach on a newly curated 5M-sentence Viet-
+namese dataset featuring automated alignments and bound-
+ary tags, verifying its highly efficient performance.
+2. Streaming End-to-End Inverse
+Text Normalization
+In this section, we explain the chosen pretrained text-to-text
+models and describe our proposed framework for streaming
+end-to-end ITN.
+2.1. Pretrained Text-to-Text Models
+Pretrained text-to-text models such as BART [21] and T5 [22]
+have advanced seq2seq learning by unifying diverse NLP tasks
+under a generative framework. Unlike encoder-only architec-
+tures, these models utilize a complete Transformer encoder-
+decoder structure where both inputs and outputs are represented
+as text strings. BART [21] is pretrained using a denoising ob-
+jective including token masking, deletion, and sentence permu-
+tation to learn robust bidirectional encoder representations and
+autoregressive decoder capabilities. Similarly, T5 [22] employs
+a span-corruption objective on the Colossal Clean Crawled Cor-
+pus (C4), facilitating effective transfer learning for downstream
+tasks such as translation and summarization. Extensive empir-
+ical evidence indicates that leveraging these pretrained founda-
+tions significantly improves performance on downstream tasks
+compared to training from scratch, especially in low-resource
+or domain-specific scenarios [21, 22, 23].
+For the Vietnamese language, EnViT51 [24] adapts the T5-
+base architecture to a bilingual setting. Following the standard
+configuration, the model features 12 layers in both the encoder
+and decoder, a hidden dimension of 768, 12 attention heads,
+and a gated-GELU feed-forward projection with an intermedi-
+ate dimension of 2048, totaling approximately 275 million pa-
+rameters. EnViT5 was pretrained on a massive bilingual corpus,
+including an 80GB filtered subset of CC100 [25], using a 15%
+span-corruption objective for both English and Vietnamese. It
+utilizes a shared SentencePiece tokenizer [26] with a 50,048-
+subword vocabulary specifically optimized for the morphologi-
+cal nuances of the Vietnamese language. EnViT5 achieves su-
+1https://huggingface.co/VietAI/envit5-base
+661
+perior performance on Vietnamese-English translation tasks on
+the PhoMT benchmark [27], outperforming larger models such
+as mBART [24]. Given its superior semantic alignment and
+generative efficiency, we adopt EnViT5 as the foundation for
+our end-to-end ITN system, subsequently adapting the architec-
+ture to satisfy streaming requirements.
+2.2. Model Architecture
+The proposed streaming end-to-end ITN model, illustrated in
+Fig. 1, is built upon the pretrained EnViT5 architecture. It com-
+prises a streaming-capable encoder and an autoregressive de-
+coder, optimized for real-time inverse text normalization.
+2.2.1. Streaming Encoder with Joint Tagger
+To support streaming inference within the encoder, we employ
+the Dynamic Right Context (DRC) masking technique [28] dur-
+ing training. Specifically, we utilize an attention mask to in-
+corporate variable chunk sizes and dynamic look-ahead while
+maintaining access to the full historical left context. By varying
+these parameters during training, the masking strategy effec-
+tively simulates the restricted future context inherent in real-
+time processing, ensuring robustness to diverse latency con-
+straints during inference.
+For an input sequenceX={x 0,...,x n−1}, the encoder
+generates hidden representationsH∈R n×d through Trans-
+former layers constrained by the DRC mask, whereddenotes
+the hidden dimensionality of the model. A linear tagging layer
+(the Tagger module as illustrated in Fig. 1), is integrated atop
+these hidden representations to facilitate on-the-fly detection of
+normalization spans (e.g., punctuation, capitalization, or numer-
+ical expressions). Following [2], the tagger classifies each to-
+kenx i using a{B, I, O}(Beginning, Inside, Outside) labeling
+scheme. The predicted tag ˆti is determined by:
+ˆti =argmax(H iWtag), W tag∈R d×3 (1)
+These predicted tags serve as the control signals for the
+Read–Tag–Write policy (described in Section 2.3). Unlike hy-
+brid approaches [3, 12] that require fine-grained tags for various
+ITN categories to trigger specific FST rules, our tagger utilizes
+only 3 classes. This reduced label space simplifies classification
+and leads to more robust span detection compared to complex
+multi-class systems.
+2.2.2. Autoregressive Decoder and Training Objective
+During training, the decoder generates written-form tokensy t
+by cross-attending to the encoder representationsH, condi-
+tioned on the ground-truth previous tokensy <t. While the en-
+coder is constrained for streaming, the decoder maintains its
+standard autoregressive structure. The probability distribution
+over the vocabulary at each step is computed as:
+P(y t|y<t,H) =softmax(e tW⊤
+f f n)(2)
+wheree t∈R d is the decoder hidden state at stept,W f f n∈
+RV×d is the vocabulary projection matrix, andVdenotes the
+vocabulary size.
+The model is optimized using a multi-task objective. We
+defineL tag as the cross-entropy loss for span detection and
+Lgen as the sequence generation loss:
+Ltag =− 1PB
+b=1Nb
+BX
+b=1
+NbX
+i=1
+logP(t b,i|x b,i)(3)
+Lgen =− 1PB
+b=1Tb
+BX
+b=1
+TbX
+t=1
+logP(y b,t|y b,<t,H b)(4)
+Here,Bdenotes the batch size, whileN b andT b represent the
+source and target sequence lengths for theb-th sample, respec-
+tively. The termst b,i andy b,t denote the ground-truth tag at step
+iand the target token at stept. The probabilityP(t b,i|x b,i)
+is computed by applying the softmax function to the tagger log-
+itsH b,iWtag.
+The overall objective is a combination of these components:
+L=L tag +L gen (5)
+2.3. Read–Tag–Write Policy
+To enable efficient streaming inference, we propose the
+Read–Tag–Write (RTW) policy. Unlike SiMT policies that
+manage global structural reordering [13], RTW exploits the lo-
+cal, order-preserving nature of ITN to coordinate the interaction
+between the streaming encoder and the autoregressive decoder,
+ensuring that generative normalization occurs only when neces-
+sary. The policy operates in three distinct phases:
+1.Read:The system receives incoming ASR tokens in discrete
+chunks. LetC k ={x i,...,x i+c−1}be thek-th chunk of
+sizec. The encoder, constrained by the DRC mask, pro-
+cessesC k by leveraging the cached historical context and a
+limited look-ahead ofrtokens to compute hidden represen-
+tationsH i:i+c−1, which are appended to the global hidden
+state sequenceH 0:i+c−1.
+2.Tag:A joint tagging layer performs token-level classifi-
+cation on the hidden states of the newly arrived chunk.
+For each tokenx j ∈C k, the model predicts a tag ˆtj ∈
+{B,I,O}as:
+ˆtj =argmax(H jWtag)(6)
+The policy identifies transformation spans using{B,I}la-
+bels. A span (e.g., a singleBor aB-Isequence) is con-
+sidered complete only when the tagger encounters a tag
+ˆtj+1 ∈{B,O}or a sentence boundary. If ˆtj+1 =I, the
+token is treated as a continuation of the current span and the
+system continues to “Read” without triggering the “Write”
+phase.
+3.Write:Unlike standard seq2seq models that decode the en-
+tire sequence, the RTW policy invokes the decoder selec-
+tively based on predicted tags:
+•Verbatim Pass-through:For tokens tagged asO, the sys-
+tem directly emits the spoken-form token. This ensures
+minimal latency and preserves the integrity of verbatim
+segments by bypassing the generative decoder.
+•Selective Decoding:When aB−Ispan (or a se-
+quence of consecutive spans) is completed, the decoder
+is triggered. To optimize throughput, multiple consecu-
+tive spans within a chunk are concatenated and processed
+in a single decoder invocation. Letmbe the index of the
+final token in the last completed span. The decoder gen-
+erates the written-form segmentˆylocal by cross-attending
+to the encoder hidden statesH 0:m:
+P(ˆylocal|ˆypre,H 0:m) =
+UY
+u=1
+P(y u|[ˆypre;y <u],H 0:m)
+(7)
+662
+where[·;·]denotes the concatenation operator,ˆypre repre-
+sents the written-form prefix generated in previous steps,
+andy u is theu-th token of the local sequence of lengthU.
+Crucially, cross-attention is restricted toH 0:m, ensuring
+look-ahead context does not influence the current transfor-
+mation. This constraint prevents the decoder from over-
+generating or emitting extraneous tokens beyond the tar-
+get span. The decoder generates tokens until an<EOS>
+token is predicted, signaling the end of the local transfor-
+mation. To prevent infinite decoding loops in edge cases
+where the model fails to emit an<EOS>token, we im-
+plement a forced hard-stop that truncates generation at a
+maximum ofL max local tokens per local span.
+2.4. Inference Optimization via Copy–Paste Strategy and
+KV Caching
+Encoder KV Caching:To maximize efficiency, we implement
+an incremental Key-Value (KV) cache for the encoder, enabling
+the reuse of computations from previous chunks. Similarly,
+we cache the encoder hidden states and the previously decoded
+written-form prefix. When the decoder is triggered, the entire
+cross-attention and self-attention KV states need to be updated
+to incorporate the newly computed encoder states. We perform
+an initial single batched forward pass through the decoder to
+populate the self-attention and cross-attention KV caches using
+the existing prefix, bypassing the need for autoregressive decod-
+ing during this initialization phase. Subsequent tokens are then
+produced via standard autoregressive generation. These opti-
+mizations significantly improve inference throughput and mini-
+mize latency.
+Copy–Paste Strategy:In contrast to [2], which completely ex-
+cludes historical context from the autoregressive decoder, we ar-
+gue that such context is vital for accurate normalization. Since
+spoken and written forms are frequently identical in ITN, the
+Otag is the most prevalent. Our RTW policy leverages this
+by bypassing the decoder for these tokens and copying them
+directly to the output. Crucially, these skipped tokens are still
+incorporated into the historical context to guide the decoding of
+B−Itokens. This approach not only reduces computational
+overhead and mitigates hallucinations in verbatim segments but
+also allows the decoder to maintain the full historical context
+efficiently.
+Decoder KV Caching:To mitigate the computational overhead
+inherent in the Copy–Paste mechanism and autoregressive de-
+coding, where standard processing would redundantly recom-
+pute the entire history for both copied and emitted tokens, we
+implement the “fully streaming” version by enabling the de-
+coder KV Caching for both self- and cross-attention. This al-
+lows the model to reuse states from previous invocations and
+perform updates only for new tokens. While this eliminates ini-
+tial passes, it introduces a training-inference mismatch: training
+uses the full target prefix, whereas streaming inference updates
+states incrementally without re-attending to past tokens under
+new encoder states. Our experiments show this results in only a
+marginal performance fluctuation compared to the first strategy.
+2.5. Prefix-based Training Augmentation
+The RTW policy requires the decoder to emit an<EOS>
+token to terminate each local normalization span. Standard
+training, however, typically conditions<EOS>prediction on
+a global source-side boundary. This creates a train-test mis-
+match during streaming inference, where local spans must ter-
+minate without observing a global<EOS>or future context.
+Algorithm 1Prefix-based Training Augmentation
+Require:Training pair(x 0:N−1,y 0:M−1 ), probabilityp trunc
+1:r∼Uniform(0,1)
+2:ifr<p trunc then
+{Truncated case}
+3:Samplek∼Uniform{1,...,N−1}
+4:x ′←x 0:k−1{No source-side<EOS>}
+5:y ′←[y 0:l−1;<EOS>]{y 0:l−1 is the target aligned with
+x0:k−1}
+6:else
+{Full-sequence case}
+7:x ′←[x 0:N−1 ;<EOS>]
+8:y ′←[y 0:M−1 ;<EOS>]
+9:end if
+10:return(x ′,y′)
+Simply appending an<EOS>token to source chunks during in-
+ference is unsuitable, as it would invalidate the incremental KV
+cache through self- and cross-attention and exacerbate distribu-
+tion shifts.
+To bridge this train-test discrepancy, we introducePrefix-
+based Training Augmentation(Alg. 1), a computationally ef-
+ficient method applied on-the-fly during training. We stochas-
+tically truncate training examples in an aligned manner with a
+probabilityp trunc. In these instances, the source-side<EOS>
+is omitted, while the target-side prefix is explicitly terminated
+with an<EOS>token. This strategy compels the model to learn
+that any valid completion of a normalization span, even when
+occurring mid-sentence, must trigger termination based solely
+on the current partial encoder hidden states. By simulating these
+artificial boundaries, the model becomes robust to the truncated
+inputs encountered during streaming inference. Consequently,
+the decoder can reliably terminate generation without compro-
+mising the incremental KV cache, ensuring the system remains
+responsive to subsequent incoming chunks.
+2.6. Data Construction
+We construct our dataset from thebinhvq 2 news corpus, a
+large-scale collection containing approximately 6 billion words
+across diverse domains. Using the proposed data generation
+pipeline, we produce 5M training sentence pairs, 50k validation
+pairs, and 50k test pairs. In addition to spoken-written text pairs,
+the dataset provides deterministic phrase-level alignments be-
+tween spoken-form inputs and written-form targets, as well as
+token-level normalization boundary annotations. For span de-
+tection, each token is labeled using the IOB tagging scheme to
+identify segments requiring normalization. These spans encom-
+pass the entire affected word. For instance, a trailing punctua-
+tion mark is grouped within the preceding word’s span. These
+annotations facilitate both prefix-based training augmentation
+and auxiliary tagging supervision.
+Categories: We define a comprehensive set of ITN categories
+that reflect common phenomena in ASR outputs. These cat-
+egories include punctuation restoration, capitalization, semi-
+otic normalization, and phonetic normalization. For punctua-
+tion restoration, we consider four standard punctuation marks:
+comma, period, question mark, and exclamation mark [12].
+Semiotic normalization covers entities such as numbers, dates,
+times, fractions, currencies, digit sequences, and electronic ad-
+dresses, while phonetic normalization targets out-of-vocabulary
+2https://github.com/binhvq/news-corpus
+663
+(OOV) expressions, including foreign words, named entities,
+domain names, and letter sequences.
+Pipeline: The dataset is generated through an automated data
+generation pipeline that builds upon the data preparation frame-
+work introduced in [2], with substantial extensions to support a
+broader range of ITN categories. Specifically, we define a com-
+prehensive set of regular expressions (regex) to identify normal-
+ization regions in written-form text:
+•Capitalization and punctuation restoration:Spoken-form
+inputs are generated by removing all punctuation marks and
+converting the text to lowercase.
+•Semiotic normalization:Each class (e.g., cardinal/ordinal
+numbers, decimals, currencies, time expressions, and fac-
+tions) is identified using dedicated regex patterns. Since
+these expressions are 

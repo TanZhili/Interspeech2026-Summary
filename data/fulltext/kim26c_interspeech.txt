@@ -1,0 +1,489 @@
+Mixture Consistency Learning for Robust Speaker Verification in Noisy
+Environments
+Seung-bin Kim ID 1,∗, Chan-yeong Lim ID 1,∗, Jungwoo Heo ID 1, Hyun-seo Shin ID 1, Kyo-Won Koo ID 1,
+Jisoo Son ID 1, Kyung-Wha Kim2, Ha-Jin Yu ID 1,†
+1 University of Seoul, Republic of Korea
+2 Supreme Prosecutor’s Office, Republic of Korea
+kimho1wq@naver.com, cksdud585@naver.com, hjyu@uos.ac.kr
+Abstract
+Speaker verification (SV) systems often experience perfor-
+mance degradation in real-world environments due to diverse
+noise. A common solution is to add a speech enhancement (SE)
+frontend; however, most SE modules are trained to reconstruct
+predefined “clean” reference signals that still contain remain-
+ing noise and channel variability. This can lead the SE mod-
+ule to restore non-discriminative factors as well, thereby de-
+grading SV performance. To address this limitation, we pro-
+pose a Mixture Consistency Learning–based Speaker Verifica-
+tion (MCL-SV) system. Instead of relying on reference sig-
+nals, MCL-SV enforces that the sum of the separated speaker
+and background representations matches the original input mix-
+ture, so that the enhanced signal is aligned with the input itself
+in a self-supervised manner. Experiments on multiple datasets
+show that MCL-SV consistently outperforms strong baselines
+and achieves state-of-the-art results among recent noise-robust
+SV systems.
+Index Terms: speaker verification, noisy environment, mixture
+consistency
+1. Introduction
+Speaker verification (SV) aims to determine whether an input
+utterance corresponds to a claimed speaker. Recent advances in
+deep learning have enabled SV systems to achieve outstanding
+performance in clean environments, demonstrating strong relia-
+bility in capturing speaker-discriminative characteristics [1–4].
+However, real-world scenarios inevitably expose speech signals
+to various noise factors, which significantly degrade the perfor-
+mance of SV systems.
+To mitigate this issue, a number of studies have introduced
+speech enhancement (SE) modules as frontend preprocessors
+for noise removal [5–8]. These modules typically adopt a U-Net
+architecture [9] that compresses and encodes a noisy input, then
+expands it to reconstruct enhanced features. During training, re-
+construction objectives such as a mean squared error are used
+to drive the mapping from noisy inputs to their corresponding
+“clean” signals, thereby refining the input representations and
+effectively suppressing noise interference. In particular, ExU-
+Net [7] jointly optimizes SE and SV objectives and has achieved
+outstanding performance in noisy environments.
+More recently, noise-aware approaches have been devel-
+oped under the premise that explicitly recognizing or model-
+ing noise can further improve performance [10–13]. NA-ExU-
+Net [10] separates the encoder into parallel branches to indepen-
+∗These authors contributed equally.
+†indicates the corresponding author.
+dently capture speech and noise information, and ParaNoise-
+SV [13] jointly trains a speech enhancement and a noise ex-
+traction module in parallel. These advances demonstrate that
+beyond simple noise suppression, structurally disentangling or
+explicitly exploiting noise information can substantially rein-
+force the robustness of SV systems.
+Despite recent advances, many prior studies that employ SE
+modules primarily optimize supervised losses that force the re-
+constructed output to match predefined “clean” reference data.
+However, such target-dependent learning may have limitations
+that could degrade speaker verification performance. Target ref-
+erences regarded as “clean” often retain undesirable factors aris-
+ing from recording conditions and channel variability [14, 15].
+When such targets are used as ground truth, the SE models tend
+to reproduce not only speaker-relevant information but also ir-
+relevant characteristics, which then propagate into the features
+consumed by the SV system. Consequently, downstream perfor-
+mance can degrade and the variance of the speaker embedding
+distribution may increase.
+An alternative to target reconstruction is to enforce consis-
+tency between the input mixture and the outputs of a decompo-
+sition model [16–19]. For example, Wisdomet al.introduced
+differentiable STFT and projection-based constraints that im-
+pose mixture consistency in speech enhancement, stabilizing
+training and improving separation quality [16]. MixIT further
+enables unsupervised separation by using a self-supervised ob-
+jective in which separated outputs are reassigned and re-mixed
+so that their recombination explains the original mixture, even
+without ground-truth sources [18]. These methods commonly
+leverage the constraint that the sum of multiple outputs should
+match the input mixture, demonstrating the feasibility of learn-
+ing without relying on explicit targets.
+Building on this perspective, we propose aMixture Con-
+sistency Learning–based Speaker Verification (MCL-SV)
+system that applies consistency-based learning to noise-robust
+speaker verification. MCL-SV adopts a dual-decoder SE archi-
+tecture that explicitly separates the output space into a speech
+(speaker) path and a noise (nuisance) path, instead of using a
+single-decoder SE module. Moreover, by introducing a consis-
+tency constraint that enforces the sum of the two path outputs
+to reconstruct the original mixture input, our framework pro-
+vides a target-free training signal without relying on predefined
+“clean” references.
+In addition, we explicitly couple the SV objective to
+the speech path output, encouraging it to preserve speaker-
+discriminative cues while absorbing SV-irrelevant variations
+into the noise path. Unlike prior approaches based on mix-
+ture consistency or re-mixing, which primarily aim to recover
+ground-truth sources, our method does not pursue source recov-
+4566
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-364
+Table 1:Architecture of the speech enhancement module used as
+the frontend. For convolution layers, parentheses indicate (ker-
+nel, padding, stride). (Flow:Conv→E 1→···→E 4→B→
+D4→···→D 1→TConv, SELayer: squeeze-and-excitation
+layer [21], Upsampling: interpolation layer, TConv: transposed
+convolution layer).
+Layer Structure Layer Structure
+Conv Conv2d(7,3,2x1) B SE Block×4
+E1
+Conv2d(3,1,1)
+SE Block×3 D4
+Concat(E4)
+SE Block×4
+Upsampling(2)
+Conv2d(3,1,1)
+E2
+Conv2d(3,1,2)
+SE Block×3 D3
+Concat(E3)
+SE Block×4
+Conv2d(3,1,1)
+E3
+Conv2d(3,1,1)
+SE Block×4 D2
+Concat(E2)
+SE Block×3
+Upsampling(2)
+Conv2d(3,1,1)
+E4
+Conv2d(3,1,2)
+SE Block×4 D1
+Concat(E1)
+SE Block×3
+Conv2d(3,1,1)
+SE Block
+GroupNorm + SiLU
+Conv2d(3,1,1)
+
+×2
+SELayer + Residual
+TConv Concat(Conv)
+TConv2d(2x1,1,2x1)
+ery as an end goal. Instead, it learns an SV-oriented decompo-
+sition that isolates nuisance factors that harm verification while
+minimizing the loss of speaker-discriminative information.
+We evaluate the proposed method on the V oxCeleb1 [14]
+test set simulated with MUSAN noise [20] and further assess its
+generalization on several out-of-domain datasets. Experimental
+results show that, with the same backend and a similar param-
+eter size, MCL-SV delivers consistent improvements over the
+baseline and achieves state-of-the-art performance under noisy
+conditions.
+2. Baseline
+To evaluate the effectiveness of the proposed method, we build
+a baseline that uses a conventional SE module as the frontend
+and an independent SV module as the backend.
+2.1. Frontend
+The frontend SE module is designed with a U-Net–based
+encoder-decoder architecture [9], which has been widely
+adopted in recent noise-robust SV research [10, 13]. The de-
+tailed block configuration is summarized in Table 1. This mod-
+ule takes a complex spectrogram converted from a noisy speech
+as the frontend input, stacking the real and imaginary compo-
+nents as two channels. We model the input noisy spectrogram
+Xas:
+X=S+N,(1)
+whereSandNdenote spectrograms of speech and noise,
+respectively. The encoder progressively compresses the input
+representationXusing multi-resolution convolutional blocks,
+while the decoder expands the encoded representation and re-
+constructs it into an enhanced spectrogram ˆSof the same size
+as the input. The SE module is trained with a mean squared
+error that minimizes theL 2 distance between ˆSand the clean
+referenceS:
+LSE =∥S− ˆS∥ 2.(2)
+ThisL SE loss encourages the SE module to compensate for
+noise while restoring speech quality.
+Figure 1:Illustration of the proposed MCL-SV architecture. The
+decoder splits into two identically structured paths for noise ex-
+traction (NE) and speech enhancement (SE).LMC andL SV de-
+note the mixture consistency loss and the speaker verification
+loss, respectively.
+2.2. Backend
+As the backend SV model, we adopt ReDimNet-B2 [3]. The
+ReDimNet is an architecture that introduces a dimension recon-
+figuration strategy to integrate the information of 1D and 2D
+blocks, achieving state-of-the-art performance.
+In our baseline system, the backend takes as input a log
+mel-spectrogram derived from the frontend’s enhanced repre-
+sentation and processes it to generate a speaker embedding. The
+embedding is optimized with the SphereFace2 [22] speaker ver-
+ification loss,L SV, which is defined as follows:
+LSV = 1
+N
+NX
+i=1
+h
+λlog
+
+1+exp
+ 
+−s·(g(cos(θ i,yi ))−m)−b
+
++ (1−λ)
+KX
+j̸=yi
+log
+ 
+1+exp
+ 
+s·(g(cos(θ i,j))+m)+b
+i
+,(3)
+whereiindexes the training sample,y i ∈ {1,...,K}is its
+ground-truth speaker label,Nis the mini-batch size, andK
+is the number of speakers.cos(·)denotes the cosine similar-
+ity between the speaker embedding and the class weight, and
+g(z) = 2( z+1
+2 )t is a similarity adjustment function.λ∈[0,1]
+balances the positive and negative terms,sis a scale factor,m
+is an additive margin, andbis a bias term.
+Finally, the baseline system optimizes the following objec-
+tive function:
+LBaseline =L SE +L SV.(4)
+3. Proposed method
+Many prior speech enhancement (SE)–based speaker verifica-
+tion systems optimize reconstruction losses that force the output
+spectrograms to match predefined “clean” references. However,
+such references still contain characteristics irrelevant to speaker
+verification, such as channel effects and environmental noise.
+If the SE module reproduces these as well, non-discriminative
+4567
+Table 2:Performance comparison of recent noise-robust speaker verification models across clean conditions and three noise categories
+on the VoxCeleb1 evaluation set mixed with MUSAN at 0–20 dB SNR (†: our implementation).
+Model Training Set
+V ox1 EER (%)
+Clean Noise Music Babble Avg0 5 10 15 20 0 5 10 15 20 0 5 10 15 20
+Stable ExU-Net [23]
+V oxCeleb1
+2.52 6.41 4.42 3.74 3.20 2.92 6.25 4.36 3.55 3.10 2.79 8.54 5.16 3.67 3.10 2.78 4.16
+NDAL [24] 2.63 6.14 4.00 3.23 2.91 2.80 5.87 4.19 3.53 3.23 3.09 6.43 4.44 3.59 3.08 2.87 3.88
+NA-ExU-Net [10] 1.99 5.85 3.90 3.05 2.54 2.37 6.24 3.95 2.80 2.39 2.17 9.88 4.57 3.10 2.43 2.09 3.71
+Liet al.[25] 2.40 4.94 3.69 3.43 2.94 2.68 5.19 3.58 3.11 2.75 2.57 7.81 4.25 3.28 2.78 2.60 3.63
+ParaNoise-SV [13] 1.75 5.60 3.642.75 2.12 2.00 6.20 3.622.46 1.95 1.81 9.46 4.372.64 2.13 1.84 3.40
+MCL-SV 2.47 4.12 3.132.89 2.70 2.57 3.68 3.012.77 2.56 2.49 4.75 3.262.87 2.64 2.55 3.03
+ExU-Net [7]
+V oxCeleb2
+1.46 4.06 2.92 2.13 1.79 1.63 4.38 2.82 2.05 1.60 1.51 6.41 3.02 2.15 1.83 1.66 2.59
+WavLM + NAW-SV [26] 0.85 4.39 2.46 1.84 1.35 1.25 4.52 2.54 1.70 1.32 1.16 6.23 2.83 1.84 1.45 1.18 2.31
+ReDimNet-B2† [3] 0.85 2.35 1.48 1.27 1.00 0.95 2.14 1.32 1.11 0.96 0.92 3.60 1.60 1.19 1.01 0.91 1.42
+Baseline 0.97 2.16 1.51 1.22 1.11 1.06 1.67 1.29 1.15 1.04 1.04 2.49 1.54 1.31 1.08 1.05 1.36
+FA-ExU-Net-L [27] 0.61 2.52 1.59 1.130.81 0.71 2.50 1.450.99 0.77 0.71 3.64 1.491.04 0.77 0.66 1.34
+MCL-SV 0.83 1.94 1.33 1.110.96 0.91 1.53 1.141.01 0.95 0.85 2.12 1.331.12 0.94 0.90 1.19
+factors can propagate to the SV backend and potentially degrade
+performance.
+To address this issue, we propose Mixture Consistency
+Learning–based Speaker Verification (MCL-SV) system. MCL-
+SV addresses the following issue through structural modifica-
+tions and the introduction of a consistency-based loss function.
+3.1. Architecture
+Under the assumption that even “clean” reference data may
+still contain non-discriminative components, we design a Dual-
+Decoder SE (DDSE) module to explicitly accommodate these
+elements. As shown in Fig. 1, DDSE shares a U-Net encoder
+and branches the decoder into two paths. Here, SE path is de-
+signed to preserve speaker-discriminative factors, while noise
+extraction (NE) path serves to absorb non-discriminative cues.
+Formally, the DDSE operates as follows:
+ˆS=D s(E(X)),(5)
+ˆN=D n(E(X)),(6)
+whereX, ˆS, and ˆNdenote the noisy input, the enhanced spec-
+trogram, and the estimated noise, respectively. The functions
+E(·),D s(·), andD n(·)represent the shared encoder, the SE
+decoder, and the NE decoder, respectively. The latent repre-
+sentation compressed by the shared encoder is passed to two
+decoders with identical structure. The decoders then produce
+the reconstructed spectrograms, which are optimized using loss
+functions described in Section 3.2.
+3.2. Loss functions
+In this section, we describe the loss functions used to train the
+proposed MCL-SV system. MCL-SV integrates the DDSE ar-
+chitecture with a consistency-based objective called Mixture
+Consistency (MC) loss. The MC loss is defined as follows:
+LMC =∥X−( ˆS+ ˆN)∥ 2,(7)
+whereXdenotes the original mixed input, and ˆSand ˆNare the
+spectrogram outputs produced by the DDSE structure. Unlike
+conventional training that relies on predefined reference targets,
+the MC loss is independent of explicit targets. Instead, it en-
+forces mixture consistency by constraining the sum of the SE
+and NE outputs to match the original mixed input.
+However, the mixture-consistency constraint alone does not
+clearly specify which information should be routed through the
+SE path and which should be captured by the NE path. To re-
+solve this routing ambiguity and to encourage a decomposition
+that is directly beneficial for speaker verification, we couple the
+SV objective explicitly to the SE-path output ˆS. As shown in
+Fig. 1, we feed ˆSinto the SV backend and optimize it using the
+speaker verification lossL SV, thereby encouraging ˆSto pre-
+serve speaker-discriminative cues. At the same time, the NE
+path is naturally pressured to absorb SV-irrelevant variations
+into ˆN. Consequently, the overall training objective of MCL-
+SV is defined as follows:
+LProposed =L MC +L SV.(8)
+In this formulation,L MC acts as a reconstruction-oriented
+regularizer that stabilizes DDSE decomposition without targets,
+whileL SV serves as a task-driven constraint that defines the
+roles of the two paths from the SV perspective. Unlike tradi-
+tional speech enhancement that aims to recover “clean” target
+or source separation methods that pursue decomposition as an
+end goal, our approach learns a decomposition optimized for
+SV performance.
+By integrating (i) the dual-path output space of DDSE, (ii)
+the target-free mixture consistency constraint, and (iii) the di-
+rect coupling of the SV objective, the proposed framework en-
+ables structured learning in which speaker-relevant information
+is retained in ˆSand speaker-irrelevant variations are encouraged
+into ˆN. This joint learning aligns the enhanced frontend rep-
+resentation with the downstream SV objective and is expected
+to yield robust speaker verification performance under diverse
+noise conditions.
+4. Evaluation Setup
+V oxCeleb1 (V ox1) [14] and V oxCeleb2 (V ox2) [15] were used
+as sources of clean utterances and training data. Noise samples
+were drawn from the MUSAN dataset [20], which was divided
+into two non-overlapping subsets for training and testing. To
+create noisy speech, clean utterances were mixed with noise at
+SNR levels uniformly sampled between 0 and 20 dB, following
+the protocol in [7]. Room impulse response (RIR) reverberation
+[28] was also applied for data augmentation. For out-of-domain
+evaluation, we employed Nonspeech100 [29], V oxSRC23 [30],
+and VC-Mix [31].
+Model training was performed using the Adam optimizer
+[32] together with a cosine-annealing learning rate schedule
+[33]. For SphereFace2 [22], we setλ=0.7 andt=3, and the mar-
+gin and scale parameters were set to 0.2 and 32 when trained on
+V ox2, and 0.1 and 24 when trained on V ox1, respectively. Eval-
+uation was based on the equal error rate (EER). Additionally,
+4568
+Table 3:Loss ablation results of the proposed framework
+trained on VoxCeleb2 dataset. SV , SE, NE, and MC denote
+the loss functions of speaker verification, speech enhancement,
+noise estimation, and mixture consistency, respectively.
+Exp Params Loss V ox1 EER (%)
+SV SE NE MC Clean Noise Music Babble Avg
+#1 (Baseline) 6.9M O O X X 0.97 1.41 1.24 1.49 1.36
+#2 6.9M O X X X 1.03 1.46 1.30 1.49 1.39
+#3 7.2M O O O X 0.99 1.36 1.24 1.44 1.33
+#4 7.2M O O O O 0.94 1.40 1.24 1.41 1.32
+#5 7.2M O X O O 0.91 1.35 1.18 1.34 1.27
+#6 7.2M O O X O 0.84 1.35 1.20 1.37 1.28
+#7 (Proposed) 7.2M O X X O 0.83 1.25 1.10 1.28 1.19
+all experiments were conducted without applying large-margin
+fine-tuning or score normalization technology. Further imple-
+mentation details, including pretrained weights and experimen-
+tal code, are available at the following link1.
+5. Evaluation Results
+5.1. Overall Effectiveness
+Table 2 presents a comparison of the proposed MCL-SV with
+recent noise-robust speaker verification models under a com-
+mon protocol on the V ox1 evaluation data. When trained on
+V ox1, MCL-SV shows relatively lower performance in clean
+and high-SNR conditions but maintains stable results across all
+environments. Notably, it achieves significant improvements at
+the most challenging 0 dB condition and records an average
+EER of 3.03%. Considering that real environments are closer to
+low SNR scenarios with diverse noise distributions, this robust-
+ness in noisy conditions provides a more practical advantage.
+On V ox2, the baseline system that integrates an SE fron-
+tend module with our reproduced ReDimNet-B2 [3] backend
+achieves a lower average EER than the backend-only sys-
+tem in noisy conditions, indicating that the SE module con-
+tributes to improved noise robustness. MCL-SV further ad-
+vances this trend, achieving an average EER of 1.19% while
+remaining competitive in clean conditions. It demonstrates
+relative improvements of 16.2% and 12.5% over our repro-
+duced ReDimNet-B2 and the baseline, respectively. In particu-
+lar, MCL-SV also improves clean performance by about 14.4%
+compared to the baseline, suggesting that explicitly discarding
+non-discriminative factors from the original signal contributes
+to performance gains.
+5.2. Loss Ablation Study
+Table 3 summarizes the performance of different loss configu-
+rations when training on V ox2. The performance refers to the
+average EER obtained by mixing MUSAN data into the V ox-
+Celeb1 evalset at SNRs ranging from 0 to 20 dB. In this table,
+Exp. #1 represents the baseline system, while Exp. #2 applies
+onlyL SV. Exp. #3 extends the decoder into two branches and
+adds the NE loss, which minimizes theL 2 distance between the
+estimated noise ˆNand the reference noiseN, yielding results
+similar to the baseline (#1). In contrast, Exps. #5 and #6, which
+incorporate the MC loss while omitting parts of the target-based
+SE and NE losses, show improved performance with average
+EERs of 1.27% and 1.28%, respectively. These findings sug-
+gest that leveraging the self-consistency of the input signal can
+be more beneficial for speaker verification than relying solely
+on predefined targets. Moreover, the fact that performance im-
+1https://github.com/kimho1wq/MCL-SV
+Table 4:Out-of-domain evaluation on the VoxCeleb1 test set
+synthesized with Nonspeech100 noise source. All models are
+trained on VoxCeleb1.
+Model Params Nonspeech EER (%)
+0 5 10 15 20 Avg
+Baseline 6.9M 5.21 3.99 3.50 3.20 3.12 3.80
+Diff-SV [5] 3.8M 8.23 5.06 3.85 3.19 2.89 4.64
+NA-ExU-Net [10] 4.8M 7.82 4.78 3.46 2.75 2.44 4.25
+Liet al.[25] N/A 6.41 4.57 3.55 2.99 2.75 4.05
+ParaNoise-SV [13] 7.8M 7.61 4.40 3.17 2.22 2.09 3.90
+WavLM + NAW-SV [26] 102M+ 6.19 3.65 2.65 2.08 1.88 3.29
+MCL-SV 7.2M 4.30 3.39 2.88 2.69 2.60 3.17
+Table 5:Out-of-domain results on VoxSRC23 and VC-Mix with
+all models trained on VoxCeleb2.
+Model Params EER (%)
+V oxSRC23 VC-Mix Avg
+Baseline 6.9M 5.04 3.21 4.13
+ResNet34 [34] 8.0M 5.50 3.07 4.29
+ResNet34 + SEED [35] 20.8M 5.31 2.56 3.94
+MCL-SV 7.2M 4.49 2.70 3.60
+proved even when SE or NE losses were partially excluded im-
+plies that directly estimating noise or channel factors may not
+always be essential, and that omitting them can in some cases
+be more effective. Finally, Exp. #7, which combines all compo-
+nents of the proposed framework, achieves the best result with
+an average EER of 1.19%, confirming the effectiveness of our
+approach.
+5.3. Out-of-Domain Generalization
+We further examined the generalization ability of MCL-SV
+on out-of-domain datasets. On the Nonspeech100 evaluation
+(Table 4), MCL-SV achieved an average EER of 3.17%, out-
+performing not only the baseline but also larger models such
+as WavLM + NAW-SV [26]. A similar trend is observed on
+V oxSRC23 and VC-Mix (Table 5), where MCL-SV consistently
+surpasses the baseline and achieves competitive results against
+the recent advanced SEED system [35]. Although SEED sys-
+tem performs slightly better on the VC-Mix dataset, MCL-SV
+achieves a 3.60% EER on average across the two datasets, out-
+performing both the baseline and SEED. Overall, these results
+demonstrate that, even in more realistic scenarios involving do-
+main shifts and changes in noise distributions, our proposed sys-
+tem exhibits stable speaker-discriminative performance across
+diverse environmental conditions.
+6. Conclusion
+This paper proposed MCL-SV , a novel speaker verification sys-
+tem that combines a dual-decoder speech enhancement with
+mixture consistency learning. The system constrains the sum
+of the two decoder outputs to match the noisy input and directly
+optimizes the speech branch for speaker verification, thereby
+reducing reliance on target labels and focusing the module on
+speaker discriminative features. In our experiments, MCL-SV
+achieves the best average performance under both in-domain
+and out-of-domain conditions. Ablations on loss configurations
+further show that replacing target–based losses with the mix-
+ture consistency objective is the primary source of the gains. In
+future work, we will closely analyze how decoder outputs that
+separate speaker-relevant and speaker-irrelevant factors differ
+from those of conventional speech enhancement systems.
+4569
+7. Acknowledgements
+This work was supported by Suprem Proseuctors’ Office(SPO)
+grant funded by the Korea government(Minstry of Justice). (No.
+SPO-2024-R-1-3-1-Audio-D, Development of fake voice detec-
+tion technology robust in new voice synthesis technology and
+speaker recognition)
+8. Generative AI Use Disclosure
+Generative AI tools were used solely for English language edit-
+ing and manuscript polishing. All scientific content, methodol-
+ogy, experiments, and results were developed and verified by
+the authors. The authors take full responsibility for the content
+of this paper.
+9. References
+[1] B. Desplanques, J. Thienpondt, and K. Demuynck, “Ecapa-
+tdnn:emphasized channel attention, propagation and aggregation
+in tdnn based speaker verification,” inProc. Interspeech, 2020.
+[2] S. bin Kim, J. weon Jung, H. jin Shim, J. ho Kim, and H.-J. Yu,
+“Segment aggregation for short utterances speaker verification us-
+ing raw waveforms,” inProc. Interspeech, 2020.
+[3] I. Yakovlev, R. Makarov, A. Balykin, P. Malov, A. Okhotnikov,
+and N. Torgashov, “Reshape dimensions network for speaker
+recognition,” inProc. Interspeech, 2024.
+[4] S. bin Kim, C. yeong Lim, J. Heo, J. ho Kim, H. seo Shin, K.-
+W. Koo, and H.-J. Yu, “Mr-rawnet: Speaker verification system
+with multiple temporal resolutions for variable duration utterances
+using raw waveforms,” inProc. Interspeech, 2024.
+[5] J. ho Kim, J.

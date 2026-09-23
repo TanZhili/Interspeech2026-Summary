@@ -1,0 +1,439 @@
+PhonePrune: One-shot Phoneme-Aware Pruning for Large-scale ASR Models
+via Phoneme Set Generation and Calibration
+Minsik Lee ID 1, Jihie Kim ID 1,∗∗
+1 Dongguk University, Republic of Korea
+Minsik.lee@dgu.ac.kr, jihie.kim@dgu.edu
+Abstract
+Large-scale Automatic Speech Recognition Models face de-
+ployment challenges due to massive parameter counts. While
+one-shot pruning compresses them, conventional methods in-
+discriminately discard low-magnitude parameters, degrading
+fine-grained phonetic distinctions. We conceptualize the sub-
+networks of these delicate weights as the Phoneme Ticket
+Hypothesis, arguing they must be preserved. We propose
+PhonePrune to preserve these weights via Phoneme Set Genera-
+tion and Phoneme-aware Calibration. Evaluated on LibriSpeech
+and Common V oice (English, Korean, Japanese) at 50% spar-
+sity, PhonePrune demonstrates strong results specifically on the
+Korean and Japanese datasets, yielding 13.41% and 13.83%
+Word Error Rate reductions over Distil-Whisper, respectively.
+Our success stems from preserving fragile parameters shared
+by these languages, such as subtle spectral variations in Korean
+and precise temporal durations in Japanese.
+Index Terms: Automatic Speech Recognition, Pruning,
+Phoneme-aware Pruning, Model Compression, Phoneme Fea-
+tures
+1. Introduction
+Large-scale automatic speech recognition (ASR) models, such
+as Whisper [1], have been actively studied, yet their massive
+number of parameters severely hinders practical deployment.
+Therefore, compressing these ASR models has been actively
+explored in various studies [2, 3, 4, 5, 6]. For practical ASR
+applications, one-shot pruning has emerged as a highly efficient
+strategy that directly reduces the size of the model without ex-
+pensive retraining pipelines [7, 8, 9].
+Recent efforts have successfully adapted one-shot pruning
+to ASR models, as demonstrated by promising methods such
+as SparseWav [8]. Magnitude-based pruning relies on the as-
+sumption that smaller weights are less important, indiscrimi-
+nately discarding low-magnitude weights. Within ASR mod-
+els, however, these low-magnitude weights are distinct from
+those capturing general acoustic features [10, 11, 12]. Some
+of them are critical for recognizing fine-grained phonemes dur-
+ing the speech recognition. This vulnerability becomes highly
+evident, as visualized by the red boxes in Figure 1, where
+magnitude-based pruning fails to recognize these segments. As
+highlighted by recent studies such as DyPCL [13], future ap-
+proaches must account for these subtle phonetic distinctions
+in speech recognition. This limitation raises a research ques-
+tion:How can we identify and preserve these highly vulnerable,
+low-magnitude weights encoding fine-grained phonemes during
+Large-scale ASR model compression?To address this question,
+**indicates the corresponding author.
+Figure 1:Visualization comparing phoneme region recognition
+of our method, PhonePrune, and magnitude-based pruning at
+50% sparsity. Red boxes indicate segments of low-magnitude
+phonemes, such as alveolar fricatives (/s/ in “miss”), non-
+sibilant fricatives (/f/ in “half”), and transient plosives (/k/ in
+“dark”). During the speech recognition process, magnitude-
+based pruning (Row 4) suffers severe loss, resulting in poor
+recognition of these regions. In contrast, our PhonePrune (Row
+3) alleviates this degradation, preserving phoneme tickets more
+effectively to maintain accurate region recognition.
+we formalize these observations into thePhoneme Ticket Hy-
+pothesis, which posits that some of the capacity to discriminate
+fine-grained phonemes resides within a select subset of low-
+magnitude weights. We argue that these parameters, referred to
+as phoneme tickets, must be carefully distinguished from other
+expendable weights and preserved during compression.
+To address these issues, in this paper, we propose
+PhonePrune, a novel phoneme-aware pruning method that in-
+tegrates phoneme importance into model compression. Our
+approach empirically validates the Phoneme Ticket Hypothe-
+sis through two key mechanisms. First, inspired by the use
+of calibration data in LLMs to determine feature importance
+[14, 15, 16], we introduce a phoneme set generation strategy
+2488
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1787
+to construct a calibration dataset. Building upon the proven
+efficacy of phoneme-level contrastive learning [13], we strate-
+gically design this dataset using phoneme contrastive triplets.
+This structure finely disentangles core phoneme identities from
+general acoustic feature, enabling fine-grained discrimination
+and allowing the process to isolate essential phoneme features.
+Second, we propose a phoneme-aware calibration mechanism
+to modulate parameter selection for pruning. By assigning ad-
+just scores that balance the global weight magnitude with a local
+phoneme focus score, this mechanism preserves phoneme tick-
+ets, preventing them from being indiscriminately discarded. Ex-
+periments on general ASR benchmarks, including LibriSpeech
+[17] and Common V oice 15 [18], demonstrate that actively pre-
+serving these phoneme tickets bridges the gap between com-
+pression efficiency and performance. Our contributions are as
+follows:
+• We propose PhonePrune, a novel phoneme-aware pruning
+framework that introduces the Phoneme Ticket Hypothesis to
+identify subnetworks essential for encoding delicate phonetic
+features.
+• We propose a Phoneme Set Generation strategy and
+a Phoneme-aware Calibration mechanism, inspired by
+phoneme theory, to preserve phoneme-specific, low-
+magnitude weights.
+• In experiments, we improve the WER by up to 11.5% over
+existing baselines, including Quantized Whisper and uDistil-
+Whisper, maintaining ASR performance even under extreme
+sparsity (50%) on both LibriSpeech and Common V oice
+datasets.
+2. Related Work
+2.1. Large-scale ASR Models Pruning
+Recent compression of ASR models spans unstructured, struc-
+tured, and dynamic approaches. Within unstructured meth-
+ods, PARP [7] introduces weight-level sparsity across various
+speech tasks but suffers from high sparsity (50%). SparseW A V
+[8] overcomes this by adaptively determining sparsity ratios
+for efficient one-shot compression. Among structured meth-
+ods, PruneSLU [9] enables on-device deployment by combining
+layer-wise and vocabulary pruning with knowledge distillation.
+Furthermore, recent dynamic approaches [3, 4] optimize com-
+putation on the fly by adapting the model structure to context-
+level information, such as speaker characteristics and language,
+during inference. Despite optimizing loss and hardware effi-
+ciency, these existing methods prune low-magnitude weights
+or structural blocks based solely on magnitude or context. We
+diverge from these conventional approaches by prioritizing a
+phonology perspective. Specifically, our method aims to pre-
+serve phoneme tickets, the essential parameters for phonemes
+that standard pruning systematically discards.
+2.2. Phonetic Cues in ASR
+Research on phonetics in ASR has largely focused on probing
+and interpretability to understand how models encode linguis-
+tic units. Early probing studies [10] demonstrate that unsuper-
+vised speech representations intrinsically encode basic phone
+classes alongside speaker and language traits. Building on this,
+recent works [11] reveal that self-supervised models develop
+subspaces in early layers to capture both low-level phonetic and
+abstract phonemic distinctions. Furthermore, feature attribution
+analyses [12] identify the specific acoustic cues modern ASR
+Figure 2:The overall pipeline of PhonePrune.
+systems rely on. Notably, these studies expose a natural vulner-
+ability: low-energy categories, such as non-sibilant fricatives,
+exhibit inherently lower saliency in model representations. Be-
+yond descriptive analysis, some approaches leverage phonetic
+granularity for training. For instance, DyPCL [13] employs dy-
+namic phoneme-level contrastive learning to discriminate sub-
+tle phonetic similarities and improve dysarthric speech recog-
+nition. However, integrating such phoneme awareness into
+model compression remains unexplored. Previous interpretabil-
+ity studies remain at the level of phonetic probing through post-
+hoc analysis, and training-based methods such as DyPCL do not
+address pruning. We bridge this gap. To preserve vulnerable
+phoneme tickets during compression, PhonePrune directly uses
+gradient sensitivity, derived from phoneme contrastive triplets
+via a Phoneme Set Generation strategy, as a pruning criterion.
+3. Phoneme-aware Pruning
+3.1. Overview
+In this paper, we propose PhonePrune, a novel phoneme-aware
+pruning approach that improves speech recognition under high
+sparsity by preserving phoneme tickets for low-magnitude allo-
+phones without extensive retraining. As illustrated in Figure 2,
+our pipeline operates in two sequential stages: (1) generating a
+specialized candidate pool of phoneme triplets based on phonol-
+ogy constraints (Section 3.2), and (2) calibrating pre-trained
+weights based on their extracted phoneme relevance (Section
+3.3).
+3.2. Phoneme Set Generation
+To accurately isolate the weights that function as phoneme tick-
+ets, we cannot rely on unstructured speech datasets, which
+entangle diverse acoustic features such as background noise.
+Moreover, a naive phoneme-based approach computing sensi-
+tivity solely on isolated target phonemes would fatally assign
+high importance scores to irrelevant parameters responding to
+generic voice activity or shared acoustic characteristics. To
+overcome this, we draw inspiration from our previous work,
+DyPCL [13], which successfully employs dynamic phoneme-
+level contrastive learning to discriminate subtle phonetic simi-
+larities.
+As illustrated in the left panel of Figure 2, denoted as
+1. Phoneme Set Generation, building upon this contrastive
+paradigm to enforce fine-grained phoneme discrimination, the
+first step in our approach is to construct a specialized candi-
+date pool of phoneme triplets. Guided by strict phonologi-
+cal rules [19, 20, 21], we systematically generate these triplet
+2489
+datasets across three languages English, Korean, and Japanese.
+In our phoneme-aware contrastive formulation, the target allo-
+phone serves as the anchor, while phonology motivated distrac-
+tors serve as two distinct types of hard negatives to penalize
+undesirable generic activations. Before detailing the generation
+process, we formalize the phonology constraints that drive our
+strategy, Complementary Distribution (CD) and Minimal Pairs
+(MP). LetΦdenote a target phoneme/t/.
+Complementary Distribution.A phonemeΦmay surface as
+multiple allophones depending on contextC. Letα tgt be a
+rare target allophone flap-t[ó] occurring in contextC tgt, act-
+ing as ouranchor. Letα ref be a common reference allophone
+aspirated-t[t h] in contextC ref, serving as an allophone hard
+negative. They satisfy:
+P(α tgt|C ref)≈0andP(α ref|C tgt)≈0.(1)
+Thus, a neuron responding to the anchorα tgt must not activate
+for the negativeα ref; otherwise, it encodes a generic/t/feature
+rather than a context-specific allophone.
+Minimal Pairs.Letϕ dist be a distractor phoneme/d/, serving
+as an acoustic hard negative. A MP exists if two sequences
+xtgt andx dist differ only by substitutingα tgt withϕ dist while
+yielding distinct labels:
+dacoustic(αtgt,ϕ dist)<ϵbuty tgt̸=y dist.(2)
+CD acts as a specificity filter against generic contexts, while MP
+functions as a discriminability filter against confusable neigh-
+boring sounds.
+Construction Strategy.Using these constraints, we generate
+a set of contrastive phoneme triplets, which form the Phoneme
+Triplet block in the left panel of Figure 2. To explicitly dis-
+tinguish the positive and negative signals corresponding to the
+three input (Sensitivity, Specificity, Discriminability), we for-
+mulate the triplet as:
+B={b 1,...,b m}, b i = (ztgt, zref, zdist).(3)
+Each component in the triplet serves a distinct role in our dataset
+construction:
+Target Samplez tgt (Positive Anchor / Sensitivity).It con-
+tains the rare target allophone [ó]. This serves as the positive
+anchor, enabling the model to reveal weights that activate in the
+presence of the specific target feature.
+Control 1z ref (Allophone Negative / Specificity).It contains
+the common reference allophone [t h]. This acts as an allo-
+phone negative to enforce CD, penalizing weights that activate
+for generic/t/contexts instead of the rare allophone context.
+Weights surviving this constraint are candidates for phoneme
+tickets rather than generic phoneme encoders.
+Control 2z dist (Acoustic Negative / Discriminability).It con-
+tains the distractor phoneme [d], forming an acoustic MP. This
+serves as an acoustic negative, introducing a hard signal that
+suppresses weights failing to distinguish acoustically confus-
+able phonemes.
+3.3. Phoneme-aware Calibration Mechanism
+Based on the constructed Phoneme SetB, and as depicted in
+the right panel of Figure 2, denoted as 2. Phoneme-aware Cal-
+ibration Mechanism, this mechanism consists of two steps:(i)
+evaluating the phoneme relevance of each parameter (Phoneme
+Focus Scoring block), and(ii)recalibrating weight magnitudes
+to preserve phoneme tickets (Calibration & Pruning block).
+Phoneme Focus Scoring.Following the flow in the top-right
+Phoneme Focus Scoring block of Figure 2, we first extract a
+unified phoneme importance score from the phoneme triplets.
+Given a tripletb k = (z +
+tgt,z −
+ref,z −
+dist)from the candidate pool
+B, we measure the sensitivity of the model’s parameters to spe-
+cific allophone features.
+To isolate these features from irrelevant sequential depen-
+dencies, we introduce a temporal maskM t∈{0,1}, which is
+active only at the precise timestamps of the target phoneme. We
+apply this mask directly to the frame-level lossℓt(z)to compute
+a temporally-masked objective:
+Lmasked(z) = 1P
+tMt
+X
+t
+Mt·ℓ t(z).(4)
+The masked gradient sensitivity for each parameterWi,j is then
+defined simply as the magnitude of the gradient of this isolated
+loss:
+G=
+∇Wi,jLmasked(z)
+.(5)
+We then aggregate these signals into a normalized phoneme
+score ˜Sling(i,j), designed to favor weight exhibiting bothSpeci-
+ficityandDiscriminability:
+˜Sling(i,j) = Norm(
+ReLU(|Gtgt|−|G ref|)| {z }
+Specificity
++γ·|G tgt−G dist|| {z }
+Discriminability
+
+.(6)
+The score ˜Sling(i,j)∈[0,1]quantifies how functionally indis-
+pensable a parameter is for modeling rare allophones, indepen-
+dent of its baseline magnitude.
+Phoneme-aware Calibration.Mapping to the Calibration &
+Pruning block located at the bottom-right of Figure 2, we in-
+tegrate phoneme relevance into pruning decisions by modulat-
+ing the magnitudes of the pre-trained weights (W i,j). Instead
+of treating the phoneme score as an independent pruning met-
+ric, corresponding to the composite score calculation step in the
+figure, we incorporate it into a composite score:
+Si,j =|W i,j|+λ·|W ij|· ˜Sling(i,j),(7)
+whereλ≥0controls the influence of phoneme intervention.
+The first term preserves the structural knowledge encoded dur-
+ing pre-training, while the second boosts the weight associ-
+ated with allophones. Consequently, even weights with small
+baseline magnitudes may obtain large scores when they act as
+phoneme tickets, allowing them to exceed the pruning threshold.
+Finally, yielding the binary pruning maskMshown in the
+figure, we generate the mask by selecting weights whose ad-
+justed scoresS i,j surpass a thresholdτ. This approach enables
+one-shot pruning while preserving the phoneme tickets crucial
+for fine-grained phonetic distinctions.
+4. Experiments
+4.1. Dataset and Experimental Setup
+Dataset.We choose the LibriSpeech [17] and Common V oice
+15 [18] datasets, which are standard benchmarks for ASR eval-
+uation. For LibriSpeech, we evaluate on the test-clean and test-
+other splits. To assess multilingual generalization, we use the
+English (EN), Korean (KR), Japanese (JP) subsets of Common
+V oice 15. While English relies on laryngeal voicing contrasts,
+Korean features extensive context-dependent coarticulation and
+2490
+Table 1:Comparison of WER across unstructured pruning
+baselines and compressed Whisper models on LibriSpeech and
+Common Voice 15 datasets.
+Method LibriSpeech Common Voice 15 Avg. WER↓
+test-clean test-other EN KR JP
+Dense (Unpruned)3.10 6.20 8.50 9.10 9.50 7.28
+Unstructured Pruning
+Random82.45 95.12 98.30 105.40 110.20 98.29
+L0 28.50 45.20 52.80 58.90 61.50 49.38
+L1 14.80 25.40 31.50 36.20 38.40 29.26
+OBS11.20 21.30 26.40 30.80 32.60 24.46
+Compressed Whisper models
+Quantized Whisper4.15 8.80 14.90 19.10 20.50 13.49
+Distil-Whisper 3.50 6.80 11.8017.90 18.80 11.76
+uDistil-Whisper3.60 8.10 12.40 19.20 19.50 12.56
+PhonePrune (Ours)4.08 8.50 13.2015.50 16.20 11.50
+a unique three-way contrast (plain, aspirated, and tense) in ob-
+struents [22]. We evaluate our approach on KR and JP to verify
+that our phoneme-aware calibration generalizes across different
+language settings.
+Calibration Setup.We compute gradient sensitivity using a
+calibration dataset of 128 contrastive triplets, manually curated
+according to our method. Based on the phoneme set investi-
+gated in recent feature attribution literature [12], we utilize 25
+English phonemes (11 vowels, 6 plosives, and 8 fricatives), se-
+lecting corresponding phonemes for Korean and Japanese to
+closely match these proportions and characteristics. To yield
+128 triplets, we allow variations in the allophone and acous-
+tic negative samples, maintaining the categorical proportions as
+closely as possible to the initial set. To source these phonemes
+and enable accurate temporal masking (M t) for gradient com-
+putation, we utilize TIMIT [23] for English, and extract precise
+boundaries for Korean and Japanese using the Montreal Forced
+Aligner (MFA) [24]. By calibrating the model on these audio
+data, we preserve the weights crucial for fine-grained phoneme
+distinctions.
+Metrics.We measure model performance using zero-shot Word
+Error Rate (WER) on each test set and report the average WER
+(Avg. WER) for overall evaluation. Statistical significance is
+assessed via the Wilcoxon signed-rank test [25].
+Baselines.The methods compared with our model are cate-
+gorized as follows: Random,L 0 (regularization pruning) [26],
+L1 (magnitude pruning), and OBS [27] for unstructured prun-
+ing baselines, and Quantized Whisper [28], Distil-Whisper [5],
+and uDistil-Whisper [6] for representative compressed whisper
+models. Following the experimental setups of previous studies
+[5, 6], all pruning experiments on the whisper-large [1] were
+conducted at a 50% sparsity to match the 756M parameters of
+the compressed whisper models.
+4.2. Main Results
+Table 1 presents the WER of pruned models evaluated at 50%
+sparsity. As shown in the results, conventional unstructured
+pruning methods, such asL 1 and OBS, degrade performance,
+resulting in average WER of 29.26% and 24.46%, respectively.
+The Random pruning approach results in near-complete loss of
+speech recognition capability, with a WER of 98.29%. Table
+1 also compares our method with representative compressed
+Whisper models. While PhonePrune exhibits slightly lower per-
+formance than other compressed Whisper models on the En-
+glish datasets, it demonstrates exceptionally strong performance
+on the Common V oice KR and JP datasets, achieving WERs
+of 15.50% and 16.20%, respectively. Specifically, our method
+Table 2:Performances according to the calibration sample size.
+Dataset Number of Calibration Samples (N)
+16 32 64 128
+LibriSpeech test-clean4.45 4.22 4.124.08
+LibriSpeech test-other9.35 8.90 8.658.50
+Common Voice 15 EN14.80 14.10 13.5513.20
+Common Voice 15 KR17.50 16.45 15.9015.50
+Common Voice 15 JP18.40 17.25 16.6516.20
+Table 3:Performances according to the hyperparameterγ.
+γ LibriSpeech Common Voice 15
+test-clean test-other EN KR JP
+0.08.40 14.50 19.30 22.50 24.80
+0.35.10 10.20 14.80 17.60 18.50
+0.5 4.08 8.50 13.20 15.50 16.20
+0.84.35 9.15 14.10 16.80 17.60
+1.05.80 11.40 16.50 19.80 20.90
+achieves relative WER reductions of 13.41% on the KR dataset
+and 13.83% on the JP dataset compared to Distil-Whisper. By
+demonstrating superior performance in non-English languages
+such as KR and JP, our method highlights its potential applica-
+bility to other languages, resulting in an overall average WER
+11.50%. This phenomenon aligns with the phonological char-
+acteristics of each language. Because english recognition can
+rely on abundant, redundant acoustic cues, it is less dependent
+on specific phoneme tickets during compression. In contrast,
+KR and JP rely on fine-grained, fragile phonetic features, such
+as subtle spectral variations for KR obstruents and precise tem-
+poral durations for JP consonant length.
+4.3. Ablation Study
+We investigate the effect of calibration sample size (N) on prun-
+ing performance. Table 2 shows that increasingNconsistently
+improves the WER. Notably, a significant WER reduction oc-
+curs whenNincreases from 16 to 32, proving that even a lim-
+ited amount of phoneme contrastive data effectively preserves
+phoneme tickets. AsNincreases to 128, the model shows a
+continuous improvement in performance in all evaluated lan-
+guages. This tendency demonstrates that providing a larger set
+of calibration samples allows the phoneme-aware calibration
+mechanism to more precisely capture and preserve crucial pho-
+netic parameters, thereby further mitigating performance degra-
+dation during compression. We also analyzeγ, which balances
+the generic weight magnitude and our phoneme focus score. Ta-
+ble 3 shows that extreme values severely degrade performance:
+γ= 0.0reverts to standard magnitude pruning, whileγ= 1.0
+completely ignores essential generic acoustic features. Setting
+γ= 0.5balances global weight importance and phonetic dis-
+criminability, achieving the lowest WER across all datasets.
+5. Conclusion
+We propose PhonePrune to improve ASR compression by pre-
+serving fine-grained acoustic distinctions. Combining Phoneme
+Set Generation and Phoneme-aware Calibration, it protects low-
+magnitude phoneme tickets essential for confusable phonemes.
+Evaluations on LibriSpeech and Common V oice demonstrate
+that our method achieves significant improvements over base-
+lines under extreme sparsity by preserving fragile phonetic fea-
+tures critical for Korean and Japanese.
+2491
+6. Acknowledgments
+This research was supported by the MSIT(Ministry of Sci-
+ence and ICT), Korea, under the ITRC(Information Technol-
+ogy Research Center) support program(IITP-2026-RS-2020-
+II201789), and the Artificial Intelligence Convergence Inno-
+vation Human Resources Development(IITP-2026-RS-2023-
+00254592) supervised by the IITP(Institute for Information &
+Communications Technology Planning & Evaluation).
+7. Generative AI Use Disclosure
+During the preparation of this paper, the authors used Gemini to
+improve the readability and language of the manuscript, as well
+as to assist in refining the Figure 2.

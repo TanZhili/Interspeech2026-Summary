@@ -1,0 +1,460 @@
+EffVOC: Low-Delay Efficient Speech Waveform Reconstruction
+from Spectral Representations Without Phase
+Renzheng Shi1, Simon Welker2, Timo Gerkmann2, Tim Fingscheidt1
+1 Institute for Communications Technology, TU Braunschweig, Braunschweig, Germany
+2 Signal Processing Group, Universit¨at Hamburg, Hamburg, Germany
+{re.shi, t.fingscheidt}@tu-bs.de,{simon.welker, timo.gerkmann}@uni-hamburg.de
+Abstract
+The Griffin-Lim algorithm has been a seminal contribution for
+phase reconstruction from amplitude spectrograms, however,
+requiring (infinitely) high algorithmic delay. Its low-delay vari-
+ant suffers in speech quality. Recent (generative) neural net-
+work methods improve on speech quality still at medium to
+high algorithmic delay, but often they are complex and opti-
+mized only for one specific input representation. We build upon
+an efficient low-delay speech vocoder and proposeEffVOC,
+which supports synthesis of wideband (WB) or fullband (FB)
+speech from either amplitude spectrum or Mel coefficient in-
+puts. We evaluate both input representations across multiple
+model sizes in a unified framework and compare against state of
+the art. Results show that our proposed low-delay (20 ms vs. 32
+ms or more) efficient approach marks a new SOTA by achiev-
+ing top-ranked subjective MOS scores (WB: 4.17/4.15, FB:
+4.14/4.11) for amplitude spectrum/Mel representations, very
+close to ground truth.
+Index Terms: vocoder, speech reconstruction, low delay
+1. Introduction
+Phase reconstruction aims to infer the phase spectrogram from
+amplitude-based spectral representations to subsequently recon-
+struct the speech waveform, enabling speech generation from
+representations without phase [1]. Early traditional methods,
+such as the Griffin-Lim algorithm (GLA) [2], estimate the phase
+spectrogram by iteratively alternating between the time and fre-
+quency domains, enforcing consistency with the given ampli-
+tude spectrogram. Although widely used,GLAtypically re-
+quires a high number of iterations to achieve acceptable qual-
+ity, leading to high computational cost. Augmented with a mo-
+mentum modification from optimization theory, an improved
+version ofGLAhas achieved faster convergence and improved
+performance [3]. Meanwhile, adaptation ofGLAfor real-time
+speech applications has been realized via real-time iterative
+spectrogram inversion (RTISI) [4]. Without further lookahead,
+however, this comes at the cost of reduced accuracy. A gen-
+eral RTISI framework capable of seamless integration with it-
+erative algorithms has been formulated [5], allowing straight-
+forward adaptation and improved performance. Non-iterative
+algorithms [6, 7] have demonstrated efficient phase reconstruc-
+tion in a single pass by directly exploiting phase-amplitude rela-
+tions. Improved performance has been achieved by leveraging
+the phase reconstructed by the non-iterative algorithms as an
+initial estimate for subsequentGLA-based refinement [7].
+In another direction of research, neural network-based
+methods have been proposed to enable faster and higher-quality
+waveform reconstruction either by coupling the iteration pro-
+cess with a neural network [8, 9] or by formulating a two-stage
+approach [10, 11] where phase derivatives are predicted in the
+first stage and subsequently used to reconstruct phase in the sec-
+ond stage. To migrate the dependency on the periodicity of esti-
+mated phase derivatives, alternative approaches conditioned on
+thevon Misesdistribution have been introduced [12–14]. How-
+ever, such hybrid approaches often heavily rely on traditional
+methods, leading to limited flexibility. Alternatively, methods
+that directly predict the phase spectrogram solely by a neural
+network have been explored [15, 16]. Nonetheless, complex
+training regimes and loss functions are used to obtain reliable
+phase reconstruction and to ensure phase continuity. On the
+other hand, generative models, such as diffusion models [17]
+and generative adversarial networks (GANs), offer a new per-
+spective by treating phase estimation as a generative task rather
+than a predictive one. Among these, GAN-based vocoders, such
+asBigVGAN[18] andVocos[19], have demonstrated high-
+fidelity speech reconstruction from Mel coefficient inputs and
+computational efficiency.
+Despite the superiority of neural network-based methods,
+they typically rely on utterance-based reconstruction, inher-
+ently incurring (infinitely) high algorithmic delay, preventing
+their usage in real-time conversational applications. How-
+ever, directly extending existing methods to their causal ver-
+sion often leads to degraded performance. To mitigate this
+issue, noncausal-to-causal transfer learning strategies leverag-
+ing knowledge distillation have been proposed [20, 21] to re-
+gain performance. Additionally, a band-aware networkBAPEN
+[22] has shown to effectively capture phase patterns across
+frequency bands, while exhibiting minimal degradation in
+its causal configuration. An iterative flow-based vocoder,
+MelFlow[23], that combines generative interpolating flow
+matching with a causal inference scheme, has demonstrated
+high-performance vocoding and has achieved real-time process-
+ing on a consumer laptop GPU with a limited number of itera-
+tions.
+Meanwhile, neural speech codecs, e.g.,SoundStream
+[24] andEncodec[25], have demonstrated superior abil-
+ity in delivering high-quality speech with low delay and low
+bitrate while remaining architecturally efficient. Taking ad-
+vantage of the architectural choice ofEncodec, a low-delay
+speech vocoder has achieved so-far state-of-the-art (SOTA) in
+its class with only 20 ms of algorithmic delay [26], excelling the
+utterance-basedBigVGANandVocos, as well as their causal
+counterparts. This method, however, only operates on Mel co-
+efficients and synthesizes wideband speech, leaving applicabil-
+ity towards higher bandwidths for vocoding open. Also it is
+unclear, whether and how this approach can be employed for
+speech waveform reconstruction from the amplitude spectrum.
+In this paper, we build upon the low-delay speech vocoder
+[26] and proposeEffVOC, which can be configured to synthe-
+4495
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2407
+size either wideband or fullband speech, based on either ampli-
+tude spectrum input or Mel coefficient input. We employ iden-
+tical window duration and frame shift by keeping the number
+of samples proportional to the sampling rate. We systematically
+investigate the impact of different spectral representations on
+low-delay1 speech waveform reconstruction under varying sam-
+pling rate constraints. To the best of our knowledge, we provide
+the first unified comparison of this kind within one reconstruc-
+tion model. Finally, we analyze the effect of model depth with
+both inputs in the fullband setup, examining how the number of
+layers influences reconstruction quality.
+The rest of the paper is structured as follows. Our novel
+low-delay speech reconstruction modelEffVOCis described
+in Section 2. The experimental setup follows in Section 3, em-
+pirical results in Section 4 and Section 5 provides a conclusion.
+2. Proposed Model
+Due to its inherent causal design and suitability for wave-
+form reconstruction under limited algorithmic delay, we adapt
+the speech vocoder from [26] towards our proposed low-delay
+speech reconstruction modelEffVOC. In particular, we retain
+the efficient upsampling transformation structure to progres-
+sively increase the temporal resolution of input features to the
+time-domain waveform and keep recurrent layers for long-range
+temporal dependency modeling. Despite the simplicity, this hy-
+brid convolution-recurrent design enables effective modeling of
+both local feature dynamics and temporal coherence. It can be
+configured to operate on Mel coefficients or amplitude spectro-
+grams and to synthesize wideband or fullband speech.
+Details of our proposedEffVOCare shown in Fig. 1. The
+model consists of two convolutional layers, two long short-term
+memory (LSTM) layers, and four transposed convolutional lay-
+ers, each followed by a residual block (ResBlock). Weight
+normalization is applied to all (transposed) convolutional lay-
+ers and causal convolutions are used throughout. We use the
+notationConv(h×1, R·F)andDeConv(h×1, R·F) /s
+to indicate a convolutional layer and transposed convolutional
+layer with stridesandR·Fkernels of sizeh×1, respec-
+tively. The size of the feature representations before and after
+each layer is denoted astime axis size×1×number of fea-
+ture maps, with the second dimension included solely for nota-
+tional consistency. TheResBlock()(Fig. 1 right side) consists
+of two branches: a main branch with two consecutive convo-
+lutional layers and a bypass with a single convolutional layer.
+The outputs of the two branches are added. The model directly
+reconstructs speech waveform ˆs.
+To obtain the required input representations, we first seg-
+ment the original time-domain speech signalsinto overlap-
+ping framess t using a periodic Hann window of lengthN w
+and a frame shift ofN s samples. We denote the frame index
+byt∈ T, whereTrepresents the set of frame indices with
+T=|T|frames in an utterance. The discrete Fourier transform
+(DFT) of lengthKis subsequently applied to frames t to obtain
+the spectrogramS t, from which the respective amplitude spec-
+trogram|S t|is extracted. Given the conjugate symmetry prop-
+erty of the spectrogram, we preserve only the non-redundant
+frequency bins to form the amplitude spectrum input, yielding
+1Note that the termdelayin this paper refers exclusively to the al-
+gorithmic delay, which is platform-independent and solely determined
+by the frame length of our processing scheme; delay contributions by
+AD/DA converters come on top. This also holds for the platform-
+dependent processing time, which we report in our work via thereal-
+time factor(RTF) on a certain platform.
+ResBlock(R·F)
+Conv(7×1,16F)
+LSTM(16F)
+T×1×16F
+LSTM(16F)
+T×1×16F
+DeConv(10×1,8F) /5
+T×1×16F
+ResBlock(8F)
+5T×1×8F
+DeConv(8×1,4F) /4
+5T×1×8F
+ResBlock(4F)
+20T×1×4F
+DeConv(4 (8)×1,2F) /2 (4)
+20T×1×4F
+ResBlock(2F)
+40T(80T)×1×2F
+DeConv(4 (6)×1, F) /2 (3)
+40T(80T)×1×2F
+ResBlock(F)
+80T(240T)×1×F
+Conv(7×1,1)
+80T(240T)×1×F
+T×1×(MorA)
+|S1:T|orSmel
+1:T
+80T(240T)×1×F
+ˆs
+Conv(3×1, R
+2·F)
+Conv(3×1, R·F)
+T×1× R
+2·F
++
+Conv(3×1, R·F)
+T×1×R·F
+T×1×R·F
+Figure 1:Proposed low-delay speech reconstruction model
+EffVOC(left side) for wideband speech (black and blue dimen-
+sions) and fullband speech (black and red dimensions). Details
+of theResBlock()are shown on the right side.
+A=K/2 + 1bins in total. Built upon these, the Mel spectro-
+gramS mel
+t withMcoefficients is then obtained by applying a
+Mel filter bank, followed by logarithmic scaling.
+The proposedEffVOCmodel architecture is mostly identi-
+cal for wideband and fullband speech as shown in Fig. 1, except
+for the latter two transposed convolutional layers, where the
+strides and kernel sizes are adjusted to match the time-frequency
+resolution. Differences in the layer hyperparameters and the re-
+spective input and output dimensions for wideband and fullband
+speech are highlighted in blue and red, respectively.
+3. Experimental Setup
+3.1. Dataset and Preprocessing
+We evaluate the performance of our proposed low-delay speech
+reconstruction modelEffVOCon a multi-speaker English-
+language VCTK dataset [27]. All recordings have an origi-
+nal sampling rate of 48 kHz. To ensure a fair comparison, we
+use the same test setD test
+VCTK asBAPEN[22], which consists of
+recordings from the last 8 speakers. Training and validation sets
+are configured with the remaining recordings. Our training set
+Dtrain
+VCTK consists of approximately 35.8 hours of recordings from
+93 speakers. The validation setD val
+VCTK is formed with record-
+4496
+Table 1:Results of baselines and our proposedEffVOCmodel on theVCTK test setD test
+VCTK at16 kHzsampling rate. Models with “*”
+indicate results taken from [22]. Except ground truth, thebestand second-best results are highlighted.
+Method Input #Iter. Delay #Params. #GFLOPS RTF
+y PESQ-WB
+x POLQA
+x NISQA
+x LPS
+x ESTOI
+x MCD
+y LSD
+y MOS
+x
+Ground truth - - - - - - 4.64 4.71 4.27 1.000 1.00 0.00 0.00 4.20
+GLA[2] ampl. 100 high - - - 4.344.554.24 0.971 0.93 1.07 5.19 3.95
+RTISI-GLA[5] ampl. 100 20 ms - - - 3.49 2.55 3.67 0.966 0.89 1.71 5.69 2.44
+RTISI-DM[5] ampl. 100 20 ms - - - 3.57 2.95 3.79 0.966 0.92 1.46 5.28 2.76
+DiffPhase* [17] ampl. 25 high 66.00 M 6659.78 -4.49- - - - - - -
+BAPEN* [22] ampl. - high 6.82 M 31.00 - 4.47 - - - - - - -
+BAPEN* [22] ampl. - 32 ms 6.79 M 31.56 - 4.26 - - - - - - -Ours
+w/ F = 64 ampl. - 20 ms 27.19 M 38.16 0.652 4.31 4.45 4.190.976 0.94 0.84 1.80 4.17
+w/ F = 32 ampl. - 20 ms 7.27 M 9.73 0.621 4.24 4.36 4.24 0.974 0.93 0.92 2.184.17
+w/ F = 16 ampl. - 20 ms 2.05 M 2.53 0.608 4.11 4.17 4.17 0.971 0.90 1.16 2.43 4.08
+w/ F = 8 ampl. - 20 ms 0.63 M 0.68 0.593 3.82 3.62 3.79 0.954 0.83 1.86 2.83 3.63
+MelFlow[23] Mel 25 32 ms 27.90 M 7050.00 3.594 4.40 4.32 4.19 0.973 0.90 1.17 2.12 3.95
+MelFlow[23] Mel 5 32 ms 27.90 M 1410.00 0.719 4.19 4.394.330.972 0.88 3.53 3.18 3.94Ours
+w/ F = 64 Mel - 20 ms 25.92 M 37.65 0.644 4.25 4.32 4.160.976 0.940.88 1.85 4.12
+w/ F = 32 Mel - 20 ms 6.63 M 9.48 0.622 4.21 4.37 4.27 0.975 0.93 0.94 2.04 4.15
+w/ F = 16 Mel - 20 ms 1.73 M 2.40 0.611 4.06 4.09 4.22 0.971 0.90 1.21 2.57 4.12
+w/ F = 8 Mel - 20 ms 0.47 M 0.620.5843.20 2.88 3.72 0.947 0.83 1.77 5.38 3.46
+ings from the remaining speakers and has a total duration of 2.5
+hours. We re-sample all recordings from three splits to 16 kHz
+for the wideband experiments.
+As mentioned in the introduction, we use fixed window and
+frame shift durations for both wideband and fullband experi-
+ments. Specifically, a periodic Hann window of 20 ms with
+a frame shift of 5 ms (75% frame overlap) is employed in all
+experiments, resulting in a window length and frame shift pair
+(Nw, Ns) = (320,80)for wideband and(960,240)for full-
+band, respectively. The corresponding DFT sizes areK= 512
+andK= 1024, respectively. Our Mel filterbank consists of
+M= 80Mel filters for both sampling rates. The algorithmic
+delay of our proposedEffVOCis 20 ms.
+3.2. Experimental Settings and Training
+Model configurations:We investigate the effect of ampli-
+tude spectrum and Mel coefficient inputs using four differ-
+ent model sizes in the wideband experiments by settingF∈
+{64,32,16,8}. On the other hand, we setF= 32for the
+fullband experiments and examine the impact of model depth
+with three different stride setups, i.e.,{5,4,4,3}as in Fig. 1,
+{5,4,3,2,2}, and{5,3,2,2,2,2}, respectively. To accommo-
+date the latter two stride setups, the number of transposed con-
+volutional layers is increased to five and six, respectively, each
+followed by a residual block. Following the same design in Fig.
+1, the number of kernels in each transposed convolutional layer
+is halved w.r.t. the previous layer.
+Training setup:We follow the training procedure [26] to train
+our proposedEffVOC. An AdamW optimizer with an initial
+learning rate of1·10 −4 and a batch size of 32 is used. Other
+configurations, including the discriminator setup, the optimizer
+hyperparameter, the learning rate scheduler, and the training
+losses, follow the official implementation ofBigVGAN[18].
+All models are trained with 1M steps.
+Baseline models:We compare our proposedEffVOCwith
+both traditional algorithms, i.e.,GLA[2],RTISI-GLA[5], a
+low-delay difference map version (RTISI-DM) [5], and neu-
+ral network-based models, i.e.,DiffPhase[17],BAPEN[22],
+andMelFlow[23]. The same pair of window length and frame
+shift detailed in Section 3.1 is used forGLA,RTISI-GLA, and
+RTISI-DM. WhileMelFlowis trained with 1M steps on the
+same dataset as our methods, it follows its original configura-
+tion from [23] with a 32 ms periodic Hann window and 16 ms
+frame shift (50% frame overlap). Results ofDiffPhaseand
+BAPENare directly taken from [22].
+3.3. Evaluation Metrics
+Instrumental metrics:Several metrics are employed for eval-
+uation. Five intrusive metrics are selected, including the per-
+ceptual evaluation of speech quality (PESQ-WB) according to
+ITU-T Recommendation P.826.2 [28], the perceptual objective
+listening quality analysis (POLQA) [29], extended short-time
+objective intelligibility (ESTOI) [30], the Mel-cepstral distance
+(MCD) [31], and the log-spectral distance (LSD) [32]. More-
+over, the non-intrusive metric NISQA [33] and the Levenshtein
+phone similarity (LPS) [34] are used. Note that LPS = 1 - LPD,
+with the Levenshtein phoneme distance (LPD) taken from [34].
+We also measure the real-time factor (RTF) on a singleNVIDIA
+A100GPU device as the ratio of the time to process one single
+frame divided by the frame shift. An RTF≤1signifies real-
+time capability. As mentioned earlier, the frame shift for our
+EffVOCis 5 ms, whereasMelFlowuses a 16 ms frame shift.
+Subjective metrics:In addition, we perform ITU-T P.808 [35]
+subjective listening tests, receiving absolute category rating
+mean opinion scores (MOS) via crowdsourcing on a 7% sub-
+set ofD test
+VCTK (in total 160 files, with the same gender distribu-
+tion). Following the URGENT 2024 Challenge approach [36],
+this subset was carefully designed using constrained pseudo-
+random file selection to preserve the rank order of all instru-
+mental metrics, thereby ensuring the same distribution as the
+full test set. For each evaluated model, the MOS was computed
+as the mean over 160 files, each rated by 8 different listeners.
+All listeners passed a strict check according to ITU-T P.808 and
+received compensation.
+4. Results and Discussion
+Table 1 compares our proposedEffVOCagainst all baselines
+onD test
+VCTK in awidebandsetup with 16 kHz sampling rate.
+Model size is measured in terms of trainable parameter count
+(# Params.) and complexity as Giga floating-point operations
+per second (# GFLOPS).
+4497
+Table 2:Results of baselines and our proposedEffVOCmodel withF= 32on theVCTK test setD test
+VCTK at48 kHzsampling rate.
+Model with “*” indicates result taken from [22]. Except ground truth, thebestand second-best results are highlighted.
+Method Input # Iter. Delay # Params. # GFLOPS RTF
+y PESQ-WB
+x POLQA
+x NISQA
+x ESTOI
+x MCD
+y LSD
+y MOS
+x
+Ground truth - - - - - - 4.64 4.67 4.46 1.00 0.00 0.00 4.15
+GLA[2] ampl. 100 high - - - 4.26 4.30 4.430.931.62 5.25 3.94
+RTISI-GLA[5] ampl. 100 20 ms - - - 3.48 2.51 3.87 0.89 1.98 5.42 2.62
+RTISI-DM[5] ampl. 100 20 ms - - - 3.56 2.91 3.95 0.92 1.83 2.14 2.83
+BAPEN* [22] ampl. - high 6.82 M 31.00 -4.43- - - - - -Ours
+w/{5,4,4,3}ampl. - 20 ms 8.22 M 13.390.6304.224.334.400.93 1.11 2.01 4.14
+w/{5,4,3,2,2}ampl. - 20 ms 8.20 M 11.53 0.749 4.224.334.41 0.92 1.18 2.07 4.12
+w/{5,3,2,2,2,2}ampl. - 20 ms 8.12 M 8.90 0.878 4.22 4.31 4.400.931.14 2.27 4.11
+MelFlow[23] Mel 25 32 ms 28.10 M 21130.00 3.856 4.22 4.14 4.38 0.89 2.16 3.14 3.89
+MelFlow[23] Mel 5 32 ms 28.10 M 4226.00 0.771 4.10 4.19 4.44 0.88 4.81 4.41 3.85
+Ours
+w/{5,4,4,3}Mel - 20 ms 6.67 M 12.77 0.632 4.08 4.054.450.92 1.31 2.33 4.10
+w/{5,4,3,2,2}Mel - 20 ms 6.65 M 10.91 0.748 4.07 4.10 4.44 0.92 1.31 2.37 4.10
+w/{5,3,2,2,2,2}Mel - 20 ms 6.57 M 8.28 0.864 4.04 4.104.450.92 1.36 2.50 4.11
+The upper part of Table 1 shows models withamplitude
+spectrum inputs. We observe an overall high subjective quality
+ofGLA[2], being top in POLQA. Other utterance-based neural
+networks [17, 22] show top PESQ-WB scores. The low-delay
+(i.e., 20 ms) version ofGLAandDM[5] severely fall behind
+in all metrics, motivating the search for good quality low-delay
+methods. The larger version of our proposed model (F= 64)
+shows good PESQ-WB and POLQA scores, while being overall
+strongest in speech intelligibility (LPS, ESTOI) and in signal
+fidelity (MCD, LSD) among all reported methods. Compar-
+ing our amplitude-based model (F= 64) toBAPEN[22] with
+32 ms algorithmic delay, we reach a slightly higher PESQ-WB
+(4.31 vs. 4.26) with a larger model at only slightly higher com-
+plexity, but requiring only 20 ms of algorithmic delay. Using a
+similar model size (∼7 M,F= 32), a comparable PESQ-WB
+(4.24 vs. 4.26) is reached at much lower computational demand.
+Models withMel coefficient inputsare shown in the lower
+part of Table 1.MelFlow[23], a Mel representation base-
+line with 32 ms algorithmic delay, is reported both in a high-
+performance variant (25 iterations, very good PESQ-WB score)
+and in a single-GPU real-time capable streaming variant (5 it-
+erations, good RTF of 0.719). Our Mel-based model (F= 64)
+delivers still a good PESQ-WB while being top in speech in-
+telligibility (LPS, ESTOI) and overall second-best in signal fi-
+delity (MCD, LSD). OurF= 32variant provides roughly the
+same speech quality scores and LPS asMelFlowwith 5 iter-
+ations, but with lower algorithmic delay, much smaller model
+size, and requiring two orders of magnitude less computations
+(GFLOPS). On top, we reach better ESTOI and signal fidelity
+(MCD, LSD). Also, the RTFs of ourF= 64andF= 32mod-
+els are slightly better thanMelFlowwith 5 iterations. Note
+that a higher frame overlap and a shorter analysis frame are
+known to ease the reconstruction problem through higher time-
+frequency redundancy, in particular when mapping fewer DFT
+bins to the same number ofM= 80Mel channels. The choices
+we make forEffVOC(20 ms frames, 75% overlap) hence lead
+to a higher frame rate and higher computational cost than 50%
+overlap, but allow for a lower delay and higher reconstruction
+fidelity than longer frames and less overlap.
+Among our proposed models, we observe that forF= 64
+andF= 32, amplitude and Mel representations have compara-
+ble performance. Only for smaller network sizes, the amplitude
+input representation delivers a significantly better quality.
+Concerning MOS scores, we clearly see our proposed net-
+works ahead of all others, with our low-delayF= 64and
+F= 32amplitude-based models being in top position, closely
+followed by our Mel-based network withF= 32; both within
+an only 0.05 MOS margin towards ground truth.
+In Table 2, we evaluate the performance of our proposed
+EffVOCwithF= 32onD test
+VCTK in afullbandsetup with 48
+kHz sampling rate. Smae as in Table 1, models are grouped by
+the respective input representation.
+Foramplitude spectrum inputs, again, the (infinite) delay
+BAPENmethod [22] is very strong in PESQ-WB, but they don’t
+report on the fullband POLQA metric, where our methods are
+leading overall, even excellingGLA[2]. Again, our methods are
+best in intelligibility (ESTOI) and signal fidelity (MCD, LSD).
+Models withMel coefficient inputsare shown in the lower
+part of Table 2.MelFlow(32 ms algorithmic delay) [23]
+in both variants, again, is best among Mel input methods for
+PESQ-WB and POLQA, but with large model size and very
+high complexity. Still, the streamingMelFlow(5 iterations)
+reaches real-time capability (RTF of 0.771). Interestingly, RTFs
+of our methods are in a similar range. Our 20 ms low-delay ap-
+proaches are again stronger both in intelligibility and signal fi-
+delity. Across our proposed models, we observe that amplitude
+input models consistently outperform Mel input models w.r.t.
+PESQ-WB and POLQA and achieve better signal fidelity.
+Concerning MOS scores for fullband speech, all of our
+models outperform any of the baselines.We find it particu-
+larly interesting that even our smallest proposed model (Mel
+coefficient input, 6.57 M) reaches a competitive MOS of 4.11,
+excelling all baseline methods and being less than 0.05 MOS
+points behind ground truth,thereby setting a new SOTA for full-
+band speech synthesis from Mel coefficients.
+5. Conclusions
+We investigated low-delay speech waveform reconstruction us-
+ing amplitude spectrum and Mel coefficient inputs in a unified
+speech vocoder framework. Among the neural network ap-
+proaches, our proposed real-time capableEffVOCmodels are
+small, low-complex, and of low algorithmic delay (20 ms). For
+widebandspeech, ourEffVOCdemonstrates new state of the
+art (SOTA) subjective MOS scores. Our smallest proposedfull-
+bandEffVOCmodel (Mel repres

@@ -1,0 +1,522 @@
+MeanFlow-TSE: One-Step Generative Target Speaker Extraction with
+Mean Flow
+Riki Shimizu1,∗∗, Xilin Jiang1, Nima Mesgarani1
+1 Electrical Engineering, Columbia University, United States
+rs4613@columbia.edu
+Abstract
+Target speaker extraction (TSE) aims to isolate a desired
+speaker’s voice from a multi-speaker mixture using aux-
+iliary information. Although recent advances in diffu-
+sion and flow-matching models have improved TSE per-
+formance, these methods typically require multi-step sam-
+pling, which limits their practicality in low-latency settings.
+In this work, we propose MeanFlow-TSE, a one-step gen-
+erative TSE framework trained with mean-flow objectives,
+enabling fast and high-quality generation without iterative
+refinement. Building on the AD-FlowTSE paradigm, our
+method defines a flow between the background and target
+source that is governed by the mixing ratio. Experiments on
+the Libri2Mix corpus show that our approach outperforms
+existing generative TSE models in separation quality and
+perceptual metrics while requiring only a single inference
+step. These results demonstrate that mean-flow-guided one-
+step generation offers an efficient alternative for real-time
+target speaker extraction.
+Index Terms: target speaker extraction, speech enhance-
+ment, meanflow, one-step generation
+1. Introduction
+Target speaker extraction (TSE) isolates the voice of a de-
+sired speaker from mixtures of overlapping speech and
+background noise, guided by speaker-specific cues such as
+enrollment utterances [1, 2], lip movements [3, 4], direc-
+tion of arrival [5, 6], or brain signals [7]. By effectively
+filtering out interfering sounds, TSE is crucial for ensuring
+robustness in downstream applications such as automatic
+speech recognition and hearing aids, particularly in acous-
+tically challenging real-world conditions.
+Traditional approaches to TSE generally operate as dis-
+criminative models that estimate the target speech wave-
+form directly from the input mixture. Typically, mod-
+els are trained to predict a multiplicative mask applied to
+learned audio representations or spectrograms to filter out
+interfering sounds while preserving the target speaker. By
+conditioning source separation backbones such as Conv-
+TasNet [8] or SepFormer [9] with speaker embeddings de-
+rived from auxiliary cues, these systems effectively iso-
+late the desired speaker. This discriminative training fo-
+cuses on minimizing reconstruction errors such as Scale-
+Invariant Signal-to-Noise Ratio (SI-SNR) to recover the
+target speaker of interest. While achieving strong signal-
+level performance, these methods can introduce artifacts
+and may struggle with generalization to unseen acoustic
+conditions.
+**indicates the corresponding author.
+Code and checkpoints are available athttps://github.
+com/rikishimizu/MeanFlow-TSE.
+MeanFlow-TSE
+AD-FlowTSE
+ Flow Matching for TSE
+Background Target SpeechMixture
+t = 0 t = λt = 1
+Inference
+(Few Steps)
+Background Target SpeechMixture 
+t = 0 t = λ t = 1
+Flow Time t
+Inference
+(One Step)
+Target Speech
+Gaussian Noise Inference 
+(Many Steps)
+t = 0 t = 1
+Figure 1:Comparison of generative TSE inference
+paradigms.T op:Standard Flow Matching transforms the
+Gaussian noise to the target speech using iterative ODE in-
+tegration (many steps).Middle:AD-FlowTSE [10] defines
+the flow trajectory between the background and target, ini-
+tializing inference at the mixture’s mixing ratio (t=λ) to
+reduce sampling steps.Bottom:The proposed MeanFlow-
+TSE leverages mean-flow objectives to enable direct, high-
+quality one-step generation from the mixture (t=λ) to the
+target speech (t= 1).
+Recent work on speech enhancement, separation, and
+extraction with diffusion models [11] and flow match-
+ing [12] represents a paradigm shift from discriminative
+mask estimation to generative modeling, treating TSE as
+a conditional generation task. Diffusion-based TSE mod-
+els [13, 14] demonstrated the potential of score-based gen-
+erative modeling, achieving high perceptual quality. How-
+ever, these methods suffer from high computational costs
+and slow inference speeds due to the iterative reverse
+sampling process, typically requiring at least 10 function
+evaluations (NFEs) for high-quality [13, 14]. Reducing
+NFEs is critical for meeting latency constraints in real-
+time applications such as hearing aids and live telecom-
+munication systems. Flow matching offers a promis-
+ing alternative by learning straighter probability paths.
+FlowTSE [15] applied conditional flow matching to mel-
+spectrogram domain TSE, while AD-FlowTSE [10] intro-
+5633
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-109
+duced a mixing-ratio-aware transport between background
+and target sources, enabling adaptive few-step generation.
+Notably, AD-FlowTSE achieves competitive performance
+even with a single sampling step, demonstrating the poten-
+tial of one-step generation for TSE. However, it uses the
+standard rectified flow-matching objective, originally de-
+signed for multi-step sampling, and thus leaves room for
+improvement for its one-step inference capability.
+Mean-flow objectives offer a principled solution for di-
+rect one-step generation. Diverging from standard flow
+matching, which models instantaneous velocities at dis-
+crete points along a trajectory, MeanFlow [16] models the
+average velocity across the entire trajectory. This for-
+mulation obviates the need for small-step ODE integra-
+tion, thereby enabling effective one-step generation that
+achieves state-of-the-art performance on image genera-
+tion [16], speech enhancement [17, 18], and text-to-speech
+synthesis [19]. This approach was further refined by theα-
+Flow method [20], which decomposes the mean-flow ob-
+jective into trajectory flow matching and trajectory consis-
+tency terms. By identifying a strong negative correlation
+between these terms, the authors proposed a curriculum
+learning strategy that gradually interpolates the objective
+from trajectory flow matching to the mean-flow identity.
+Notably,α-Flow eliminates the need for Jacobian-vector
+product calculations during training, significantly reducing
+computational overhead while enhancing training stability.
+Despite these successes in other domains, mean-flow objec-
+tives have not yet been explored for target speaker extrac-
+tion.
+In this work, we propose MeanFlow-TSE, the first
+application of mean-flow objectives to target speaker ex-
+traction. Building on the AD-FlowTSE paradigm, our
+method defines a flow between background and target
+source governed by the mixing ratio used to create the mix-
+ture, enabling mixing-ratio-aware initialization and train-
+ing. By training with mean-flow objectives, we achieve
+fast and high-quality one-step generation. Experiments on
+Libri2Mix demonstrate that MeanFlow-TSE outperforms
+existing diffusion- and flow-matching-based TSE models in
+separation quality (SI-SDR) and perceptual metrics (PESQ,
+ESTOI) while maintaining computational efficiency suit-
+able for real-time applications, establishing mean-flow-
+guided one-step generation as an effective alternative for
+practical target speaker extraction systems.
+2. Background
+2.1. Target Speaker Extraction
+The goal of Target Speaker Extraction (TSE) is to recover
+the discrete speech waveforms∈R L of a specific target
+speaker from a single-channel mixturey∈R L. The mix-
+ture is modeled as the sum of the target speech and an in-
+terference componentb∈R L (comprising other speakers
+and background noise):
+y=s+b(1)
+TSE systems utilize an auxiliary reference cuee, typi-
+cally a pre-recorded enrollment utterance, to identify the
+target speaker. The problem is formulated as estimating
+ˆs=f θ(y,e). While traditional methods often estimate
+masks, the generative approach models the trajectory in
+the spectral domain. Let STFT(·)denote the Short-Time
+Fourier Transform. We define the spectral representations
+of the mixture, target, and background asY=STFT(y),
+S=STFT(s), andB=STFT(b), respectively.
+2.2. Flow Matching for TSE
+Flow matching [12] provides a simulation-free framework
+for training Continuous Normalizing Flows (CNFs). It
+models the generation process as a deterministic Ordinary
+Differential Equation (ODE) governing a statezt in the la-
+tent space (here, the complex spectral domain):
+dzt =v θ(zt,t,e)dt, t∈[0,1](2)
+wherev θ is a neural network predicting the velocity field.
+The objective is to transform a source distributionp 0(z)to
+the data distributionp 1(z). Optimal Transport (OT) defines
+a straight-line probability path:
+zt = (1−t)z 0 +tz 1 (3)
+The standard flow matching objective minimizes the regres-
+sion error between the network output and the path deriva-
+tive:
+LFM(θ) =E t,z0,z1,e
+
+∥vθ(zt,t,e)−(z 1−z 0)∥2
+(4)
+2.3. Adaptive Deterministic Flow Matching
+AD-FlowTSE [10] adapts this framework by defining the
+flow between the background representationBand the tar-
+get representationS. Although the physical mixture is ad-
+ditive (y=s+b), assuming scale invariance of the extrac-
+tion task, it models the mixture as a convex combination
+governed by a scalar mixing ratioλ∈[0,1]to align it with
+the optimal transport trajectory:
+y=λs+ (1−λ)b(5)
+In the spectral flow domain, the path is defined such that
+z0 =Bandz 1 =S:
+zt =tS+ (1−t)B(6)
+wheret∈[0,1]. This allows formixing-ratio-aware ini-
+tialization. Since the mixture spectrogramYlies att=λ
+on this trajectory, inference can be initialized atz ˆλ≈Y
+using an estimated mixing ratio ˆλ, reducing the integration
+range to[ ˆλ,1].
+2.4. MeanFlow andα-Flow Objectives
+Extracting the target speaker effectively via the standard
+flow matching or diffusion requires multiple function eval-
+uations (NFEs) and ODE steps. To mitigate this compu-
+tational bottleneck, MeanFlow [16] enables one-step gen-
+eration by modeling the average velocity required to jump
+between time stepstandr(wherer > t). The statez r is
+recovered via:
+zr =z t + (r−t)v avg(zt,t,r)(7)
+To improve training efficiency, theα-Flow framework [20]
+defines a hybrid target velocityv α
+t,r that interpolates be-
+tween the ground-truth trajectory and a self-consistency tar-
+get: Let the ground truth direction beu=S−B. The target
+velocityvα
+t,r is defined as:
+vα
+t,r =αu+ (1−α)v θ(zτ,τ,r)(8)
+whereα∈(0,1]is a scalar hyperparameter andτ=αr+
+(1−α)tis an intermediate time. The objective minimizes
+the distance to this interpolated target:
+Lα(θ) =E t,r,B,S
+hvθ(zt,t,r)−v α
+t,r
+2i
+(9)
+5634
+3. MeanFlow-TSE
+3.1. Proposed Formulation and Inference
+We adapt MeanFlow to TSE by conditioning the velocity
+estimator on the enrollmente. The networkv θ(zt,t,r,e)
+predicts the transport from timetto target timer.
+At inference, we aim to recover the clean targetS
+(wherer= 1) in a single step. Using an estimated mixing
+ratio ˆλ, we initialize the flow at the mixturez start =Y
+(corresponding totstart = ˆλ). The target spectrogram ˆSis
+estimated as:
+ˆS=Y+ (1− ˆλ)vθ(Y, ˆλ,1,e)(10)
+This effectively skips the noise-dominant trajectory, jump-
+ing directly from the mixture to the target.
+3.2. Adaptive Weight Loss
+Following theα-flow framework [20], we employ an adap-
+tive weightwparametrized byαandc. Let∆ =
+vθ(zt,t,r,e)−v α
+t,r be the error vector. The weight is de-
+fined as:
+w= α
+||∆||2
+2 +c (11)
+wherec= 10 −3. The training objective applies this weight
+with a stop-gradient operator sg(·):
+LAdaptive(θ) =E t,r,...
+
+sg(w)·||∆|| 2
+2
+
+(12)
+3.3. Alpha Curriculum Scheduling
+We employ a curriculum learning strategy that gradu-
+ally transitions the training objective from trajectory flow
+matching (α= 1) to the mean-flow identity (α→0).
+The hyperparameterαgoverns both the target velocity in-
+terpolation in Eq. (8) and the adaptive weight in Eq. (11).
+We implement a sigmoid-based schedule over training iter-
+ationsk:
+α(k) =clip
+
+1−σ
+
+γ·
+ k−k s
+ke−ks
+−0.5
+
+,α min,1.0
+
+(13)
+wherek s andk e denote the start and end of the transi-
+tion,γcontrols the steepness, andσ(·)is the sigmoid func-
+tion. This creates three training phases: (1) trajectory flow
+matching pretraining (k<k s,α= 1), (2) curriculum tran-
+sition (ks≤k < ke,αdecreases from 1 toα min), and (3)
+mean-flow fine-tuning (k≥k e,α≈α min). We setks = 0,
+ke at epoch 2000,γ= 25.0, andα min = 0.005.
+3.4. Mixing Ratio Predictor
+Sinceλis unknown during inference, we use an auxiliary
+networkg ϕ to estimate it. Using ECAPA-TDNN [21] as a
+feature extractorw(·)and an MLPh(·), the predictor out-
+puts:
+ˆλ=g ϕ(y,e) =σ(h([w(y);w(e)]))(14)
+This is trained separately via MSE loss:L MR(ϕ) =E[( ˆλ−
+λ)2].
+4. Experiments
+4.1. LibriMix Dataset
+Similar to AD-FlowTSE, we adopted the setup described
+in [24, 25] using the Libri2Mix dataset. We combined the
+train-360andtrain-100subsets for training, while
+reserving thedevandtestsets for validation and evalu-
+ation, respectively. All audio was sampled at 16 kHz. Our
+input pipeline utilized 6-second segments, composed of a 3-
+second enrollment speech paired with a 3-second mixture.
+For spectral feature extraction, we applied an STFT with a
+hop size of 128 and a window length of 510.
+4.2. Training Configuration
+4.2.1. Model and Optimization
+The backbone architecture is a U-Net style Diffusion Trans-
+former (UDiT) [26] comprising 16 transformer layers [27]
+with 16 attention heads and a hidden dimension of 768.
+Both input and output dimensions are set to 512, with a po-
+sitional length of 500 and no positional encodings applied.
+We optimized the model using AdamW [28] with a weight
+decay of 0.01. The learning rate followed a cosine anneal-
+ing schedule (Tmax = 50) with a 5-epoch warm-up, decay-
+ing from an initial1×10 −4 to a minimum of1×10 −5.
+4.2.2. Training Setup
+The model was trained for 2,000 epochs with a batch size of
+32 using distributed data parallelism across eight NVIDIA
+L40 GPUs. We employed 16-bit mixed-precision training
+to reduce memory consumption and improve computational
+efficiency. To prevent exploding gradients, gradient clip-
+ping was applied with a threshold of 0.5. During inference,
+the Euler solver was executed with a single step for both
+validation and testing, except for NFE analysis in Figure 2.
+The final model was selected based on the checkpoint that
+achieved the highest SI-SDR on the validation set.
+4.2.3. MeanFlow Configuration
+The time stepsrandtwere sampled from a log-normal
+distribution parametrized byµ=−0.4andσ= 1.0. We
+utilize a flow ratio of0.5: essentially, for50%of the train-
+ing iterations, the conditiont=ris enforced, effectively
+reducing the objective to standard rectified flow matching.
+To balance the loss components, the adaptive weight coef-
+ficientcwas set to1×10 −3.
+4.3. Baseline Models
+We evaluate MeanFlow-TSE against a diverse set of
+generative TSE baselines, including DiffSep+SV [14],
+DDTSE [14], DiffTSE [13], FlowTSE [15], SR-SSL [22],
+and SoloSpeech [23]. For these models, we adopt the com-
+prehensive benchmark results reported by Navon et al. [15]
+under both clean and noisy configurations. Additionally,
+we include AD-FlowTSE [10] as a primary point of com-
+parison. As AD-FlowTSE shares the same backbone archi-
+tecture and hyperparameters as our method, it serves as a
+direct control to isolate the specific efficacy of the Mean-
+Flow paradigm.
+4.4. Evaluation Metrics
+To comprehensively assess model performance, we em-
+ploy 6 metrics covering speech quality, intelligibility, and
+speaker similarity. Signal fidelity and perceptual quality are
+measured using Scale-Invariant Signal-to-Distortion Ratio
+(SI-SDR) [29], Perceptual Evaluation of Speech Quality
+(PESQ) [30], and Extended Short-Time Objective Intelli-
+gibility (ESTOI) [31]. We also report DNSMOS [32] and
+OVRL scores to estimate mean opinion scores. Finally, to
+evaluate how well the target identity is maintained, we cal-
+culate Speaker Similarity (SIM) [33] based on the cosine
+similarity between the target and estimated embeddings.
+5635
+Table 1:Performance comparison of generative TSE models on the Libri2Mix Noisy and Clean sets.
+Method Type Libri2Mix Noisy Libri2Mix Clean
+PESQ ESTOI SI-SDR OVRL DNSMOS SIM PESQ ESTOI SI-SDR OVRL DNSMOS SIM
+Mixture – 1.08 0.40 -1.93 1.63 2.71 0.46 1.15 0.54 0.00 2.65 3.41 0.54
+DiffSep+SV [14]
+G
+1.32 0.60 – 2.78 3.63 0.62 1.85 0.79 – 3.143.830.83
+DDTSE [14] 1.60 0.71 – 3.28 3.74 0.71 1.79 0.78 –3.303.79 0.73
+DiffTSE [13] – – – – – – 3.08 0.80 11.28 – – –
+FlowTSE [15] 1.86 0.75 –3.30 3.820.83 2.58 0.84 – 3.27 3.79 0.90
+SR-SSL [22] – – – – – – 2.99 – 16.00 – – –
+SoloSpeech [23] 1.89 0.78 11.12 – 3.76 – – – – – – –
+AD-FlowTSE [10] 2.15 0.81 12.69 3.11 3.480.872.89 0.90 17.49 3.15 3.590.95
+MeanFlow-TSEG2.21 0.82 12.853.17 3.55 0.733.26 0.93 18.803.21 3.69 0.92
+Figure 2:Comparison of performance metrics (SI-SDR and
+PESQ) across different numbers of function evaluations.
+5. Results
+5.1. Overall Performance
+In Table 1, we report the performance of MeanFlow-TSE
+compared against other generative baseline TSE models on
+the noisy and clean subsets of Libri2Mix.
+Overall, our approach consistently outperforms com-
+peting generative baselines in terms of extraction and
+reference-based perceptual quality. On theLibri2Mix
+Cleantest set, MeanFlow-TSE achieves a PESQ of 3.26
+and an SI-SDR of 18.80 dB, surpassing the strong AD-
+FlowTSE baseline by 0.37 and 1.31 dB, respectively.
+This substantial improvement highlights the efficacy of
+the mean-flow objective in learning a more accurate one-
+step transport map compared to the standard rectified flow
+matching used in AD-FlowTSE. Similar trends are ob-
+served on theLibri2Mix Noisyset, where our method
+achieves state-of-the-art results for intrusive metrics with
+2.21 PESQ and 12.85 dB SI-SDR.
+Regarding non-intrusive perceptual metrics like OVRL
+and DNSMOS, which assess speech quality without a
+ground-truth reference, MeanFlow-TSE achieves competi-
+tive results but trails slightly behind FlowTSE and DDTSE.
+This aligns with the trade-off between intrusive metrics
+and non-intrusive ”naturalness” scores previously reported
+in [10]. Crucially, MeanFlow-TSE improves upon AD-
+FlowTSE across both OVRL and DNSMOS, effectively
+narrowing the gap with multi-step generative models while
+maintaining significantly higher extraction quality.
+5.2. NFE Analysis
+To verify the effectiveness of our one-step generation strat-
+egy, we analyze the impact of the Number of Function Eval-
+uations (NFE) on extraction performance. Figure 2 illus-
+trates that MeanFlow-TSE achieves its peak performance at
+NFE = 1 both in terms of SI-SDR and PESQ. This behav-
+Table 2:Comparison of Real Time Factor (RTF) and Peak
+GPU Memory (VRAM) on Libri2Mix. NFE values for base-
+lines correspond to the optimal configurations reported in
+their respective original studies [23, 10].
+Method NFE Params (M) RTF Mem (MB)
+SoloSpeech [23] 50 589 0.75 3738
+AD-FlowTSE [10] 1 358 0.017 15315 0.047
+MeanFlow-TSE1 359 0.018 1536
+ior empirically validates the theoretical motivation behind
+MeanFlow-TSE: the training objective successfully recti-
+fies the flow trajectory, enabling the model to map the noisy
+mixture directly to the clean target in a single step. Con-
+sequently, additional Euler integration steps are not only
+unnecessary but slightly detrimental, likely due to accumu-
+lated discretization errors.
+5.3. Computational Cost Analysis
+Table 2 benchmarks the computational efficiency of
+MeanFlow-TSE against its most competitive baselines,
+SoloSpeech and AD-FlowTSE. All measurements were
+conducted on a single NVIDIA L40 GPU using a batch size
+of 1 and 3-second audio segments.
+As a diffusion-based model, SoloSpeech requires 50
+Number of Function Evaluations (NFE), resulting in a
+significantly higher Real-Time Factor (RTF) and memory
+footprint than its flow-based counterparts. In contrast,
+MeanFlow-TSE and AD-FlowTSE utilize a near-identical
+backbone architecture; while MeanFlow-TSE includes a
+small additional time-step embedder, the resulting increase
+in parameter count and peak memory usage is marginal.
+Crucially, these results demonstrate that the performance
+gains reported in Table 1 are achieved with negligible
+computational overhead relative to AD-FlowTSE. With its
+single-step inference and minimal footprint, MeanFlow-
+TSE is uniquely suited for real-time deployment on edge
+devices.
+6. Conclusions
+We introduced MeanFlow-TSE, a novel framework for one-
+step generative target speaker extraction. Our method
+achieves state-of-the-art SI-SDR, PESQ, and ESTOI per-
+formance on the Libri2Mix benchmark. Future work will
+extend this framework to reverberant environments and
+multi-channel scenarios.
+5636
+7. Acknowledgement
+The authors thank the National Institutes of Health (NIH-
+NIDCD), Marie-Jos ´ee and Henry R. Kravis for the grant
+support. We also thank the authors of AD-FlowTSE
+and Alpha-Flow for making their implementations open-
+sourced, as our work directly built on them.
+8. Generative AI Use Disclosure
+Portions of this manuscript were assisted by OpenAI Chat-
+GPT for writing. The authors reviewed, edited, and take
+full responsibility for the content.
+9. References
+[1] Q. Wang, H. Muckenhirn, K. Wilson, P. Sridhar, Z. Wu,
+J. R. Hershey, R. A. Saurous, R. J. Weiss, Y . Jia, and
+I. L. Moreno, “V oiceFilter: Targeted V oice Separation
+by Speaker-Conditioned Spectrogram Masking,” 2019, pp.
+2728–2732. [Online]. Available: https://www.isca-archive.
+org/interspeech 2019/wang19h interspeech.html
+[2] M. Ge, C. Xu, L. Wang, E. S. Chng, J. Dang, and H. Li,
+“SpEx+: A Complete Time Domain Speaker Extraction
+Network,” inInterspeech 2020. ISCA, Oct. 2020, pp.
+1406–1410. [Online]. Available: https://www.isca-archive.
+org/interspeech 2020/ge20 interspeech.html
+[3] A. Ephrat, I. Mosseri, O. Lang, T. Dekel, K. Wilson,
+A. Hassidim, W. T. Freeman, and M. Rubinstein, “Looking
+to listen at the cocktail party: a speaker-independent
+audio-visual model for speech separation,”ACM Trans.
+Graph., vol. 37, no. 4, pp. 112:1–112:11, Jul. 2018. [Online].
+Available: https://dl.acm.org/doi/10.1145/3197517.3201357
+[4] Z. Pan, R. Tao, C. Xu, and H. Li, “Muse: Multi-
+Modal Target Speaker Extraction with Visual Cues,” in
+ICASSP 2021 - 2021 IEEE International Conference
+on Acoustics, Speech and Signal Processing (ICASSP),
+Jun. 2021, pp. 6678–6682. [Online]. Available: https:
+//ieeexplore.ieee.org/abstract/document/9414023
+[5] D.-J. Alcala Padilla, N. L. Westhausen, S. Vivekanan-
+than, and B. T. Meyer, “Location-Aware Target
+Speaker Extraction for Hearing Aids,” inInterspeech
+2025. ISCA, Aug. 2025, pp. 2975–2979. [Online].
+Available: https://www.isca-archive.org/interspeech 2025/
+alcalapadilla25 interspeech.html
+[6] S. He, J. liu, H. Li, Y . Yang, F. Chen, and X. Zhang,
+“3S-TSE: Efficient Three-Stage Target Speaker Extraction
+for Real-Time and Low-Resource Applications,” Jan.
+2024, arXiv:2312.10979 [cs]. [Online]. Available: http:
+//arxiv.org/abs/2312.10979
+[7] E. Ceolini, J. Hjortkjær, D. D. E. Wong, J. O’Sullivan,
+V . S. Raghavan, J. Herrero, A. D. Mehta, S.-C. Liu, and
+N. Mesgarani, “Brain-informed speech separation (BISS)
+for enhancement of target speaker in multitalker speech
+perception,”NeuroImage, vol. 223, p. 117282, Dec. 2020.
+[Online]. Available: https://www.sciencedirect.com/science/
+article/pii/S1053811920307680
+[8] Y . Luo and N. Mesgarani, “Conv-TasNet: Surpassing
+Ideal Time–Frequency Magnitude Masking for Speech
+Separation,”IEEE/ACM Transactions on Audio, Speech,
+and Language Processing, vol. 27, no. 8, pp. 1256–1266,
+Aug. 2019. [Online]. Available: https://ieeexplore.ieee.org/
+abstract/document/8707065
+[9] C. Subakan, M. Ravanelli, S. Cornell, M. Bronzi,
+and J. Zhong, “Attention Is All You Need In Speech
+Separation,” inICASSP 2021 - 2021 IEEE International
+Conference on Acoustics, Speech and Signal Processing
+(ICASSP), Jun. 2021, pp. 21–25. [Online]. Available:
+https://ieeexplore.ieee.org/abstract/document/9413901
+[10] T.-A. Hsieh and M. Kim, “Adaptive Deterministic Flow
+Matching for Target Speaker Extraction,” Oct. 2025,
+arXiv:2510.16995 [eess]. [Online]. Available: http://arxiv.
+org/abs/2510.16995
+[11] J. Ho, A. Jain, and P. Abbeel, “Denoising Dif-
+fusion P

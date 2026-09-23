@@ -1,0 +1,429 @@
+A Gated Multi-Task Whisper Framework for Speech, Emotion, and Scene
+Understanding
+Manjiri Bhat ID 1,∗,∗∗, Ravindra B. Keskar ID 1,∗
+1 Visvesvaraya National Institute of Technology Nagpur, India
+manjiribhat04@gmail.com, rbkeskar@cse.vnit.ac.in
+Abstract
+Assistive technology requires understanding complex audio
+which involves jointly modeling speech content, emotional
+cues, and environmental context. We propose a Gated Multi-
+Task model that performs automatic speech recognition, speech
+emotion recognition, and acoustic scene classification, often
+treated as independent tasks, within a unified framework. Built
+on the Whisper-small encoder, the model employs task-specific
+heads and a gating mechanism that classifies input audio as
+clean speech, noisy speech, or non-speech to conditionally ac-
+tivate downstream modules during inference. We introduce
+ESAS-32K, a simulated dataset combining emotional speech
+with acoustic scenes under varying signal-to-noise conditions.
+Experiments show that Whisper-based gated multi-task learn-
+ing improves task-specific metrics compared to ungated and
+single-task baselines, and mitigates speech-to-text hallucina-
+tions, demonstrating the effectiveness of the proposed method
+for context-aware audio analysis.
+Index Terms: Multi-Task Learning, Whisper Model, Condi-
+tional Inference, Speech Emotion Recognition, Acoustic Scene
+Classification, Automatic Speech Recognition
+1. Introduction
+Human speech conveys not only linguistic content but also rich
+paralinguistic and contextual information, including emotional
+state, health, age, gender, cultural background, and environmen-
+tal cues [1]. This information is important for a sensitive assis-
+tive technology based on audio. Traditional audio processing
+systems have largely focused on single tasks such as voice activ-
+ity detection (V AD) [2], keyword spotting [3], speaker recogni-
+tion [4], language identification [5], speech emotion recognition
+(SER) [6], automatic speech recognition (ASR) [1], sound event
+detection (SED) [7], and acoustic scene classification (ASC)
+[8]. These tasks analyze speech and non-speech acoustic sig-
+nals, and have critical applications in human–computer interac-
+tion, mental health assessment [9, 10], emergency alerts [11],
+elder-care monitoring [12], and environmental monitoring [13].
+In real-world scenarios, intelligent auditory systems must op-
+erate effectively across diverse and dynamic acoustic environ-
+ments such as homes, parks, or crowded public spaces. For
+instance, a smart assistant supporting elderly people may need
+to simultaneously transcribe speech for issue comprehension
+(ASR), detect emotional distress (SER), and recognize environ-
+mental context (ASC). Similarly, an auditory agent deployed
+in public spaces could transcribe calls for help, assess urgency
+from vocal cues, and infer scene context to trigger timely re-
+sponses. In such cases, selectively activating only relevant tasks
+*These authors contributed equally.
+**indicates the corresponding author.
+is crucial for both resource efficiency and quick response. These
+use cases motivate unified audio models that exhibit situational
+awareness by jointly modeling speech, emotion, and environ-
+mental context.
+Recent transformer-based foundation models such as Whis-
+per [14], Wav2Vec 2.0 [15], HuBERT [16], and WavLM
+[17] have demonstrated strong generalization across speech
+tasks due to large-scale pre-training on diverse and noisy data.
+Beyond ASR, these models have achieved competitive per-
+formance in V AD, SER, speech translation, SED, and ASC
+[18, 19, 20, 7]. However, deploying independent models for
+each task is often inefficient under real-time and memory con-
+straints. Multi-task learning (MTL) with shared representations
+has therefore emerged as a promising alternative. MTL involves
+performing two or more tasks within a single model. Several
+MTL frameworks have been proposed in recent years. Chen
+et al. [21] introduced MTLSER, a Wav2Vec 2.0-based model
+jointly performing ASR, SER, and speaker identification. Whis-
+per is augmented with auxiliary heads for noise or background
+classification to improve robustness in specific speech applica-
+tions [22, 13]. Another study developed a transformer-based
+dual-decoder architecture for simultaneous speech and back-
+ground sound classification [23], showing improved robustness
+under low SNR conditions. These studies indicate the potential
+of shared encoders for noisy speech understanding.
+Whisper [14] is particularly attractive for MTL as it retains
+noise-variant representations that implicitly encode contextual
+sound information in noisy environments [24, 22, 25]. How-
+ever, despite its strong performance in noisy ASR, Whisper is
+prone to hallucinations during inference, generating spurious
+or repetitive transcriptions on silent or non-speech segments
+[26, 27]. Existing mitigation strategies, such as external V AD-
+based filtering [28] or decoding constraints [26], are typically
+applied post hoc and do not address intrinsic task routing. Ad-
+ditionally, Whisper does not explicitly leverage scene context in
+spite of adequately representing it. These limitations motivate
+our proposedGated Multi-Task Whisperframework. We jointly
+model ASR, SER, and ASC using a learnable V AD-like gate
+that dynamically activates task heads based on input type [29],
+enabling efficient inference while suppressing hallucinations in
+Whisper on non-speech segments.
+Our main contributions are as follows:
+• We propose a gated MTL architecture built on Whisper that
+conditionally activates ASR, SER, and ASC heads based on
+the predicted input type.
+• We simulate a mixed-corpus, mixed-SNR dataset named
+ESAS-32K comprising over 32,000 samples by combining
+emotional speech and acoustic scene datasets.
+• We evaluate the proposed model under varying levels of su-
+1266
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-135
+pervision using word error rate, classification accuracy, F1-
+score, and hallucination rate as evaluation metrics.
+• We demonstrate thatgate-controlledrouting significantly re-
+duces hallucinations compared to ungated multi-task and
+single-task baselines.
+2. Proposed Method
+The proposed gated multi-task architecture built on Whisper-
+small jointly performs ASR, SER, and ASC. The core in-
+novation is athree-wayV AD-inspired gate that conditionally
+activates task heads during inference, enabling context-aware
+processing and suppressing hallucinated ASR outputs on non-
+speech inputs. The training and inference architecture is shown
+in Figure 1.
+2.1. Whisper Processor and Inputs
+Given an audio signalx∈R T , resampled to 16 kHz, the Whis-
+per processor extracts a log-Mel spectrogram with 3000 frames
+and 80 Mel bins:
+X= LogMel(x)∈R 80×3000 (1)
+The spectrogram is transposed and fed to the encoder. For ASR,
+transcriptions are tokenized asy asr(y1,...,y L), with padding
+tokens masked using−100. For SER and ASC, labels are
+mapped to integer class IDs with missing labels set to−100
+andC ser,C asc are the number of classes:
+yser∈{0,...,C ser−1}∪{−100}(2)
+yasc∈{0,...,C asc−1}∪{−100}(3)
+The gate targety gate ∈ {0,1,2}respectively denotes clean
+speech, non-speech, and noisy speech.
+2.2. Shared Encoder
+The Whisper-small encoder comprises two convolutional lay-
+ers followed by 12 Transformer blocks [14]. It mapsXto the
+hidden-state sequenceH:
+H= E(X)∈R T ′×D (4)
+whereT ′ is 1500 andDis 768. The encoder output is directly
+passed to the ASR decoder. For classification heads, the em-
+bedding ¯his generated via mean-pooling:
+¯h= 1
+T′
+T ′
+X
+t=1
+Ht∈R D (5)
+2.3. Multi-Task Heads
+The model contains four output heads: an ASR decoder and
+linear classifiers for the V AD-gate, SER, and ASC.
+ASR Decoder:The Whisper decoder consists of 12 Trans-
+former layers [14] which predict output tokens onH. The de-
+coder is frozen during initial training to stabilize optimization
+and unfrozen during joint fine-tuning.
+ˆyasr = D(H)(6)
+Gate Head:A three-class classifier predicts the routing de-
+cisionˆygate. HereW g andb g are gate weights and bias:
+ˆzgate = softmax(Wg ¯h+b g),ˆy gate = arg max(ˆzgate)(7)
+SER Head:Emotion probabilitiesˆy ser for speech samples
+are computed as:
+ˆzser = softmax(Ws¯h+b s),ˆy ser = arg max(ˆzser)(8)
+Here,W s is the SER weight andb s is the SER bias.
+ASC Head:Scene probabilitiesˆy asc for non-speech and
+noisy speech inputs are predicted as:
+ˆzasc = softmax(Wa¯h+b a),ˆy asc = arg max(ˆzasc)(9)
+Here,W a is the ASC weight andb a is the ASC bias.
+2.4. Training Procedure
+All heads are optimized jointly using a weighted multi-task loss
+as defined in [30]. The V AD gate head is trained using standard
+cross-entropy (CE) loss. For ASR, loss is omitted for samples
+without transcripts, while SER and ASC losses are computed
+using masked CE to account for task-specific label availability.
+The task-specific binary masks are defined as:
+masr =
+(
+1,if transcript̸=null
+0,else (10)
+mser =
+(
+1,if SER label̸=−100
+0,else (11)
+masc =
+(
+1,if ASC label̸=−100
+0,else (12)
+The overall training objective is a weighted sum of task losses:
+L=λ ASRLASR +λ SERLSER +λ ASCLASC +λ GATELGATE (13)
+whereλ ASR,λ SER,λ ASC,λ GATE >0are task-specific weights.
+The gate loss weightλ GATE is initialized to a higher value to pri-
+oritize accurate inference-time routing. Training is conducted in
+two phases: (i) the encoder and classification heads (gate, SER,
+ASC) are trained while the ASR decoder is frozen, and (ii) all
+components are jointly fine-tuned. Gate predictions are not used
+for task routing during training and are applied only at inference
+time.
+2.5. Inference and Conditional Routing
+During inference, task execution is conditioned onˆygate as fol-
+lows:
+•ˆygate == 0: ASR + SER
+•ˆygate == 1: ASC only
+•ˆygate == 2: ASR + SER + ASC
+This gate-controlled routing reduces computation and sup-
+presses ASR hallucinations on non-speech inputs by avoiding
+unnecessary decoding [26].
+3. Experimental Setup
+3.1. Datasets and Evaluation Metrics
+The emotional speech data used to construct ESAS-32K is
+sourced from publicly available datasets including RA VDESS
+[31], TESS [32], and SA VEE [33], while acoustic scene sam-
+ples are obtained from the SPASS dataset [34]. ESAS-32K is
+a fully annotated, synthesized multi-task corpus designed by us
+for joint learning of ASR, SER, ASC, and V AD-style gating. It
+consists of a total of 32,080 audio samples, comprising 7,080
+1267
+Figure 1:Gated multi-task Whisper model architecture. Training phase: Gate, ASR, SER, and ASC are jointly optimized using a
+weighted multi-task loss function. Inference phase: ASR, SER, and ASC heads are activated based on Gate Head.
+clean speech samples, 7,080 noisy speech samples, and 17,920
+non-speech noise-only samples. Noisy speech samples are gen-
+erated by mixing emotional speech with acoustic scenes at mul-
+tiple signal-to-noise ratios (5, 10, 15, 20 dB) [29], and all audio
+is resampled to 16 kHz and padded to a uniform duration of
+10 s. Each sample is annotated with the appropriate task labels,
+with 8 emotions for SER, 3 V AD labels, 5 scenes for ASC, and
+the ASR transcripts.
+For evaluation, standard classification metrics of accuracy
+and F1-score are reported for the V AD gate, SER, and ASC
+tasks, while ASR performance is measured using word error
+rate (WER) and hallucination (Hal.) rate. Hal. rate (Eq. 14) is
+computed as the percentage of non-speech samples for which
+the ASR decoder generates text.
+Hal.Rate(%) = N ASR
+NS
+NNS
+×100(14)
+whereN NS is the total number of non-speech samples andNASR
+NS
+is the number of non-speech samples for which the ASR de-
+coder generates a transcript.
+3.2. Training Configuration
+The model is initialized from theWhisper-small.en1 variant pre-
+trained on 680,000 hours of multilingual and noise-rich audio.
+It consists of a 12-layer Transformer encoder and 12-layer de-
+coder with a hidden size of 768. Optimization is performed
+using AdamW with initial learning rate of5×10 −5 and batch
+size of 4, with each phase trained for 5 epochs. The gate pre-
+dicts three classes: clean speech, non-speech, noisy speech,Cser
+is 8 andC asc is 5. The multi-task objective is a weighted sum
+of individual losses, initialized to 0.5 forλASR,λ SER,λ ASC and 1
+forλ GATE to prioritize inference-time routing accuracy. During
+decoding, ano repeat ngram sizeof 3 with a repetition
+penalty of 1.3 is applied to mitigate looping hallucinations on
+short speech segments. All models are implemented using Py-
+Torch and the Hugging Face Transformers framework. Base-
+line systems use TensorFlow, Keras, scikit-learn, and Librosa.
+1https://huggingface.co/openai/whisper-small.
+en
+Experiments are conducted on a workstation with an Intel(R)
+Core(TM) i9-9900K 3.60 GHz CPU, an NVIDIA TITAN RTX
+GPU (24 GB, CUDA 12.2), and 128 GB RAM.
+4. Results and Discussion
+This section presents a comprehensive evaluation of the pro-
+posed Gated Multi-Task Whisper model on the ESAS-32K
+dataset. We analyze the impact of data availability, gate-
+controlled routing, decoding constraints, and comparisons with
+single-task state-of-the-art baselines. All training, validation,
+and test splits are mutually exclusive.
+4.1. Performance of Gated Multi-task Whisper
+Table 1 reports performance under varying levels of labeled
+training data. Metrics include accuracy and F1-score for the
+V AD gate, SER, and ASC heads, along with WER for ASR and
+hal. rate on non-speech inputs. Results are shown both with and
+without theno repeat ngram sizedecoding constraint.
+Table 1:Performance evaluation of Gated Multi-task
+Whisper on ESAS-32K. WER corresponds to speech sam-
+ples and Hal. rate to non-speech samples for ASR.
+no repeat ngram sizeis 3 with repetition penalty of 1.3.
+Gate SER ASC ASR
+Train/Val/Test (%) Acc. F1 Acc. F1 Acc. F1 WER Hal. Rate (%)
+Withoutngramlimit
+70 / 10 / 20 99.98 0.997 98.2 0.9785 94.5 0.944 23.3150.015
+40 / 10 / 50 99.48 0.992 97.1 0.969 92.4 0.922 21.423 0.404
+20 / 10 / 70 99.24 0.991 94.1 0.941 90.0 0.897 15.5200.722
+10 / 10 / 80 98.99 0.990 91.1 0.905 86.5 0.860 25.156 1.014
+Withngramlimit
+70 / 10 / 20 99.98 0.998 98.1 0.977 94.5 0.943 0.411 0.014
+40 / 10 / 50 99.50 0.994 96.9 0.966 92.4 0.924 0.426 0.440
+20 / 10 / 70 99.15 0.991 93.7 0.936 90.2 0.898 0.814 0.784
+10 / 10 / 80 98.97 0.988 90.3 0.895 86.9 0.867 0.996 1.112
+Across all tasks, the best performance is achieved under the
+high-resource (70/10/20) setting, with gradual degradation as
+labeled data is reduced. Despite this, the gate head remains
+highly robust even in low-resource regimes, benefiting from its
+higher loss weight and the relative simplicity of three-class dis-
+crimination. SER and ASC performance remains competitive
+1268
+Table 2:Effect of Gating Mechanism in Proposed Multi-task
+Whisper evaluated on ESAS-32K
+SER ASC ASR
+Train/Val/Test (%) Acc. F1 Acc. F1 WER Hal. Rate (%)
+With Gate
+70 / 10 / 20 98.2 0.9785 94.5 0.944 23.3150.015
+40 / 10 / 50 97.1 0.9690 92.4 0.922 21.4230.404
+Without Gate
+70 / 10 / 20 97.5 0.9710 93.2 0.925 34.412 96.11
+40 / 10 / 50 96.4 0.9610 92.6 0.922 35.300 96.23
+Table 3:Performance comparison of the proposed method
+with single-task and state-of-the-art task-specific models on the
+ESAS-32K corpus (70% train, 10% validation, 20% test).
+Task Model Input Features Acc. (%) F1
+V AD Gate
+S-RF [29] MFCC, GTCC, ZCR 99.13 0.989
+Whisper-V AD Log-Mel Spec 99.90 0.990
+ProposedLog-Mel Spec99.98 0.997
+SER
+2D-CNN [35] Log-Mel Spec 90.3 0.897
+Whisper-SER Log-Mel Spec 96.2 0.960
+ProposedLog-Mel Spec98.2 0.978
+ASC
+Inception-ResNet [8] Mel Spec 97.4 0.974
+Whisper-ASC Log-Mel Spec 92.4 0.924
+ProposedLog-Mel Spec94.5 0.944
+ASR
+WER Hal. Rate (%)
+Whisper-small Log-Mel Spec 30.774 98.58
+ProposedLog-Mel Spec23.315 0.40
+with corresponding high-resource setting, indicating that joint
+optimization does not degrade classification quality.
+Most notably, the integrated gating mechanism sup-
+presses ASR hallucinations on non-speech inputs. Even
+when some non-speech samples are misclassified as speech
+by the gate, hallucinations remain minimal. Applying the
+no repeat ngram sizeconstraint further reduces WER by
+preventing looping repetitions, an effect that is particularly pro-
+nounced due to the 10 s duration of ESAS-32K samples com-
+pared to Whisper’s expected 30 s input. This constraint miti-
+gates padding-induced hallucinations without affecting classi-
+fication performance, though its effectiveness for longer seg-
+ments requires further investigation.
+4.2. Importance of Gating Mechanism
+Table 2 compares the proposed model with and without the gat-
+ing mechanism. While SER and ASC accuracy and F1-scores
+show only marginal degradation in the ungated setting, the ASR
+hallucination rate increases drastically. More than 96% of non-
+speech samples in the ungated model produce meaningless or
+inappropriate transcriptions, including repetitions and profani-
+ties [26]. This behavior persists even when repetition penalties
+are applied, confirming that decoding constraints alone are in-
+sufficient. The gate-controlled architecture is therefore essential
+for reliable ASR in mixed speech and non-speech environments.
+4.3. Comparison with single task baseline models
+The proposed model consistently outperforms or matches
+single-task and state-of-the-art baselines across all evaluated
+tasks (see Table 3). For SER, the proposed multi-task model
+surpasses both Whisper-SER and the 2D-CNN baseline de-
+rived from [35], indicating that shared representation learning
+improves emotion classification in noisy environments when
+trained jointly with ASR and gating. It is important to note that
+SER models are trained and evaluated exclusively on speech
+samples (i.e., clean and noisy speech segments). For ASC, per-
+formance is slightly lower than the Inception-ResNet baseline
+but remains consistent, even under reduced supervision. The
+individual ASC task is applied only to non-speech and noisy
+speech samples to determine the model’s ability to general-
+ize scene understanding within a unified framework. The pro-
+posed V AD gate achieves superior performance compared to
+both feature-based and Whisper-based single-task baselines, ef-
+fectively performing three-class discrimination between clean
+speech, noisy speech, and non-speech. Most notably, the gate-
+controlled architecture nearly eliminates ASR hallucinations.
+Among all evaluated models, only the single-task ASR base-
+line is trained and tested on the full ESAS-32K dataset (in-
+cluding non-speech segments) to assess susceptibility to hal-
+lucinations in noisy audio, where it exhibits severe degrada-
+tion. While state-of-the-art baselines are trained independently
+for each task, the proposed method leverages pre-trained Whis-
+per weights with joint optimization across four tasks and still
+achieves comparable or superior performance, demonstrating
+the effectiveness of gated MTL.
+4.4. Key Takeaways
+•Integrated gating reduces hallucinations:The gated multi-
+task Whisper model explicitly suppresses hallucinated tran-
+scriptions during silent or non-speech inputs (as observed in
+native Whisper models), reducing hallucination rates from
+>96% to<1% via the novel V AD-inspired gate trained as
+an auxiliary task that performs dynamic routing at inference.
+•Joint training preserves task performance:Jointly opti-
+mizing ASR, SER, ASC, and the gating yields performance
+comparable to (or better than) task-specific baselines. The
+mechanism itself is architectural and modular, and can be ex-
+tended to different multi-task audio settings.
+•Robustness under limited supervision:The model main-
+tains reasonable performance even with as little as 10%
+labeled training data, demonstrating suitability for low-
+resource scenarios.
+•Decoding constraints improve ASR quality:
+no repeat ngram sizereduces WER by prevent-
+ing repetition loops without affecting classification accuracy.
+•Whisper as a shared backbone:The pre-trained Whisper
+encoder generalizes effectively across speech and ambient
+sound tasks. The proposed design is independent of model
+size and can be applied to all Whisper variants.
+•Generalization beyond current settings:The current evalu-
+ation focused on fixed-length (10 seconds) English audio and
+a limited set of acoustic scenes; extending the framework to
+variable-length, multilingual, and cross-corpus settings, and
+improving gate robustness under severe noise, are key direc-
+tions.
+5. Conclusion and Future Scope
+The Gated Multi-Task Whisper framework jointly models ASR,
+SER, and ASC with a shared encoder for robust, unified audio
+understanding. A V AD-inspired gate enables conditional task
+activation during inference, significantly reducing ASR halluci-
+nations on non-speech inputs while maintaining strong perfor-
+mance across tasks, validated on the ESAS-32K dataset with
+noisy and mixed acoustic conditions. The proposed framework
+is especially useful for audio monitoring and voice-based as-
+sistants. Future work includes variable-length and multilingual
+evaluation, generalization to other domains, improved routing
+under varied noise, and examining ethics and privacy in contin-
+uous monitoring deployments.
+1269
+6. Generative AI Use Disclosure
+Generative AI tools have been mainly used for language editing,
+paraphrasing, grammar correction, and formatting purposes in
+the manuscript. All scientific contributions, technical imple-
+mentations, and interpretations were developed and validated
+by the authors. In accordance with policy guidelines, no gener-
+ative AI system is listed as a co-author, and all authors take full
+responsibility for the content and integrity of this paper.

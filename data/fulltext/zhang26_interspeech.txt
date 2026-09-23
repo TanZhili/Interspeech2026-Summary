@@ -1,0 +1,500 @@
+AURA: Audio-Geometry Conditioned U-Net Refinement with Flow Matching
+for High-Fidelity Monaural-to-Binaural Synthesis
+Wenjie Zhang1,∗, Changjun He1,∗, Yinghan Cao1, Shiyun Xu1, Mingjiang Wang1,∗∗
+1 Harbin Institute of Technology (Shenzhen), China
+{25B962008, changjunhe, 23S052009, 24B352003}@stu.hit.edu.cn, mjwang@hit.edu.cn
+Abstract
+Spatial audio is crucial for immersive listening, and binaural
+rendering is particularly appealing due to its alignment with hu-
+man auditory perception. However, synthesizing high-quality
+binaural audio from monaural input remains challenging, as
+spatial cues must be inferred while preserving both spatial re-
+alism and fine-grained timbral detail, limiting its use in VR/AR
+and telepresence. To address this issue, we propose AURA, a
+two-stage binaural synthesis framework that explicitly models
+the relationship between monaural audio and source direction.
+The first stage combines global context modeling and local tex-
+ture extraction to produce a coarse binaural estimate. The sec-
+ond stage refines this estimate with a generative mechanism,
+enhancing spatial cues and spectral details for high-fidelity out-
+put. Extensive experiments show that AURA outperforms state-
+of-the-art methods in both subjective evaluations and objective
+metrics (Wave-L2: 0.123 vs. 0.128).
+Index Terms: Binaural audio synthesis, Spatial perception,
+Flow matching
+1. Introduction
+Audio is central to human perception and interaction, and deliv-
+ering high-quality listening experiences is increasingly impor-
+tant for virtual reality, mixed reality, and telepresence systems
+[1, 2, 3]. While monaural audio conveys content, it lacks the
+spatial context required to infer a source’s distance and direc-
+tion. Binaural audio, by contrast, encodes spatial cues via inter-
+aural level and time differences (ILD/ITD), enabling a stronger
+sense of externalization and spatial presence [4, 5]. These prop-
+erties have spurred growing interest in binaural audio synthesis,
+which aims to recover realistic spatial impressions from readily
+available monaural recordings.
+A substantial body of prior work relies on classical signal-
+processing pipelines that render binaural audio using head-
+related transfer functions (HRTFs) [6, 7, 8, 9]. In these ap-
+proaches, binaural cues are typically modeled by sparsely mea-
+suring responses at discrete spatial locations and then using the
+resulting HRTF database to spatialize monaural signals. While
+effective in principle, such measurements are expensive and in-
+herently tied to fixed capture setups, which makes it difficult to
+faithfully account for the relative pose between a (virtual) sound
+source and a listener, their potential motion, and the presence of
+environmental noise and reverberation in realistic scenes [10].
+As a result, producing high-quality binaural renderings that re-
+main robust under diverse and dynamic conditions continues to
+be a challenging and largely unresolved problem [10, 11].
+*These authors contributed equally.
+**indicates the corresponding author.
+Given the strong success of deep neural networks in audio-
+related tasks, learning-based binaural synthesis has attracted
+growing attention for its potential to model spatial cues and
+interaural differences more accurately, thereby enabling more
+natural listening experiences. Some approaches further lever-
+age auxiliary modalities, with visual information being the most
+common choice, to facilitate binaural generation [12, 13, 14]. In
+this work, however, we focus on the most fundamental setting
+where only monaural audio is available. Richard et al. propose
+WarpNet, which incorporates a time dynamic warping (TDW)
+module and conditioned hyper-convolutions to fuse monaural
+audio with the relative source–listener geometry for binaural
+synthesis [11]. Leng et al. introduce BinauralGrad, a two-
+stage framework that uses diffusion to generate a shared binau-
+ral component from the TDW-based estimate and then synthe-
+sizes the interaural difference component to produce the final
+binaural signal [15]. Lee et al. perform binaural rendering in
+the Fourier domain, improving interpretability and robustness
+across source domains, leading to the NFS model [16]. He et
+al. integrate positional cues via a dual-position attention module
+and capture motion-induced Doppler effects [17]. Despite these
+advances, most existing methods still fall short of producing
+high-fidelity binaural audio that is perceptually indistinguish-
+able from real-world recordings.
+At the same time, the emergence of flow matching opens
+a promising alternative for audio synthesis by learning control-
+lable probability paths [18, 19, 20], which can help capture real-
+istic acoustics and dynamic environmental noise. However, ap-
+plying flow matching to binaural synthesis from monaural input
+is intrinsically challenging, because a monaural signal does not
+explicitly encode spatial pose, motion state, or other directional
+attributes needed to disambiguate binaural cues. To address this
+challenge, we cast binaural synthesis as a two-stage process: the
+first stage predicts a coarse binaural signal from the monaural
+input, while the second stage applies flow-matching-based re-
+finement to inject fine-grained spatial and spectral details that
+are critical for high-quality binaural rendering.
+Overall, we proposeAURA, a two-stage framework for
+mono-to-binaural synthesis conditioned on (virtual) source ge-
+ometry. AURA first predicts a coarse binaural signal with a hy-
+brid Transformer–CNN U-Net that jointly captures long-range
+contextual dependencies and fine-grained local binaural tex-
+tures while aligning audio content with spatial cues. It then
+refines the coarse estimate with conditional flow matching to
+recover subtle spatial micro-cues and stochastic acoustic details
+that are difficult to infer from monaural input alone. Concretely,
+our contributions are threefold: (i) we design a hybrid U-Net
+backbone that integrates attention-based context modeling with
+convolutional texture extraction for robust coarse binaural pre-
+diction; (ii) we introduce an audio–pose interaction mechanism
+3323
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-87
+Spatial-Enhanced Residual 
+Upsample Block
+*
+Pose
+TDW
+TCDB
+TCDB
+SERUB
+SERUB
+Flow Matching
+Binaural Audio 𝑌𝑌
+Mono
+C
+SAMA
+TCDB
+Norm
+1 × 1
+SG
+1 × 1
+*
+1 × 1
+* 𝛽𝛽
+𝑋𝑋𝐷𝐷𝐷𝐷𝐷𝐷𝐷𝐷
+Norm
+* 𝛼𝛼1
+𝛼𝛼2
+Norm
+1 × 1
+SG
+1 × 1
+MHSA
+𝑋𝑋𝐷𝐷𝐷𝐷𝐷𝐷
+Avg Pool
+3 × 3 DW
+DownSample
+1 × 1
+Norm&Activate
+C
+UpSample
+1 × 1
+Norm&Activate
+𝑋𝑋𝑈𝑈𝐷𝐷𝐷𝐷
+Skip
+𝑋𝑋𝑈𝑈𝐷𝐷𝐷𝐷𝐷𝐷
+Element-wise 
+Addition
+C Concatenation
+(a) SERUB (b) TCDB (c) An overview of the proposed AURA model
+x𝜏𝜏Pose
+CNN Block
+Norm&Activate
+× 𝑁𝑁𝑑𝑑𝐷𝐷𝑑𝑑𝐷𝐷
+CNN Block
+Norm&Activate
+× 𝑁𝑁𝑚𝑚𝐷𝐷𝑑𝑑
+× 𝑁𝑁𝐷𝐷𝑢𝑢
+Conditions
+CNN Block
+Norm&Activate
+𝑑𝑑
+𝑑𝑑𝑑𝑑 𝜙𝜙𝑂𝑂𝑂𝑂(𝑌𝑌)
+(d) Conditional flow matching
+1 × 1
+C Pose
+× 𝑁𝑁en
+SERUB
+*
+Figure 1:Overview of the AURA architecture. (a) illustrates the detailed architecture of the Spatial-Enhanced Residual Upsample
+Block (SERUB). (b) depicts the detailed architecture of the Transformer-CNN Downsample Block (TCDB), whereα 1,α 2, andβare
+all learnable parameters. (c) Schematic illustration of AURA, where dashed lines indicate skip connections. (d) provides an enlarged
+view of our flow matching model conditioning on spatial information and intermediate statexτ at timestepτon the probabilistic path.
+that enables the model to track spatial configuration and mo-
+tion cues; and (iii) we employ flow-matching-based refinement
+to enhance realism by injecting fine spectral and spatial details.
+Extensive evaluations show that AURA achieves more natural
+and higher-fidelity binaural rendering while maintaining effi-
+cient inference.
+2. METHODOLOGY
+2.1. Overall Architecture
+The overall architecture of the proposed AURA and its key com-
+ponents are illustrated in Fig. 1. The input to AURA consists of
+monaural audio along with the spatial information of (virtual)
+sound sources, including position and orientation, hereafter re-
+ferred to as Pos and Ori. We adopt Time Dynamic Warping [11]
+to process the input audio. The Transformer-CNN Downsample
+Blocks (TCDBs) are then employed to extract audio feature rep-
+resentations, while the Spatial-Enhanced Residual Upsample
+Blocks (SERUBs) generate coarse-grained binaural audio. The
+Spatial-Awareness and Motion Attention Mechanism (SAMA)
+is utilized to attend to the spatial location and motion state of
+the (virtual) sound sources. Additionally, Flow Matching is ap-
+plied to refine the coarse-grained binaural audio. The detailed
+architecture of AURA is described in the following subsections.
+2.2. Encoder-Decoder Architecture
+To simultaneously capture both local features and long-range
+dependencies in audio representations, the CNN and Trans-
+former branches are incorporated within the TCDB, as illus-
+trated in Fig. 1(b). Specifically, TCDB first performs downsam-
+pling to obtain deep audio features. In the Transformer branch,
+multi-head self-attention (MHSA) is employed to process these
+features, while a learnable lightweight modulator is introduced
+to enhance the Transformer’s capacity for effective feature rep-
+resentation. Subsequently, a seamlessly integrated SimpleGate
+(SG) [21] replaces the conventional feed-forward network, al-
+lowing more efficient information propagation. Residual con-
+nections are applied to both processes to compensate for poten-
+tial information loss and to stabilize the learning of deep repre-
+sentations.
+In parallel, the CNN branch leverages 1×1 and 3×3 depth-
+wise convolutions to encode channel-wise and spatial context,
+effectively capturing local patterns and incorporating inductive
+biases. Residual connections within the CNN branch further
+ensure the integrity and stable transmission of information. Fi-
+nally, the outputs from the Transformer and CNN branches are
+fused, achieving a collaborative representation of both local and
+global audio characteristics, which provides a robust foundation
+for subsequent audio synthesis in the AURA framework.
+To enhance the model’s ability to perceive spatial position-
+ing during audio feature reconstruction, spatial information is
+concatenated at multiple stages within SERUB, effectively im-
+proving the model’s spatial awareness. Additionally, to pre-
+serve low-level feature information and prevent loss of impor-
+tant details during the downsampling process, SERUB incorpo-
+rates the audio feature information from earlier stages, ensuring
+that the model retains critical features throughout the processing
+pipeline. The detailed structure is shown in Fig. 1(a).
+2.3. Spatial-Awareness and Motion Attention Mechanism
+The variation in the position and orientation of (virtual) sound
+sources is crucial for accurately presenting spatial percep-
+tion. To enable the model to attend to the spatial positioning
+and directional changes of (virtual) sound sources, we intro-
+duce Spatial-Awareness and Motion Attention (SAMA) within
+AURA. The structure of SAMA is illustrated in Fig. 2. It com-
+3324
+prises three key components: self-attention, cross-attention, and
+multi-scale information fusion modules.
+The following presentation is an example of SAMA. The
+inputV∈R B×7×L, where 7 represents the number of channels
+for spatial information, with 3 channels representing position
+and 4 channels representing orientation which is parameterized
+as a unit quaternion. The inputVfirst undergoes self-attention
+to capture contextual information, followed by cross-attention
+to model the interrelations between position and orientation in-
+formation. Subsequently, multi-scale convolution extract and
+integrate spatial information across different scales. Finally,
+the processed features pass through a one-dimensional convo-
+lution, followed by normalization and an activation function.
+Throughout this process, residual connections are included to
+ensure information preservation and to mitigate potential infor-
+mation loss.
+Norm
+SelfAttention
+* 𝛾𝛾1
+Norm
+CrossAttention
+C
+1 × 1
+* 𝛾𝛾2
+Split
+Pos Ori
+1 × 1 3 × 3 5 × 5 7 × 7
+Norm&Activate
+Norm
+SelfAttention
+𝛾𝛾1
+Norm
+CrossAttention
+C
+1 × 1
+* 𝛾𝛾2
+Split
+Pos Ori
+1 × 1 3 × 3 5 × 5 7 × 7
+Norm&Activate
+*
+Figure 2:The architecture of Spatial-Awareness and Motion At-
+tention (SAMA), whereγ 1 andγ 2 are all learnable parameters.
+2.4. Conditional Flow Matching Refinement
+Learning a mono-to-binaural mapping requires not only inject-
+ing geometric cues but also recovering fine-grained acoustic
+details such as background ambience and subtle spatial micro-
+cues. These details are often weak or exhibit stochastic behav-
+ior in monaural recordings. To model such residual details be-
+yond the coarse prediction, AURA employs Conditional Flow
+Matching, abbreviated as CFM, as a refinement stage, as shown
+in Fig. 1, subfigure d. Compared to diffusion-based generators
+[22, 23, 24, 25, 26], CFM provides a continuous-time formu-
+lation with stable optimization and a simpler training objective
+[18].
+Letˆy∈R B×2×T denote the coarse binaural estimate from
+the first stage, and lety∈R B×2×T be the ground-truth binau-
+ral waveform. We define a refinement prior by perturbing the
+coarse estimate with isotropic Gaussian noise:
+x0 = ˆy+σz,z∼N(0,I),(1)
+and set the target sample asx 1 =y. Under the continuous nor-
+malizing flow view, refinement corresponds to learning a time-
+dependent conditional vector field that transports samples from
+the prior aroundˆyto the data distribution ofy, conditioned on
+the pose sequenceV. Importantly, the CFM network takesonly
+(xτ,τ,V)as input; the coarse estimateˆyaffects refinement im-
+plicitly through the initializationx 0, whileVprovides the ex-
+plicit spatial conditioning.
+Following the OT path commonly used in flow matching,
+we construct a linear probability path betweenx 0 andx 1:
+xτ = (1−τ)x 0 +τx 1.(2)
+This path induces the corresponding target velocity field
+v⋆(xτ,τ) =x 1−x 0,(3)
+which is constant alongτfor the linear OT bridge. We param-
+eterize the conditional vector field with a neural networku θ(·)
+and train it to matchv ⋆ via
+LCFM =E τ,x0,x1
+
+∥uθ(xτ,τ,V)−(x 1−x 0)∥1
+
+(4)
+At inference time, we samplex 0 = ˆy+σzand solve the
+ODE defined by the learned vector field:
+dxτ
+dτ =u θ(xτ,τ,V), x τ=0 = ˆy+σz,(5)
+fromτ= 0toτ= 1to obtain the refined binaural output
+˜y:=xτ=1.(6)
+2.5. Loss Function
+During the training process, we supervise the model using a
+composite loss function, which consists of the L2-loss, phase
+error, amplitude error, andLCFM . The L2-loss is employed to
+measure the mean squared error between the synthesized binau-
+ral audio and the ground truth. The corresponding loss function
+is formulated as follows:
+L2(y,yt) = 1
+n
+nX
+(y−y t)2 (7)
+Here,yandy t denote the synthesized binaural audio and
+the ground truth, respectively, andnrepresents the length of the
+audio sequence. To quantify the phase discrepancy between the
+synthesized binaural audio and the ground truth, we employ the
+phase-loss, which is defined as follows:
+LPhase (y,yt) =L(∠Y(t,f),∠Y g(t,f))(8)
+Y(t, f)represents the short-time Fourier transform operation, the
+subscriptgindicates the operation on the ground truth,∠de-
+notes the phase computation.
+LAmp(y,yt) =L(|Y(t,f)|,|Y g(t,f)|)(9)
+Here,|·|denotes the amplitude computation. The AURA
+model is trained using a composite loss function, which is de-
+fined as follows:
+L=λ wavL2 +λPhaseLPhase +λAmpLAmp +λCFMLCFM
+(10)
+3. EXPERIMENTAL SETUP
+3.1. Dataset
+We evaluate our method using the dataset proposed in [11]. The
+listeners are represented by a KEMAR mannequin equipped
+with binaural microphones. Participants are instructed to move
+around the KEMAR mannequin and speak within a radius of 1.5
+m, resulting in a total of 2 hours of paired monaural and binau-
+ral recordings sampled at 48 kHz. To the best of our knowledge,
+this is currently the only publicly available dataset recorded out-
+side an anechoic chamber. For consistency and comparability,
+we follow the original training, validation, and test splits as de-
+scribed in [16].
+3325
+Table 1:Comparison of our approach with other advanced
+models in quantitative evaluation.
+Model YearWave-L2↓Amp-L2↓Phase-L2↓Param MACs
+DSP - 1.021 0.091 1.569 - -
+WaveNet [27] 2016 0.179 0.037 0.968 4.65 M 22.34 G
+WarpNet [11] 2021 0.167 0.048 0.807 8.59 M 4.27 G
+BinauralGrad [15] 2022 0.128 0.030 0.837 13.82 M 15.32 G
+NFS [16] 2023 0.172 0.035 0.999 0.55 M 357.58 M
+DPATFNet [17] 2025 0.148 0.0370.71714.88 M 2.44 G
+AURA 20260.123 0.0280.843 11.26 M 759.17 M
+3.2. Evaluation Metrics
+Considering factors such as auditory experience, we conduct
+both quantitative and perceptual evaluations of the synthesized
+binaural audio. Quantitatively, we report Wave-L2 (waveform
+MSE to the ground truth) and, in the STFT domain, Phase-L2
+and Amp-L2 (phase and magnitude MSE, respectively). For
+perceptual evaluation, we recruit 15 listeners to rate test-set
+samples on a 1–5 scale, including MOS (overall quality), Spa-
+tial MOS (spatialization quality), and Similarity MOS (percep-
+tual similarity to the ground truth).
+3.3. Implementation details
+In our experiments, each training batch contains 200 ms of au-
+dio. Both TCDB and SERUB consist of 6 layers, withN en in
+SERUB set to 3. For flow matching refinement,N down,Nmid,
+andNup are set to 1, 3, and 1, respectively. We use a fixed-step
+Euler solver with 10 steps, andσis set to 0.01. Moreover,λwav,
+λPhase ,λAmp, andλCFM are set to 1.0, 1.0, 0.01, and 1.0, re-
+spectively. Batch normalization is used for normalization, and
+GELU is used as the activation function.
+The optimizer used in the experiments is Adam [28], with
+a maximum learning rate of1×10 −3 and a minimum learning
+rate of1×10 −5. The learning rate is adjusted using a cosine
+annealing strategy [29], with a linear warm-up over 1000 steps.
+The model is trained for a total of 300,000 steps.
+4. RESULTS AND ANALYSIS
+4.1. Audio Performance
+We conduct both quantitative and perceptual evaluations of the
+synthesized binaural audio1, with the results presented in Tables
+1 and 2. Here, Param denotes the total number of model pa-
+rameters, while MACs represents the cumulative count of mul-
+tiply–accumulate operations, serving as an indicator of com-
+putational cost. For traditional DSP-based methods, binaural
+audio is synthesized using the publicly available CIPIC HRTF
+database [6]. In terms of quantitative metrics, the proposed
+method achieves the best performance in Wave-L2 and Amp-
+L2. Beyond quantitative evaluation, model size and computa-
+tional cost are also important factors to consider. Compared
+to BinauralGrad, our method not only delivers superior perfor-
+mance but also requires fewer parameters and MACs. Although
+NFS has a smaller parameter count and lower MACs, its per-
+formance is relatively inferior. DPATFNet achieves strong re-
+sults in Phase-L2, yet its model size and computational cost are
+higher than those of the proposed method.
+For perceptual evaluation, we conduct an online double-
+blind listening study. All participants rate the full set of sam-
+ples, with randomized presentation order to reduce ordering ef-
+fects [30, 31, 32], and method identities remain hidden through-
+1Audio samples are available at: https://ethuil.github.io/AURA/
+Table 2:Comparison of our approach with other advanced
+models in perceptual evaluation.
+Model Year MOS↑Spatialization MOS↑Similarity MOS↑
+DSP - 3.47±0.23 3.46±0.179 3.62±0.157
+WaveNet [27] 2016 3.57±0.178 3.54±0.326 3.92±0.317
+WarpNet [11] 2021 3.47±0.145 3.67±0.242 3.67±0.238
+BinauralGrad [15] 2022 3.53±0.181 3.84±0.132 3.78±0.215
+NFS [16] 2023 3.42±0.315 3.56±0.328 3.63±0.223
+DPATFNet [17] 2024 3.56±0.17 3.78±0.176 4.14±0.257
+AURA 20263.82±0.152 3.89±0.127 4.21±0.137
+Table 3:Objective evaluation results of ablation study
+Model Wave-L2↓Amp-L2↓Phase-L2↓
+AURA 0.123 0.028 0.843
+w/o TDW 0.223 0.031 1.183
+w/o Trans. branch 0.132 0.031 0.863
+w/o CNN branch 0.130 0.029 0.904
+w/o SAMA 0.145 0.031 0.970
+w/o CFM 0.183 0.028 0.906
+out. We report MOS with 95% confidence intervals by aggre-
+gating ratings across listeners and samples, and summarize the
+results in Table 2. AURA attains a MOS of 3.82, surpassing the
+baseline (3.47). Spatial-awareness MOS is comparable across
+models, potentially reflecting listeners’ higher expectations for
+spatial cues. In addition, AURA yields higher similarity scores,
+indicating improved fidelity to the reference audio.
+4.2. Ablation Studies
+To analyze the contributions of different components in AURA,
+we conduct an ablation study, as summarized in Table 3. Re-
+moving the TDW module (w/o TDW) leads to a performance
+drop across all metrics. Excluding the Transformer or CNN
+branch (w/o Trans. branch or w/o CNN branch) results in Wave-
+L2 increasing to 0.132 and 0.130, and Amp-L2 to 0.031 and
+0.029, indicating that both branches contribute to feature repre-
+sentation. When SAMA is omitted (w/o SAMA), the model’s
+ability to capture the spatial position and orientation of (virtual)
+sources is reduced, leading to Wave-L2 = 0.145 and Amp-L2
+= 0.031. The removal of CFM (w/o CFM) has a pronounced
+effect on synthesis quality, resulting in Wave-L2 = 0.183 while
+Amp-L2 remains largely unchanged, highlighting CFM’s crit-
+ical role in high-fidelity audio synthesis. Overall, the ablation
+results demonstrate that all components (TDW, Trans. branch,
+CNN branch, SAMA, and CFM) contribute jointly to achieving
+higher synthesis quality and fidelity.
+5. Conclusion
+This paper presents a novel binaural audio synthesis model,
+AURA, designed to provide a more immersive auditory experi-
+ence. AURA synthesizes high-quality and high-fidelity binaural
+audio in two main stages. In the first stage, AURA effectively
+captures both global and local features through the Transformer
+branch and CNN branch, improving audio quality and natural-
+ness. SAMA enables the model to attend to the motion and
+spatial positions of (virtual) sound sources by simultaneously
+focusing on the interrelationship between position and orienta-
+tion, thereby significantly enhancing spatial perception. In the
+second stage, the use of CFM complements the acoustic de-
+tails of sound propagation, achieving fine-grained binaural au-
+dio. AURA outperforms state-of-the-art models in both audio
+quality and spatial perception. Exploring more realistic binau-
+ral audio synthesis will be the next step in our research.
+3326
+6. Acknowledgments
+Thanks to the National Natural Science Foundation of China
+under Grant No.62276076, the Key Research and Develop-
+ment Program of Xinjiang Uygur Autonomous Region un-
+der Grant No. 2025B04037-001, the Shenzhen Higher Ed-
+ucation Institutions Stability Support Program under Grant
+No.GXWD20231130133530002 and the Guangdong Basic
+and Applied Basic Research Foundation under Grant No.
+2023A1515140109.
+7. Generative AI Use Disclosure
+The authors used generative AI tools only for language editing,
+grammar correction, and manuscript polishing. All technical
+content, including the problem formulation, methodology, ex-
+periments, analysis, and conclusions, was developed and ver-
+ified by the authors. The authors take full responsibility and
+accountability for the entire content of this paper.

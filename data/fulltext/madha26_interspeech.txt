@@ -1,0 +1,508 @@
+DLLM-TTS: Block Discrete Diffusion Language Model for Text-to-Speech
+Synthesis
+Wasim Madha1,∗∗, Nityanand Mathur 1, Hamees Sayed 1, Apoorv Singh 1, Sameer Khurana 1, Akshat
+Mandloi1, Sudarshan Kamath 1
+1 Smallest.ai
+wasim@smallest.ai, nityanand.mathur@iiitg.ac.in, hamees@smallest.ai,
+apoorv.singh@smallest.ai, sameerkhurana10@gmail.com, akshat@smallest.ai,
+sudarshan@smallest.ai
+Abstract
+Current text-to-speech systems face a trade-off: autoregres-
+sive codec language models produce highly intelligible speech
+but require large-scale models and training data and decode
+tokens sequentially, while non-autoregressive approaches im-
+prove speed at the cost of linguistic accuracy. We present
+DLLM-TTS, a framework that formulates TTS as conditional
+block discrete diffusion over X-Codec2 neural audio codec to-
+kens. The model decomposes sequences into blocks and applies
+masked diffusion within each block while processing blocks se-
+quentially, learning both local acoustic coherence and global
+text-speech alignment. During inference, parallel token pre-
+diction within blocks enables efficient generation with a real-
+time factor (RTF) of 0.15. A 0.6B-parameter model trained
+on 20K hours achieves competitive performance on the Seed-
+TTS-eval benchmark, demonstrating that block discrete diffu-
+sion language models enable practical and data-efficient speech
+synthesis with parallel generation.
+Index Terms: discrete diffusion, text-to-speech, block diffu-
+sion, neural codec, language model
+1. Introduction
+Text-to-speech synthesis faces a fundamental efficiency-quality
+trade-off. Autoregressive codec language models [1, 2, 3]
+achieve high-quality zero-shot synthesis but require 60K–250K
+hours of data and generate tokens sequentially, incurring high
+latency. Non-autoregressive approaches based on flow match-
+ing [4, 5] and diffusion [6, 7] enable parallel generation but
+typically need explicit duration modeling or struggle with text-
+speech alignment, leading to word skipping or repetition errors.
+Recent masked discrete diffusion language models [8, 9]
+have shown that discrete diffusion can match autoregressive
+quality for text generation with parallel decoding. BD3-
+LM [10] further introduces block decomposition, interpolating
+between autoregressive and fully parallel generation with flexi-
+ble speed-quality trade-offs. However, these methods have only
+been explored for text; their application to conditional speech
+generation over discrete codec tokens remains unexplored.
+We presentDLLM-TTS, which adapts block discrete dif-
+fusion to conditional speech generation. Speech exhibits strong
+local acoustic coherence at the phoneme level while requiring
+longer-range dependencies for text-speech alignment, a struc-
+ture naturally suited to block diffusion. We model speech as
+block discrete diffusion over X-Codec2 [11] codec tokens: se-
+quences are decomposed into blocks, and the model recon-
+structs masked tokens within each block conditioned on text,
+**indicates the corresponding author.
+enabling parallel prediction within blocks while preserving se-
+quential dependencies across them. The masked diffusion ob-
+jective additionally provides implicit data augmentation, as
+each sequence is observed under diverse masking patterns, im-
+proving data efficiency over autoregressive training.
+Contributions.❶We introduce block discrete diffusion for
+TTS, modeling speech synthesis as conditional masked token
+reconstruction over codec tokens with block decomposition,
+the first application of block discrete diffusion to conditional
+speech generation.❷We employ staircase attention to jointly
+capture local acoustic coherence within blocks and global text-
+speech alignment across blocks, without explicit duration mod-
+eling.❸We achieve competitive intelligibility on the Seed-TTS
+benchmark [12] using only 20K hours of data, a 3–12×reduc-
+tion over autoregressive systems.❹A 0.6B-parameter model
+achieves an RTF of 0.15 with strong zero-shot speaker similar-
+ity.
+2. Related Work
+Autoregressive Codec Language Models.A dominant
+paradigm in TTS formulates speech synthesis as language mod-
+eling over discrete neural codec tokens. V ALL-E [1] pioneered
+this approach by training on 60K hours of speech, achieving
+strong zero-shot synthesis from a 3-second prompt. V ALL-
+E 2 [2] introduced repetition-aware sampling and grouped
+code modeling to reach human parity on standard benchmarks.
+LLASA [3] demonstrated that scaling LLaMA-based architec-
+tures with X-Codec2 [11] up to 8B parameters yields consistent
+quality gains. DiTAR [13] combines a language model with
+a diffusion transformer in a patch-based autoregressive frame-
+work for continuous-valued speech generation. While these
+systems achieve high quality, sequential token generation in-
+troduces latency that limits real-time applications.
+Non-Autoregressive Speech Synthesis.To overcome the la-
+tency bottleneck, non-autoregressive methods generate speech
+in parallel. V oicebox [4] applies flow matching over mel-
+spectrograms conditioned on text and surrounding audio con-
+text. F5-TTS [5] simplifies the pipeline by using flow match-
+ing with a Diffusion Transformer (DiT), eliminating duration
+models and phoneme alignment. NaturalSpeech 3 [6] em-
+ploys factorized diffusion over disentangled speech attributes
+(content, prosody, timbre). StyleTTS 2 [7] achieves human-
+level quality through style diffusion and adversarial training
+with speech language model discriminators. CosyV oice [14]
+combines an LLM-based text-to-token stage with conditional
+flow matching for token-to-speech synthesis. SoundStorm [15]
+uses confidence-based parallel decoding over RVQ tokens for
+fast generation but struggles with text-speech alignment when
+6652
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-788
+Input Token Sequence
+ref txt ref codec gen txt [MASK]L
+Block Discrete Diffusion Transformer
+Iterative Denoising
+Blk 1 Blk k Blk N
+X-Codec2 Decoder
+Waveform
+Figure 1:Overview of DLLM-TTS.Textandreference codec
+tokensare concatenated withgeneration textand[MASK] L
+targets, then processed by theBlock Discrete Diffusion Trans-
+formerusing staircase attention (bidirectional/causal). Each
+block isiteratively denoisedand decoded byX-Codec2into
+speech.
+trained from scratch. MegaTTS 3 [16] proposes sparse align-
+ment with a latent diffusion transformer for robust zero-shot
+synthesis. These approaches typically require explicit duration
+prediction, frame-aligned annotations, or multi-stage pipelines,
+which complicate training data preparation.
+Discrete Diffusion Language Models.Masked discrete dif-
+fusion has recently emerged as a viable alternative to autore-
+gressive modeling for text generation. MDLM [8] derives
+a simplified objective based on masked language modeling
+losses, achieving strong performance among diffusion-based
+language models. LLaDA [9] scales masked diffusion to 8B pa-
+rameters, demonstrating competitive performance with autore-
+gressive LLMs on in-context learning and instruction follow-
+ing. BD3-LM [10] extends MDLM with block decomposition,
+interpolating between fully parallel diffusion and autoregres-
+sive generation while enabling variable-length output and KV
+caching. However, these methods have primarily been studied
+for text generation. Their application to conditional speech gen-
+eration, where both acoustic coherence and text–speech align-
+ment must be modeled jointly over discrete codec tokens, re-
+mains largely unexplored. Our work addresses this gap by
+adapting block discrete diffusion for text-to-speech synthesis.
+3. Methodology
+3.1. Background
+Neural Audio Codecs.Neural audio codecs compress contin-
+uous audio waveforms into discrete token sequences through
+learned quantization. Traditional residual vector quantization
+(RVQ) approaches like EnCodec [17] employ multiple code-
+book layers to progressively refine representations, producing
+parallel token streams. In contrast, X-Codec2 [11] adopts
+a unified semantic-acoustic architecture: a semantic encoder
+(Wav2Vec2-BERT) captures linguistic content while an acous-
+tic encoder preserves fine-grained audio characteristics. These
+representations are fused and quantized using single-stage Fi-
+nite Scalar Quantization (FSQ) with vocabulary size|V|=
+6561, producing a single token stream at frame ratefr = 50Hz.
+This yieldsL=f r·d sec codec tokens ford sec seconds of au-
+dio, simplifying integration with transformer language models
+by avoiding multiple parallel codebook streams.
+Masked Discrete Diffusion.Masked diffusion [8] defines a
+forward process that progressively corrupts discrete sequences
+by replacing tokens with a special[MASK]token, and a reverse
+process that learns to denoise the corrupted observations. For a
+sequencex= (x 1,...,x L)where eachx i∈V, the forward
+process at continuous timestept∈[0,1]corrupts each token
+independently:
+q(zt|x) =
+LY
+i=1
+
+αt·δ(zi
+t =x i)+(1−α t)·δ(zi
+t =[MASK])
+
+(1)
+whereαt∈[0,1]is a monotonically decreasing schedule func-
+tion. Att= 0the sequence is fully clean (α 0 = 1), while at
+t= 1it is fully masked (α 1≈0). The model learns the reverse
+processpθ(x|z t,c)to predict original tokens given corrupted
+observationszt and conditioningc.
+Block Discrete Diffusion.BD3-LM [10] extends masked dif-
+fusion by decomposing sequences into blocks of sizeB. Rather
+than processing the entire sequence uniformly, block diffusion
+generates blocks sequentially while allowing parallel prediction
+within each block. During training, the model receives concate-
+nated input[x t⊕x 0]wherex t contains masked tokens and
+x0 contains clean tokens from previous blocks. A specialized
+staircase attentionmask enforces: (1) bidirectional attention
+within each block for local coherence, (2) causal attention from
+noised blocks to previous clean blocks for sequential context,
+and (3) full causal attention within clean blocks. This architec-
+ture interpolates between fully parallel diffusion (B=L) and
+autoregressive generation (B= 1), enabling a flexible trade-off
+between generation speed and sequential dependency modeling.
+3.2. Block Discrete Diffusion for Speech
+We formulate text-to-speech synthesis as conditional block dis-
+crete diffusion over codec token sequences. Given a text input
+and speaker prompt, the model generates speech by iteratively
+denoising masked codec tokens through a block-based genera-
+tion process.
+Sequence Decomposition.A codec token sequencex=
+(x1,...,x L)is partitioned intoKcontiguous blocks of size
+B:
+x= [x (1),...,x (K) ], K=⌈L/B⌉,x (k)∈V B (2)
+whereB= 32tokens (∼0.64 s of audio atf r = 50Hz).
+Forward Process.For a given diffusion timestept∈[0,1],
+tokens within the target block are independently masked with
+probability1−α t whereαt = 1−tis a linear schedule. Con-
+cretely, for each positioniin blockk, a binary mask is sampled
+asm (k)
+i ∼Bernoulli(1−α t), and the corrupted token is:
+zi
+t = (1−m (k)
+i )xi +m (k)
+i [MASK](3)
+i.e., positions wherem (k)
+i = 1are replaced with[MASK]while
+others remain clean. The resulting masked sequencez t forms
+the corrupted observation that the model learns to reconstruct.
+Reverse Process and Training.The model predicts original
+unmasked tokens givenzt, conditioned on both text and speaker
+information. We adopt staircase attention, where positioniat-
+tends to positionjaccording to the binary maskA ij∈{0,1},
+defined as:
+Aij =1[C 1∨C 2∨C 3 ](4)
+with three conditions:C 1:b i=bj ∧b i≤b∗ (bidirectional
+within noised blocks),C 2:bj<bi (causal across blocks), and
+C3:bi=bj∧b i>b∗∧j≤i(causal within clean blocks), where
+bi =⌈i/B⌉maps positionito its block index,b ∗ is the cur-
+rent noised block, and1[·]is the indicator function. This en-
+ables bidirectional attention within each noised block for local
+6653
+Table 1:Model architecture hyperparameters.
+Hyperparameter Value
+Layers 28
+Hidden dim (d) 896
+Attention heads (H) 14
+Head dim (d/H) 64
+Text vocab (Qwen tokenizer) 151 936
+Codec vocab (|V|) 6 561
+Max sequence length 2 048
+Block size (B) 32
+coherence, causal attention to previous clean blocks for sequen-
+tial context, and causal attention within clean blocks for autore-
+gressive conditioning. The training objective minimizes cross-
+entropy loss over masked positions:
+L=E t∼U[0,1],x,z t∼q(·|x)
+
+−
+X
+i∈Mt
+logpθ(xi|z t,c)
+
+(5)
+whereM t denotes the set of masked positions at timestept,
+andcrepresents conditioning information (text and speaker
+prompt).
+Variable-Length Handling.To handle variable-length se-
+quences, we introduce an end-of-sequence (EOS) token. All to-
+kens following EOS are set to EOS, which simplifies the mask-
+ing process and eliminates the need for explicit length predic-
+tion, as the model learns to generate EOS when synthesis is
+complete.
+3.3. Model Architecture
+Our model is a 0.6B-parameter transformer initialized from
+Qwen2 [18] and adapted for block discrete diffusion. Table 1
+summarizes the architecture. The model uses Rotary Position
+Embeddings (RoPE) [19] for efficient long-context modeling.
+Training Input Format.During training, the input sequence
+consists ofNtext tokens followed byLcodec tokens:
+[<text>t 1···t N <EOS>c 1···c L]
+Text tokens and codec tokens are embedded via separate em-
+bedding layersE text ∈R |Vtext|×d andE codec ∈R |V|×d into
+a sharedd-dimensional space, then concatenated to form the
+inputh 0 ∈R (N+L)×d . During each training step, codec to-
+kens are randomly masked according to the diffusion timestept
+(Eq. 3), and the model learns to reconstruct the original tokens.
+Inference Input Format.For zero-shot speaker adaptation, we
+employ a reference-and-generation paradigm:
+[<ref text> <gen text> <EOS>r 1···r M [MASK]L]
+The reference text is the transcript of a 3–5 s speaker prompt.
+The reference codec tokens (M= 150–250atf r = 50Hz)
+encode the speaker’s voice characteristics. The generation sec-
+tion (Ltokens) starts fully masked and is iteratively denoised
+through block diffusion (Eq. 2), providing the model with both
+linguistic content and speaker identity through attention-based
+conditioning. The maximum sequence length is 2048 tokens
+(∼40 s of speech).
+3.4. Inference
+At inference time, we generate speech through sequential block
+diffusion decoding. Starting from a fully masked generation
+segment, we processKblocks sequentially, applyingTdenois-
+ing steps within each block (defaultT=B/2 = 16).
+Confidence-Based Sampling.At each denoising steps∈
+{1,...,T}within a block, the model predicts token distri-
+butions for all masked positions. For each masked position
+i∈M s, we compute:
+ˆxi = arg max
+v∈V
+pθ(xi =v|z s,c)(6)
+Positioniis unmasked if the model confidence exceeds a thresh-
+oldτ:
+Us =
+
+i∈M s : max
+v
+pθ(xi =v|z s,c)>τ
+	
+(7)
+withτ= 0.6. Unmasked positions are fixed toˆx i; remain-
+ing positions stay masked for subsequent steps. This allows the
+model to commit to high-certainty tokens first, then resolve am-
+biguous positions.
+Early Stopping.If all masked positions are unmasked (M s =
+∅) before stepT, denoising terminates early, reducing compu-
+tation for easy blocks.
+Generation Speed.Each block ofB= 32tokens spans
+B/fr = 0.64s of audio. Blocks are decoded sequentially with
+up toTparallel denoising steps each, yielding an RTF of 0.15 at
+T= 16. KV caching across blocks reduces latency for subse-
+quent blocks, and the block-sequential design enables streaming
+with low time-to-first-audio.
+4. Experiments
+4.1. Experimental Setup
+Training Data.We train DLLM-TTS through a two-stage
+curriculum:Stage 1trains the model on 16K hours sampled
+from the Emilia dataset [20] for 20 epochs, establishing co-
+herent codec token generation conditioned on text and speaker
+prompts. Training uses a batch size of 16 per GPU with 8-
+step gradient accumulation (effective batch size 128) across
+8×H100 GPUs for 3 days.Stage 2fine-tunes on 4K hours
+of high-quality synthetic speech to improve prosody and align-
+ment. Throughout both stages, we samplet∼U[0,1]and ap-
+ply per-token masking with probability1−α t (Eq. 3). We use
+AdamW [21] with learning rate1×10 −4, cosine schedule with
+1% warmup, and effective batch size 128.
+Evaluation.We evaluate on theSeed-TTS-evalbench-
+mark [12], a zero-shot TTS evaluation suite covering standard
+and challenging scenarios (rare words, complex prosody, long-
+form utterances).
+Metrics.We report:
+•Word Error Rate (WER)andCharacter Error Rate
+(CER)computed using Whisper-large-v3 [22] to measure in-
+telligibility.
+•Speaker Similarity (SIM)measured as cosine similar-
+ity between speaker embeddings extracted using WavLM-
+TDNN [23], evaluating voice cloning fidelity.
+•Mean Opinion Score (MOS)collected from 25 listeners fol-
+lowing the CodecMOS-Accent protocol [24], assessing per-
+ceptual naturalness and prosody on a 5-point scale.
+Baselines.We compare against autoregressive mod-
+els (LLASA [3], IndexTTS2 [25], Qwen2.5-Omni [26]),
+non-autoregressive models (F5-TTS [5], MaskGCT [27],
+CosyV oice3 [28], OpenAudio-s1-mini [29]), and hybrid mod-
+els (DiTAR [13]).
+6654
+Table 2:Results on Seed-TTS-eval (English). MOS collected
+from 25 listeners under the CodecMOS-Accent protocol.Bold:
+best. Underline : second best.
+Model Params WER↓CER↓SIM↑MOS↑
+Autoregressive Models
+LLASA-3B 3B 3.14 1.59 0.579 4.28
+Qwen2.5-Omni 7B 2.72 1.70 0.632 3.85
+Non-Autoregressive Models
+F5-TTS 0.3B 2.00 1.53 0.670 4.05
+MaskGCT – 2.62 2.27 0.717 3.76
+OpenAudio-s1-mini 0.5B 1.94 1.18 0.5504.29
+Hybrid Models
+DiTAR 0.6B1.69 1.020.735 4.20
+CosyV oice3 0.5B 2.02 1.16 0.718 4.10
+IndexTTS2 1.5B 2.23 1.08 0.706 3.98
+Block Diffusion (Ours)
+DLLM-TTS 0.6B2.25 1.05 0.7504.25
+4.2. Results and Analysis
+Table 2 presents results on the Seed-TTS-eval benchmark. With
+T= 32denoising steps and block sizeB= 32,DLLM-TTS
+achieves a WER of 2.25% and one of the highest speaker
+similarity scores (0.750) among open-source systems, using
+only0.6B parametersand20K hours of training data, sub-
+stantially less than systems trained on up to 250K hours. These
+results demonstrate that block discrete diffusion achieves com-
+petitive intelligibility while providing strong zero-shot voice
+cloning.
+Subjective Quality.On subjective evaluation (Table 2),
+DLLM-TTS attains a MOS of4.25, behind only OpenAudio-
+s1-mini and LLASA-3B and ahead of all other baselines. This
+confirms that our objective gains translate into perceptual qual-
+ity, and that block-wise denoising boundaries do not harm nat-
+uralness or prosody.
+Data Efficiency.Compared to autoregressive codec language
+models trained on 60K–250K hours, DLLM-TTS achieves
+competitive intelligibility with only20K hours, a3–12×data
+reduction. We attribute this to the masked diffusion training
+objective (Eq. 5), which exposes each sequence to diverse mask-
+ing patterns across timesteps, providing implicit data augmenta-
+tion compared to the single left-to-right ordering of autoregres-
+sive training.
+Latency.Following the inference procedure in Section 3.4,
+withT= 16steps per block and confidence thresholdτ= 0.6,
+DLLM-TTS achieves an RTF of0.15. Each block ofB= 32
+codec tokens spansB/fr = 0.64s of audio, enabling low time-
+to-first-audio and streaming synthesis after the first block is de-
+noised. KV caching across theKsequential blocks further re-
+duces latency.
+0 32 64 96 128 132
+Generated Token Position
+01
+5
+10
+15
+20
+25
+30
+3537
+40
+45
+50
+55
+60
+65
+6970
+75
+80
+85
+90
+95
+100101
+105
+110
+115
+120
+125
+130 Denoising Step (Global)
+Generated: 132 tokens
+Blocks: 6
+Total steps: 133
+Masked (MASK)
+Committed
+Not Yet Appended
+Block 0
+Block 1
+Block 2
+Block 3
+Block 4
+Block 5
+Figure 2:Visualization of the block-wise denoising process.
+(B= 32,T= 32)
+Table 3:Ablation studies. Top: denoising stepsT(atB= 32).
+Bottom: block sizeB(atT=B).Bold: best.
+Config WER↓CER↓SIM↑
+Denoising steps (T),B= 32
+T=814.58 7.86 0.748
+T=163.84 1.250.765
+T=322.25 1.050.750
+T=648.83 6.76 0.746
+Block size (B),T=B
+B=84.19 2.06 0.725
+B=163.04 1.43 0.746
+B=322.25 1.05 0.750
+4.3. Ablation Studies
+Effect of Denoising Steps.Table 3 (top) evaluates the number
+of denoising stepsTper block during inference (Section 3.4).
+Withτ= 0.6(Eq. 7), increasingTimproves intelligibility
+while maintaining stable speaker similarity: WER decreases
+from 14.58% to 2.25% and CER from 7.86% to 1.05% when
+moving fromT= 8toT= 32, while SIM remains relatively
+stable (0.746–0.765). AtT= 16(=B/2), the model achieves
+a favorable speed–quality trade-off with an RTF of0.15.
+Effect of Block Size.Table 3 (bottom) varies block sizeBwith
+matched denoising steps (T=B). LargerBraises within-
+block parallelism but reduces sequential boundariesK=
+⌈L/B⌉, weakening cross-block conditioning under the stair-
+case mask (Eq. 4); smallerBstrengthens autoregressive guid-
+ance but limits parallel context. Empirically,B= 32is best
+(WER 2.25%, CER 1.05%, SIM 0.750): smaller blocks (B=
+8,16) raise error rates, while excessively large blocks sacri-
+fice sequential modeling capacity and degrade intelligibility.
+Speaker similarity stays stable across configurations (0.725–
+0.750), showing robust voice cloning.
+5. Conclusion
+We presented DLLM-TTS, a TTS framework based on block
+discrete diffusion language modeling over neural audio codec
+tokens. By decomposing codec token sequences into blocks
+and applying masked diffusion within each block while pro-
+cessing them sequentially, the model learns both local acoustic
+coherence and global text–speech alignment without requiring
+explicit duration modeling or phoneme-level annotations.
+A 0.6B-parameter model trained on 20K hours of data
+achieves competitive intelligibility on the Seed-TTS benchmark
+while obtaining strong speaker similarity, demonstrating im-
+proved data efficiency compared to autoregressive codec lan-
+guage models trained on 60K–250K hours. The block-parallel
+inference strategy achieves a real-time factor (RTF) of 0.15, en-
+abling practical real-time speech synthesis.
+These results suggest that block discrete diffusion language
+models offer a scalable alternative to autoregressive speech
+models, combining the parallel generation advantages of diffu-
+sion with the sequential structure needed for stable text–speech
+alignment.
+6655
+6. Use of Generative AI Disclosure
+In preparing this manuscript, the authors used generative AI
+tools for language refinement (rephrasing and improving the
+clarity of author-written text) and as a coding assistant (help-
+ing write and debug software for experiments and analysis). All
+research contributions, including the methodology, experimen-
+tal design, results, and scientific claims, are the authors’ own.
+The authors reviewed and verified all AI-assisted text and code,
+and take full responsibility for the content of this paper.
+6656

@@ -1,0 +1,446 @@
+Tongue2Speech: Real-Time Speech Synthesis from Tongue Ultrasound Videos
+via Spatiotemporal Transformers
+Yash Sonkar ID 1,∗, Yasaswi Kilaru ID 1,∗, Sudheera Yelimeli ID 1, Neil Shah ID 1,2, Vineet Gandhi ID 1
+1 CVIT, IIIT Hyderabad, India
+2 TCS Research, Pune, India
+{yash.sonkar, kilaru.yasaswi, sudheera.yelimeli, neilkumar.shah}@research.iiit.ac.in,
+vgandhi@iiit.ac.in
+Abstract
+Ultrasound-to-Speech aims to synthesize intelligible speech
+from tongue ultrasound video. Prior approaches rely mainly
+on purely convolutional or recurrent architectures. We present
+Tongue2Speech, a lightweight framework combining explicit
+3D spatio-temporal encoding with a multi-layer Transformer
+to model long-range articulatory dynamics. Spectral distortion
+metrics (such as MSE) commonly used in prior work are weak
+indicators of lexical accuracy when used in isolation. There-
+fore, we evaluate performance using word error rate (WER). On
+the English TaL corpus,Tongue2Speechachieves15.93%WER
+in single-speaker and31.64%in multi-speaker settings, out-
+performing six strong baselines. Speaker-specific fine-tuning
+further improves intelligibility for unseen users. These results
+highlight tongue-only ultrasound as a promising pathway to-
+ward practical silent speech synthesis. Audio samples are avail-
+able at:https://tongue2speech.github.io/
+Index Terms: Ultrasound-to-Speech, Silent Speech Interfaces,
+Ultrasound Tongue Imaging
+1. Introduction
+Human speech arises from coordinated physiological processes
+in which airflow from the lungs excites the vocal folds and the
+vocal tract shapes the resulting sound through movements of the
+tongue, lips, jaw, and velum. As the most dynamic and acousti-
+cally influential articulator,the tonguegoverns vowel formants
+and many consonantal contrasts through its deformable sur-
+face [1, 2, 3], making its motion highly informative of the in-
+tended speech signal. The task of Ultrasound-to-Speech (U2S)
+aims to reconstruct intelligible speech from real-time tongue
+imaging, enabling Silent Speech Interfaces (SSI) without an
+acoustic signal [3]. Such systems are vital for individuals
+with preserved tongue movements but impaired phonation, such
+as laryngectomy patients [4] or those with neurological disor-
+ders [5, 6] that compromise laryngeal or respiratory control.
+Existing SSI techniques present several challenges: elec-
+tromagnetic articulography requires intraoral sensors, real-time
+MRI is costly and temporally constrained, and surface elec-
+tromyography measures indirect muscle activity rather than ar-
+ticulator geometry [7, 8, 9]. In contrast, ultrasound directly cap-
+tures tongue surface geometry, providing access to lingual ges-
+tures that are otherwise invisible [10, 3]. The development of
+cost-effective ultrasound hardware [11] and the current avail-
+ability of portable probes 1 further enhances its viability for
+practical deployment. Consequently, among sensing modalities,
+*These authors contributed equally.
+1https://www.butterflynetwork.com/iq3
+Ultrasound Tongue Imaging (UTI) offers a favorable trade-off
+between physiological fidelity and practical deployability.
+Although U2S research has made steady progress, several
+important limitations remain. First, modeling long-range coar-
+ticulation is critical for accurate speech reconstruction from
+tongue-only ultrasound videos. To address this, most existing
+methods rely on convolutional encoders combined with recur-
+rent LSTM-based temporal modeling [12, 13]. However, more
+recent advances in self-attention architectures remain largely
+underexplored. Second, evaluation is often conducted on rela-
+tively small speaker sets and relies on spectral distortion metrics
+such as mean squared error (MSE) or mel-cepstral distortion
+(MCD) [14], which provide limited insight into perceptual intel-
+ligibility. Large-scale multi-speaker WER-based assessment re-
+mains scarce, particularly for tongue-only systems [15, 16, 17].
+Moreover, UTI is inherently speaker-dependent: anatomical
+differences, probe placement variation, and individual articula-
+tory strategies produce substantial geometric variability across
+speakers. Hence, zero-shot cross-speaker generalization re-
+mains extremely challenging.
+To this end, we introduceTongue2Speech, a lightweight
+architecture that maps ultrasound tongue imaging to mel-
+spectrograms. We replace traditional LSTM or purely convo-
+lutional backbones with a 3D spatio-temporal front-end and a
+multi-layer Transformer encoder to capture long-range dynam-
+ics. Moving beyond standard spectral distortion metrics, we
+prioritize ASR-based word error rate (WER) as the principal
+measure of intelligibility. Our core contributions are:
+• We proposeTongue2Speech, a U2S architecture that com-
+bines 3D convolutional encoding with a self-attention Trans-
+former to model spatio-temporal dynamics and long-range
+coarticulation. The lightweight, non-autoregressive de-
+sign uses only19.17M parameters (6.25M excluding the
+vocoder), enabling real-time applications.
+• We present an extensive investigation into U2S, providing
+comprehensive single- and multi-speaker performance across
+six baselines. We report both MSE and WER, with WER
+serving as the primary measure of usability
+• Our method achieves high-fidelity reconstruction with WERs
+of16%in single-speaker and31%in multi-speaker eval-
+uations, demonstrating thatnatural soundingandintelligi-
+bleU2S is achievable with tongue-only input. We show
+that zero-shot multi-speaker performance remains challeng-
+ing, but speaker-specific fine tuning significantly restores in-
+telligibility for unseen users.
+6856
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3023
+2. Related Work
+Ultrasound imaging of tongue motion has been used in pho-
+netic research since the 1960s, with systematic acquisition pro-
+tocols established by Stone and colleagues in the 1980s and
+1990s [7]. The U2S problem was first demonstrated by Denby
+and Stone [18], who mapped reconstructed tongue contours to
+vocal tract filter parameters using a multilayer perceptron and
+synthesized intelligible speech. A subsequent study [19] fur-
+ther evaluated spectral parameter prediction from ultrasound.
+The broader SSI framework was later formalized in [3], defin-
+ing sensing modalities and application scenarios.
+Modern U2S systems have evolved substantially in archi-
+tectural design. Early approaches employed fully connected
+DNNs for articulatory-to-acoustic mapping [12]. These were
+followed by convolutional encoders combined with recurrent
+temporal modeling (typically LSTMs), predicting mel spectro-
+grams rendered with neural vocoders [13, 20]. Subsequent work
+incorporated transfer learning from Tacotron2-style TTS sys-
+tems [17], multi-task learning [21], speaker embeddings [22],
+ConvLSTM hybrids, data augmentation [23], and geometric
+normalization using Spatial Transformer Networks [24]. More
+recently, conformer-based architectures introduced attention
+mechanisms into U2S modeling [14]. The release of the Tongue
+and Lips (TaL) corpus [25] enabled larger-scale English U2S
+research. Multi-modal systems such as TaLNet combine ultra-
+sound and lip video streams [15], and co-learning frameworks
+incorporate auxiliary audio supervision [16].
+Several studies have explored ultrasound-to-text silent
+speech recognition, demonstrating that tongue motion provides
+complementary phonetic information. Landmark-based ap-
+proaches using DeepLabCut improved multi-speaker recogni-
+tion performance [26, 27]. UTI-derived articulatory features
+have also enhanced ASR for atypical speech [28], and ul-
+trasound has been used in multimodal speech enhancement
+through knowledge distillation [10].
+Although prior work acknowledges session and speaker-
+level variability due to anatomical differences and probe place-
+ment in ultrasound imaging, systematic evaluation of large-
+scale multi-speaker generalization using intelligibility-based
+metrics remains limited, and robust zero-shot generalization re-
+mains challenging. Moreover, speaker personalization has re-
+ceived relatively little attention in U2S synthesis. In this work,
+we therefore investigate fine-tuning a multi-speaker model
+trained on a diverse speaker pool for a target speaker, showing
+that efficient personalization can restore intelligible speech syn-
+thesis while highlighting the need for stronger zero-shot U2S
+models.
+3. Dataset and Preprocessing
+We conduct experiments on the TaL corpus [25], a synchronized
+multi-speaker dataset of ultrasound tongue imaging, audio, and
+lip videos. The corpus comprises two subsets:TaL1, con-
+taining six sessions from a single native English male speaker,
+andTaL80, consisting of single-session recordings from81na-
+tive English speakers, totaling approximately24hours of syn-
+chronized ultrasound, audio, and video data. Ultrasound was
+recorded at∼80fps with a 92 ◦ field of view, producing raw
+frames of size64×842(scanlines×radial samples). Audio
+was captured at48kHz (16-bit). We extract80-dimensional
+Mel-spectrograms (window/FFT size2048, hop512) as acous-
+tic targets.
+Raw ultrasound frames are provided as scanline data ar-
+Scan Lines Transformed Wedges
+Ultrasound Probe
+3D Conv
+4 x Spatio-Temporal
+Encoder
+Batch Norm
+ReLU
+Average Pooling
+Transformer + MLP
+Vocoder
+Tongue2Speech
+Figure 1:Tongue2Speech. Top: Raw scanlines from a portable
+ultrasound probe are transformed into a wedge representation.
+Bottom: Wedge frames are encoded by four spatio-temporal
+convolutional blocks, spatially pooled, and processed by a six-
+layer Transformer before synthesis via HiFi-GAN vocoder.
+ranged in a(S,D,T)tensor, whereS= 64denotes scanlines,
+D= 842radial samples, andTthe number of frames. Be-
+cause the data are acquired in polar coordinates, we transform
+the scanlines into a Cartesian wedge representation to better
+reflect tongue surface geometry. Assuming an angular sweep
+betweenθ start andθ end, the angular step is defined as∆θ=
+(θend−θstart)/(S−1), whereSdenotes the number of scanlines.
+Let∆ddenote the radial resolution andR max = (D−1)∆dthe
+maximum depth, withDradial samples. For each Cartesian
+pixel(x,y), polar coordinates are computed asr=
+p
+x2 +y 2
+andθ= arctan 2(y,x), yielding scanline indicesr idx =r/∆d
+ands idx = (θ−θ start)/∆θ.
+We implement this mapping using GPU-accelerated bilin-
+ear grid sampling. A sampling grid and validity mask are pre-
+computed to exclude coordinates outside the probe’s field of
+view (r > Rmax orθ /∈[θ start,θ end]). The resulting Cartesian
+wedge representation has spatial resolution(64,64)per frame
+and is used as input to the model.
+4.T ongue2Speech
+Tongue2Speechcomprises three stages: a spatio-temporal con-
+volutional encoder, a self-attention Transformer backbone, and
+a neural vocoder. Ultrasound sequences in wedge-transformed
+Cartesian geometry are processed by four stacked 3D convo-
+lutional blocks (Conv3D + BatchNorm + ReLU), operating
+jointly across spatial and short-term temporal dimensions to
+capture local articulatory motion. Spatial dimensions are ag-
+gregated via adaptive average pooling, producing a per-frame
+latent embedding of dimension256while preserving temporal
+resolution. The resulting latent sequence is processed by an
+encoder-only Transformer with six layers, eight attention heads
+per layer, and a feed-forward hidden dimension of1024. Sinu-
+soidal positional encodings preserve temporal order; each layer
+consists of multi-head self-attention followed by a position-
+wise feed-forward network with GELU activation and dropout
+(p=0.1). The final hidden states are projected to the acoustic
+domain using a two-layer MLP, yielding80-dimensional mel-
+6857
+Table 1:Recognition performance of baselines and the proposed Tongue2Speech on TaL1 (single speaker).
+Baselines Model Variants (Ours) Proposed
+SessionConformer-U2S STN-CNN 2D-CNN
++BiLSTM 3D-CNN 3D-CNN
++BiLSTM
+3D-CNN+BiLSTM
++ Skip
+Tongue2Speech
+(Ours)
+WER MSE WER MSE WER MSE WER MSE WER MSE WER MSE WER MSE
+Day 2 100.00 1.815 100.00 1.833 62.86 1.376 100.00 3.120 38.12 0.810 21.55 0.74616.45 0.635
+Day 3 98.47 1.408 98.15 1.402 58.63 1.305 98.47 2.987 30.82 0.623 15.610.474 14.960.525
+Day 4 100.00 1.980 100.00 2.082 56.15 1.972 100.00 3.275 35.75 1.116 28.12 1.05520.79 0.657
+Day 5 98.67 1.970 98.07 1.877 62.86 1.291 98.67 3.289 33.66 1.002 24.24 0.85411.76 0.587
+Day 6 99.28 1.923 99.28 2.157 60.94 1.213 99.28 3.122 42.84 0.981 30.24 0.85015.93 0.579
+Overall99.26 1.819 99.08 1.877 60.29 1.417 99.26 3.155 36.46 0.906 24.15 0.79315.93 0.594
+spectrogram frames. Predicted mel-spectrograms are converted
+to waveform audio using a HiFi-GAN vocoder [29] configured
+to match the mel extraction parameters in Section 3. Separate
+vocoders are trained for the single-speaker and multi-speaker
+regimes.Tongue2Speechhas19.17M parameters in total, with
+6.25M in the convolutional front-end and Transformer back-
+bone and13.92M in the neural vocoder.
+5. Baselines
+We evaluateTongue2Speechagainst six baselines: Conformer-
+U2S [14], STN-CNN [24], 3D-CNN, 3D-CNN+BiLSTM, 3D-
+CNN+BiLSTM-Skip, and 2D-CNN+BiLSTM. The baselines
+span the major design axes of U2S mapping: input dimensional-
+ity (2D vs. 3D), temporal modeling (no explicit temporal aggre-
+gation vs. BiLSTM), and multi-scale feature aggregation. Since
+the source code for Conformer-U2S and STN-CNN is not pub-
+licly available, we re-implement both methods. The remain-
+ing four baselines are purpose-built architectural variants de-
+signed to isolate specific modeling factors. Unless stated oth-
+erwise, all baselines share the same mel extraction pipeline,
+vocoder, optimizer, and data splits. Conformer-U2S and STN-
+CNN are trained under their original MSE objectives, whereas
+Tongue2Speechand all proposed variants useL 1 loss on mel
+spectrograms. For MSE evaluation, we compute log-mel spec-
+trograms by clamping values to a minimum of10 −7 before
+applying the natural logarithm. For the re-implemented base-
+lines [14, 24], the generated samples qualitatively match the
+originals (both the spectrograms and speech); however, MSE
+values may differ due to variations in normalization procedures
+(see webpage for samples).
+Conformer-U2S[14] processes resized scanline frames
+(64×128) through a single Conformer block (encoder256
+dimensions,32attention heads, convolution kernel size31)
+followed by two Bi-LSTM layers, combining multi-head self-
+attention, depthwise separable convolutions, and recurrent tem-
+poral modeling.STN-CNN[24] prepends a Spatial Trans-
+former Network module to a CNN regression backbone, which
+learns an affine transformation of input frames to compensate
+for probe misalignment and inter-speaker geometric variability.
+3D-CNNcaptures joint spatio-temporal features through
+four 3D convolutional blocks (Conv3D + BatchNorm + ReLU
++ Dropout,p=0.1) with3×3×3kernels and spatial-
+only downsampling, followed by a linear mel projection.
+3D-CNN+BiLSTMaugments three 3D convolutional blocks
+(Conv3D + BatchNorm + MaxPool3D) with a two-layer bidi-
+rectional LSTM (hidden256dimensions) before mel projec-
+tion.3D-CNN+BiLSTM-Skipuses a three-stage 3D convo-
+lutional encoder (3×3×3kernels, BatchNorm, ReLU) with
+1×2×2MaxPool3d layers that downsample spatial resolution
+by a factor of 8 while preserving temporal length. A multi-scale
+skip-connection mechanism projects intermediate feature maps
+via1×1×1convolutions, trilinearly interpolates them to a uni-
+fied8×8resolution, and concatenates them through a fusion
+layer. The features are passed to a two-layer,256-unit BiLSTM
+followed by an MLP.2D-CNN+BiLSTMprocesses each frame
+independently through four 2D convolutional blocks (Conv2D
++ BatchNorm + ReLU + MaxPool2D), omitting max-pooling
+in the final block. Spatial features are collapsed to1×1via
+adaptive average pooling and passed to a three-layer BiLSTM
+(hidden256dimensions), with a linear output projection.
+6. Results
+We evaluateTongue2Speechand six baselines across single-
+speaker, multi-speaker, and personalized settings. Synthesized
+speech is evaluated using OpenAI Whisper Medium ASR [30].
+6.1. Single-Speaker Experiments
+Table 1 reports single-speaker results on the TaL1 corpus [25].
+Day 1 is excluded due to synchronization issues.2 The proposed
+Tongue2Speechsubstantially outperforms all baselines in terms
+of intelligibility. It achieves the lowest overall WER of15.93%,
+improving over the strongest baseline (3D-CNN+BiLSTM w/
+Skip,24.15%) by more than8absolute points while also obtain-
+ing the lowest overall MSE (0.594). These results indicate that
+explicit spatio-temporal modeling combined with Transformer-
+based temporal aggregation significantly improves reconstruc-
+tion quality from tongue ultrasound. In contrast, Conformer-
+U2S and STN-CNN produce very high MSE values (1.8–1.9)
+and near-saturated WER (∼99%), indicating effectively un-
+intelligible output. These results show that these architectures
+fail to learn a meaningful articulatory-to-acoustic mapping un-
+der the current experimental setup.
+Across architectural variants, long-range temporal aggre-
+gation and 3D spatio-temporal encoding emerge as key fac-
+tors for intelligible speech reconstruction. Systems relying
+solely on convolution or weak temporal aggregation (3D-CNN,
+Conformer-U2S, STN-CNN) produce near-saturated WER,
+whereas BiLSTM and Transformer-based models substantially
+reduce error. Although Conformer-U2S includes attention, it
+applies only a single Conformer block to resized 2D frames and
+is trained with an MSE objective. In contrast,Tongue2Speech
+uses a multi-layer Transformer operating on motion-aware em-
+beddings learned by a 3D spatio-temporal front end and is
+2https://ultrasuite.github.io/data/tal_
+corpus/#synchronisation-of-data-streams
+6858
+Table 2:Multi-speaker evaluation on TaL80. Results are
+reported for multi-speaker training and speaker-specific fine-
+tuning of Tongue2Speech on held-out speakers.
+Setting Configuration / Speaker WER MSE
+Multi-speaker
+3D-CNN + BiLSTM 42.46 0.981
+3D-CNN + BiLSTM w/ Skip 33.23 0.863
+T ongue2Speech31.64 0.851
+Personalization
+Speaker 78 33.00 0.860
+Speaker 79 46.07 1.013
+Speaker 80 27.62 0.852
+Speaker 81 37.87 0.914
+trained with anL 1 mel loss. The24-point WER gap be-
+tween 2D-CNN+BiLSTM (60.29%) and 3D-CNN+BiLSTM
+(36.46%) further highlights the benefit of joint space–time
+modeling of articulatory motion.Tongue2Speechachieves the
+best overall intelligibility and performs particularly well on
+Days2&5(14.96%,11.76%). Nonetheless, session-level vari-
+ability of up to9absolute WER points persists across systems,
+reflecting sensitivity to probe placement and inter-session geo-
+metric variation.
+6.2. Multi-Speaker Experiments
+Multi-speaker experiments are conducted on the TaL80 cor-
+pus [25], comprising articulatory recordings from81speakers
+with anatomical and probe-placement variability. We evaluate
+the two strongest single-speaker baselines (3D-CNN+BiLSTM
+and 3D-CNN+BiLSTM w/ Skip) alongsideTongue2Speech.
+A. Multi-Speaker Training.All 81 speakers are pooled
+and partitioned using a95/5train–test split at the utterance
+level. This setting evaluates the ability to learn speaker-robust
+articulatory representations under mixed-speaker supervision.
+Results are shown in Table 2 (Section A). Compared to the
+single-speaker setting, WER increases substantially across all
+systems, highlighting the difficulty of modeling cross-speaker
+articulatory variability.Tongue2Speechachieves the lowest
+WER (31.64%), outperforming 3D-CNN+BiLSTM (42.46%)
+and the skip variant (33.23%). Despite broadly compara-
+ble MSE values, intelligibility differences persist, indicating
+that attention-based aggregation over 3D motion embeddings
+improves robustness to speaker heterogeneity, though cross-
+speaker variability remains a limiting factor.
+B. Personalization via Fine-Tuning.To assess adapta-
+tion to unseen speakers,Tongue2Speechis first trained on77
+speakers (1500epochs), with four speakers (IDs78–81) held
+out. For each held-out speaker, the pre-trained model is fine-
+tuned on95%of that speaker’s data for20epochs and evalu-
+ated on the remaining5%. Results are reported in Table 2 (Sec-
+tion B). After fine-tuning, WER ranges between27.62–46.07%
+across speakers, with the best result observed for Speaker80
+(27.62%). These results indicate that while cross-speaker gen-
+eralization remains challenging, limited speaker-specific adap-
+tation substantially improves intelligibility without architectural
+modification. Together, these findings support personalization
+as a practical deployment strategy for tongue-only U2S.
+6.3. Qualitative Evaluation
+Figure 2 provides a qualitative comparison of mel-spectrograms
+generated by all systems against ground truth. Conformer-
+U2S [14] and STN-CNN [24] exhibit over-smoothed energy
+Figure 2:Mel-spectrogram comparison between ground-truth
+speech and model outputs for a representative TaL1 utterance.
+(A) Ground truth. (B) Conformer-U2S. (C) STN-CNN. (D) 3D-
+CNN. (E) 2D-CNN+BiLSTM. (F) 3D-CNN+BiLSTM. (G) 3D-
+CNN+BiLSTM+Skip. (H) Tongue2Speech. Models with weak
+temporal aggregation exhibit spectral smearing and blurred
+structure, whereas Tongue2Speech more closely preserves har-
+monics, formant trajectories, and transient boundaries.
+distributions and blurred harmonic structure, with reduced for-
+mant contrast and weakened temporal transitions, consistent
+with their near-saturated WER. The 3D-CNN baseline shows
+limited temporal sharpness, while 2D-CNN+BiLSTM produces
+visible horizontal banding artifacts and reduced high-frequency
+detail, indicating insufficient modeling of joint spatial–temporal
+motion. Incorporating 3D convolution with BiLSTM substan-
+tially restores formant continuity and vertical transition struc-
+ture, and the skip variant further sharpens low-frequency en-
+ergy bands and improves temporal localization.Tongue2Speech
+most closely matches the ground-truth spectrogram, preserv-
+ing harmonic stacks, formant trajectories, and transient bound-
+aries with improved temporal consistency. These qualitative
+differences align with the quantitative WER results, suggesting
+that accurate modeling of articulatory motion dynamics directly
+translates to improved phonetic fidelity and intelligibility.
+7. Conclusion
+We presentedTongue2Speech, a lightweight tongue-only
+ultrasound-to-speech architecture that combines 3D spatio-
+temporal convolution with a Transformer encoder for
+articulatory-to-acoustic mapping. Across six baselines, ASR-
+based evaluation shows that explicit modeling of articulatory
+motion and long-range temporal dependencies substantially
+improves intelligibility over purely convolutional or weakly ag-
+gregated systems. Our results further demonstrate that spectral
+MSE does not reliably reflect lexical correctness, reinforcing
+the need for intelligibility-driven evaluation in U2S research.
+Overall, our results demonstrate that intelligible speech can be
+reconstructed from tongue ultrasound across single-speaker,
+multi-speaker, and personalized settings. Nevertheless, robust
+cross-speaker generalization and efficient personalization
+remain important open challenges and key directions for future
+research in ultrasound-to-speech synthesis.
+6859
+8. Acknowledgements
+This work was supported in part by Advanced Research
+Grant, ANRF/ARG/2025/011971/ENS, from Anusandhan Na-
+tional Research Foundation (ANRF), Government of India
+9. Generative AI Use Disclosure
+Generative AI tools were used only to improve grammar, phras-
+ing, and clarity of expression. All conceptual and scientific con-
+tributions originate from the authors.
+10. References
+[1] K. N. Stevens,Acoustic phonetics. MIT press, 2000, vol. 30.
+[2] J. Laver,Principles of phonetics. Cambridge university press,
+1994.
+[3] B. Denby, T. Schultz, K. Honda, T. Hueber, J. M. Gilbert, and
+J. S. Brumberg, “Silent speech interfaces,”Speech Communica-
+tion, vol. 52, no. 4, pp. 270–287, 2010.
+[4] V . Alis, “Quality of life in male tracheoesophageal (te) speakers,”
+Journal of Rehabilitation Research and Development, vol. 42, no.
+1-3, pp. 1

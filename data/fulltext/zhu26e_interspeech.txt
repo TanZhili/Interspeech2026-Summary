@@ -1,0 +1,467 @@
+OmniV oice: Towards Omnilingual Zero-Shot Text-to-Speech with Diffusion
+Language Models
+Han Zhu, Lingxuan Ye, Wei Kang, Zengwei Yao, Liyong Guo, Fangjun Kuang,
+Zhifeng Han, Weiji Zhuang, Long Lin, Daniel Povey
+Xiaomi Corp., China
+{zhuhan3,dpovey}@xiaomi.com
+Abstract
+We present OmniV oice, a massively multilingual zero-shot
+text-to-speech (TTS) model that scales to over 600 languages.
+At its core is a novel diffusion language model-style discrete
+non-autoregressive (NAR) architecture. Unlike conventional
+discrete NAR models that suffer from performance bottlenecks
+in complex two-stage (text-to-semantic-to-acoustic) pipelines,
+OmniV oice directly maps text to multi-codebook acoustic to-
+kens. This simplified approach is facilitated by two key techni-
+cal innovations: (1) a full-codebook random masking strategy
+for efficient training, and (2) initialization from a pre-trained
+LLM to ensure superior intelligibility. By leveraging a 581k-
+hour multilingual dataset curated entirely from open-source
+data, OmniV oice achieves the broadest language coverage to
+date and delivers state-of-the-art performance across Chinese,
+English, and diverse multilingual benchmarks. Our code and
+pre-trained models are publicly available1.
+Index Terms: text-to-speech, zero-shot, diffusion, multilingual
+1. Introduction
+Zero-shot text-to-speech (TTS) models trained on large-scale
+datasets have demonstrated a remarkable ability to generate
+high-quality speech conditioned on only a few seconds of refer-
+ence audio [1, 2]. Despite these advances, most existing mod-
+els support only a limited set of languages, often leaving hun-
+dreds of low-resource languages behind. Expanding language
+coverage is not merely a technical challenge but also a crucial
+step toward extending speech technologies to languages across
+the globe. To address this gap, we aim to develop a massively
+multilingual zero-shot TTS model supporting hundreds of lan-
+guages. Realizing such extensive scaling requires a TTS ar-
+chitecture with exceptional capacity and robustness to handle
+diverse linguistic patterns.
+In the pursuit of such scalable and high-quality TTS, current
+research primarily adheres to two paradigms: autoregressive
+(AR) [3, 4, 5, 6, 7, 8, 9, 10, 11] and non-autoregressive (NAR)
+models [12, 13, 14]. NAR models offer advantages in both
+inference speed (via parallel decoding) and robustness (owing
+to bidirectional context) [12, 14, 15]. Within NAR frame-
+works, models can be broadly categorized into continuous-
+latent-based [14, 16, 17, 18] and discrete-token-based [19]. The
+latter was shown to yield superior prosodic diversity [20].
+However, state-of-the-art (SOTA) discrete-token NAR sys-
+tems [19] typically rely on complex two-stage cascaded
+pipelines (text-to-semantic followed by semantic-to-acoustic).
+While such decoupling simplifies the training of individual
+modules, it also introduces significant drawbacks: (1) er-
+1https://github.com/k2-fsa/OmniVoice
+Bidirectional Transformer
+Text Tokens
+Acoustic Tokens
+Prompt Segment Target Masked Segment
+Instruct Transcript
+Predicted Target
+Figure 1:Illustration of OmniVoice architecture.
+ror propagation, where inaccuracies in semantic prediction
+degrade the final audio quality; and (2) information bottle-
+necks, where low-bitrate semantic representations sacrifice fine-
+grained acoustic details. While single-stage alternatives [21]
+attempt to bypass these issues, they have historically lagged be-
+hind two-stage systems in terms of speech intelligibility.
+To bridge this gap, we introduce OmniV oice, an archi-
+tecturally streamlined yet highly effective discrete NAR TTS
+framework. OmniV oice employs a discrete masked diffusion
+objective [22] with a bidirectional Transformer [23] to directly
+map text to multi-codebook acoustic tokens, thereby bypassing
+the complexity and limitations of cascaded pipelines. Its core
+modeling philosophy extends the success of diffusion language
+models [24, 25] to the speech domain. We demonstrate that the
+potential of this minimalist architecture can be fully unleashed
+through two technical innovations:
+(1) Full-Codebook Random Masking: Conventional multi-
+codebook acoustic prediction methods adopt ”per-layer” mask-
+ing schedules [26, 19], suffering from inefficient convergence.
+We propose a fully stochastic masking strategy across all code-
+books that significantly enhances training efficiency and gener-
+ative quality.
+(2) LLM Initialization: To resolve the intelligibility issues
+in single-stage discrete NAR models, we initialize our backbone
+with pre-trained AR LLM weights to inherit linguistic knowl-
+edge, making OmniV oice the first NAR TTS model to success-
+fully benefit from LLM initialization [3].
+The architectural advantage of OmniV oice makes it
+uniquely suited for scaling across diverse linguistic contexts.
+We curated a 581k-hour multilingual dataset encompassing
+more than 600 languages, derived exclusively from open-source
+resources. Training on this dataset allows OmniV oice to achieve
+an extensive language coverage, bridging the gap for hundreds
+of previously under-served low-resource languages.
+Beyond its extensive language coverage, OmniV oice sup-
+ports multi-dimensional controllability, including prompt de-
+266
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3256
+noising [27, 28], speaker attribute-based voice design [29], and
+fine-grained paralinguistic and phonetic control [30, 31]. These
+features significantly enhance its versatility, making OmniV oice
+well-suited for a wide range of real-world applications.
+Comprehensive experimental evaluations across Chinese,
+English, and massively multilingual benchmarks (covering up
+to 102 languages) validate that OmniV oice delivers SOTA per-
+formance in intelligibility, speaker similarity, and naturalness,
+setting a new frontier for high-quality, high-coverage multilin-
+gual TTS.
+2. Proposed Method
+2.1. Architecture
+OmniV oice is a single-stage NAR TTS model with a diffusion
+language model-style architecture [24, 25]. Specifically, the
+model is trained with discrete diffusion objective and adopts a
+bidirectional Transformer backbone. OmniV oice directly maps
+text to multi-codebook acoustic tokens, eliminating the error
+propagation and information bottlenecks issues in conventional
+two-stage cascaded pipelines. This end-to-end streamlined ar-
+chitecture lays the foundation for large-scale multilingual mod-
+eling, with targeted optimizations and scaling strategies detailed
+in the subsequent sections.
+The architecture of OmniV oice is illustrated in Fig. 1. The
+input of OmniV oice comprises:
+• Text token sequence (Y): A concatenated sequence of in-
+struct and transcript tokens, providing the linguistic and task-
+oriented guidance.
+• Acoustic token matrix (X): A multi-codebook matrixX∈
+RT×C , whereTis the number of time steps andCis the
+number of codebooks.
+The acoustic matrixXis partitioned along the temporal
+dimension into two segments: the prompt segmentX prompt,
+which contains the prefix acoustic context, and the target
+masked segmentX target, where tokens are randomly replaced
+with a special mask token[M]. The model is designed to lever-
+age the text conditionsY, the promptX prompt and unmasked
+tokens inX target to recover the original tokens in the masked
+position inX target.
+The training loss is computed on the masked acoustic to-
+ken positions, aiming to optimize the model for accurate to-
+ken recovery. LetMdenote the set of indices(t,c)corre-
+sponding to masked positions within the target segment, where
+t∈ {Tp + 1,T p + 2,...,T}andc∈ {1,2,...,C}. The
+training lossLis formulated as:
+L=−
+X
+(t,c)∈M
+logP(x t,c|X,Y;θ)(1)
+wherex t,c is the ground-truth acoustic token at time steptand
+codebook indexc, andP(x t,c|...;θ)is the probability distri-
+bution predicted by the model parameterized byθ.
+2.2. Full-Codebook Random Masking
+Masking design is critical for OmniV oice, as it directly deter-
+mines the training pattern and loss function. Previous meth-
+ods for multi-codebook acoustic token prediction typically em-
+ploy a ”per-layer” masking schedule [26, 19], which randomly
+masks within a single codebook layercper sample and com-
+putes the loss exclusively for that layer. Tokens in layers above
+the selected layer are fully masked but excluded from loss com-
+putation. Such masking strategy is designed to align with the
+layer-wise inference. However, it optimizes only a sparse sub-
+set of the token matrix at each iteration, leading to suboptimal
+training efficiency.
+To circumvent this limitation, OmniV oice adopts a fully
+stochastic masking strategy across all codebook layers. Specif-
+ically, we independently sample a binary maskm i,j ∼
+Bernoulli(pt)for every entry in theT×Ctoken matrix, where
+the masking ratiop t is drawn from a uniform distributionp t∼
+U(0,1)for each training instance. Consequently, on average,
+50% of the tokens are used for loss computation,Ctimes more
+than per-layer masking strategy, significantly accelerating con-
+vergence and boosting generative quality.
+2.3. LLM Initialization
+Existing discrete NAR TTS models [19, 21], particularly single-
+stage architectures [21], often exhibit suboptimal intelligibility
+compared to their counterparts. To address this, we propose
+a simple yet effective strategy: initializing the model backbone
+with pre-trained AR large language models (LLMs) [32]. While
+LLM-based initialization has been successfully integrated into
+recent AR-TTS frameworks [3, 33], OmniV oice is the first
+NAR TTS model that successfully leverages LLM initializa-
+tion to achieve notable intelligibility gains. Our backbone is
+structurally identical to standard AR LLMs, facilitating direct
+weight transfer. While these LLMs are originally trained with
+a causal mask, we empirically find that their pre-trained knowl-
+edge translates well to our bidirectional architecture. This ini-
+tialization allows OmniV oice to repurpose LLM’s linguistic ca-
+pacity as a strong prior for text-to-speech mapping, significantly
+enhancing the intelligibility of the generated speech.
+2.4. Multilingual Scaling
+A core objective of this work is to extend language support to
+over 600 languages, including hundreds of low-resource lan-
+guages that are rarely supported in mainstream TTS systems.
+OmniV oice’s streamlined end-to-end architecture is inherently
+well-suited for such large-scale multilingual scaling.
+Expanding language coverage of TTS is a long-standing
+challenge [34, 35, 36, 37, 38, 39]. While MMS [40] scales to
+more than 1,000 languages, yet lacks zero-shot voice cloning
+capabilities and relies on language-specific modeling. Con-
+versely, current multilingual zero-shot TTS models remain lim-
+ited to narrow linguistic scopes, covering only a few dozen lan-
+guages [41, 42, 36, 43, 33, 44, 38]. To bridge this gap, we in-
+troduce the first massively multilingual zero-shot TTS model
+capable of generalizing across hundreds of diverse languages
+within a single, unified model.
+Data acquisition remains one of the primary bottlenecks for
+large-scale multilingual expansion. To address this, we aggre-
+gated 50 datasets by leveraging open-source community efforts
+([45, 46, 7, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]).
+Given the heterogeneous quality of these sources (many of
+which were not originally designed for TTS and contain noisy
+audio or transcriptions), we employed a speech restoration
+model [60] to enhance degraded speech and applied rule-based
+filtering [17] to exclude invalid transcriptions. The resulting
+corpus comprises 581k hours of audio spanning more than 600
+languages (detailed statistics in Fig. 2). Training on this un-
+precedented dataset empowers OmniV oice to achieve the broad-
+est language coverage reported to date among zero-shot TTS
+models, significantly advancing the SOTA in multilingual TTS.
+To mitigate the severe data imbalance inherent in massively
+multilingual datasets, where high-resource languages vastly
+267
+1 100 200 300 400 500 600 646
+Language Rank
+0.01
+0.1
+1
+10
+100
+1K
+10K
+100K
+Duration (Hours)
+ 100K hours: 2
+ 10K hours: 10
+ 1K hours: 33
+ 100 hours: 76
+ 10 hours: 381
+ 1 hours: 635
+Figure 2:Statistics of the multilingual training dataset.
+outnumber low-resource ones, we apply a language-level data
+resampling strategy that up-samples the training data of low-
+resource languages similar to [47].
+For multilingual text processing, we employ the sub-
+word tokenizer of pre-trained LLMs, eliminating cumbersome
+grapheme-to-phoneme conversion and language-specific text
+normalization. This strategy also allows the LLM backbone to
+inherit and leverage its pre-trained knowledge efficiently.
+2.5. Multi-Dimensional Controllability
+Beyond its extensive multilingual coverage, we further equip
+OmniV oice with controllability across acoustic, identity, and
+linguistic aspects to improve the model’s practicality.
+2.5.1. Acoustic Control: Prompt Denoising
+In practical scenarios, audio prompts are often recorded in non-
+ideal conditions, potentially compromised by environmental
+noise or reverberation. To adress this issue, we implement a
+prompt denoising task [27, 28]. During training, we augment
+a subset of the data by injecting synthetic noise and reverbera-
+tion into the prompt segments. These samples are paired with
+a specific instruction token,<|denoise|>. This mechanism
+enables the synthesis of clean, high-fidelity speech even when
+conditioned on degraded prompts.
+2.5.2. Identity Control: Attribute-Guided Voice Design
+To enable flexible TTS in the absence of an audio prompt, Om-
+niV oice supports speaker-attribute-based voice design [29, 43].
+By incorporating specific speaker attributes (e.g., gender, age,
+pitch, and accent/dialect) into the training instruction sequence,
+the model can synthesize highly customized voices on demand.
+2.5.3. Linguistic Control: Paralinguistics and Phonetics
+To bridge the gap between basic intelligibility and human-
+like expressiveness, we incorporate paralinguistic control (e.g.,
+laughter) by training on datasets enriched with such labels [30,
+61]. Furthermore, we adopt a hybrid text input format [31] to
+provide users with explicit phonetic override capabilities.
+3. Experimental Setup
+3.1. Training Datasets
+We train OmniV oice under two distinct data configurations.
+First, a bilingual variant is trained on the Chinese and English
+subsets of the Emilia dataset [45], enabling fair comparison
+with existing SOTA zero-shot TTS models trained on the same
+data. Prompt denoising is omitted in this variant to isolate its
+impact and highlight the inherent advantages of our architec-
+ture. Second, a multilingual variant is trained on a self-built
+581k-hour multilingual dataset spanning 600+ languages.
+3.2. Model Details
+OmniV oice is built on a bidirectional Transformer backbone,
+which is initialized with the pre-trained LLM weights of
+Qwen3-0.6B [32]. The Higgs-audio tokenizer [62] is adopted to
+extract 8-codebook acoustic tokens and reconstruct audio from
+these tokens.
+3.3. Training
+OmniV oice is trained with a sequence packing size of 8,192 on
+8 GPUs. The multilingual version and the bilingual Emilia ver-
+sion are trained with 2M and 300k updates, respectively.
+3.4. Inference
+For inference, we perform an iterative unmasking with 32 steps.
+The cumulative proportion of unmasked tokens at stepn, de-
+noted asr n, follows a time-shifted schedule:
+rn = τ·(n/N)
+1 + (τ−1)·(n/N) (2)
+whereN= 32is the total number of steps, andτ= 0.1is the
+shift parameter. The number of tokens to be unmasked at each
+stepnis determined byk n =r n−r n−1, wherer 0 = 0.
+We also apply a layer penalty on the log-softmax space con-
+fidence score to encourage unmasking lower-layer tokens first.
+Furthermore, classifier-free guidance [63] is utilized in the log-
+softmax space with a scale of 2. All these inference strategies
+are verified to be effective in improving performance.
+3.5. Evaluation
+We evaluate OmniV oice on multiple benchmarks. We first as-
+sess its performance in English and Chinese using LibriSpeech-
+PC [64, 14] and Seed-TTS [2]. We then extend the evaluation to
+24 languages via the MiniMax multilingual benchmark [65]. Fi-
+nally, we leverage the test and development sets of the FLEURS
+dataset [48] to construct an extensive multilingual benchmark
+covering 102 languages.
+Our evaluation is based on several objective metrics. We
+use SIM-o [12] to evaluate speaker similarity, word error rate
+(WER) and character error rate (CER) to evaluate intelligibil-
+ity, and UTMOS [66] to assess speech naturalness. The eval-
+uation protocol is consistent with [16]. These objective mea-
+sures are complemented by subjective assessments, including
+comparative mean opinion score (CMOS) and similarity mean
+opinion score (SMOS), which quantify human preferences re-
+garding relative quality and speaker similarity.
+4. Experimental Results
+4.1. Evaluation on English and Chinese
+As shown in Table 1, OmniV oice achieves competitive perfor-
+mance on Chinese and English benchmarks compared to SOTA
+models, whether trained solely on the Emilia dataset or on di-
+verse multilingual corpora. These results validate the effective-
+ness of the OmniV oice architecture.
+268
+Table 1:Evaluation results on Chinese and English test sets. Params. denotes the total parameter size of TTS systems (including audio
+tokenizer, vocoder, etc). Best results are highlighted inbold.
+Model Params. Data (hrs.)
+Objective Metrics Subjective Metrics
+LibriSpeech-PC test-clean Seed-TTS test-en Seed-TTS test-zh CMOS↑SMOS↑
+SIM-o↑WER↓UTMOS↑SIM-o↑WER↓UTMOS↑SIM-o↑WER↓UTMOS↑
+Ground-truth0.690 1.87 4.10 0.734 2.14 3.52 0.755 1.25 2.78 0.00 3.02±0.20
+AR Models
+IndexTTS2 [5] 1.7B 55k Multi. 0.700 2.35 4.06 0.706 2.33 3.65 0.764 1.05 3.00 - -
+CosyV oice3 [33] 1.1B 1000k Multi. 0.694 1.59 4.28 0.696 2.17 3.960.7781.14 3.32 - -
+V oxCPM [10] 0.7B 1800k Multi. 0.717 1.74 4.18 0.731 1.92 3.77 0.772 0.99 2.94 - -
+Qwen3-TTS [43] 1.1B 5000k Multi. 0.704 1.604.410.7081.54 4.160.766 1.153.460.40±0.163.65±0.18
+NAR Models
+F5-TTS [14] 0.4B 100K Emilia 0.655 1.89 3.89 0.664 1.85 3.72 0.750 1.53 2.93 - -
+ZipV oice [16] 0.1B 100k Emilia 0.668 1.64 3.98 0.697 1.70 3.82 0.751 1.40 3.15 -0.30±0.163.35±0.19
+MaskGCT [19] 2.2B 100K Emilia 0.691 2.26 3.91 0.713 2.88 3.55 0.773 2.40 2.63 -0.38±0.173.20±0.18
+OmniV oice-Emilia 0.8B 100k Emilia 0.697 1.57 4.23 0.717 1.72 3.88 0.765 0.89 3.05 0.42±0.153.58±0.18
+OmniV oice 0.8B 500k Multi.0.729 1.304.280.7411.60 3.91 0.7770.843.110.44±0.163.80±0.17
+Table 2:Evaluation on the MiniMax multilingual test set. We
+report the averaged performance across all 24 languages.
+Model MiniMax-Multilingual-24
+A vg SIM-o↑A vg WER↓
+ElevenLabs Multilingual v2 0.655 10.950
+MiniMax-Speech 0.766 3.774
+OmniV oice0.830 2.850
+Table 3:Evaluation on the FLEURS multilingual test set.
+Model
+FLEURS-Multilingual-102
+A vg SIM-o↑A vg CER↓ Languages with CER≤
+5% 10%
+Ground-truth - 5.11 75 92
+OmniV oice0.788 4.00 82 95
+2 10 100 1K 10K 100K
+Duration (Hours)
+0.5
+1
+2
+5
+10
+20
+40
+80
+CER (%)
+af
+yue
+ca
+ny zh
+en
+et
+fr
+hi
+hu
+ja
+lo
+oc
+pl
+sl
+es
+uryo
+af
+yue
+ca
+ny zh
+en
+et
+frhi hu
+ja
+lo
+oc
+pl
+sl
+es
+ur
+yo
+Ground-Truth
+OmniV oice (CER higher than GT)
+OmniV oice (CER lower than GT)
+Figure 3:CERs of OmniVoice vs. Ground-Truth across lan-
+guages with varying training data durations in the FLEURS-
+Multilingual-102 test set.
+4.2. Evaluation on Multilingual Benchmarks
+As shown in Table 2, despite being trained exclusively on open-
+source datasets, OmniV oice demonstrates multilingual TTS ca-
+pabilities that surpass commercial systems on the MiniMax 24-
+language benchmark. Furthermore, as illustrated in Table 3
+and Fig. 3, OmniV oice attains near-ground-truth CER on our
+102-language multilingual benchmark. Remarkably, the model
+achieves a CER below 5% for many languages with fewer than
+10 hours of training data.
+Table 4:Impact of different masking strategies.
+Masking Strategy Librispeech-PC test-clean
+SIM-o↑WER↓UTMOS↑
+SoundStorm-style mask 0.661 3.00 4.12
+MaskGCT-style mask 0.660 2.04 4.17
+Full-codebook random mask0.697 1.57 4.23
+- compute loss on a single codebook 0.648 2.85 4.22
+Table 5:Impact of LLM initialization on WER across datasets.
+Abbreviations: Libri = Librispeech-PC test-clean, Seed-en =
+Seed-TTS test-en, Seed-zh = Seed-TTS test-zh.
+Model Learning Rate WER↓
+Libri Seed-en Seed-zh
+LLM initialization 1e-41.57 1.72 0.89
+Random initialization
+1e-4 2.79 2.34 1.11
+2e-4 2.52 2.43 1.01
+5e-4 2.56 2.07 1.01
+1e-3 2.72 2.29 1.02
+4.3. Effectiveness of Key Designs
+To validate our core designs, we conduct ablation experiments
+on the Emilia dataset. All models are trained for 300k updates,
+with prompt denoising disabled unless specified otherwise.
+As shown in Table 4, our full-codebook random masking
+consistently outperforms the single-codebook strategies from
+MaskGCT and SoundStorm. Furthermore, we conducted an ex-
+periment where the loss was calculated only on a single code-
+book. This led to a significant performance degradation, con-
+firming the advantages of dense loss computation. Further ab-
+lations in Table 5 demonstrate that LLM initialization is crucial
+for a low WER, highlighting the importance of linguistic knowl-
+edge inheritance.
+5. Conclusions
+In this work, we present OmniV oice, a zero-shot TTS model
+supporting over 600 languages, built on a novel diffusion
+language model-style architecture. It adopts a single-stage
+framework to circumvent the inherent limitations of two-stage
+pipelines, and leverages full-codebook random masking and
+LLM initialization to further boost performance. Trained on
+a 581k-hour multilingual corpus curated from open-source
+datasets, OmniV oice achieves the broadest language coverage
+to date and state-of-the-art performance for zero-shot TTS.
+269
+6. Generative AI Use Disclosure
+Generative AI tools were not used to produce a significant part
+of the manuscript.

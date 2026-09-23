@@ -1,0 +1,472 @@
+Latency-Configurable Streaming Speech Enhancement
+via Asymmetric Temporal Padding
+Yunsik Kim1, Yoonyoung Chung1,2,∗∗
+1 Department of Electrical Engineering, Pohang University of Science and Technology (POSTECH),
+Pohang 37673, Republic of Korea
+2 Intus Co. Ltd., Pohang 37673, Republic of Korea
+yskim@postech.ac.kr; ychung@postech.ac.kr
+Abstract
+Streaming speech enhancement requires balancing algorithmic
+latency against quality, yet existing approaches largely treat this
+as a binary causal versus non-causal choice. LaCo-SENet ad-
+dresses this issue with two mechanisms parameterized by a sin-
+gle training-time hyperparameter. First, asymmetric temporal
+padding redistributes past and future context in convolutions,
+enabling systematic latency configuration. Second, dual-buffer
+streaming combines state buffers for past context with looka-
+head buffers that supply future context at both the input and
+feature levels. Selective state updates also prevent future-frame
+leakage into the streaming state, ensuring training–inference
+consistency. On V oiceBank+DEMAND, a fixed-budget (1.37M
+parameters) backbone yields a family of models spanning 12.5–
+75.0 ms, with PESQ rising from 3.35 to 3.43. At just 12.5 ms
+(fully causal), a PESQ of 3.35 matches or exceeds the prior
+causal state-of-the-art (3.27 at 46.5 ms).
+Index Terms: speech enhancement, streaming, configurable la-
+tency, causal convolution, asymmetric padding
+1. Introduction
+Streaming speech enhancement is essential for real-time ap-
+plications such as telephony, conferencing, hearing aids, and
+on-device voice interfaces, where algorithmic latency directly
+governs system responsiveness [1, 2]. Within the 10–80 ms
+regime where most applications operate, quality generally im-
+proves with additional lookahead, yet existing streaming mod-
+els each target a fixed latency point. No prior work has pro-
+posed a unified framework for exploring this trade-off within
+a single convolutional architecture. Redistributing convolution
+padding asymmetrically between past and future context pro-
+vides a practical latency-configuration knob that preserves the
+receptive field and parameter count. However, deploying per-
+layer asymmetric padding in chunk-based streaming introduces
+a state corruption problem. Lookahead frames recorded into
+convolution state buffers are replayed in subsequent chunks,
+progressively distorting outputs. Our dual-buffer streaming
+framework resolves this through selective state updates that re-
+strict state recording to current-chunk frames.
+We present LaCo-SENet (Latency-Configurable SE Net-
+work, 1.37M parameters, built on PrimeK-Net [3]). At
+just 12.5 ms (fully causal), it achieves PESQ 3.35 on V oice-
+Bank+DEMAND, matching or exceeding the best reported
+causal PESQ of 3.27 at 46.5 ms [4]. Varying a single training-
+time hyperparameter trades latency for quality, reaching PESQ
+3.43 at 75.0 ms.
+**indicates the corresponding author.
+Our contributions are threefold: (1) we show that asym-
+metric temporal padding serves as a practical, training-time
+latency-configuration knob for streaming convolutional SE, en-
+abling systematic exploration of discrete latency–quality trade-
+offs without changing the receptive field, parameter count, or
+architecture; (2) we propose a dual-buffer streaming frame-
+work with selective state updates that preserves equivalence
+between full-sequence and chunk-wise inference by preventing
+future-frame leakage into the streaming state; and (3) we show
+that a fixed 1.37M-parameter architecture spans 12.5–75.0 ms
+latency (PESQ 3.35–3.43) by training with different padding
+ratios, matching or exceeding prior causal models at lower la-
+tency.
+2. Related Work
+Streaming SE architectures. Diverse approaches address
+streaming speech enhancement, including DSP-DNN hy-
+brids [5], complex-valued convolutional-recurrent networks [6],
+perceptual deep filtering [7], temporal convolutional autoen-
+coders [4], Mamba-based models [8], and xLSTM-based de-
+signs [9]. Each is locked to a single latency point by its design,
+and none can systematically trade latency for quality within a
+single architecture and parameter budget.
+Stateful convolution and lookahead. Maintaining temporal
+context across chunk boundaries is fundamental to streaming.
+FastWaveNet [10] and cached convolution [11] cache past ac-
+tivations to replace zero left-padding, while Denoiser [12] ap-
+plies a similar mechanism in waveform-domain models. For
+future context, Emformer [13] and Stateful Conformer [14] add
+right-context to attention-based architectures through segment-
+level masking or memory policies. These approaches address
+past and future context individually but do not consider their
+interaction under per-layer asymmetric padding.
+Per-layer asymmetric padding. Among convolutional stream-
+ing approaches, existing methods constrain where future con-
+text may enter. DeepFilterNet [7] supplies lookahead through
+a global input shift while keeping every convolution purely
+causal; cached convolution [11] converts symmetric padding
+into an equivalent fixed output delay. Both constraints delib-
+erately preclude per-layer asymmetric padding, avoiding state
+corruption at the cost of latency flexibility. Their lookahead is
+therefore either fixed at the input boundary or set entirely by the
+symmetric kernel size. Our approach distributes padding asym-
+metrically within each layer, enabling discrete latency config-
+uration while resolving the resulting state corruption through
+selective updates.
+3004
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-817
+Figure 1: Overview of LaCo-SENet. (a) Dual-buffer streaming architecture: the STFT context buffer provides encoder lookahead at
+the input level; the feature buffer provides decoder lookahead; and state buffers preserve past context. (b) Training with asymmetric
+temporal padding (PL,PR), redistributing past and future context while preserving the receptive field. (c) Streaming inference with
+chunk-wise processing (chunk size = 1): selective state updates prevent lookahead frames from corrupting convolution states.
+3. Proposed Method
+3.1. Asymmetric temporal padding
+We fix the total temporal padding while distributing it asym-
+metrically between past and future. Let P denote the per-
+side padding of a standard symmetric convolution, so that the
+total padding is Ptot = 2P . Defining padding ratio as
+r = (rL,rR) withrL +rR = 1, the temporal padding is dis-
+tributed as:
+PL = round(Ptot·rL), P R =Ptot−PL. (1)
+For a given operating point, r is a fixed training-time hyperpa-
+rameter shared by all asymmetric convolution layers; it is not
+adapted to SNR, input content, or runtime conditions.
+Frequency-axis padding remains symmetric, and only the
+time axis receives the asymmetric split (PL,PR). Since Ptot
+is fixed, the receptive field size is preserved. Only the ratio of
+past-to-future access changes, enabling quantized latency con-
+figuration. Although the padding redistribution is algebraically
+straightforward, deploying it in a stateful streaming pipeline is
+non-trivial. Every layer with PR>0 introduces future frames
+into the convolution window, and naively caching all frames
+corrupts subsequent chunks (Section 3.2).
+3.2. Dual-buffer streaming framework
+In the streaming setting, the input spectrogram is processed
+in chunks of C time frames. Let k denote the chunk index
+and ℓ a convolution layer with asymmetric temporal padding
+(P (ℓ)
+L ,P (ℓ)
+R ). The total right-side padding accumulated across
+the encoder and decoder determines the algorithmic latency:
+Lenc =
+X
+ℓ∈E
+P (ℓ)
+R ,
+Ldec = max
+b∈B
+X
+ℓ∈Db
+P (ℓ)
+R , B ={mask, phase},
+(2)
+τms = 1000· (Lenc +Ldec)·h +W/2
+fs
+, (3)
+whereE denotes the asymmetric convolution layers in the en-
+coder,Db those in decoder branch b, h is the hop size, W
+the STFT window size, and fs the sample rate. The term
+W/2 accounts for the STFT center delay. Since the mask and
+phase decoders run in parallel, decoder lookahead is maximized
+across branches rather than summed across them. Deploying
+asymmetric padding in chunk-based streaming raises three chal-
+lenges, which we address below.
+Challenge 1: State buffer for past context. At chunk bound-
+aries, convolution left-padding is filled with zeros rather than
+actual past activations, which diverges from full-sequence pro-
+cessing [11, 10]. To resolve this, each layer ℓ with left padding
+P (ℓ)
+L caches the last P (ℓ)
+L frames of the current input as state
+s(ℓ)
+k . At chunkk, zero left-padding is replaced by this cache:
+˜x(ℓ)
+k =
+
+s(ℓ)
+k−1; x(ℓ)
+k ; 0
+
+,
+s(ℓ)
+k ← lastP (ℓ)
+L frames of x(ℓ)
+k .
+(4)
+Challenge 2: Lookahead buffer for future context. When
+PR>0, convolutions reference frames beyond the chunk bound-
+ary. In streaming, these are unavailable unless explicitly
+buffered [13]. LaCo-SENet delays its output and buffers ad-
+ditional input at two levels.
+Input lookahead (encoder). When Lenc > 0, the encoder in-
+put is extended to C +Lenc frames, so that every encoder-side
+convolution accesses actual future frames instead of zeros.
+Feature buffer (decoder). WhenLdec > 0, encoder output fea-
+tures are accumulated in a buffer, and the decoder is invoked
+only once the buffer satisfies bufferedframes≥C+Ldec. Upon
+invocation, the decoder receives an extended feature sequence.
+Only the portion corresponding to the current chunk is emitted,
+while the remaining frames serve as future context. Since at
+leastLdec lookahead frames lie between the emitted region and
+3005
+Table 1: Comparison on VoiceBank+DEMAND. Best causal result per metric in bold; models marked † or‡ excluded from bold
+ranking. —: not reported or unverifiable.
+Model Year τ (ms) Params PESQ STOI CSIG CBAK COVL
+Noisy — — — 1.97 .921 3.35 2.44 2.63
+RNNoise [5] 2018 10 0.06M 2.33 .922 3.40 2.51 2.84
+GaGNet [15] 2022 ∼10 5.94M 2.94 — 4.26 3.45 3.59
+DFNet3 [7] 2023 40 2.13M 3.17 .944 4.34 3.61 3.77
+aTENNuate [4] 2025 46.5 0.84M 3.27 — 4.57 2.85 3.96
+xLSTM-SENet† [9] 2025 — ∼2.2M 3.26 .950 4.57 3.79 4.00
+SEMamba† [8] 2024 — 1.41M 3.29 .950 — — —
+LaCo-SENet (Lenc=0, L dec=0)
+2026
+12.5
+1.37M
+3.35±.02 .952±.000 4.61±.01 3.71±.01 4.05±.02
+LaCo-SENet (Lenc=1, L dec=1) 25.0 3.36 ±.01 .953±.000 4.62±.01 3.72±.02 4.07±.01
+LaCo-SENet (Lenc=3, L dec=3) 50.0 3.40 ±.02 .953±.001 4.63±.02 3.72±.01 4.09±.02
+LaCo-SENet (Lenc=5, L dec=5) 75.0 3.43±.01 .954±.001 4.66±.02 3.78±.00 4.12±.02
+LaCo-SENet‡ (Lenc=15, L dec=15) 200.0 3.47 ±.02 .957±.001 4.69±.01 3.79±.03 4.17±.02
+PrimeK-Net [3] 2025 — 1.41M 3.61 — 4.81 3.98 4.35
+† Labeled unidirectional, but encoder convolutions use non-causal symmetric padding; algorithmic latency not deterministically computable.
+‡ Symmetric padding (rR=0.5); architecture upper bound, excluded from best-causal ranking.
+the zero right-padding boundary, all emitted outputs are com-
+puted with actual future context rather than zeros.
+Challenge 3: Selective state update. When both state and
+lookahead buffers are active, a subtler problem emerges. If the
+state buffer records all frames, including the appended looka-
+head, those frames appear twice in subsequent chunks (once
+from the state and once as newly arrived input), progressively
+distorting outputs. LaCo-SENet restricts the state-update scope
+via a selection operator ΠC(x) = x1:C that keeps only current-
+chunk frames. Even when processing an extended input xk,ext
+that containsC current frames plus lookahead, the state update
+depends only on the current-chunk frames:
+s(ℓ)
+k ← lastP (ℓ)
+L frames of ΠC(x(ℓ)
+k,ext). (5)
+Consequently, lookahead frames participate in the forward com-
+putation but are never recorded into the state.
+3.3. Backbone architecture
+Letx[t]∈ R denote a single-channel noisy waveform. We com-
+pute the STFT Xf,n ∈ C, apply power-law magnitude com-
+pression (c=0.3), and represent the input as X ∈ R2×T×F
+(compressed magnitude and phase).
+Our backbone gθ follows PrimeK-Net [3] with streaming-
+specific modifications. We decompose it into an encoder Eθ,
+a sequence of time–frequency blocks Tθ, and two parallel de-
+codersDM
+θ (mask) andDΦ
+θ (phase):
+H =Tθ(Eθ(X)), ˆM =DM
+θ (H), ˆΦ =DΦ
+θ (H). (6)
+The backbone predicts a magnitude mask ˆM∈ RT×F and an
+enhanced phase ˆΦ∈ RT×F , from which the enhanced spectro-
+gram is reconstructed via masking and phase replacement. The
+input is projected to Ch channels, processed by the encoder’s
+Dense Dilated Depthwise Block (DSDDB), and downsampled
+along frequency (stride (1, 2)), yielding H ∈ RCh×T×F ′
+(F′=⌈F/2⌉). Each decoder applies a DSDDB followed by
+transposed convolution to restore frequency resolution.
+3.3.1. Dense Dilated Depthwise Block (DSDDB)
+DSDDB stacks four depthwise separable convolutions with ex-
+ponentially increasing dilation rates (1, 2, 4, 8) and dense con-
+nections. Each subsequent layer takes the concatenation of
+all preceding layer outputs as input. The depthwise convolu-
+tion uses AsymmetricConv2d (Section 3.1) so that the temporal
+padding ratio r consistently controls the allocation of past and
+future context across the network.
+3.3.2. Time–Frequency Sequence Block (TS Block)
+Each TS Block processes time and frequency axes sequentially.
+For batch size N, the time branch reshapes the feature map
+from RN×Ch×T×F ′
+to R(NF ′)×Ch×T and applies a stack of
+Channel Attention Blocks (CAB) and Group Prime Kernel FFN
+(GPKFFN) modules, all employing causal convolutions. The
+frequency branch reshapes it to R(NT )×Ch×F ′
+and applies the
+same block types non-causally, since the frequency axis carries
+no temporal ordering.
+3.3.3. Streaming-specific modifications
+The following changes are required to make the backbone com-
+patible with chunk-based streaming:
+1. Normalization: InstanceNorm → BatchNorm. Instan-
+ceNorm statistics depend on the full sequence length, making
+them inconsistent across chunk sizes. BatchNorm uses fixed
+running statistics and is chunk-size invariant.
+2. Channel attention (SCA) : AdaptiveAvgPool1d (global)
+→ CausalConv1d (depthwise, Ksca=sca kernel size).
+Global pooling aggregates future frames, violating causality.
+A causal depthwise convolution restricts the context to past
+frames only.
+3.3.4. Model configuration
+The backbone uses dense channels Ch=64, DSDDB depth
+4, four TS Blocks (2 time + 2 freq), time kernels
+[3, 5, 7, 11], frequency kernels [3, 11, 23, 31], SCA kernel size
+11, and STFT parameters (win/hop/fft) of 400/100/400 samples
+(25.0/6.25/25.0 ms at 16 kHz).
+4. Experiments
+4.1. Experimental Setup
+We evaluated on V oiceBank+DEMAND [16] at 16 kHz, com-
+prising 11,572 training and 824 test utterances mixed with 10
+noise types at four SNR levels.
+3006
+Figure 2: PESQ vs. algorithmic latency on Voice-
+Bank+DEMAND. LaCo-SENet (filled circles, connected)
+spans 12.5–200.0 ms with a constant 1.37M parameters. Open
+markers denote selected comparison models shown in the plot.
+Training. We used AdamW (lr =5×10−4,
+(β1,β 2)=(0.8, 0.99)) with exponential LR decay, batch size 8,
+and 400K steps. The training loss follows PrimeK-Net [3]:
+L = 0.9Lmag + 0.3Lpha + 0.1Lcom + 0.05Lcon + 0.05Lgan,
+weighting magnitude, phase, complex, consistency, and
+MetricGAN [17] metric terms. Each latency configuration
+was trained independently with three random seeds. The best
+checkpoint was selected by validation PESQ, and we report
+mean± s.d. across seeds.
+Evaluation. We report PESQ (wideband), STOI, and the com-
+posite measures CSIG, CBAK, COVL [18] on full-length test
+utterances using full-sequence inference. Streaming equiva-
+lence is verified in Section 4.3.
+Latency configurations. Encoder and decoder share a common
+padding ratio r=(rL,rR), giving equal lookahead (Lenc=Ldec).
+Sweeping rR from 0 (fully causal) to 0.5 (symmetric) yields
+nine configurations spanning τ=12.5–200.0 ms. These com-
+prise six at Lenc=Ldec∈{ 0,..., 5}, two intermediate (100.0,
+150.0 ms), and a symmetric reference (rR=0.5) as an architec-
+ture upper bound. Table 1 reports four representative causal
+points and the symmetric reference. Figure 2 shows all nine.
+Comparison models. Our comparison includes four causal
+baselines with verifiable latency spanning 10–46.5 ms: RN-
+Noise [5], GaGNet [15], DeepFilterNet3 [7], and aTENNu-
+ate [4], along with the non-causal PrimeK-Net [3] as an upper
+bound. Latency values are from original papers or estimated
+as (window−hop)/fs. SEMamba [8] and xLSTM-SENet [9]
+report unidirectional variants but use non-causal symmetric en-
+coder padding, so their algorithmic latency is indeterminate.
+They are excluded from latency-based ranking.
+4.2. Results
+At 12.5 ms (fully causal), LaCo-SENet achieves PESQ 3.35,
+outperforming all causal baselines including aTENNuate [4]
+(3.27 at 46.5 ms). PESQ then rises with lookahead (Figure 2),
+from 3.35 at 12.5 ms to 3.43 at 75.0 ms, with the largest gains
+in the 25–75 ms range and diminishing returns beyond. The
+symmetric reference adds only +0.04 over a further 125 ms,
+reaching 3.47 at 200.0 ms. The streaming configurations thus
+retain 93–95% of the non-causal PrimeK-Net [3] quality (3.61)
+at comparable parameter count (1.37M vs. 1.41M).
+Streaming throughput. We measured end-to-end steady-state
+streaming RTF (STFT + model + iSTFT) using ONNX Run-
+time on a single thread of an Intel Xeon Silver 4510. Increas-
+ingC amortizes fixed per-step overhead (Figure 3). RTF falls
+Figure 3: Steady-state streaming RTF vs. chunk sizeC (frames)
+for three total lookahead valuesLenc+Ldec∈{ 0, 10, 30}.
+Table 2: Ablation on selective state update (SSU). Streaming
+PESQ at chunk size C=1 with SSU enabled vs. disabled; tail
+30 frames trimmed to exclude end-of-utterance OLA boundary
+artifacts. Mean± std over three seeds.
+Lenc+Ldec τ (ms) w/ SSU w/o SSU ∆PESQ
+0 12.5 3.39 ±.01 3.39±.01 0.00
+2 25.0 3.41 ±.01 1.86±.31 −1.56
+6 50.0 3.45 ±.01 1.45±.14 −2.00
+10 75.0 3.48 ±.01 1.39±.01 −2.09
+30 200.0 3.52 ±.02 2.04±.06 −1.48
+from 4.59 at C=1 to 0.30 at C=64 for Lenc+Ldec=0, while
+the large-lookahead penalty narrows from 2.10 × at C=1 to
+≈1.0× byC=64 (RTF≈0.23–0.30 across all configurations).
+Real-time operation (RTF<1) needsC≥7–12. At C=8 the to-
+tal latency (algorithmic plus chunk buffering) is 62.5 ms for the
+causal case, at RTF 0.77.
+4.3. Ablation Study
+Table 2 evaluates SSU by disabling it during streaming infer-
+ence (C=1), with Ltot=Lenc+Ldec. For all asymmetric con-
+figurations (Ltot=2–10), disabling SSU drops PESQ below the
+noisy baseline (1.97), worsening monotonically with looka-
+head, from−1.56 atLtot=2 to−2.09 atLtot=10. The symmet-
+ric reference (Ltot=30,rR=0.5) drops less (−1.48), as its equal
+left–right padding halves the state buffer, reducing corruption.
+SSU is thus essential whenever asymmetric padding introduces
+lookahead. We further verify that chunk-wise streaming out-
+puts are numerically identical to full-sequence outputs across
+all configurations.
+5. Conclusion
+We presented LaCo-SENet, a dual-buffer streaming framework
+whose algorithmic latency is configurable via asymmetric tem-
+poral padding, with training–inference equivalence preserved
+by selective state updates. On V oiceBank+DEMAND, a fixed
+1.37M-parameter architecture spans 12.5–75.0 ms (PESQ 3.35–
+3.43) across padding ratios, surpassing prior causal models at
+lower latency.
+6. Code Availability
+The implementation is available athttps://github.com/
+yskim3271/LaCo-SENet.
+3007
+7. Acknowledgments
+This work was supported by the National Research Founda-
+tion of Korea (NRF) grant funded by the Ministry of Science
+and ICT (RS-2025-00516311); by the Institute of Information
+& Communications Technology Planning & Evaluation (IITP)
+grant funded by the Korean government (RS-2019-II191906,
+Artificial Intelligence Graduate School Program); by the Re-
+gional Innovation System & Education project (Specialized In-
+dustry Scale-UP unit), supported by Gyeongsangbuk-do; and
+by the High-Performance Computing Support Project funded
+by the Government of the Republic of Korea (Ministry of Sci-
+ence and ICT).
+8. Generative AI Use Disclosure
+Generative AI tools were used solely to edit and polish the
+manuscript text (e.g., grammar and wording). They were not
+used to generate research content—including the method, ex-
+periments, analysis, or results—and are not credited as authors.
+9. References
+[1] C. K. A. Reddy, H. Dubey, V . Gopal, R. Cutler, S. Braun, H. Gam-
+per, R. Aichner, and S. Srinivasan, “ICASSP 2021 deep noise sup-
+pression challenge,” in Proc. ICASSP, 2021, pp. 6623–6627.
+[2] H. Schr ¨oter, T. Rosenkranz, A. N. Escalante-B., and A. Maier,
+“Low latency speech enhancement for hearing aids using deep fil-
+tering,” IEEE/ACM Trans. Audio, Speech, Lang. Process., vol. 30,
+pp. 2716–2728, 2022.
+[3] Z. Lin, J. Wang, R. Li, F. Shen, and X. Xuan, “PrimeK-Net: Multi-
+scale spectral learning via group prime-kernel convolutional neu-
+ral networks for single channel speech enhancement,” in Proc.
+ICASSP, 2025, pp. 1–5.
+[4] K.-H. Pei, H. Zhang, T.-W. Chen, and K. Koishida, “aTEN-
+Nuate: Efficient autoencoder-based speech enhancement with
+temporal convolutional networks,” in Proc. Interspeech , 2025,
+arXiv:2409.03377.
+[5] J.-M. Valin, “A hybrid DSP/deep learning approach to real-time
+full-band speech enhancement,” in Proc. IEEE MMSP, 2018, pp.
+1–5.
+[6] Y . Hu, Y . Liu, S. Lv, M. Xing, S. Zhang, Y . Fu, J. Wu, B. Zhang,
+and L. Xie, “DCCRN: Deep complex convolution recurrent net-
+work for phase-aware speech enhancement,” inProc. Interspeech,
+2020, pp. 2462–2466.
+[7] H. Schr ¨oter, A. N. Escalante-B., T. Rosenkranz, and A. Maier,
+“DeepFilterNet: Perceptually motivated real-time speech en-
+hancement,” in Proc. Interspeech, 2023, pp. 312–316.
+[8] R. Chao, W.-H. Cheng, G. Friedland, and Y . Tsao, “An investiga-
+tion of incorporating Mamba for speech enhancement,” in Proc.
+IEEE SLT, 2024, arXiv:2405.06573.
+[9] N. K ¨uhne, M. Schaefer, M. Dietze, and R. Martin, “xLSTM-
+SENet: xLSTM for single-channel speech enhancement,” inProc.
+Interspeech, 2025, arXiv:2501.06146.
+[10] T. L. Paine, P. Khorrami, S. Chang, Y . Zhang, P. Ramachandran,
+M. A. Hasegawa-Johnson, and T. S. Huang, “Fast wavenet gener-
+ation algorithm,” arXiv preprint arXiv:1611.09482, 2016.
+[11] A. Caillon and P. Esling, “Streamable neural audio syn-
+thesis with non-causal convolutions,” in Proc. DAFx , 2022,
+arXiv:2204.07064.
+[12] A. D ´efossez, G. Synnaeve, and Y . Adi, “Real time speech en-
+hancement in the waveform domain,” in Proc. Interspeech, 2020,
+pp. 3291–3295.
+[13] Y . Shi, Y . Wang, C. Wu, C.-F. Yeh, J. Chan, F. Zhang, D. Le,
+and M. Seltzer, “Emformer: Efficient memory transformer based
+acoustic model for low latency streaming speech recognition,” in
+Proc. ICASSP, 2021, pp. 6783–6787.
+[14] V . Noroozi, S. Majumdar, A. Kumar, J. Balam, and B. Gins-
+burg, “Stateful conformer with cache-based inference for stream-
+ing automatic speech recognition,” in Proc. ICASSP , 2024,
+arXiv:2312.17279.
+[15] A. Li, C. Zheng, R. Peng, and X. Li, “Glance and gaze: A col-
+laborative learning framework for single-channel speech enhance-
+ment,” Applied Acoustics, vol. 187, p. 108499, 2022.
+[16] C. Valentini-Botinhao, “Noisy speech database for training
+speech enhancement algorithms and TTS models,” University
+of Edinburgh, Tech. Rep., 2017. [Online]. Available: https:
+//datashare.ed.ac.uk/handle/10283/2791
+[17] S.-W. Fu, C.-F. Liao, Y . Tsao, and S.-D. Lin, “MetricGAN: Gen-
+erative adversarial networks based black-box metric scores op-
+timization for speech enhancement,” in Proc. ICML, 2019, pp.
+2031–2041.
+[18] Y . Hu and P. C. Loizou, “Evaluation of objective quality measures
+for speech enhancement,” IEEE Trans. Audio, Speech, Lang. Pro-
+cess., vol. 16, no. 1, pp. 229–238, 2008.
+3008

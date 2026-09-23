@@ -1,0 +1,478 @@
+Parameter-Efficient Adaptation of Speech-Aware LLMs for Timestamp
+Prediction
+Vishal Sunder1, Samuel Thomas1, Xulin Fan2, Brian Kingsbury1, George Saon1, Avihu Dekel1, Luis
+Lastras1
+1 IBM Research
+2 University of Illinois Urbana-Champaign
+vishal.sunder@ibm.com
+Abstract
+Word-level timestamps are essential for many speech applica-
+tions. Existing methods either degrade transcription quality when
+interleaving timestamps or require separate alignment models
+that do not integrate into speech LLMs. We propose a parame-
+ter efficient framework for speech recognition with timestamps
+(SRWT) within a single speech LLM. Our approach generates
+transcriptions in the first step and regenerates them with times-
+tamps in the second, preserving transcription quality. We intro-
+duce modular low rank adaptation (LoRA) variants that train
+only on SRWT data without degrading base model capabilities,
+enabling isolated adaptation as speech LLMs scale to more tasks.
+We propose novel activated LoRA (aLoRA) for SRWT, enabling
+KV-cache reuse thus allowing improved performance through
+base model usage while preserving modularity. Experiments
+show a 27ms alignment error in English (35% relative improve-
+ment over the best baseline) and 21ms in multilingual data, while
+maintaining WER identical to the base model. Proposed meth-
+ods also exhibit strong zero-shot transfer, achieving 37ms error
+on multilingual data when trained only on English.
+Index Terms: Speech Recognition, Word-level Timestamp Pre-
+diction, Speech-aware Large Language Model
+1. Introduction
+Large language models (LLMs) have brought about a paradigm
+shift in speech AI. Applications such as automatic speech recog-
+nition (ASR) and speech translation (AST) are being integrated
+into state-of-the-art LLMs [1–3] which follows the idea of align-
+ing speech and text representations. While classic approaches
+rely on explicit embedding alignment [4–8], most modern LLM
+based models follow an architecture where pretrained speech en-
+coders and LLMs are “stitched” together via a lightweight neural
+interface. This design combines the strong acoustic modeling
+capabilities of audio encoders with the linguistic knowledge
+of LLMs, yielding models that excel across a diverse range
+of speech tasks. SLAM-LLM [9], Granite-Speech [2], and
+Qwen-Audio [3, 10, 11] are prime examples of this. Other ef-
+forts have pushed these capabilities further: SALMONN [12]
+augments LLaMA [13] with general audio understanding, while
+AudioPaLM [14] extends PaLM-2 [15] beyond speech compre-
+hension to speech generation.
+Considerable effort has gone into equipping speech LLMs
+with additional capabilities such as diarization [16], timestamp
+prediction [3,11,17], contextual biasing [18], slot filling [19,20],
+and emotion recognition [21]. In this paper, we focus on word-
+level timestamp prediction. Accurate word-level timestamps are
+essential for applications like closed captioning, keyword-based
+audio retrieval, and transcript synchronization.
+Previous work on timestamp prediction falls into two cate-
+gories: two-pass and one-pass approaches.
+Two-pass approachesgenerate a transcript first, then align
+it to the audio. The most traditional are GMM-HMM-based
+forced alignment systems available in toolkits like HTK [22] and
+Kaldi [23], with accessible implementations such as the Montreal
+Forced Aligner (MFA) [24]. These need pronunciation dictionar-
+ies and domain-matched acoustic models. CTC-based alignment,
+like NeMo Forced Aligner (NFA) [25], applies Viterbi decoding
+on CTC posteriors but struggles with finer word boundaries due
+to blank token modeling. More recent methods combine ASR
+with neural alignment: WhisperX [26] uses Whisper [27] for
+transcription and applies DTW on phoneme posteriors, though
+frame-level phoneme predictions are difficult to obtain at scale.
+Canary-v2 [28] pairs an encoder-decoder ASR model with a
+CTC aligner. CrisperWhisper [29] uses an attention-based ap-
+proach [30] to extract alignments from Whisper’s cross-attention
+via DTW. Qwen3 Forced Aligner [11] uses a non-autoregressive
+LLM to timestamp a given transcript. However, none of these
+provide a unified solution within a single speech LLM.
+One-pass approachestrain autoregressive models to produce
+transcripts and timestamps in a single generation. The Canary
+encoder-decoder model was adapted by [31] for timestamp-
+interleaved ASR and automatic speech translation (AST) us-
+ing NFA-generated training data. Qwen-Audio [3] supports
+speech recognition with timestamps (SRWT) alongside other
+tasks. Speech-LLM based models [2] have also been adapted for
+SRWT with timestamp-specific regularization [17]. A common
+problem with one-pass methods is degradation in transcription
+quality [17,31]; most autoregressive models struggle to maintain
+text coherence when timestamps are interleaved.
+In this paper, we propose parameter efficient adaptation
+frameworks to perform SRWT in two steps within a single
+speech-LLM: step one generates the transcript (ASR), and step
+two regenerates it with interleaved timestamps (SRWT). This
+design addresses key gaps in current research:
+Preserving ASR performance:One-step SRWT degrades tran-
+scription quality. Our single pass,two-step designallows the
+model to condition on its own ASR output, preserving coherence
+while adding timestamps.
+Parameter-efficient, task-isolated adaptation:Speech LLMs are
+trained on large-scale multi-task data. Full fine-tuning for SRWT
+risks degrading ASR/AST performance and requires costly re-
+training on original tasks. We proposelow-rank adaptation
+variantsthat add minimal parameters and train only on SRWT
+data, leaving the base model capabilities intact.
+KV cache reuse:We propose anovel activated LoRA
+(aLoRA) [32] framework for timestamps, which reuses the
+KV cache from the ASR step by activating timestamp-specific
+6213
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2441
+adapters only in the second step of a continuous generation pro-
+cess. Reusing the KV cache leads to better performance owing
+to strong KV representations from the base model.
+Zero-shot multilingual transfer:Ourmodular adaptationenables
+strong zero-shot transfer to new languages without language-
+specific timestamp supervision.
+2. Model Design
+2.1. Base Speech-LLM
+For all experiments, we use a speech-aware large language model
+(speech-LLM) following the architecture described in [2]. The
+speech-LLM is first trained on a variety of datasets for speech
+transcription and translation tasks (illustrated in Figure 1), and
+subsequently adapted for timestamp generation.
+LLM
+Enc [audio]Proj
+LoRAA
+audio 
+logmel
+USER: transcribe/translate audio ASST: hello world
+trained
+frozen
+Figure 1:Speech-LLM architecture. Only the projector and
+LoRA weights are trained.
+The speech-LLM comprises the following components:
+Speech Encoder:We employ a 16-layer Conformer en-
+coder [33] with a hidden dimension of 1024 and 8 attention
+heads, trained using the CTC loss [34] on a variety of publicly
+available ASR corpora [2].
+Projector:The output from the penultimate layer of the speech
+encoder is passed to a 2-layer Q-Former projector [2, 12]. The
+Q-Former operates on non-overlapping blocks of 15 encoder
+frames, using 3 learnable query vectors per block to perform
+cross-attention over the encoder outputs leading to a 5× down-
+sampling of the audio sequence. A final linear layer projects the
+Q-Former outputs from its internal dimension of 1024 to match
+the LLM embedding dimension of 2048.
+LLM:We use a 1-billion parameter LLM1 consisting of 40 trans-
+former layers, hidden dimension of 2048, 16 attention heads,
+and SiLU activation [35]. The model employs grouped query
+attention [36] with 4 key-value heads, RoPE positional encod-
+ings [37], and a vocabulary size of 100,352 tokens.
+LoRA:The LLM is fine-tuned using Low-Rank Adaptation
+(LoRA) [38] with rank r=64 and scaling factor of 0.5, applied
+to all linear projections (query, key, value, and output) across all
+40 layers. We denote these base LoRA weights as LoRAA.
+2.2. Speech Recognition with Timestamps (SRWT)
+SRWT is the task of transcribing speech while generating word-
+level timestamps interleaved with the transcription. We train
+models to predict the end time for each word. Since the start time
+of a word typically coincides with the end time of the preceding
+word, explicitly generating both introduces redundancy. Instead,
+we introduce a silence token ( ) to mark pauses between words,
+allowing the start time of any word to be inferred from the end
+time of the preceding token.
+For example, we have a 1-second utterance “hello how
+are you”, with the corresponding SRWT target sequence:
+1https://huggingface.co/ibm-granite/
+granite-4.0-1b-base
+|20 hello|30 |40 how|60 are|85 you|94 |100
+Here, “ ” denotes silence, “|” separates each word from its end
+time, and all timestamps are in units of 10 ms. The start time of
+a word is inferred from the end time of the preceding token. In
+the above example, “hello” starts at 0.2 seconds and ends at
+0.3 seconds, and the next word “how” starts at 0.4 seconds.
+Some prior work [3, 17, 31] has modeled SRWT as a single-
+pass generation task, where the language model directly produces
+timestamped transcriptions conditioned on the input speech.
+However, this approach leads to significant word error rate
+(WER) degradation when timestamps are interleaved.
+Thus, we use a two-step approach that leverages the strong
+transcription capabilities of speech-LLMs. In the first step, the
+model generates a standard transcription. In the second step,
+the model performs SRWT conditioned on the speech and the
+ASR transcript. This avoids WER degradation, as the model
+can copy the transcript and by decoding “what” before “when”,
+alignment reduces to a localization problem rather than joint
+decoding, simplifying the second step.
+Since speech-LLMs are typically pre-trained on tasks that
+may not include SRWT, it is crucial to develop techniques that
+efficiently introduce SRWT capabilities without degrading per-
+formance on existing tasks. To this end, we propose three adap-
+tation approaches (Figure 2): Non-Mod and Mod-aLoRA are
+one-pass,two-stepmethods with KV-cache reuse, while Mod-
+LoRA is atwo-passmethod requiring KV-cache recomputation.
+Moreover, Mod-aLoRA and Mod-LoRA offer full modularity.
+Non-Modular SRWT (Non-Mod):Figure 2(a) illustrates a
+straightforward approach of continually fine-tuning the speech-
+LLM to generate timestamps in the second step of LLM gen-
+eration. Specifically, we fine-tune both the Q-Former projector
+and LoRAA, yielding Proj ′ and LoRAf
+A, respectively. The ad-
+vantage of this approach is that it can generate ASR and SRWT
+outputs continuously without recomputing the KV-cache for the
+sequence preceding the SRWT output. However, the model is
+not modular: it must be retrained jointly on both the original
+tasks (transcription/translation) and SRWT, with no guarantee of
+preserving performance on the original tasks.
+Modular LoRA (Mod-LoRA):Figure 2(b) shows a two-pass
+but modular approach that preserves the base speech-LLM. The
+base LoRA weights ∆WA are merged into the LLM and frozen.
+We then train new timestamp adapters: LoRAT for the LLM and
+LoRAPr
+T for the projector. For a given LLM weight matrix, the
+effective weights in each pass are:
+Pass 1:W eff =W 0 + ∆WA (1)
+Pass 2:W eff =W 0 + ∆WA + ∆WT (2)
+Only ∆WT is trainable; ∆WA remains frozen. The advantage
+of this approach is modularity: the base capabilities are fully pre-
+served, and the timestamp adapter can be enabled or disabled as
+needed. However, this model is two-pass and since the effective
+weights differ between passes, the KV-cache computed in pass 1
+is incompatible with pass 2 and needs to be recomputed.
+Modular Activated LoRA (Mod-aLoRA):Figure 2(c) presents
+a novel application ofactivatedLoRA (aLoRA) [32] that
+achieves modularity while enabling KV-cache reuse from the
+base model in a one-pass, two-step approach. As with Mod-
+LoRA, ∆WA is merged and frozen, while aLoRAT and LoRAPr
+T
+are trained for the LLM and projector respectively. The key
+innovation is that aLoRAT remains dormant until a designated
+6214
+Proj’Enc
+audio1
+Proj LoRAA(LLM)Enc
+audio1
+Enc
+audio2
+ProjLoRAT
+Pr LoRAA(LLM)LoRAT
+Proj LoRAA(LLM)Enc
+audio1
+Enc
+audio2
+ProjLoRAT
+Pr LoRAA(LLM)aLoRAT
+𝐊𝐕 − 𝐂𝐚𝐜𝐡𝐞𝐊𝐕 − 𝐂𝐚𝐜𝐡𝐞
+X
+USER: Transcribe audio1
+ASST: hello world (step-1)
+USER: <|timestamp|>
+ASST: hello|50 world|120 (step-2)
+Continuous gen.
+USER: Transcribe audio2
+ASST: hello world (pass-1)
+USER: <|timestamp|>
+ASST: hello|50 world|120 (pass-2)
+Separate passes (KV re-compute)
+USER: Transcribe audio1
+ASST: hello world (step-1)
+USER: <|timestamp|> audio2
+ASST: hello|50 world|120 (step-2)
+Continuous gen.(KV cache re-use)
+audio1 ASR SRWT
+prefill
+(LoRAA
+f )
+gen
+(LoRAA
+f )
+gen
+(LoRAA
+f )
+tokens
+KV
+audio1 ASR SRWT
+gen
+(LoRAA)
+tokens
+KV(pass-1)
+prefill
+(LoRAT)KV(pass-2)
+trained
+frozen
+(a) (b) (c)
+LLMLoRAA
+f
+step-1 step-2
+audio2
+prefill
+(LoRAT)
+prefill
+(LoRAA)
+audio1 ASR SRWT
+gen
+(LoRAA)
+tokens
+KV prefill
+(aLoRAT)
+audio2
+gen
+(aLoRAT)
+prefill
+(LoRAA)
+step-2step-1
+gen
+(LoRAT)
+Figure 2:Overview of SRWT approaches. The bottom row shows KV-cache computation: prefill for user-provided or first-pass/first-step
+tokens, gen for generation. The LoRA labels indicate weights that are active when computing KV for each segment.(a) Non-Mod:
+Fine-tuned model reuses step 1 KV-cache but loses modularity.(b) Mod-LoRA:Two-pass approach with different LoRA weights between
+passes. Pass 2 requires full KV-cache recomputation.(c) Mod-aLoRA:aLoRA activates only after <|timestamp|>, enabling
+KV-cache reuse while preserving modularity and allowing a continuous generation of ASR and SRWT as a two-step process.
+Table 1:Comparison of two-pass SRWT approaches.
+Non-Mod Mod-LoRA Mod-aLoRA
+Reuse pass-1 KV-cache Yes No Yes
+Preserve base model No Yes Yes
+Train on SRWT data only No Yes Yes
+invocation token (<|timestamp|>) is encountered:
+Weff =W 0 + ∆WA +m·∆W T (3)
+where m is a binary mask (0 before invocation, 1 after). Prior
+to invocation, the LLM operates with the base model weights
+(W0 + ∆WA). Upon invocation, the timestamp adapter ac-
+tivates, audio is re-injected via LoRAPr
+T , and timestamps are
+generated with stacked weights (W0 + ∆WA + ∆WT). This
+design combines Mod-LoRA’s modularity with seamless KV-
+cache continuity across a single generation pass. As illustrated
+in Figure 2(c), it also provides flexibility to leverage both the
+base model’s richaudio1 representation and a timestamp-specific
+audio2 encoding. Future work could mask attention to audio1
+during SRWT generation for computational efficiency [32]. Ta-
+ble 1 gives a comparison between the three models.
+3. Experiments
+3.1. Configuration
+Data.We train our SRWT models using a combination of pub-
+licly available speech corpora: LibriSpeech [39], MLS (en, fr, de,
+pt, es) [40], CommonV oice (en, fr, de, pt, es) [41], V oxPopuli (en,
+fr, de, es) [42], AMI-IHM [43], Switchboard [44], TIMIT [45],
+Buckeye [46], and YODAS [47]. For AMI-IHM, Switchboard,
+TIMIT, and Buckeye, we use the available timestamp annota-
+tions. For all other datasets, we obtain word-level alignments
+using the Montreal Forced Aligner (MFA) [24], a GMM-HMM
+based forced alignment tool. We also use MFA to insert silence
+boundaries into the manually annotated datasets.
+To ensure high-quality training data, we validate the MFA-
+derived alignments using CTC-based forced alignment with our
+speech encoder (Section 2.1). We compute the Accumulated
+Average Shift (AAS) [48], the mean absolute error between
+timestamps in milliseconds, for the CTC and MFA alignments
+and retain only samples with the lowest alignment error: the top
+95% for English and top 70% for non-English data. For the larger
+datasets (YODAS and MLS-en), we cap the training data at 4M
+and 5M samples, respectively. Following [17], we augment the
+training data by concatenating consecutive utterances to create
+sequences of 2× the original length, improving generalization
+to longer audio at inference time.
+Training.The base speech-LLM is trained on a variety of pub-
+licly available datasets for ASR/AST tasks (see [2]) for 900k
+steps with a batch size of 128 and a learning rate of 1e-4 with
+linear decay after 1000 warmup steps. For SRWT adaptation,
+Non-Mod is continually fine-tuned on the original tasks plus
+SRWT for 800k steps at a reduced learning rate of 4e-5, while
+Mod-LoRA and Mod-aLoRA are trained for 800k steps at a
+learning rate of 1e-4 on SRWT data. For modular approaches,
+projector LoRA is applied to all linear projections in the Q-
+Former. We also use pad-free training with Flash attention [49].
+3.2. Results
+Table 2 presents our main results. We compare against five base-
+lines: Qwen3 Forced Aligner [11], which trains a separate non-
+autoregressive LLM to generate timestamps given a first-pass
+transcript; In-sync [17], a speech LLM trained for one-pass, one-
+step SRWT; CrisperWhisper [29], which adapts Whisper with
+a modified tokenizer that treats spaces as individual tokens and
+6215
+Table 2:SRWT results. AAS (ms↓) measures absolute error in timestamp prediction; WER (%↓) is word error rate of the transcriptions
+with interleaved timestamps. We also report the first pass WER of the speech-LLM. TMT means TIMIT and BKY is Buckeye data.
+English Multilingual
+MLS CV
+AMI-I AMI-S LS-C LS-O VOX CV MLS TMT BKY Avgfr es de pt fr es de pt Avg
+ASR baseline
+Speech-LLM WER 8.5 22.3 1.4 2.9 5.6 5.7 4.6 2.2 12.2 7.3 4.1 2.9 4.0 12.7 5.6 3.4 4.2 3.6 5.3
+Baselines
+Qwen3-FA AAS 48.1 82.5 27.8 29.3 41.0 48.4 34.3 29.9 34.8 41.8 38.1 27.0 32.3 26.3 30.3 40.0 29.4 34.2 33.3
+In-sync AAS 41.7 – 12.9 16.1 52.0 37.4 28.4 20.1 26.3 – – – – – – – – – –
+WER 10.2 – 1.6 3.6 6.3 9.1 5.4 2.8 12.2 – – – – – – – – – –
+CrisperWhisper AAS 55.7 64.3 35.9 40.1 47.2 97.4 46.4 42.7 48.3 53.1 35.6 28.0 31.2 36.8 62.9 58.9 60.9 83.8 50.1
+WER8.426.3 1.7 3.7 5.9 7.0 5.21.3 10.6 7.8 8.5 5.7 4.2 12.7 12.0 6.64.011.4 8.1
+Canary-v2 AAS 127.8 129.7 92.5 89.2 109.9 110.3 94.3 86.1 100.9 104.5 85.0 81.1 80.2 – 86.8 88.5 91.5 – –
+WER 15.6 35.7 2.2 3.6 5.9 7.4 5.0 2.7 10.8 9.93.6 2.5 3.9– 6.1 3.4 5.1 – –
+WhisperX AAS 107.1 150.2 71.7 72.0 78.8 91.2 79.2 63.6 67.2 86.8 117.3 84.7 132.2 75.0 104.2 88.1 126.8 79.5 101.0
+WER 16.5 34.0 2.4 4.7 6.5 8.9 6.1 2.5 12.2 10.4 5.3 3.2 4.8 9.4 10.3 4.6 6.4 7.8 6.5
+Ours
+Non-Mod AAS34.1 37.8 12.4 15.644.3 37.8 26.215.0 21.0 27.127.9 17.6 25.2 21.1 19.9 20.7 21.2 25.5 22.9
+WER 8.722.3 1.43.0 5.85.74.7 3.2 11.2 7.34.0 2.8 4.0 12.55.3 3.34.23.5 5.2
+Mod-LoRA AAS 41.0 44.2 12.5 15.6 38.736.023.6 27.1 28.7 29.7 42.1 18.4 22.319.7 18.419.519.4 25.3 23.9
+WER 8.5 22.41.4 2.9 5.6 5.7 4.62.2 12.2 7.34.1 2.9 4.0 12.6 5.6 3.4 4.3 3.6 5.3
+Mod-aLoRA AAS 41.0 42.8 12.4 15.634.336.122.819.7 32.6 28.623.4 16.7 18.820.8 18.519.519.5 25.4 21.2
+WER 8.6 22.41.4 2.95.75.7 4.62.2 12.2 7.34.2 2.9 4.012.45.6 3.4 4.33.5 5.3
+Table 3:Zero-shot multilingual AAS (ms↓).
+MLS CV
+fr es de pt fr es de ptAvg
+Non-Mod 396.2 407.8 502.2 626.5 160.0 202.5 234.9 185.9 339.5
+Mod-LoRA 55.9 40.6 47.138.236.5 39.7 43.3 43.0 43.0
+Mod-aLoRA38.8 34.5 34.841.633.4 36.8 39.8 39.2 37.3
+extracts timestamps via DTW on cross-attention scores; Canary-
+v2 [28], which uses an encoder-decoder model for transcription
+followed by a CTC-based forced aligner; and WhisperX [26],
+which aligns Whisper transcripts using wav2vec2 phoneme pos-
+teriors. Canary-v2 and WhisperX exhibit significantly higher
+AAS due to their reliance on frame-level posteriors which strug-
+gle to precisely detect word boundaries and silences.
+A key advantage of our design is that the SRWT WER
+matches the ASR WER. On English, all three proposed methods
+achieve 7.3% average WER, identical to the base speech LLM,
+and on multilingual data, our methods achieve 5.2–5.3% com-
+pared to the base model’s 5.3%. This confirms that the two-step
+design allows the model to reproduce the transcription while
+adding timestamps, thereby avoiding quality degradations.
+In terms of timestamp accuracy, all proposed methods outper-
+form baselines. On English, Non-Mod achieves the best average
+AAS of 27.1 ms, a 35% relative improvement over Qwen3-FA
+(41.8 ms) and 49% over CrisperWhisper (53.1 ms). Our modular
+variants achieve comparable AAS to the non-modular model
+while offering practical advantages. As shown in Table 1, mod-
+ular adaptation does not require retraining on original tasks;
+SRWT capability can be developed independently and added
+without degrading ASR/AST performance. This becomes impor-
+tant as speech LLMs support more tasks.
+Among the modular approaches, Mod-aLoRA achieves the
+best AAS by leveraging both the base model’s KV-cache from
+audio1 and a timestamp-specific audio2 encoding in a single con-
+tinuous generation pass. The aLoRA design also offers flexibility
+for future optimization: by avoiding attention overaudio1 during
+SRWT generation, computational efficiency could be improved
+while still benefiting from the transcript context.
+On multilingual data, Mod-aLoRA achieves the best average
+AAS of 21.2 ms, outperforming Non-Mod (22.9 ms) and Mod-
+LoRA (23.9 ms). We hypothesize that, compared to English,
+low-resource multilingual data benefits from preserving the base
+model’s optimized KV cache representations. The non-modular
+approach fine-tunes these representations and Mod-LoRA re-
+computes KV representations with new LoRA weights, losing
+the benefit of the pretrained cache. Mod-aLoRA strikes the best
+balance by inheriting the base model’s KV cache while activating
+timestamp-specific adapters only during generation.
+Zero-shot multilingual analysis:Table 3 presents a setting
+where we observe a clear benefit of modular approaches, in par-
+ticular, Mod-aLoRA over Non-Mod. When models are trained
+only on English SRWT and evaluated on multilingual data,
+Non-Mod exhibits poor zero-shot transfer (339.5ms avg AAS),
+while modular methods generalize substantially better. No-
+tably, Mod-aLoRA (37.3ms) outperforms Mod-LoRA (43.0ms),
+which we attribute to its ability to leverage the base model’s KV-
+cache which preserves multilingual acoustic knowledge and aids
+cross-lingual timestamp prediction. Modular adaptation learns
+language-agnostic features which makes timestamp prediction
+an isolated skill whereas full fine-tuning on all tasks together,
+as in Non-Mod, might be learning English specific timing cues.
+This strong zero-shot transfer suggests modular methods offer
+a practical pathway for adding timestamp capabilities to new
+languages without requiring language-specific supervision.
+4. Conclusion
+We proposed parameter-efficient adaptation methods for word-
+level timestamp prediction in speech LLMs. Our two-step ap-
+proach generates transcriptions first, then regenerates with times-
+tamps, preserving transcription quality while achieving state-of-
+the-art alignment. Our key contribution is Mod-aLoRA, which
+combines modularity with KV-cache reuse. We also explored
+Non-Mod (two-step but requires retraining) and Mod-LoRA
+(modular but no KV-cache reuse) to understand design trade-
+offs. Experiments demonstrate 35% relative improvement over
+the best baseline while maintaining identical WER. Modular
+methods also exhibit strong zero-shot transfer to new languages
+without language-specific supervision.
+6216
+5. Generative AI Use Disclosure
+We used Claude (Anthropic) to assist with editing and polish-
+ing the manuscript, including improving prose clarity, fixing
+grammatical errors, and formatting LaTeX tables. All techni-
+cal content, experimental design and scientific contributions are
+solely the work of the authors. The authors reviewed and take
+full responsibility for all content in this paper.

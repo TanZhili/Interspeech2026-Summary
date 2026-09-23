@@ -1,0 +1,519 @@
+MS-GNN: Multi-Scale Graph Neural Network for Detecting Local
+Audio-Visual Forgery Traces
+Jianrong Wang1,2, Hengyang Guo3, Jie Liu4, Ju Zhang5,∗∗, Qi Li6, Ying Guo1, Jing Zhao7
+1 College of Intelligence and Computing, Tianjin University, China
+2 Tianjin Renai College, China
+3 School of Future Technology, Tianjin University, China
+4 Tianjin Electronic Information College, China
+5 Technical College for the Deaf, Tianjin University of Technology, China
+6 School of Electrical and Information Engineering, Tianjin University, China
+7 Tianjin Beiyang Rongke Intelligent Technology Co., Ltd., China
+wjr@tju.edu.cn, HenryGuo@tju.edu.cn, liujie@tjdz.edu.cn, juzhang@email.tjut.edu.cn,
+qi.li@tju.edu.cn, guoyingla@tju.edu.cn, pyrock zj@126.com
+Abstract
+The proliferation of audio-visual deepfake technology poses a
+threat to social trust. Approaches relying on globally pooled
+multimodal features can dilute transient forgery traces (e.g.,
+lip-sync misalignments). We propose MS-GNN, a multi-scale
+graph neural network for audio-visual deepfake detection. MS-
+GNN partitions the audio-visual stream into windows to capture
+local traces. We use a multi-scale graph: a bottom-up path-
+way aggregates window features into segment-level semantics,
+while a top-down pathway propagates global context to refine
+local evidence. We obtain a global video representation by ag-
+gregating window features, and train with window-level (auxil-
+iary) and video-level (main) supervision. Experiments on LA V-
+DF and FakeA VCeleb show that MS-GNN improves deepfake
+detection, particularly for videos with localized forgery traces.
+The source code will be available here.
+Index Terms: audio-visual temporal consistency, temporal in-
+consistency analysis, window-level supervision, hierarchical
+aggregation, multi-modal sequence modeling
+1. Introduction
+Advanced generative models, including GANs [1], V AEs [2],
+diffusion models [3], and flow matching [4], have substantially
+reduced the cost of producing realistic synthetic media, accel-
+erating the spread of audio-visual deepfakes and undermining
+information integrity and social trust [5]. In practice, manipu-
+lations are often confined to short temporal windows. As Fig. 1
+illustrates, replacing only a brief spoken phrase can reverse the
+conveyed message while leaving most audio-visual content au-
+thentic. Such local forgery traces are easily diluted by global
+representations, motivating detectors that preserve fine-grained
+evidence while leveraging global context.
+Early deepfake detectors relied on uni-modal cues, such as
+visual artifacts [6, 7] or audio anomalies [8], but often general-
+ized poorly due to the lack of cross-modal corroboration. This
+limitation spurred multi-modal detectors that explicitly model
+audio-visual consistency. For example, Chugh et al. [9] mea-
+sure cross-modal discrepancies, while others adopt contrastive
+alignment [10] or direct feature fusion [11, 12]. While effec-
+tive, these methods typically make global decisions after pool-
+**indicates the corresponding author.
+ing, which can obscure short-span tampering traces—a limi-
+tation highlighted by LA V-DF [13]. From a signal process-
+ing perspective, short-span manipulations can be viewed as
+the target signal, whereas authentic context acts as background
+noise. Global pooling reduces the effective Signal-to-Noise
+Ratio (SNR), whereas our method explicitly strengthens local
+forgery evidence to prevent it from being suppressed by authen-
+tic context.
+AIcan   help   children   learn
+Real video
+AI  will hinderchildren  learn
+Fake video
+Figure 1:Comparison of a real video (left) and a partially
+forged video (right), where localized speech and lip movements
+alter the conveyed message in specific segments (red regions).
+Recent work has explored alternative detection paradigms.
+For instance, DiMoDif [14] exploits high-level semantic dis-
+crepancies between audio and visual discourse, while Ref-
+eree [15] uses external reference clips to detect identity incon-
+sistencies. However, these baselines rely on semantic alignment
+or auxiliary reference data, and may miss subtle, non-semantic
+artifacts in reference-free settings. Moreover, regularization-
+based methods (e.g., Zou et al. [16]) often handle temporal scale
+implicitly via global pooling, without an explicit hierarchy for
+fine-grained temporal modeling. This motivates a structure-
+aware design that can detect localized inconsistencies without
+external references.
+To this end, we propose MS-GNN (Multi-Scale Graph
+Neural Network), designed to detect localized tampering in
+audio-visual streams. MS-GNN partitions the input into non-
+overlapping windows and performs bi-directional multi-scale
+aggregation and context-guided refinement: bottom-up aggre-
+gation builds segment-level context, while top-down propaga-
+tion injects this context back to refine window representations.
+We jointly optimize an auxiliary window-level objective and a
+main video-level objective, improving sensitivity to localized
+forgeries while maintaining video-level discrimination, as illus-
+2429
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-416
+Input Representation OutputAggregation
+win···
+Video
+Encode
+Audio
+Encode
+Build Graph
+win1win2win··· winn
+TE1 TEnTE2 TE···
+{ K }
+{ L }
+v1
+a1
+v2
+a2
+v···
+a···
+vn
+an
+win1 winnwin2
+fake
+MS-GNN Layer l
+v1
+v2
+v···
+vn
+a1
+a2
+a···
+an
+TransformerTransformer
+V
+A
+S
+v1'
+v2'
+v···'
+vn'
+a1'
+a2'
+a···'
+an'
+MLPMLP MLPMLPMLPMLPMLPMLP
+win1
+a1
+v1
+vn
+v2
+v···
+an
+a2
+a···
+w1
+wn
+w2
+w···
+winn win2win···
+Attention pooling
+classifierclassifierclassifierclassifierclassifier
+w1
+wn
+w2
+w···
+G ✓✗
+✗
+✓
+✗
+✗
+Cross
+Cross
+ Cross
+Cross
+ Cross
+MLP{ 0.0-0.4 }{ 0.4-0.8 }{ … -… }{ … -… }
+Intra-modal edge (Audio-to-Audio)Video Encode：TimeSFormer a Audio / Video Window Nodev wFused Window Representation{ 0.4-0.8 }：Timestemp
+Intra-modal edge (Video-to-Video)Audio Encode：WavLM AVAudio / Video Segment Representation Fused Segment RepresentationS{ K }：Number of intra-modal neighbors
+GGlobal Video RepresentationCross-modal edge (Audio-to-Video)win：400ms Window Duration { L }：Number of cross-modal neighbors TE Temporal Embedding / concat
+Figure 2:The MS-GNN architecture. The framework processes audio-visual inputs via graph construction, multi-scale refinement, and
+attention pooling to produce both window- and video-level forgery predictions.
+trated in Fig. 2.
+2. Method
+Given an audio-visual stream, MS-GNN detects local forgeries
+by modeling dependencies across multiple temporal scales. It
+consists of three steps: (i) constructing graph-based representa-
+tions for windows, (ii) refining them through stacked MS-GNN
+layers, and (iii) aggregating the final window features for video-
+level prediction under multi-task supervision.
+2.1. Input Representation and Graph Construction
+We first partition the input video into non-overlapping windows.
+For each windowi, we extract visual (v i ∈R Dv ) and audio
+(ai∈R Da) features and concatenate them with a temporal en-
+coding (TE) derived from the window’s timestamp. These aug-
+mented features are processed by modality-specific encoders to
+yield initial feature matrices,H 0
+v andH 0
+a. Finally, we con-
+struct a heterogeneous graphG= (V,E)where nodes repre-
+sent the audio and visual windows, and edges model both intra-
+modal (temporally adjacent) and cross-modal (synchronized)
+relationships. The number of intra-modal temporal neighbors is
+controlled byK, and the number of synchronized cross-modal
+neighbors is controlled byL.
+2.2. MS-GNN Layer
+Each MS-GNN layer updates window features through three
+stages: window-level interaction, bottom-up semantic aggrega-
+tion, and top-down contextual refinement (Algorithm 1).
+2.2.1. Stage 1: Window-level Interaction
+To model local temporal dynamics and cross-modal dependen-
+cies, we employ a dual-stream interaction module augmented
+with a soft temporal locality prior.
+Intra-modal Dynamics.We introduce a time-aware atten-
+tion mechanism that biases message passing toward temporally
+nearby evidence while preserving content-dependent attention.
+For a windowiand a temporal neighborj∈N i, we compute
+the queryq i, keyk j, and valuev j via linear projections. The
+attention coefficientα ij is modulated by a Gaussian temporal
+Algorithm 1A Single MS-GNN Layer
+1:Input:FeaturesH l−1
+v ,H l−1
+a ; GraphG
+2:Output:Refined featuresH l
+v,H l
+a
+3:// Stage 1: Window-level Interaction
+4:H ′
+v←GAT(H l−1
+v ,G v→v)▷Intra-modal
+5:H ′
+a←GAT(H l−1
+a ,G a→a)
+6:H ′′
+v,H′′
+a←DualGAT(H′
+v,H′
+a,G)▷Fusion
+7:// Stage 2: Bottom-Up Aggregation
+8:{W v,k},{W a,k}←GroupWindows(H ′′
+v,H′′
+a)
+9:fork= 1→N s do
+10:s v,k←Aggregate(W v,k)▷CLS token aggregation
+11:s a,k←Aggregate(W a,k)
+12:s f,k←Fuse(s v,k,s a,k)▷Cross-attention
+13:end for
+14:// Stage 3: Top-Down Refinement
+15:fori= 1→N w do
+16: ¯sf,i←SummarizeContext({s f,k},i)▷Avg
+17:h l
+v,i,h l
+a,i←Refine(h′′
+v,i,h′′
+a,i, ¯sf,i)▷Res
+18:end for
+19:returnH l
+v,H l
+a
+bias:
+αij = softmaxj
+
+
+q⊤
+i kj√dk
+·exp
+
+−∆t2
+ij
+τ 2
+
+| {z }
+Locality Prior
+
+,(1)
+where∆t ij denotes the temporal distance andτis a learnable
+time-scale parameter. This bias reduces noisy long-range prop-
+agation, while the content scoreq⊤
+i kj still determines the rele-
+vance of each neighbor. Thus, the Gaussian term acts as a soft
+inductive bias rather than a content-independent rule. We up-
+date the visual feature ash′
+v,i = Dropout(P
+jαijvj) +hl−1
+v,i ,
+and update audio features analogously.
+Cross-modal Fusion.To capture audio-visual discrepancies
+(e.g., lip-sync errors), we employ Dual Cross-modal Graph At-
+tention (DualGAT) with a learnable fusion gate. For the visual
+2430
+stream querying audio (V←A), we compute:
+H′′
+v =H′
+v +γ a→v·Attention(Q v,K a,V a),(2)
+whereγ a→v is a learnable scalar initialized to0. This identity
+mapping avoids untrained cross-modal noise from corrupting
+pre-trained uni-modal features. In one trained model,γ a→v is
+learned as−0.045,0.058, and0.012across the three layers.
+These descriptive values indicate residual cross-modal refine-
+ment while avoiding large perturbations to the pre-trained uni-
+modal features.
+2.2.2. Stage 2: Bottom-Up Aggregation
+To build higher-level context, we group windows into overlap-
+ping temporal segments of a predefined size, denoted as the
+hyperparameterS size. For each segment, a Transformer with
+a CLS token aggregates the constituent window features into
+modality-specific representations,s v,k ands a,k. These are then
+fused via cross-attention to produce unified segment represen-
+tations{s f,k}Ns
+k=1:
+sf,k = CrossAttnseg(sv,k,s a,k).(3)
+2.2.3. Stage 3: Top-Down Refinement
+The fused segment representations provide global context for
+refining window-level features. For each windowi, we com-
+pute a context vector ¯sf,i by averaging the representations of
+all segments that contain windowi. We then update window
+features through a residual connection:
+hl
+v,i =h′′
+v,i + MLPfuse([h′′
+v,i, ¯sf,i]).(4)
+2.3. Global Aggregation and Multi-Task Loss
+After stackingN layer MS-GNN layers, the final window fea-
+tures{w i}Nw
+i=1 are aggregated into a single video-level repre-
+sentationgvia attention pooling. The model is trained with a
+multi-task objective combining a main video-level loss and an
+auxiliary window-level loss, both using Focal Loss:
+L=λ vidLF ocal(ˆyvid,y vid)+λ winLF ocal(ˆywin,y win),(5)
+where the auxiliary task encourages learning fine-grained local
+forgery cues, andλ vid,λ win are loss weights.
+3. Experiments
+3.1. Datasets
+We evaluate our model on two datasets. To assess sensitiv-
+ity to local inconsistencies, we useLA V-DF[13], which con-
+tains numerous partially forged samples. To assess behav-
+ior on globally manipulated videos, we use the large-scale
+FakeA VCeleb[17], adopting the five-fold cross-validation
+setup from Zou et al. [16].
+3.2. Implementation and Metrics
+Our model is trained for 30 epochs using the AdamW optimizer
+with a learning rate of1×10−4, a batch size of 256, CosineAn-
+nealingLR scheduling, and early stopping. We extract 768-
+dimensional features from TimeSformer [18] and WavLM [19]
+using 400 ms non-overlapping windows. The MS-GNN uses
+3 layers (hidden sizes [512, 256, 64]), a segment size of 8
+with 50% overlap, and loss weights ofλvid=0.9andλ win=0.1
+(Eq. 5).
+3.3. Results
+3.3.1. Performance on LAV-DF
+On LA V-DF, which is rich in local forgeries, MS-GNN im-
+proves over the compared baselines. As shown in Table 1, our
+method achieves 98.12% ACC and 99.81% AUC, outperform-
+ing prior methods. This result indicates that our multi-scale
+architecture captures local inconsistencies that are missed by
+global pooling strategies.
+Table 1:Results on LAV-DF
+Method ACC (%) AUC (%)
+MDS [9] 93.42 97.83
+JA VDD [11] 94.42 96.91
+BA-TFD [13] 65.29 50.97
+DimoDif [14] 97.84 99.74
+Referee [15] 96.74 99.70
+MS-GNN (ours)98.12 99.81
+3.3.2. Performance on FakeAVCeleb
+On FakeA VCeleb, composed mainly of globally forged videos
+lacking isolated local anomalies, MS-GNN remains competi-
+tive, as shown in Table 2. This setting favors global compar-
+ative methods such as MRDF-CE, which is consistent with the
+moderate ACC of 93.20% for our model that is optimized for lo-
+cal inconsistency detection. Nevertheless, our model achieves
+the highest AUC of 96.75%, indicating effective sample rank-
+ing and showing that fine-grained multi-scale analysis remains
+useful even on globally manipulated data.
+Table 2:Results on FakeAVCeleb
+Method ACC (%) AUC (%)
+VFD [10] 81.52 86.11
+A VOID-DF [12] 83.70 89.20
+Ensemble A VDF [20] 91.15 89.90
+Multimodaltrace [21] 92.60 90.93
+MRDF [16]94.0592.43
+Referee [15] 83.75 89.86
+MS-GNN (ours) 93.2096.75
+3.4. Ablation Study
+To validate our key components, we conducted an ablation
+study on LA V-DF (Table 3). The baseline achieves 91.80%
+ACC (Row 1). Window interaction and hierarchical fusion
+independently improve performance (Rows 2–4), with CLS-
+based aggregation yielding better performance than mean pool-
+ing. Combining both modules yields a +4.76% ACC gain
+(Row 5). The full model incorporating all components achieves
+the highest performance, with a +6.32% ACC improvement
+over the baseline (Row 10), demonstrating each module’s con-
+tribution. Rows 9 and 10 show that MS-GNN does not
+strictly require window-level supervision for detection: the
+multi-scale architecture alone captures local inconsistencies,
+achieving 98.01% ACC. Incorporating window-level supervi-
+sion nonetheless yields a marginal further improvement and
+provides window-level evidence for interpreting suspicious seg-
+ments.
+2431
+Table 3:Ablation study on LAV-DF . WS denotes window-level
+supervision.
+Row WI HF TE AA WS ACC (%) AUC (%)
+1× × × ×✓91.80 96.01
+2✓× × ×✓93.86 98.03
+3×HF (Mean)× ×✓93.35 97.89
+4×HF (CLS)× ×✓95.21 98.48
+5✓HF (CLS)× ×✓96.56 99.23
+6✓HF (CLS)✓×✓96.98 99.47
+7✓HF (CLS)×✓ ✓96.70 99.36
+8×HF (CLS)✓ ✓ ✓96.66 99.33
+9✓HF (CLS)✓ ✓×98.0199.81
+10✓HF (CLS)✓ ✓ ✓98.12 99.81
+3.5. Case Study
+Fig. 3 provides a qualitative example from LA V-DF. As shown
+in Fig. 3(a), MS-GNN assigns high window-level scores to
+the forged span (W10–W13), leading to a correct video-level
+classification. In contrast, Fig. 3(b) shows that a baseline us-
+ing simple global averaging produces non-discriminative scores
+and misclassifies the video. This example shows how our
+multi-scale approach preserves local evidence that would oth-
+erwise be lost. Beyond binary classification, MS-GNN pro-
+vides coarse window-level temporal evidence for suspicious
+segments, which can support downstream forensic analysis.
+0.00s 4.30s 5.24s5.60s
+W0W1W2W3W4W5W6W7W8W9W10W11W12W13
+Window scores replicate the video level…
+0.47 
+0.33 0.34 
+0.45 0.41 
+0.35 
+0.40 
+0.51 
+0.29 0.32 
+0.78 
+0.88 0.89 
+0.84 
+0.47 
+0.33 0.34 
+0.45 0.41 
+0.35 
+0.40 
+0.29 0.32 
+0.51 
+0.78 
+0.84 
+0.88 0.89 
+W0W1W2W3W4W5W6W7W8W9W10W11W12W13
+<0.50.5–0.670.67–0.84≥0.84Ground-truth forged
+0.00s 4.30s 5.24s5.60s
+(a) MS-GNN window-level scores
+    (video-level score 0.64 ✓)
+Ground-truth forged
+(b) Baseline window-level scores
+       (video level score 0.45 ✗)
+All windows = 0.45
+Figure 3:Case study on clip001251.
+3.6. Hyperparameter Analysis: Window Duration and Seg-
+ment Size
+Fig. 4(a) illustrates how different segment sizes induce differ-
+ent aggregation hierarchies, while Fig. 4(b) summarizes their
+impact on performance. Our parameter choices are directly
+grounded in the physical and statistical properties of localized
+manipulations.
+First, the400ms window aligns with the natural duration
+of a spoken word, matching the word-level tampering typical
+in LA V-DF [13]. Defining windows by absolute time rather
+than frame counts also makes feature extraction less sensitive
+to varying video resolutions and frame rates.
+Second, as shown in Fig. 4(b), performance peaks at
+Ssize=8, corresponding to a3.2s receptive field. Since LA V-
+DF fake segments average0.65s and max out at1.6s [13], this
+3.2s segment provides sufficient context to cover local anoma-
+lies alongside authentic content for reliable audio-visual con-
+trast. Smaller segments lack sufficient reference context, while
+larger segments withS size≥12may dilute subtle forgery fea-
+tures into the dominant authentic background. The degradation
+window level
+segment level
+window level
+segment level
+Ssize 4 16… …
+Figure 4:(a) Different segment sizes result in distinct aggrega-
+tion hierarchies. (b) Impact of Segment Size on performance.
+on both sides supports a context-sufficiency trade-off rather than
+a fragile single-value setting.
+3.7. Complexity and Efficiency Analysis
+Table 4:Efficiency comparison on A800 (100 clips, 2.8 s each;
+batch size=1; end-to-end; warmup=10).
+Model Max dur. Params FLOPs Med P90 Peak Mem Feat
+(s) (M) (G) (ms/clip) (ms/clip) (GB) (ms/clip)
+MRDF [16] 20 19.967 152.52036.830 37.0580.20430.000
+Referee [15] 2.8 272.314 2979.118 119.987 120.614 2.039 -
+DiMoDif [14] 240.124 0.0953794.340 3794.4550.0333790.000
+MS-GNN (ours) +∞33.655 0.123 2307.480 2309.184 0.464 2230.000
+We further evaluate the computational efficiency on a single
+NVIDIA A800 GPU. As shown in Table 4, we report end-to-
+end latency per 2.8 s clip at a batch size of 1, including fea-
+ture extraction, after 10 warmup runs. Since the compared
+methods support different maximum input durations—Referee:
+2.8 s, MRDF: 20 s, DiMoDif: 24 s, MS-GNN:+∞—the bench-
+mark uses uniformly trimmed 2.8 s clips for a fair comparison.
+DiMoDif and MS-GNN employ a two-stage pipeline where fea-
+ture extraction precedes inference, so their end-to-end latency
+is dominated by their heavy backbones, namely TimeSformer
+and WavLM. The MS-GNN aggregation and refinement mod-
+ule itself is lightweight at only 0.123 G FLOPs, indicating that
+end-to-end efficiency could improve with more efficient feature
+extraction.
+4. Conclusions
+We introduced MS-GNN, a multi-scale graph neural network
+for detecting localized audio-visual forgeries by linking fine-
+grained local evidence with global context. Experiments on
+LA V-DF and FakeA VCeleb demonstrate improved video-level
+detection, especially for localized manipulations, while future
+work will explore adaptive segmentation and more efficient fea-
+ture extraction.
+2432
+5. Acknowledgments
+This work was financially supported by Key R&D Program of
+the Nanning Science Research and Technology Development
+Plan (20253057) and Tianjin Science and Technology Program,
+Special Project for High-Quality Development of Manufactur-
+ing Industry (25ZGZNGX00040).
+6. Generative AI Use Disclosure
+Generative AI tools were used only for language polishing and
+editing assistance. The authors reviewed and remain responsi-
+ble for all scientific content, experiments, and conclusions.

@@ -1,0 +1,487 @@
+Improving Adversarial Robustness in Spoken Language Identification through
+Self-Defensive Distillation
+Spandan Dey
+Samsung R&D Institute India-Bangalore
+Bengaluru, Karnataka, India
+spandan.dey@samsung.com
+Abstract
+Robustness against adversarial attacks is majorly explored
+for security-critical speech applications, such as speaker veri-
+fication and speech recognition. Concerning their on-growing
+multilingual expansion, we present one of the first exten-
+sive studies on developing adversarial robustness for spoken
+language identification (LID). We show the vulnerability of
+state-of-the-art LID models under widely-explored white-box
+gradient-based adversarial attacks. We then propose a novel
+adversarial robust LID framework, Self-Defensive Adversarial
+Re-Training (SDART). It expands the conventional adversarial
+re-training with adversarial sample mining, teacher-free defen-
+sive distillation using dynamic online label smoothing, and lin-
+guistic consistency regularization. Across multiple databases
+and architectures, SDART outperforms several conventional ad-
+versarial robustness methods, improving performance on both
+genuine and adversarially attacked samples.
+Index Terms: Spoken language identification, Adversarial at-
+tack, Adversarial re-training, Defensive distillation.
+1. Introduction
+Contrary to the commonly known replay attacks [1] or text-
+to-speech (TTS), voice conversion (VC) based synthetic at-
+tacks [2, 3],adversarial attackssystematically alter input sam-
+ples with small, human-imperceptible systematic perturbations
+that can lead to inevitable misclassifications [4]. From the initial
+conceptualization by Szedey et al. [5] for computer vision appli-
+cations, over the past decades, recognizing the threats posed by
+doctored misclassifications from these applications, researchers
+across fields have developed a wide variety of adversarial at-
+tacks and their mitigation approaches.
+Naturally, in speech domain, the majority of adversarial
+robustness studies are centered around security-critical appli-
+cations, such as automatic speaker verification (ASV) [6] for
+voice biometrics or automatic speech recognition (ASR) for
+voice commands [7]. Kan et al. [8] proposed segment-wise
+score distribution matching approach to detect targeted black-
+box adversarial attacks in ASV . In [9], diffusion-based adver-
+sarial purification (DAP) was proposed to remove the perturba-
+tion from the ASV inputs. A learnable mask detector (LMD)
+approach was proposed in [8] to detect attacked ASV inputs us-
+ing score distribution mismatch. Wang et al. [10, 11] introduced
+the AdvSV dataset to improve ASV robustness against over-the-
+air attacks using a contrastive domain-aligned one-class classi-
+fier. On the ASR side, in [12], low-frequency energy of audio
+input is used to detect the adversarial inputs for the wav2vec
+2.0 [13] and Whisper architecture [14]. Gao et al. [15] proposed
+speech-based gradient optimization for developing ASR robust-
+ness against transferable white-box attacks. In [16], a short uni-
+versal acoustic adversarial segment was appended to Whisper
+inputs to compel it to conduct translation even though its prompt
+was set for speech transcription. A cross-lingual adversarial at-
+tack was proposed in [17] to force a multilingual ASR model to
+generate a distorted transcript in the target language.
+With the ongoing trend of extending multilingual support
+for different speech applications, we believe a new threat is
+emerging, in which the front-end spoken language identifica-
+tion (LID) module can be subjected to adversarial attacks. Ad-
+versaries can simply alter the language prediction of the input
+speech by attacking the LID module, leading to catastrophic
+performances for the diverse multilingual backends. Although
+LID development has shown impressive progress over the past
+few years [18, 19, 20], surprisingly, in the literature, we could
+not find major LID-related studies dedicated to adversarial at-
+tacks. To our knowledge, this work presents one of the first
+studies to analyze the sensitivity of standalone state-of-the-art
+LID models to a range of widely explored adversarial attacks.
+Thereafter, we focus on developing effective adversarial attack
+robustness for LID frameworks. Across diverse LID architec-
+tures and databases, our proposed adversarial robustness ap-
+proach has consistently outperformed several widely popular
+robustness approaches. In this line, the major contribution of
+our work is summarized as follows:
+• We launch multiple well-known adversarial attacks against
+state-of-the-art standalone LID architectures, ECAPA-
+TDNN [21] and Conformer [22]. We report an in-depth
+analysis of their sensitivity to performance degradations by
+varying attack step sizes and numbers, controlling the amount
+of input perturbation and attack launch time.
+• We propose a novel adversarial robustness approach for LID,
+Self-Defensive Adversarial Re-Training(SDART), that enables
+(i) progressive adversarial domain exposure withadversar-
+ial sample mining, (ii) a teacher-free version of defensive-
+distillation [23] building upononline label smoothing[24], and
+(iii) linguistic relation guided consistency regularization.
+• Considering the top-10 most widely spoken languages in the
+world, we have shown that across different architectures and
+widely explored LID databases (V oxLingua107 [25] and Com-
+mon V oice [26]), the proposed SDART consistently outper-
+forms other widely popular robustness approaches.
+• Under black-box scenarios, we also demonstrate the effective-
+ness of SDART for providing robustness against transferable
+adversarial attacks.
+2. Adversarial attack: Overview
+Let, a genuine (feature, label) sample(X,y)be fed to a clas-
+sifierf θ (θdenoting the parameters). In an adversarial at-
+2661
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3091
+tack, the input feature is subtly contaminated by a systemati-
+cally orchestrated perturbationδsuch that the generated feature
+Xadv =X+δis imperceptibly similar toX. To ensure that,
+the perturbationδis constrained to be around a very smallL p
+norm boundedϵ-ball of that genuine input:||X adv−X||p≤ϵ.
+Different norms are used to formulate adversarial attacks:L 1,
+L2, and, most commonly,L ∞. An attack is successful if:
+fθ(Xadv)̸=y. Based on the access to knowledge for perturba-
+tion generation, adversarial attacks can be categorized aswhite-
+box(where the architecture and the parameters off θ are acces-
+sible to the adversary) andblack-box(no information aboutf θ).
+In the era of open sourcing, the likelihood of white-box attacks
+is increasing, as adversaries can gain access to architectural de-
+tails and development data descriptions. Hence, in this study,
+we consider the most widely popular white-box adversarial at-
+tacks.
+Fast Gradient Sign Method (FGSM):FGSM [4] is a
+single-step white-box attack that perturbs the input in the di-
+rection of the gradient of the loss with respect to the input. The
+adversarial example is generated as
+Xadv =X+ϵ·sign (∇ XL(fθ(X),y)),(1)
+whereϵdefines maximum perturbation size underℓ ∞ con-
+straint. Being single-step nature, FGSM is computationally ef-
+ficient but typically less effective than iterative attacks.
+Projected Gradient Descent (PGD):PGD is an iterative
+extension of FGSM that applies multiple small gradient ascent
+steps, each followed by a projection onto the feasible perturba-
+tion set. Starting fromX 0 =X, the update at iterationtis:
+Xt+1 = Π∥X−X0∥p≤ϵ
+
+Xt +ϵ·sign
+
+∇XL(fθ(Xt),y)
+
+(2)
+whereϵdenotes the step size andΠ(·)represents the pro-
+jection operator onto theℓ p-bounded perturbation space. Op-
+erating in multi-step refinements, PGD is regarded as a strong
+first-order adversary with higher attack success rates.
+3. Methodology
+Adversarial robustness approaches can be either reactive (detect
+attacked inputs before they are fed tof θ) or proactive (mod-
+ify the parameters off θ so that attacked inputs yield correct
+classifications). Reactive approaches fall into a high-risk-high-
+reward regime, and the model’s compromise becomes inevitable
+if the detector fails. Hence, proactive adversarial robustness ap-
+proaches are more common,adversarial re-training(ART) [27]
+being the most widely explored among them.
+3.1. Adversarial re-training (ART)
+ART injects adversarially attacked training data during classi-
+fier training [4] and optimizes amin-maxobjective:
+min
+θ
+E(X,y)∼D
+
+max
+∥δ∥p≤ϵ
+L
+ 
+fθ(X+δ),y
+
+(3)
+In Eq. 3,Ddenotes the joint distribution of(X,y). The
+inner maximization objective aims to generate effective ad-
+versarial samples during training that can increase the overall
+loss. Whereas the outer minimization attempts to minimize
+that same loss, leading to generalization against adversarial in-
+puts. Researchers have used different approaches to inject ad-
+versarial attack samples into ART alongside genuine samples.
+In every step during training, adversarial samples were cre-
+ated and injected with corresponding genuine ones in [4], half
+the batch was used for attack generation in [28], multiple at-
+tacks were used in ART in [29]. ART serves as a founda-
+tion for developing more sophisticated adversarial robustness
+frameworks. For example,TRADESapproach was proposed
+in [27] with the additional regularizer objective of minimizing
+the KL-divergence between genuine and corresponding adver-
+sarial logits:D KL(fθ(X),fθ(Xadv)).MARTwas proposed
+in [30], which extends ART by only applying adversarial at-
+tacks for correctly classified genuine samples. Another very
+successful approach for adversarial robustness is defensive dis-
+tillation (DD) [23]. It uses a teacher network (often same net-
+work trained prior with genuine samples) to guide a student net-
+work (trained with adversarial samples) with soft-labels. DD
+helps in reducing the sensitivity of perturbation size by reduc-
+ing the gradient magnitude of the input.
+3.2. Self-defensive adversarial re-training (SDART)
+Motivation & hypotheses:Upon analyzing these main-
+stream approaches, we hypothesize three key aspects that can
+help in enabling adversarial attack robustness, (i) controlled
+perturbation-domain exposures, (ii) consistency regularization
+between genuine and their respective attacked samples, (iii)
+gradient sensitivity reduction. Encapsulating all these, we
+proposeself-defensive adversarial re-training(SDART) that
+blends ART with teacher-free knowledge distillation [31] and
+language-aware consistency regularization using dynamicon-
+line label smoothing[24]. Conventional regularization ap-
+proaches aim to minimize representation or logit distance be-
+tween a clean sample and its attacked counterpart. It does
+not consider whether the clean sample is correctly predicted
+by the classifier. We propose to perform logit-pairing only for
+correctly predicted clean samples. For linguistic consistency,
+we adopt epoch-wise and language-specific soft labels for logit
+pairing instead of sample-wise labels. This approach stabilizes
+training convergence while inducing inter-language dynamics
+as crucial information for the LID task. For clarity, we discuss
+SDART in terms of its different incremental sub-methods.
+Method 1: Adversarial sample mining in ART-We ex-
+tend ART using (i) primarily PGD attack with a uniformly dis-
+tributed random perturbation size in[0.010,0.035](cf. Sec-
+tion 5.1), and (ii) adversarial sample mining (ASM). In ASM,
+dependent on the epocht, during batch generation, we gradu-
+ally increase adversarial samples by allowing onlyγfraction
+of genuine samples for adversarial attack generation:γ t =
+max(1,0.1 + 0.05∗t). In each batch, the genuine and the
+adversarial samples are then stacked together for training.
+Method 2: Online label smoothing (OLS)-To formulate
+epoch-wise, language-specific logits for consistency regulariza-
+tion, during ART, we propose the preceding epoch to guide the
+following epoch with soft-labels. Let a logit matrixSt∈R L×L
+(Ldenotes the number of languages) be initialized with all ze-
+ros at the beginning of eacht-th epoch. Consider, a segment
+(Xi,yi)is fed to the LID modelf θ which is correctly classi-
+fied,arg max(fθ(Xi)) =y i. Concerning ART, hereXcan be
+a genuine sampleX gen or an adversarial sampleX adv. Let
+the corresponding softmax logit bep(l|X i)∈R L. We set
+St[:,yi] =p(l|X i). PopulatingSfor each correctly classified
+training sample, at the end of the epoch, we set
+St[:,k] = 1
+Nt
+k
+(
+Nt
+kX
+j=1
+p(l|Xj))(4)
+Here,N t
+k denotes the number of correctly classified training
+samples in thet-th epoch with true labelk∈[1,L],S t[:,k]
+denotes thek-th column of theS. At the nextt+ 1-th epoch,
+St is used as supervised matrix with soft-labels residing in each
+column for each ground-truth label[1,L]. The total loss to be
+2662
+Figure 1:An overview of the working principle of the proposed SDART-based LID framework.
+optimized is then:
+LOLS =αL hard + (1−α)L soft (5)
+For better convergence, the conventional hard-label based
+loss is also included, weighted byα. We have setα= 0.7upon
+experimental validation.L soft is computed as:
+Lsoft =−
+LX
+k=1
+St[:,k]logp(k|X i)(6)
+Method 3: Dynamic OLS-In Eq. 5,αis kept static across
+all epochs. However, during the initial phase of learning, we
+believe the quality of soft-labels is not matured enough to guide
+the learning of the next epoch. Hence, we extend Eq. 5 withα
+being gradually increased based on the epoch count (t):α t =
+max(0.7,α≤2 +β∗t). Empirically, we setα ≤2 = 0.01as the
+initial weights for the first two epochs,β= 0.05.
+Method 4: Entropy-regularized dynamic OLS-In the lit-
+erature, high success rate of adversarial attacks is primarily at-
+tributed to the large number of input samples with borderline
+presence to the complex decision boundary [27]. With minimal
+perturbation, it is easier to attack and make the classifier mis-
+classify such samples, pushing it to the other side of the deci-
+sion boundary. Even though predicted correctly, these samples
+are likely to produce low-confidence, high-entropy prediction
+logits. To reduce the impact of such samples, instead of simple
+averaging, we modify Eq. 4 with weightsw j set as the inverse
+of the prediction score entropy to produce more reliable soft-
+labels for self-distillation:
+St[:,k] = 1
+Nt
+k
+(
+Nt
+kX
+j=1
+wj·p(l|Xj))(7)
+wj = 1/(
+LX
+i=1
+−p(l|Xj)[i] logp(l|Xj)[i])(8)
+Method 5: Genuine sample-guided, entropy-
+regularized, dynamic OLS-The above methods, so far,
+do not consider whether the correctly classified sample is
+genuine or an adversarially attacked sample without success.
+To ensure that SDART learns the actual information of inter-
+language dynamics observed in real-world data, in the final
+modification, we restrict the logit matrix update only if the
+correct prediction is from the genuine samples. In Figure 1,
+the overview of the working principle of the proposed SDART
+adversarial robustness approach is presented.
+4. Experiment details
+Databases & features:We primarily use the widely-explored
+V oxLingua107 [25] subset (V oxLingua-10), considering all its
+utterances from the top ten most widely spoken languages in
+the world: English, Mandarin, Hindi, Spanish, French, Arabic,
+Bengali, Portuguese, Russian, and Urdu. We split the data into
+session-disjoint training, validation, and evaluation splits using
+80:10:10 ratio. Additionally, we verify our proposed framework
+on the Common V oice dataset [26] for the same languages and a
+similar data split. During training, we split the utterances from
+the training and validation sets into segments of 3s. The evalua-
+tion is conducted at utterance-level. The non-speech and silence
+segments are discarded by using V AD. For each segment, we
+extract 80-dimensional log Mel-spectrograms and apply chan-
+nel mean normalization.
+Classifier training procedure:Following the recent LID
+literature [32, 33, 31], we primarily use the ECAPA-TDNN ar-
+chitecture [21] for developing LID frameworks. We train the
+models for 50 epochs with early-stopping, with a batch size of
+64, Adam optimizer, and learning rate of 0.0001. Cross-entropy
+loss is used for training the baseline and ART, while OLS loss
+is used for training SDART. To perform the adversarial attacks,
+we follow the torchattacks library [34]. We report the results
+using equal error rate (EER) (in %) andC avg (∗100).
+5. Experiment results & discussions
+5.1. Baseline LID against different adversarial attacks
+As a foundation experiment, we first examine how our baseline
+(ECAPA-TDNN trained on V oxLingua-10) LID framework’s
+performances degrade under two most widely explored white-
+box adversarial attacks, FGSM and PGD. We examine with
+different hyperparameter choices of perturbation step size and
+number of steps (for PGD). We conduct this experiment on the
+V oxLingua-10 validation set and use these results to select the
+attack hyperparameter for subsequent experiments. We also re-
+port the average attack launch time (in ms) and the total pertur-
+bation in mean square error (MSE) between the genuine input
+Mel spectrogram and its attacked counterpart. The results in
+Table 1 show gradual performance degradation as the step size
+increases. Even though the performance degradations are less
+sensitive to the step size, the resulting degradations noticeably
+increase the attack launch time. For building adversarial robust-
+ness, concerning attack’s impact and launch time, we choose the
+5-step PGD with step size of0.03. For the proposed SDART,
+2663
+Table 1:Baseline (ECAPA-TDNN trained on VoxLingua-10)
+LID performances against different configurations of the FGSM
+and PGD adversarial attacks. Here, MSE is in10−5 units, and
+attack launch time (Time) is in milliseconds.
+Model Step size # steps EER Cavg MSE Time
+No attack - - 3.794 4.095 - -
+FGSM
+0.01 1 5.592 6.003 0.10 18
+0.03 1 14.425 15.297 0.92 17.9
+0.05 1 30.638 31.794 1.00 17.9
+PGD
+0.01
+5 5.567 6.038 9.1 75
+10 5.543 6.606 9.5 141
+25 5.518 6.028 9.6 337
+0.03
+5 8.819 9.573 45.71 76.44
+10 13.757 14.710 66.00 141
+25 14.455 15.582 78.90 338
+0.05
+5 10.093 11.147 100.70 74.04
+10 19.344 19.876 130.20 120
+25 30.618 31.337 187.51 289
+Table 2:LID performances of the proposed SDART approach
+with ECAPA-TDNN model trained with VoxLingua-10. Module-
+wise incremental performance breakdown, along with compar-
+ison with other notable literature is also presented.
+Approach Genuine FGSM PGD
+EER Cavg EER Cavg EER Cavg
+Baseline 4.098 4.727 15.112 16.170 9.345 10.111
+Basic ART 3.923 4.235 9.949 10.698 9.049 10.698
+ART + ASM 3.578 4.108 5.612 5.924 4.335 4.666
+ART + ASM + OLS 3.091 3.390 4.079 4.489 5.236 5.968
+ART+ASM+ Dynamic OLS 2.831 3.064 3.819 4.232 3.880 4.647
+ART+ASM+Dynamic OLS
+with entropy-regularization 3.083 2.900 3.312 2.934 4.844 4.637
+ART + ASM + Dynamic OLS
++ entropy-regularization +
+genuine-sample guidance (SDART)
+2.801 3.159 3.666 3.786 3.544 4.074
+TRADES [27] 3.541 4.010 3.907 5.156 5.630 6.208
+Defensive-distillation (DD) [23] 3.803 4.075 11.693 12.313 9.849 9.926
+MART [30] 5.210 5.452 4.765 6.537 12.660 14.150
+we randomly select the step size from[0.010,0.035].
+5.2. LID performance analysis of SDART
+In Table 2, we present the performance analyses of the pro-
+posed SDART approach for the ECAPA-TDNN model trained
+with V oxLingua-10. We report performances on the original
+evaluation set with genuine samples, along with the evalua-
+tion sets generated by FGSM and PGD attacks (perturbation
+size0.03). To develop a deeper understanding of SDART,
+we also observe performances of the major sub-modules in-
+crementally. For comparison with the literature, along with
+ART, we further implement several popular adversarial robust-
+ness approaches (their hyperparameters are optimized based
+on V oxLingua-10 validation set), such as TRADES [27],
+Defensive-distillation [23, 35], MART [30]. The proposed
+SDART approach consistently outperforms ART and other
+comparable robustness approaches. Notably, SDART achieves
+the best performance for both genuine and attacked evaluation
+sets. For this, we believe the controlled attack exposure using
+adversarial sample mining, the effective handling of the bor-
+derline high-entropy genuine samples, and the incorporation of
+language-specific consistency regularization play a pivotal role.
+5.3. Ablation experiments: Adversarial robustness across
+multiple LID corpora and frameworks
+We explore gradient-based adversarial attacks in which the per-
+turbation is computed from the gradient of the input with re-
+spect to the model’s loss. Hence, to verify the effectiveness
+of SDART, we conduct experiments with another popular ar-
+chitecture, Conformer [22], trained on V oxLingua-10. Addi-
+tionally, to examine SDART across databases, we also train the
+ECAPA-TDNN with Common V oice corpus. The performances
+Table 3:Adversarial robustness evaluation of LID models
+trained with Conformer-based architecture with VoxLingua-10.
+Approach Genuine FGSM PGD
+EER Cavg EER Cavg EER Cavg
+Baseline 4.131 5.482 6.753 8.678 5.442 5.891
+ART + ASM 3.571 4.603 4.800 5.858 3.678 4.726
+TRADES [27] 3.624 4.709 3.730 4.770 3.606 4.594
+DD [23] 3.672 4.722 4.432 5.554 3.786 4.815
+SDART(proposed) 2.911 3.706 4.692 5.695 2.926 3.522
+Table 4:Adversarial robustness of LID models trained with
+ECAPA-TDNN architecture with Common Voice corpus.
+Approach Genuine FGSM PGD
+EER Cavg EER Cavg EER Cavg
+Baseline 3.831 3.527 34.723 33.800 20.700 20.494
+ART + ASM 5.510 5.728 12.825 12.750 10.260 10.070
+TRADES [27] 3.408 3.807 11.894 12.420 8.098 8.074
+DD [23] 4.692 3.180 9.526 9.977 7.949 7.548
+SDART(proposed) 3.237 2.503 11.792 11.260 7.573 7.235
+0 1 2 3 4 5 6 7
+EER (%)
+V oxLingua-10
+ECAP A
+CommonV oice
+ECAP A
+4.16
+3.23
+2.78
+2.35
+Baseline
+SDAR T
+Figure 2:EERs for the ECAPA-TDNN baseline and the pro-
+posed SDART LID framework when the adversarial attack is
+transferred from the Conformer-based LID framework.
+of these additional experiments are reported in Table 3 and Ta-
+ble 4, respectively. For both sets of experiments, on majority
+cases, SDART achieves superior LID performances.
+5.4. Ablation experiments: A look into the aspect of trans-
+ferable adversarial attacks for black-box use cases
+Owing to the ongoing trend of open-source development, we
+explore white-box adversarial attacks in which the adversary
+has access to the LID model. Here, we also examine SDART
+into black-box attack scenario, assuming the adversary does not
+have access to the ECAPA-TDNN model. In such cases, at-
+tackers usually generate adversarial examples using other re-
+lated architectures to attack the unseen framework. To simulate
+such a scenario, we apply transferable black-box adversarial at-
+tacks generated from the Conformer model to attack ECAPA-
+TDNN-based frameworks. In Figure 2, we report the EERs of
+the baseline and SDART systems, showing the effectiveness of
+the proposed method against black-box adversarial attacks.
+6. Conclusions
+We present one of the first studies analyzing and improving the
+robustness of LID systems against adversarial attacks. Build-
+ing on conventional adversarial re-training, we propose SDART,
+a novel adversarial robustness method for LID that integrates
+controlled adversarial domain exposures via adversarial sample
+mining, teacher-free defensive distillation with dynamic online
+label smoothing, and language-conditioned consistency regu-
+larization. Compared with other popular robustness methods,
+SDART shows superior performance across LID frameworks
+and databases for both genuine and adversarial LID evaluations.
+In the future, we plan to apply SDART for diverse evolving ad-
+versarial attacks and to other speech processing applications.
+2664
+7. Generative AI use disclosure
+Generative AI tools were used for limited language editing and
+final manuscript polishing. All technical contributions, experi-
+mental designs, analyses, and conclusions were developed, ver-
+ified, and approved by the authors. The authors retain full re-
+sponsibility for the content of this manuscript in accordance
+with ISCA policy.

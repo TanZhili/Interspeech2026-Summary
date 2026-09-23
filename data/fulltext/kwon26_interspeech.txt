@@ -1,0 +1,435 @@
+Delayed-Commitment Online Speaker T racking for Robust Many-Speaker
+Diarization
+Y oungki Kwon1, Hee-Soo Heo1, Minjae Lee1, Han-Gyu Kim1, Bong-Jin Lee1
+1 NA VER Cloud Corporation, South Korea
+youngki.kwon@navercorp.com
+Abstract
+Online speaker diarization—determining “who spoke when” in
+real time—is critical for meeting transcription, yet scaling to many
+speakers remains challenging. Within the clustering paradigm, we
+propose an online diarization system with no explicit speaker-count
+cap. Its core module, Delayed-Commitment Online Speaker
+Tracking (DC-OST), labels each embedding immediately but defers
+new-speaker registration until sufficient evidence accumulates.
+DC-OST also incorporates an adaptive distance threshold to
+suppress spurious registrations. Under system voice activity
+detection, the proposed system achieves 9.53% and 9.12% DER
+at 0.5 s latency on V oxConverse and V oxSRC-23—up to 21 and 28
+speakers, respectively—outperforming both DIART and Sortformer.
+Moreover, a per-speaker-count analysis shows that our system
+maintains consistent accuracy as the number of speakers grows,
+unlike baseline systems whose performance degrades.
+Index T erms: speaker diarization, online processing, speaker track-
+ing, speaker clustering, many-speaker
+1. Introduction
+Speaker diarization answers “who spoke when” in an audio stream
+and is a fundamental component of meeting transcription and
+voice applications [1, 2]. While traditionally performed offline on
+complete recordings, the growing demand for real-time transcription
+has motivatedonlinespeaker diarization, where the system must
+assign consistent speaker labels with bounded latency as the session
+unfolds. Unlike offline pipelines [3, 4, 5, 6, 7] that can process all
+speech segments after observing a complete recording, an online
+system must decide incrementally whether each new segment
+belongs to an already-observed speaker or signals the arrival of a
+new one—and such decisions are difficult to revise once committed.
+How a system manages these incremental speaker-identity
+decisions largely defines its capabilities and limitations; existing
+approaches can be broadly characterized by how they handle
+these decisions.Clustering-basedmethods [8, 9, 10, 11] compare
+incoming speaker embeddings against accumulated centroids and
+register new speakers on demand, placing no architectural limit
+on the speaker count.Fixed-capacitymethods [ 12, 13] instead
+jointly classify frame-level multi-speaker activities through a fixed
+set of output nodes, naturally handling overlapped speech but
+restricting the number of simultaneous speakers to a small constant
+(typically four). Recentcapacity-extendedmethods build upon the
+same fixed-capacity paradigm, raising the speaker ceiling through
+global and local attractors [14], online attractor decoders [ 15],
+or target-speaker conditioning [16]; however, the fundamental
+constraint remains—the number of speakers a model can reliably
+handle is still bounded by per-block limits or implicitly constrained
+by the speaker-count distribution seen during training.
+Despite these advances, existing approaches struggle to main-
+tain accuracy as the number of speakers grows substantially. Fixed-
+capacity and capacity-extended methods are structurally bounded as
+noted above, while clustering-based methods, though architecturally
+open-ended, have not been specifically designed or evaluated to
+maintain consistent accuracy as the speaker count increases. Real-
+world meetings frequently involve far more than four participants,
+and the number is typically unknown in advance. This gap is exacer-
+bated by the evaluation practice of prior work: as shown in Figure 2,
+the widely adopted DIHARD III benchmark [17] concentrates 61.4%
+of sessions in the two-speaker bin, making it difficult to assess many-
+speaker robustness. Prior online systems have largely been evaluated
+on benchmarks dominated by low speaker counts, leaving their ro-
+bustness under broad speaker-count distributions and realistic system
+voice activity detection (V AD) conditions underexplored.
+To bridge this gap, we propose an online diarization system
+whose core isDelayed-Commitment Online Speaker Tracking
+(DC-OST), a centroid-based speaker tracking module designed to
+remain accurate even as the number of speakers grows. DC-OST
+addresses two intertwined difficulties of online centroid tracking.
+First, adelayed-commitmentbuffer defers centroid construction
+until multiple candidate embeddings accumulate, producing
+high-quality centroids from multiple observations. Second,
+anadaptive distance thresholdthat scales with the number of
+registered speakers suppresses the spurious speaker registrations
+that empirically arise under a fixed threshold as more speakers
+accumulate. Unlike conventional online clustering, which registers
+a new speaker as soon as a single embedding’s distance exceeds
+the decision boundary, DC-OST commits a centroid only after
+aggregating multiple observations while still emitting a label for
+every embedding immediately, marking the key distinction from
+the closest prior work. Our main contributions are:
+• We present DC-OST, a centroid-based online speaker tracking
+module that maintains consistent diarization accuracy across
+a wide range of speaker counts, without imposing any explicit
+speaker-count cap.
+• On V oxConverse [18] and V oxSRC-23 [ 19], our system
+achieves 9.53% and 9.12% DER at 0.5 s latency, substantially
+outperforming DIART [8] and Sortformer [13].
+• We provide a detailed per-speaker-count analysis on many-
+speaker datasets (up to 21 and 28 speakers) under system V AD
+conditions, together with a consistency metric (Std(∆)), demon-
+strating that the proposed system maintains substantially more
+uniform performance across speaker counts than the baselines.
+2. Proposed Method
+2.1. System Overview
+Our pipeline comprises three modules: V AD, speaker embedding
+extraction, and DC-OST (Figure 1(a)). V AD identifies speech
+5287
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-898
+Figure 1:(a) Proposed pipeline: VAD, speaker embedding
+extraction (1.5 s window , 0.5 s step), and DC-OST with 0.5 s latency.
+(b) DC-OST labeling example. Provisional labels indicate that
+the centroid is still under construction; committed labels denote a
+fully registered speaker . The commitment progress row tracks buffer
+accumulation towardK=5; “commit” marks centroid creation.
+segments, from which speaker embeddings are extracted using a
+1.5 s sliding window at a 0.5 s step. After the initial window is filled,
+a new embedding is produced every 0.5 s, yielding 0.5 s system
+latency. DC-OST then assigns each embedding to an existing
+or new speaker (Algorithm 1); all distances are cosine distances.
+Figure 1(b) illustrates this process on a multi-speaker stream.
+2.2. Delayed-Commitment Online Speaker T racking
+Given a stream of speaker embeddings, the DC-OST module must
+assign each embedding a speaker label in real time (Algorithm 1).
+This task poses two intertwined challenges: (1)new-speaker
+detection—deciding when an embedding belongs to a speaker not
+yet observed, where a fixed decision boundary becomes increasingly
+prone to over-segmentation as the number of registered speakers
+grows; and (2)centroid quality—constructing a reliable centroid for
+a newly detected speaker, given that a single noisy embedding can
+corrupt all subsequent distance comparisons. This risk compounds
+with the speaker count: more speakers require more centroid
+constructions, raising the cumulative probability that a corrupted
+centroid cascades errors into future assignments. A naive remedy
+for centroid quality is to enlarge the embedding extraction window,
+but this directly increases latency and the risk of capturing multiple
+speakers within one window.
+Our key insight is todecouple label output from speaker
+registration: every embedding receives a speaker label immediately
+upon arrival, while the internal centroid construction is deferred
+until sufficient evidence accumulates. This decoupling resolves
+the tension between the two challenges—the system can demand
+strong evidence before committing a centroid (improving quality)
+without delaying the output label (preserving latency). Figure 1(b)
+illustrates this behavior: each embedding is immediately assigned
+a speaker label (“Speaker labels” row), while the buffer progress
+dots track the internal centroid construction toward the “commit”
+point. We address challenge (1) with an adaptive distance threshold
+(Section 2.2.1) and challenge (2) with a delayed-commitment buffer
+(Section 2.2.2). The two components are presented in algorithmic
+order; as the ablation in Section 4.3 shows, the delayed-commitment
+buffer is the larger contributor to the overall improvement.
+2.2.1. Adaptive Distance Thresholding
+Each incoming embedding is compared against all committed
+centroids using cosine distance (Algorithm 1). If the minimum
+distance falls below the thresholdτ, the embedding is assigned to an
+existing speaker; otherwise, it is treated as a potential new speaker.
+Algorithm 1DC-OST: Online Speaker Tracking
+Require:Embedding stream{e t}; paramsτbase,λ,τmax,K
+1:Init centroidsC←∅, bufferB←∅, countN←0
+2:foreach incoming embeddinge t do
+3:τ←min(τ base+λ·N,τ max)
+4:d min←minc∈Ccosdist(et,c){∞ifC=∅}
+5:ifd min<τthen
+6:c ∗←nearest centroid toet
+7:Apply AHC onC; letG(c ∗)be the cluster containingc∗
+8:ℓ t← label of centroid with highest assignment count in
+G(c∗)
+9: Update matched centroid via cumulative moving average
+and L2-normalize
+10:else
+11:Appende t to bufferB
+12:ℓ t←N+1{provisional label}
+13:if|B|≥Kthen
+14:c new←Medoid(B)
+15:C←C∪{c new};N←N+1;B←∅
+16:end if
+17:end if
+18:outputℓ t
+19:end for
+Empirically, we observe that a fixed threshold leads to an increasing
+rate of spurious speaker registrations as the number of registered
+speakersN grows. We therefore employ an adaptive threshold that
+scales linearly withN, requiring progressively stronger evidence
+before creating another speaker:
+τ=min(τ base+λ·N,τmax).(1)
+Here,τmax imposes an upper bound that prevents the threshold from
+growing indefinitely. When an embedding is assigned to an existing
+speaker, the output label is determined via online AHC-based
+label mapping [9], which groups similar centroids that may have
+formed for the same speaker over time, and selects the label of
+the centroid that has accumulated the most embedding assignments
+in the matched group. The selected centroid is then updated via
+a cumulative moving average with L2 re-normalization.
+2.2.2. Delayed Commitment
+When the distance exceedsτ, rather than immediately creating a
+new centroid from this single (potentially noisy) embedding, we
+place it in a buffer and defer centroid construction untilK candidate
+embeddings accumulate (Algorithm 1). Crucially, the label output
+isnotdeferred: every buffered embedding is immediately assigned
+the provisional labelN+1, where N is the current number of
+committed speakers. Once the buffer reaches K embeddings,
+it yields a single committed centroid, and the provisional label
+becomes the permanent identity of the new speaker. In Figure 1(b),
+embeddingse1–e5 each receive provisional label 1 as they are
+buffered; once the buffer has accumulatedK embeddings, the
+centroid is committed and subsequent embeddings from the same
+speaker (e.g.,e6, e10) receive committed label 1. Meanwhile,
+e7–e9 exceed the adaptive threshold and begin a new buffer for
+speaker 2 with provisional label 2. This separation of label output
+from centroid construction ensures that the system outputs a speaker
+label for every embedding upon arrival, while internally demanding
+K observations before committing a centroid, thereby obtaining
+a high-quality representation without any output delay.
+Since the buffer may contain embeddings from multiple
+speakers, we determine the committed centroid as the medoid—the
+5288
+Figure 2:Speaker-count distribution per session across three
+benchmarks. DIHARD III concentrates 61.4% of sessions in the
+two-speaker bin, whereas V oxSRC-23 (up to 28 speakers) and
+V oxConverse (up to 21 speakers) spread sessions broadly, with
+12.6% and 15.5% containing 11 or more speakers, respectively.
+buffered embedding that minimizes the sum of distances to all
+others. This choice naturally filters outliers by selecting an actual
+observed embedding.
+3. Experimental Setup
+3.1. Datasets and Evaluation Metrics
+To evaluate whether online systems maintain consistent accuracy
+regardless of speaker count, we select V oxConverse [18] and
+V oxSRC-23 [19], which contain in-the-wild audio with up to 21 and
+28 speakers, respectively. As shown in Figure 2, both datasets dis-
+tribute their sessions broadly across speaker counts, with 15.5% and
+12.6% of sessions containing 11 or more speakers, respectively. In
+contrast, DIHARD III [17] concentrates 61.4% of its sessions in the
+two-speaker bin, making it less suited for assessing many-speaker
+robustness; we therefore focus on V oxConverse and V oxSRC-23.
+All evaluations use system V AD rather than oracle boundaries,
+reflecting realistic deployment conditions. Both benchmarks feature
+many speakers with moderate levels of overlapping speech; our
+study therefore targets such many-speaker, moderate-overlap condi-
+tions, and we do not claim coverage of heavily overlapped settings.
+Following the official evaluation protocols of V oxConverse and
+V oxSRC-23, we report Diarization Error Rate (DER)—decomposed
+into False Alarm (FA), Miss (MS), and Speaker Confusion (SC)—
+and Jaccard Error Rate (JER), both with a standard 0.25 s collar.
+3.2. Implementation Details
+Our V AD module employs a convolutional recurrent neural network
+(CRNN) with a sliding-window onset/offset decision mechanism,
+identical to that described in [20]. To extract speaker embeddings,
+we employ a 256-dimensional embedding model trained on
+V oxCeleb1&2 [21] with angular margin softmax, as described
+in [22]. Embeddings are extracted with a 1.5 s window and 0.5 s step.
+The DC-OST parameters are set as follows:τbase=0.55,λ=0.005,
+τmax = 0.8, and a delayed-commitment buffer size ofK= 5 , all
+Table 1:Overall performance on V oxConverse and V oxSRC-23 test
+sets. Latency is in seconds.
+System Latency DER JER F A MS SC
+V oxConverse[18]
+DIART [8] 0.5 17.02 46.67 3.12 2.48 11.40
+Sortformer [13] 1.04 16.97 58.42 0.96 3.14 12.86
+Ours 0.59.53 24.771.35 2.965.20
+Ours (pyn. V AD) 0.5 10.74 26.30 1.21 4.06 5.47
+Challenge Winner [27] Offline 4.49 – – – –
+V oxSRC-23[19]
+DIART [8] 0.5 17.46 49.97 2.95 3.06 11.43
+Sortformer [13] 1.04 20.79 57.83 1.10 4.23 15.45
+Ours 0.59.12 25.791.30 2.765.04
+Ours (pyn. V AD) 0.5 10.63 27.97 1.26 3.89 5.48
+Challenge Winner [27] Offline 5.32 – – – –
+tuned empirically. For the label mapping with centroid clustering [9],
+we use AHC with a distance threshold of 0.6. Note that our system
+does not include a dedicated overlap handling module; overlapped
+speech segments are assigned to a single speaker.
+3.3. Baselines
+We are not aware of prior online diarization studies reporting results
+on V oxConverse or V oxSRC-23 under system V AD conditions. We
+compare against two representative online diarization systems—one
+clustering-based and one fixed-capacity—whose authors have made
+well-documented implementations publicly available, enabling
+reproducible evaluation under identical test conditions:
+• DIART[ 8]: A clustering-based online system that combines
+pyannote-based local segmentation with incremental clustering
+for global speaker tracking. We use the official open-source
+implementation [23] with the authors’ recommended parameters
+optimized for V oxConverse (τactive = 0.576, ρupdate =
+0.915,δnew=0.648), operating at 0.5 s latency.
+• Sortformer[13]: A fixed-capacity streaming system that jointly
+models up to four speakers per chunk. We use the official
+Hugging Face checkpoint [24], whose training data includes
+V oxConverse, in a 1.04 s low-latency configuration.
+Given these ties to V oxConverse, neither baseline is at a disadvantage
+in this evaluation. Since each system integrates its own front-end
+models (V AD and speaker embeddings), the comparison reflects
+full system-level performance. To isolate the contribution of our DC-
+OST module from the V AD front-end, we additionally report results
+using the publicly available pyannote segmentation model [25, 26]
+for V AD (denoted “Ours (pyn. V AD)” in Table 1). We also
+include the best single system (Ahc2 in Table 4 of [27]) from the
+V oxSRC-23 Challenge winner as an offline upper-bound reference.
+In contrast to our system, DIART, Sortformer, and the offline
+reference system employ explicit overlap detection mechanisms.
+4. Results and Analysis
+4.1. Main Results
+Table 1 summarizes the overall performance on both evaluation sets;
+all online baseline results were obtained by running the publicly
+available official implementations under our evaluation protocol
+rather than citing published numbers, ensuring identical conditions.
+On V oxConverse, the two online baselines yield DERs around 17%,
+while our system achieves 9.53%; on V oxSRC-23, the proposed
+system records 9.12% compared to 17.46% (DIART) and 20.79%
+(Sortformer). The improvement is predominantly driven by lower
+Speaker Confusion (SC: 5.20 vs. 11.40 and 12.86 on V oxConverse).
+5289
+Table 2:DER (%) breakdown by number of reference speakers.∆
+represents the deviation from the Global DER. Std(∆) measures
+consistency (lower is better).
+# Spk DIART Sortformer Ours∆DIART∆Sortf.∆Ours
+V oxConverse
+1 6.80 6.23 4.78 -10.22 -10.74 -4.75
+2 14.13 2.87 10.38 -2.89 -14.10 +0.85
+3 14.18 4.34 9.93 -2.84 -12.63 +0.40
+4 12.44 5.35 6.87 -4.58 -11.62 -2.66
+5 15.52 7.30 9.62 -1.50 -9.67 +0.09
+6 13.61 13.75 6.87 -3.41 -3.22 -2.66
+7 17.45 18.39 10.11 +0.43 +1.42 +0.58
+8 18.64 21.58 8.89 +1.62 +4.61 -0.64
+9 19.65 23.04 11.04 +2.63 +6.07 +1.51
+10 18.92 23.19 9.00 +1.90 +6.22 -0.53
+11+ 21.61 27.95 11.46 +4.59 +10.98 +1.93
+Global 17.02 16.97 9.530 0 0
+Std(∆)– – – 4.14 9.142.04
+V oxSRC-23
+1 6.73 7.06 3.25 -10.73 -13.73 -5.87
+2 14.98 6.48 8.92 -2.48 -14.31 -0.20
+3 12.10 5.56 8.13 -5.36 -15.23 -0.99
+4 13.41 7.44 7.21 -4.05 -13.35 -1.91
+5 13.49 15.27 6.35 -3.97 -5.52 -2.77
+6 18.79 21.82 11.15 +1.33 +1.03 +2.03
+7 16.53 22.55 8.05 -0.93 +1.76 -1.07
+8 18.10 17.88 8.30 +0.64 -2.91 -0.82
+9 17.25 23.92 9.51 -0.21 +3.13 +0.39
+10 24.29 36.50 12.41 +6.83 +15.71 +3.29
+11+ 24.54 40.60 11.66 +7.08 +19.81 +2.54
+Global 17.46 20.79 9.120 0 0
+Std(∆)– – – 5.19 12.022.60
+Replacing our CRNN V AD with the publicly available pyannote
+segmentation model yields 10.74% and 10.63% DER on V oxCon-
+verse and V oxSRC-23, still well below both online baselines, further
+confirming that the gain originates from the DC-OST module rather
+than the V AD front-end. Lacking a dedicated overlap detection
+module, our system attributes overlapping segments to a single
+speaker, which explains the remaining Miss (MS) errors. For
+reference, the best single system from the V oxSRC-23 Challenge
+winner [27] achieves 4.49% and 5.32% DER on V oxConverse
+and V oxSRC-23, respectively; the gap to this upper bound mainly
+reflects the inherent constraints of streaming processing and the
+absence of explicit overlap handling. Beyond overall metrics, we
+next examine whether this improvement holds consistently across
+different speaker counts—the central claim of this work.
+4.2. Robustness Across Speaker Counts
+While Table 1 shows strong overall performance, the primary
+objective of this work is to assess whether the improvement remains
+consistent as the number of speakers increases. To quantify this,
+we group sessions by their reference speaker count and compute a
+per-bin DER. We define∆ as the difference between each system’s
+per-bin DER and its own global DER, and use the standard deviation
+of ∆ across 11 bins (1 to 11+) as a within-system consistency
+measure: a lower Std(∆) indicates more uniform accuracy across
+speaker counts.
+As shown in Table 2, both baselines show∆ values that trend
+upward with the speaker count, indicating progressive accuracy
+degradation in many-speaker sessions. In contrast, our system’s∆
+remains relatively flat across bins. On V oxConverse, this is reflected
+in a Std(∆) of 2.04 for our system, compared to 4.14 for DIART and
+9.14 for Sortformer, and the same trend holds on V oxSRC-23. These
+results confirm that DC-OST effectively scales to many-speaker
+sessions, and underscore the importance of evaluating diarization
+systems across diverse speaker-count distributions.
+Table 3:Ablation on proposed components in terms of DER (%).
+Base corresponds to a fixed threshold with immediate commitment
+(K=1).
+Configuration V oxConverse V oxSRC-23
+Base (Fixed +K=1) 12.18 11.74
++ Delayed Commitment (K=5) 10.22 9.58
++ Adapt Threshold 10.59 10.62
+Both (Proposed) 9.53 9.12
+Table 4:Ablation on embedding buffer size for new speaker
+registration (K) in terms of DER (%).
+DatasetK=1K=3K=5K=7K=9K=11K=13K=15
+V oxConverse 10.59 9.64 9.53 9.56 9.549.399.48 9.64
+V oxSRC-23 10.62 9.58 9.129.079.29 9.41 9.84 9.87
+4.3. Ablation Studies
+Component Analysis:Table 3 isolates the contribution of each DC-
+OST component, starting from a baseline that uses a fixed distance
+threshold with immediate commitment (K=1 ). Each component
+individually reduces DER on both datasets: Delayed Commitment
+improves centroid quality by buffering multiple embeddings before
+selecting a representative, while Adaptive Thresholding suppresses
+excessive speaker registrations. Combining both yields the lowest
+DER (9.53% and 9.12%), consistent with their complementary
+roles: delayed commitment governshowa centroid is formed, while
+adaptive thresholding governswhena new speaker is detected.
+Effect of Buffer Size (K):Table 4 examines the sensitivity to
+the buffer sizeK. With an overly smallK (e.g.,K=1 ), the system
+creates a centroid from a single, potentially noisy embedding, yield-
+ing DERs of 10.59% and 10.62%. Conversely, with an excessively
+largeK (e.g.,K≥13 ), the prolonged buffering period increases
+the risk of mixing embeddings from different speakers, degrading
+centroid purity (DER rises to 9.84% on V oxSRC-23 atK=13 ). The
+results show thatK in the range 5–11 consistently yields the lowest
+DER on both datasets; we adoptK=5 as the default since it pro-
+vides strong performance while minimizing the buffer requirement.
+4.4. Real-time Analysis
+On all 642 recordings from the V oxConverse and V oxSRC-23 test
+sets (∼103 h), the pipeline achieves an average Real-Time Factor
+(RTF) of 0.043 on a single GPU; the DC-OST module itself runs en-
+tirely on CPU and adds no latency beyond the 0.5 s processing step.
+5. Conclusion
+We presented DC-OST, a centroid-based online speaker tracking
+module whose adaptive distance threshold and delayed-commitment
+buffer jointly address the intertwined challenges of new-speaker
+detection and centroid quality in many-speaker online diarization,
+decoupling label output from centroid construction so that every
+embedding receives a speaker label immediately upon arrival.
+Evaluated on V oxConverse and V oxSRC-23 (up to 21 and 28
+speakers, respectively) under system V AD, our system achieves
+9.53% and 9.12% DER—roughly halving the error of both DIART
+and Sortformer, driven largely by reduced speaker confusion.
+Per-speaker-count analysis reveals highly consistent accuracy
+across all speaker counts (Std( ∆) = 2.04 and 2.60), while the
+baselines degrade sharply in many-speaker sessions. Current
+limitations include the absence of explicit overlap handling and the
+single-buffer assumption, which future work will address through
+overlap detection and multi-buffer extensions.
+5290
+6. Generative AI Use Disclosure
+A generative AI assistant was used to refine grammar and improve
+the clarity of expressions in the manuscript originally drafted by the
+authors. All technical content, experimental design, and scientific
+claims were produced entirely by the authors.

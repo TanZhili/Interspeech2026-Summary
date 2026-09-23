@@ -1,0 +1,446 @@
+GigaAM Multilingual: Foundation Model for Underrepresented Languages
+Andrei Kuzmenko1,∗, Alexandr Maximenko1,∗, Aleksandr Kutsakov1, Georgii Gospodinov1,∗∗,
+Dmitrii Bolotov1, Oleg Kutuzov1, Pavel Bogomolov1, Fyodor Minkin1
+1 SaluteDevices, Russia
+{andrey.kuzmenko2907, ae.maximenko, askutsakov, georgygospodinov, bolotovdm,
+olegkutuzov01, bobrosoft98, minkin.fyodor}@gmail.com
+Abstract
+Despite recent scaling successes, multilingual ASR perfor-
+mance remains highly uneven, with long-tail languages suf-
+fering from severe data scarcity. This work addresses the
+challenge of building robust foundation models for underrep-
+resented Central Asian languages (Kazakh, Kyrgyz, Uzbek).
+We present GigaAM Multilingual, a Conformer encoder pre-
+trained on 2M hours of audio using a HuBERT-style objective.
+Crucially, we introduce a cluster-level data balancing strategy
+during pre-training and a domain-aware sampling method dur-
+ing fine-tuning to mitigate head-language dominance. In con-
+trolled comparisons, our approach outperforms strong open pre-
+trained encoders (Whisper Large v3, Omnilingual-1B) on target
+languages, achieving significant gains on spontaneous speech
+while maintaining efficiency. We release the foundation en-
+coder and ASR model, offering a proven recipe for effective
+multilingual adaptation under realistic data imbalance.
+Index Terms: speech recognition, self-supervised learning,
+multilingual, low-resource languages
+1. Introduction
+Recent years have seen rapid progress in multilingual automatic
+speech recognition (ASR), driven by scaling data, model capac-
+ity, and weakly-supervised and self-supervised training objec-
+tives [1, 2, 3, 4]. Despite these advances, recognition quality
+remains highly uneven across languages: performance on high-
+resource languages is strong, while many low-resource and
+long-tail languages still exhibit error rates that are prohibitive
+for downstream applications [5].
+A major contributor to this disparity is data imbalance [6]:
+empirical data distribution favors head languages, whereas dras-
+tic equalization via naive upsampling can lead to overfitting or
+degradation on high-resource languages. Principled strategies
+for mixing and weighting data in pre-training and adaptation
+are thus essential.
+In this work, we extend GigaAM [7] – an efficient self-
+supervised learner (SSL) for Russian ASR – to the multilin-
+gual setting. We pre-train the encoder on a 2M-hour corpus
+with highly skewed language-group proportions (Fig. 1). Al-
+though the target Central Asian languages (Kyrgyz, Kazakh,
+Uzbek) are present in pre-training, their share is small, and
+strong general-purpose ASR models often struggle in this low-
+resource regime (Table 1).
+We propose a two-level approach that explicitly accounts
+for long-tail structure. First, we incorporate group-aware
+reweighting during SSL pre-training, increasing the contribu-
+tion of low-share language groups to the pre-training objective
+*These authors contributed equally.
+**indicates the corresponding author.
+Table 1:WER (%) of GigaAM Multilingual against public mul-
+tilingual ASR systems on Common Voice (CV), FLEURS, and
+our internal in-the-wild test sets (Sec. 4.2), best in bold.
+Lang Split
+GigaAM
+Multilingual
+Omnilingual
+1B LLM ASR
+Seamless M4T
+large v2
+Whisper
+large v3
+English CV 21.5 24.716.220.0
+FLEURS 9.4 7.1 5.83.9
+Russian
+CV5.113.6 9.2 9.1
+FLEURS3.06.4 4.6 3.1
+Internal6.014.6 16.1 10.1
+Kazakh
+CV13.823.7 23.8 57.8
+FLEURS4.46.6 6.8 32.4
+Internal15.832.2 62.9 65.2
+Kyrgyz
+CV10.221.6 14.3 95.2
+FLEURS5.58.1 9.5 86.3
+Internal9.825.0 78.3 102.2
+Uzbek
+CV9.232.8 25.1 109.9
+FLEURS7.315.4 11.9 105.4
+Internal12.730.2 40.0 120.6
+via cluster-level sampling weights. Second, we fine-tune on a
+mixture of Russian, English, Kyrgyz, Kazakh, and Uzbek us-
+ing a data recipe that combines open-source corpora, synthetic
+speech, weakly-supervised and internally annotated data.
+We ablate pre-training and fine-tuning sampling and eval-
+uate adaptation to low-coverage languages. Under a controlled
+protocol with matched fine-tuning data and decoding, GigaAM
+adapts better than Whisper [1] and Omnilingual [4] pretrained
+encoders on Kyrgyz/Kazakh/Uzbek, and converges faster on
+languages with minimal pre-training coverage (e.g., Bashkir,
+Georgian).
+We summarize our contributions as follows:
+• GigaAM Multilingual: a state-of-the-art open-weight 1 multi-
+lingual ASR model for Kyrgyz, Kazakh, and Uzbek.
+• Group-aware reweighting during SSL pre-training and its in-
+teraction with downstream fine-tuning.
+• Cross-lingual transfer results on tail languages.
+2. Related Work
+Large-scale ASR models have substantially improved multi-
+lingual robustness by scaling training data and model capac-
+ity. Whisper demonstrates strong zero-shot generalization from
+large-scale weak supervision [1], while USM and MMS im-
+prove coverage and transfer via large-scale multilingual pre-
+training and downstream fine-tuning [2, 3]. Omnilingual ASR
+explicitly targets extensibility to a very large set of languages
+and emphasizes rapid adaptation with minimal data [4]. De-
+1https://github.com/salute-developers/GigaAM
+2099
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2483
+spite this progress, recent benchmark efforts highlight that im-
+provements remain uneven across languages and varieties, with
+long-tail languages still lagging behind [5].
+2.1. Multilingual speech representation learning
+Self-supervised learning enables the training of transferable
+speech encoders from unlabeled audio [8, 9, 10]. Multilin-
+gual SSL work shows that scaling alone is insufficient: sam-
+pling must account for language and dataset imbalance to pre-
+vent head languages from dominating [6]. mHuBERT-147
+scales HuBERT-style training to 147 languages with multilin-
+gual up-sampling and batching. This motivates our group-aware
+reweighting during pre-training and its interaction with down-
+stream adaptation.
+2.2. Data pipelines for low-resource ASR
+For tail languages, the primary bottleneck is often data: tran-
+scribed speech is scarce and noisy. Consequently, recent efforts
+increasingly adopt automated corpus construction and refine-
+ment pipelines. GigaSpeech 2 provides a concrete example of
+an end-to-end pipeline for creating a low-resource corpus, us-
+ing Whisper for initial transcription, MMS-based forced align-
+ment, and iterative refinement to improve pseudo-labels [11].
+At the same time, data heterogeneity itself can be a dominant
+factor: OWSM v3.2 analyzes how heterogeneous sources affect
+speech-to-text foundation models and proposes strategies for
+filtering and normalization [12], while OWSM v4 emphasizes
+scalable data cleaning and web-data integration [13]. These
+trends underscore that data curation and mixing policies are fun-
+damental design factors; our work turns this insight into practice
+by quantifying the contribution of each pipeline component and
+by showing that source-aware weighting is critical for stable
+low-resource gains (Section 4.4).
+2.3. Practical encoder selection for low-resource adaptation
+While open multilingual encoders make low-resource adapta-
+tion accessible, selecting a suitable starting point is non-trivial
+due to undisclosed data mixtures and limited ablations.
+Motivated by this gap, we perform a controlled comparison
+of two recent multilingual encoders trained at large scale (ap-
+proximately 3–5M hours). We evaluate these encoders under an
+identical adaptation pipeline on our target language set, using
+the same fine-tuning recipe, weighting strategy, and decoding
+configuration (Section 4.5).
+3. Method
+3.1. Pre-training
+We pre-train GigaAM Multilingual with a HuBERT-style [9]
+masked unit prediction objective, where the model predicts dis-
+crete acoustic units at masked time steps from an input mel-
+spectrogram sequence. Both the teacher and the student are
+600M-parameter Conformer encoders with 24 layers, a hidden
+dimension of 1024, and Rotary Position Embeddings [14] in
+the self-attention layers. The encoder operates at a frame rate
+of 25 Hz (40 ms stride).
+Target units are produced by the teacher model. We extract
+teacher representations on the training split and runK-means
+withK=1000clusters over these features. Each representation
+is then mapped to its nearest centroid to obtain a discrete unit
+label.
+In pre-training, we randomly mask contiguous spans cover-
+ing 40% of the input frames and train the student to predict the
+teacher-derived labels at the masked positions.
+3.2. Data Preparation and Weighting
+We construct a corpus of 2 million hours of in-house audio. For
+pre-training data preparation, we virtually segment each audio
+file into one-minute chunks and apply an in-house voice activ-
+ity detection model to every chunk. As a result, each record-
+ing is reduced to several speech-only fragments. We then run
+language identification on every fragment using the MMS LID
+4017 model [3]. Since a single audio may contain multiple
+fragments, we determine the language of the full recording via
+majority voting over fragment-level predictions. This proce-
+dure yields more than 70 high-frequency languages in the pre-
+training corpus.
+Directly balancing all 70 languages is particularly challeng-
+ing due to the presence of low-resource languages, for which
+reliable weight estimation is difficult and prone to overfitting.
+To address this issue, we apply a clustering algorithm [15] to a
+weighted language co-occurrence graph. In this graph, vertices
+correspond to languages, and edge weights reflect how often
+a pair of languages appears within the same audio recording.
+Importantly, we do not use raw co-occurrence counts: we in-
+stead use a normalized weightw ij =c ij/√ninj (withc ij =
+co-occurrence count,n i,n j = counts per language), so pairs
+co-occurring more than expected get higher weights.
+After pruning low-weight edges and low-degree vertices,
+clustering yields five language clusters (Fig. 1); otherwise, the
+graph fragments into small outlier groups, making balancing
+during pre-training more difficult. Audio recordings are as-
+signed to languages using two thresholds: 0.7 on majority-
+vote confidence and 0.7 on the mean model confidence of the
+selected-language segments. Audio recordings below either
+threshold are treated as “uncertain” in the corresponding lan-
+guage. Subsequent data weighting is performed at the cluster
+level rather than per individual language.
+3.3. Fine-tuning
+We fine-tune the pretrained encoder with a CTC objective [16]
+using a shared character vocabulary across English, Russian,
+Kazakh, Kyrgyz, and Uzbek. To address data scarcity for Cen-
+tral Asian languages, we train on a multi-domain dataset com-
+prising open-source, internal, synthetic, and weakly-supervised
+data (Table 2).
+Table 2:Fine-tuning data (hours) by language and source.
+English Russian Kazakh Kyrgyz Uzbek
+Open-Source 26738 1767 1031 26 313
+Crowd-Source 0 3363 876 514 272
+Weakly-Supervised 0 0 9 324 0
+Synthetic 0 692 7896 6415 0
+3.3.1. Open-Source Data
+We incorporate publicly available corpora covering read and
+conversational speech across the target languages, including
+Common V oice [17], FLEURS [18], Golos [19], Russian Lib-
+riSpeech [20], Europarl-ASR [21], LibriSpeech [22], Peo-
+ple’s Speech [23], SLURP [24], SPGISpeech [25], TED-LIUM
+[26], VCTK [27], V oxForge [28], Uzbek Speech Corpus [29],
+2100
+Figure 1:Language duration distribution by cluster. Bars show hours per language; shaded “uncertain” segments denote low-
+confidence predictions assigned to the corresponding language. Languages in bold participate in the experiments.
+Kazakh Speech Corpus 2 [30], KazakhTTS [31], Yodas [32].
+These datasets provide diverse recording conditions and speak-
+ing styles, contributing to domain robustness.
+3.3.2. Crowdsourcing and Quality Control
+We collected Russian, Kyrgyz, Kazakh, and Uzbek speech us-
+ing an in-house crowdsourcing platform. Each utterance was
+transcribed by five independent annotators. Quality was moni-
+tored with interleaved golden-set items and automatic pruning
+of ambiguous gold prompts based on inter-annotator character
+error rate (CER). Final transcriptions were produced using a
+reliability-weighted ROVER algorithm [33] with text normal-
+ization. We removed annotators from the pool if their perfor-
+mance on golden-set items was inconsistent with their agree-
+ment with the ROVER aggregate on non-gold tasks.
+3.3.3. Synthetic Data
+To increase coverage for Kazakh and Kyrgyz, we augment fine-
+tuning with synthetic speech. We sample text prompts from
+the Kazakh/Kyrgyz portion of mC4 [34], synthesize audio us-
+ing an in-house multi-speaker TTS system (over 100 voices),
+and apply ASR-based verification. Specifically, we decode each
+synthetic utterance with a preliminary ASR checkpoint and re-
+tain it only when the CER between the prompt and the ASR
+hypothesis is below a threshold, filtering out mismatches and
+low-quality generations.
+3.3.4. Weakly Supervised Data
+We obtain additional supervised-style training data from long-
+form recordings paired with transcripts via a forced-alignment
+pipeline. We use MMS [3] to obtain time-aligned transcripts
+and derive short training segments. We then apply ASR-based
+filtering: we decode each segment with a preliminary ASR
+checkpoint and keep it only if CER between the segment tran-
+script and the ASR hypothesis is below a threshold, discarding
+likely misaligned or noisy segments.
+4. Experiments
+4.1. Experimental Setup
+We pre-train the model for 300k steps with a learning rate of
+2×10 −4 and a total audio batch size of2048×32s per update
+(approximately 18.2 hours of audio). We then fine-tune for 200k
+steps using AdamW, with a peak learning rate of6×10 −5,
+Table 3:Pre-training data mixture and cluster sampling
+weights; values are averaged WER (%) across available splits
+per language. E0 uses the natural cluster distribution.
+Exp[p C1, pC2, pC3, pC4, pC5]Rus Eng Kir Kaz Uzb
+E0 [0.60, 0.27, 0.08, 0.03, 0.02]4.6 14.49.4 12.3 10.5
+E1 [0.60, 0.20, 0.10, 0.05, 0.05]4.614.6 9.1 11.9 10.2
+E2 [0.50, 0.15, 0.25, 0.05, 0.05] 4.7 15.48.5 11.4 9.7
+E3 [0.40, 0.25, 0.25, 0.05, 0.05] 4.9 14.6 8.7 11.6 9.8
+a 5k-step warmup, and cosine decay to1×10 −7. Gradient
+accumulation is used to achieve a virtual batch size of 3200.
+In both stages, data sampling weights are applied at the
+epoch level by reconstructing the training pool before each
+epoch according to the target sampling distribution (cluster-
+level in pre-training; language/domain-level in fine-tuning).
+Unless stated otherwise, pre-training uses the empirical clus-
+ter distribution, whereas fine-tuning uses uniform sampling
+across languages with domain-stratified sampling within each
+language.
+4.2. Evaluation
+We evaluate on Common V oice [17], FLEURS [18], and in-
+ternal in-the-wild datasets collected via crowdsourcing (6–20 h
+of speech-dense audio per language). We exclude utterances
+longer than 30 seconds and samples whose references contain
+digits. References are normalized before WER computation
+(lowercasing, punctuation removal); model outputs are normal-
+ized where required to ensure consistency. For English, we ad-
+ditionally canonicalize British/American spelling variants (e.g.,
+“centre”→“center”) and expand common contractions (e.g.,
+“I’m”→“I am”) in both references and hypotheses. Whisper
+large-v3 [1] does not support Kyrgyz and is run without a lan-
+guage token. Seamless-M4T v2 large [35] is used with explicit
+language forcing, as it otherwise tends to translate into a more
+frequent language. Omnilingual ASR [4] is the 1B variant with
+an LLM decoder, with language specified per utterance. All
+models are decoded using greedy decoding.
+4.3. Pretrain Data Mixture
+We ablate cluster-level sampling weights during pre-training
+to improve WER on Central Asian languages (Table 3). E0
+uses the natural (unweighted) distribution; E1 and E2 progres-
+sively shift weight toward C3 (Central Asian cluster). From
+2101
+Table 4:WER (%) by fine-tuning sampling strategy.
+Lang Split
+unbalanced
+sampling
+language-balanced
+sampling
+domain-aware
+sampling
+English CV19.621.1 21.5
+FLEURS8.710.8 9.4
+Russian
+CV 6.0 6.25.1
+FLEURS 3.2 3.13.0
+Internal6.06.26.0
+Kazakh
+CV 15.313.613.8
+FLEURS 4.74.4 4.4
+Internal 18.0 17.415.8
+Kyrgyz
+CV 11.2 10.510.2
+FLEURS 5.9 5.65.5
+Internal 11.4 11.29.8
+Uzbek
+CV 13.08.99.2
+FLEURS 10.47.07.3
+Internal 15.5 12.812.7
+E0 to E2, WER on Kyrgyz improves from 9.4 to 8.5 and on
+Uzbek from 10.5 to 9.7, while Russian remains almost un-
+changed (4.6→4.7) and English WER increases only slightly
+(14.4→15.4). Experiment E3 attempts to balance performance
+across all languages, recovering English WER to 14.6%, but
+compromises the gains on target languages. Since our primary
+objective is to improve low-resource performance, we adopt E2
+for the final model and public release.
+4.4. Fine-tuning Data Ablation
+In this section, we investigate the impact of fine-tuning data
+sampling strategies on ASR performance. Table 4 contrasts
+three approaches: (i) natural distribution sampling (unbal-
+anced), (ii)language-balancedsampling with uniform lan-
+guage probabilities, and (iii)domain-awaresampling, which
+applies explicit weighting to sub-domains within each language.
+While unbalanced sampling minimizes WER for English
+(the predominant language), it significantly degrades per-
+formance on low-resource languages (Kyrgyz, Kazakh, and
+Uzbek) due to insufficient representation during optimization.
+Adopting a language-balanced strategy yields substantial gains
+for tail languages with only a marginal regression in English
+performance.
+Domain-aware sampling delivers the most significant im-
+provements for Kazakh and Kyrgyz, particularly on the Internal
+split (spontaneous speech). We attribute this to better regula-
+tion of domain composition: unlike simple language balancing,
+domain-aware sampling prevents large synthetic subsets from
+dominating the training curriculum, thereby improving general-
+ization to spontaneous conditions. In contrast, Uzbek exhibits
+a distinct pattern where domain-aware sampling offers no clear
+benefit over language balancing. This is consistent with its data
+profile: the Uzbek subset is relatively small and lacks the syn-
+thetic augmentation that requires domain-weight regulation.
+Based on these findings, our final released model combines
+the E2 pre-trained encoder with domain-aware sampling for
+fine-tuning. Table 1 compares our final ASR system against
+public multilingual ASR.
+4.5. Encoder Ablation
+To isolate the contributions of the pretrained encoder and
+the fine-tuning data recipe, we fine-tune Whisper Large and
+Table 5:Encoder ablation under matched CTC fine-tuning:
+WER (%) averaged over splits per language. Best inbold,
+second-best underlined
+Lang
+GigaAM
+240M
+GigaAM
+600M
+Omni SSL 1B
+CTC
+Whisper Large v3
+CTC
+English 19.114.424.5 16.7
+Russian 6.4 4.611.8 9.4
+Kazakh 13.7 12.319.0 17.1
+Kyrgyz 10.2 9.413.6 13.4
+Uzbek 11.7 10.514.2 13.8
+Avg 12.2 10.216.6 14.1
+Omnilingual-1B encoders with a CTC objective on our dataset,
+using the same setup as for GigaAM. We also run the same
+pipeline with our smaller 240M model, in addition to the full
+600M model. Table 5 summarizes the results: both GigaAM
+variants outperform Whisper and Omnilingual under this con-
+trolled setup. Notably, the 240M encoder outperforms both
+larger baselines across all languages except English, achieving
+an average WER of 12.2% versus 14.1% for Whisper and 16.6%
+for Omnilingual, despite being substantially smaller and faster.
+4.6. Tail languages fine-tuning
+To further assess long-tail transfer, we evaluate adaptation to
+two languages with minimal pre-training coverage (less than
+500 hours): Bashkir (bak) and Georgian (kat), selected from
+different clusters. We fine-tune GigaAM, Whisper, and Om-
+nilingual encoders under the same CTC setup and train a sepa-
+rate model per language using only its Common V oice training
+data (93h for Georgian, 143h for Bashkir). GigaAM achieves
+the lowest WER on both languages (Table 6).
+Table 6:Adaptation to minimal-coverage tail languages: WER
+(%) on Common Voice (separate per-language CTC model)
+Model Georgian Bashkir
+Whisper Large v3 CTC 13.4 11.1
+Omnilingual SSL 1B CTC 7.8 8.2
+GigaAM3.8 3.6
+5. Conclusion
+This study addresses the challenge of developing high-quality
+ASR for underrepresented languages under severe data imbal-
+ance. We introduce GigaAM Multilingual, a Conformer en-
+coder pre-trained on 2M hours of audio using a cluster-aware
+sampling strategy. Our experiments demonstrate that explicit
+data balancing during pre-training and domain-aware sampling
+during fine-tuning are critical to prevent head-language domi-
+nance. As a result, our model significantly outperforms strong
+open baselines on Kazakh, Kyrgyz, and Uzbek, particularly in
+spontaneous speech. Notably, under matched CTC fine-tuning,
+even our compact 240M model surpasses the significantly larger
+Whisper Large v3 and Omnilingual 1B encoders, highlighting
+the efficiency of our approach. Beyond ASR performance, the
+resulting encoder enables rapid adaptation with limited super-
+vision and proves effective for data curation. By releasing our
+model weights, we provide a robust foundation for future re-
+search and production systems in low-resource settings.
+2102
+6. Use of Generative AI Disclosure
+Generative AI tools were used for limited language editing and
+phrasing support during manuscript preparation (e.g., improv-
+ing clarity, grammar, and wording of selected paragraphs). The
+authors reviewed and revised all AI-assisted edits and take full
+responsibility for the content, claims, experimental results, and
+conclusions of this paper. Generative AI tools were not used to
+generate experimental results, analyze data, or make scientific
+decisions.

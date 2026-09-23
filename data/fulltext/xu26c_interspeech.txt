@@ -1,0 +1,555 @@
+HRIR-Former: Grid-Free Time-Domain Reconstruction of Head-Related
+Impulse Responses with a Spatially Encoded Transformer
+Shaoheng Xu ID 1,∗,∗∗, Chunyi Sun ID 1,∗, Jihui (Aimee) Zhang ID 2,1, Amy Bastine ID 1, Prasanga N.
+Samarasinghe ID 1, Thushara D. Abhayapala ID 1, Hongdong Li ID 1
+1 The Australian National University, Australia
+2 The University of Queensland, Australia
+Shaoheng.Xu@anu.edu.au, Chunyi.Sun@anu.edu.au
+Abstract
+Individualized head-related impulse responses (HRIRs) enable
+binaural rendering, but dense per-listener measurements are
+costly. We address HRIR spatial up-sampling from sparse per-
+listener measurements: given a few measured HRIRs for a lis-
+tener, predict HRIRs at unmeasured target directions. Prior
+learning methods often work in the frequency domain, rely
+on minimum-phase assumptions or separate timing models,
+and use a fixed direction grid, which can degrade temporal
+fidelity and spatial continuity. We propose HRIR-Former, a
+time-domain, grid-free binaural Transformer for reconstructing
+HRIRs at arbitrary directions from sparse inputs. It uses sinu-
+soidal spatial features, a Conv1D refinement module, and aux-
+iliary interaural time difference (ITD) and interaural level dif-
+ference (ILD) heads. On SONICOM, it improves normalized
+mean squared error (NMSE), cosine distance, and ITD/ILD er-
+rors over prior methods; ablations validate modules and show
+minimum-phase preprocessing is unnecessary.
+Index Terms: head-related impulse responses, binaural render-
+ing, spatial audio, HRIR up-sampling, transformer
+1. Introduction
+Spatial audio seeks to capture and reproduce realistic acoustic
+scenes by preserving both audio content and spatial cues, en-
+abling an immersive listening experience [1, 2]. Among spatial-
+audio techniques, binaural recording and rendering are partic-
+ularly effective because they aim to reproduce the signals re-
+ceived at the listener’s two ears [1, 3, 4]. Binaural rendering
+typically relies on head-related transfer functions (HRTFs) or
+their time-domain counterparts, head-related impulse responses
+(HRIRs), to reproduce direction-dependent spectral and timing
+cues that support human spatial hearing. As a result, binau-
+ral spatial audio has been widely adopted in virtual/augmented
+reality (VR/AR) [5, 6, 7] and object-based audio production
+for film and other media [8]. However, acquiring individual-
+ized HRTFs/HRIRs remains challenging: per-listener measure-
+ments are tedious, costly, and time-consuming, require special-
+ized anechoic facilities, and may require listeners to remain mo-
+tionless for around an hour [9]. Accordingly, prior work has
+largely focused on two directions:HRTF personalizationand
+spatial up-sampling/augmentation.
+HRTF personalization estimates a listener’s HRTF from
+side information such as anthropometric measurements of the
+head, torso, and pinna [10, 11, 12]. Early approaches relied
+on numerical simulation and similarity-based selection [13].
+*These authors contributed equally.
+**indicates the corresponding author.
+More recent methods employ deep neural networks (DNNs)
+to learn non-linear mappings from anthropometric descriptors
+to HRTFs [14, 15, 16, 17, 18, 19], including latent-space ap-
+proaches that encode HRTFs into a low-dimensional represen-
+tation and then decode them back to full HRTFs [20]. However,
+simulation-based methods often require high-quality 3D geom-
+etry of the listener’s head and pinna [13], while DNN-based
+approaches are constrained by the limited amount of available
+measured data [20].
+To reduce the time and practical complexity of HRTF
+measurements, spatial up-sampling and augmentation meth-
+ods have been proposed. These methods aim to reconstruct a
+high angular-resolution HRTF set from only a small number
+of measurements at sparsely sampled directions [21]. Classi-
+cal approaches typically represent HRTFs using a set of basis
+functions (BFs) and synthesize responses at unmeasured direc-
+tions via interpolation or superposition [22, 23]. In practice,
+these methods often degrade when measurements are spatially
+sparse (e.g., with angular gaps of30–40 ◦) [24]. Spherical-
+harmonic (SH)-based interpolation is another common ap-
+proach [25, 26, 27, 28, 29, 30, 31], but it can also perform poorly
+under sparse sampling [24]. The Listener Acoustic Personaliza-
+tion (LAP) challenge [24] has stimulated ML-based spatial aug-
+mentation, with results showing that learned models can outper-
+form SH/BF interpolation under sparse sampling when recon-
+structing 793-direction HRTF sets from only 3–100 measure-
+ments [32, 33, 34, 35, 36, 37, 38]; however, most of these meth-
+ods remain tied to reconstruction on a fixed grid of directions.
+A further limitation of many existing ML-based pipelines
+is that they operate primarily in the frequency domain and fo-
+cus on magnitude responses, since phase is difficult to model
+directly. Phase and timing cues are therefore often recovered
+using minimum-phase (MP) approximations and/or a separate
+estimate of the time-delay (time-of-arrival) term [35, 39]. In
+contrast, relatively few works perform personalization or spa-
+tial up-sampling directly in the time domain. For example, [40]
+proposes HRIR personalization using diffusion models guided
+by anthropometric inputs, but targets a fixed grid of source di-
+rections and does not support arbitrary directions. The time-
+domain decomposition and superposition methods in [41, 42]
+enable spatially continuous HRIR reconstruction, but are re-
+stricted to the median plane. Thus, time-domain, spatially con-
+tinuous HRIR reconstruction over arbitrary 3D directions re-
+mains under-explored.
+Time-domain modeling is important for both room impulse
+responses (RIRs) and HRIRs, as phase and timing cues are cen-
+tral to spatial perception. Our prior work shows that trans-
+former architectures with positional encoding can capture long-
+range temporal structure and enable continuous spatial model-
+690
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-702
+Figure 1:Illustration of HRIR spatial up-sampling: estimating
+HRIRs at unmeasured target directions (white) from a sparse
+set of measured directions (red).
+ing of RIRs [43]. HRIR reconstruction, however, poses dif-
+ferent challenges: the number of measured subjects is limited,
+inter-subject variability is substantial, and the model must pre-
+serve binaural cues such as interaural time difference (ITD) and
+interaural level difference (ILD). We therefore develop a frame-
+work tailored to continuous HRIR reconstruction over arbitrary
+3D directions under realistic data constraints.
+We proposeHRIR-Former, a time-domain, grid-free bin-
+aural Transformer for continuous angular (azimuth–elevation)
+HRIR spatial up-sampling that reconstructs HRIRs at arbitrary
+target directions from sparse per-listener measurements. The
+main contributions are: (1)Time-domain binaural recon-
+structionthat preserves phase information naturally and does
+not impose a MP assumption. (2)Grid-free directional mod-
+elingvia sinusoidal encoding of source positions, enabling in-
+ference at previously unseen target directions without requiring
+a fixed measurement grid. (3)Auxiliary binaural-cue supervi-
+sionusing ITD/ILD-prediction heads to encourage accurate in-
+teraural timing and level cues. (4)Temporal refinementvia a
+post-Transformer Conv1D module to improve local directional
+consistency. (5)Time–frequency supervisionvia time-domain
+losses and a complex HRTF lossL HRTF for spectral alignment.
+2. Problem Formulation
+The objective of this work is to reconstruct HRIRs at arbitrary,
+unmeasured directions from a limited set of measured direc-
+tions for a given subject. Consider a free-field HRIR measure-
+ment setup (without room reverberation). For each subject, let
+there beL=M+Nsource directionsx ℓ ≜(ϕ ℓ, θℓ, rℓ)for
+ℓ= 1,...,L, whereϕandθdenote azimuth and elevation (in
+degrees), andrdenotes the source radius (in meters) in a spher-
+ical coordinate system. Among theseLdirections,Mare mea-
+sured andNare unmeasured target directions. The listener’s
+head is centered at the global originO, as illustrated in Fig. 1.
+At each measured direction{xmeas
+m }M
+m=1, we record a binau-
+ral HRIR pair sampled at ratefs and of lengthK,h (L)
+m ,h (R)
+m ∈
+R1×K for the left and right ears. We form a binaural HRIR
+row vector by concatenationh meas
+m ≜
+
+h(L)
+m h(R)
+m
+
+∈R 1×2K.
+Stacking theMmeasured binaural HRIRs yields
+H=
+hmeas
+1 hmeas
+2 ···h meas
+M
+⊤
+∈R M×2K,(1)
+where(·)⊤ denotes transpose.
+Our goal is to estimate binaural HRIRs at theNtarget di-
+rections{x tgt
+n}N
+n=1 at the same sampling ratef s and lengthK.
+Let ¯h(L)
+n , ¯h(R)
+n and ˆh(L)
+n , ˆh(R)
+n denote the ground-truth and es-
+timated HRIRs for the two ears at directionx tgt
+n . Define
+¯htgt
+n ≜
+¯h(L)
+n ¯h(R)
+n
+
+, ˆhtgt
+n ≜
+ˆh(L)
+n ˆh(R)
+n
+
+∈R 1×2K.(2)
+Stacking these yields ¯H, ˆH∈R N×2K :
+¯H=
+¯htgt
+1 ··· ¯htgt
+N
+⊤
+, ˆH=
+ˆhtgt
+1 ··· ˆhtgt
+N
+⊤
+.(3)
+The HRIR spatial up-sampling task can be formulated as
+learning a mapping ˆH=F(H,{x meas
+m }M
+m=1,{x tgt
+n}N
+n=1)such
+that ˆHclosely matches ¯H, i.e.,
+ˆH= arg min
+ˆH
+ ¯H− ˆH
+
+2
+F
+givenH,{x meas
+m },{x tgt
+n},(4)
+where∥·∥ F denotes the Frobenius norm.
+3. Proposed Method
+We learn the mapping defined in Eq. 4 by casting HRIR spatial
+up-sampling as masked inpainting over the spherical direction
+set, where unmeasured directions are treated as masked tokens
+to be predicted from the measured context. The main challenges
+are threefold: spatial HRIR variation is globally correlated yet
+irregularly sampled; temporal responses contain high-frequency
+structure that is sensitive to small errors; and binaural consis-
+tency must be preserved to maintain physically meaningful in-
+teraural cues. Our design explicitly separates spatial reasoning
+from temporal reconstruction and introduces auxiliary cue su-
+pervision for stability under sparse measurements.
+For each subject, measured and target directions are com-
+bined into a unified set ofL=M+Ndirections. We con-
+structH full∈R L×2K where measured rows contain observed
+HRIRs and target rows are initialized as zeros. A binary mask
+i∈ {0,1} L indicates observed directions, theℓ-th element
+iℓ indicates whetherh ℓ is measured (i ℓ = 1) or unmeasured
+(iℓ = 0). The network predicts HRIRs jointly for all directions,
+and measured rows are preserved via masked fusion.
+Geometric Encoding:Each binaural HRIRh ℓ ∈R 1×2K is
+masked as ˜hℓ =i ℓhℓ and projected into a latent feature:e ℓ =
+Norm
+
+σ(˜hℓWs)
+
+, whereσ(·)denotes GELU activation and
+Norm(·)denotes layer normalization.
+Each direction coordinatex ℓ∈R 3 is encoded using multi-
+frequency sinusoidal embedding [44]
+γ(xℓ) =
+
+sin(20πxℓ),cos(2 0πxℓ),...,
+sin(2P−1πxℓ),cos(2 P−1πxℓ)
+
+,
+(5)
+withP= 6. The geometric embedding is projected into the
+same latent space and added to the signal feature:
+pℓ = Norm (σ([xℓ,γ(x ℓ)]Wg)),o ℓ = [eℓ,p ℓ].(6)
+Stacking all tokenso ℓ yieldsO∈R L×D.
+Transformer Encoder:The token sequence{o ℓ}L
+ℓ=1 is pro-
+cessed by a multi-layer Transformer encoder. Each layer con-
+sists of multi-head self-attention followed by a feed-forward
+network with residual connections and normalization.
+Self-attention [44] enables each direction to attend to all
+others, capturing global spatial dependencies across irregular
+directional layouts. The maskiis applied such that missing
+directions do not contribute as keys during attention. AfterT
+layers, we obtain contextual representations:C∈R L×D.
+Decoder and Conv1D Temporal Refinement:Each contex-
+tual featurec ℓ ∈R 1×D is mapped to a full-length binaural
+HRIR using a shared multi-layer perceptron (Fig. 2):
+ˆhℓ =f dec(cℓ), ˆhℓ∈R 1×2K.(7)
+Stacking predictions ˆhℓ yields ˆHraw∈R L×2K.
+Measured rows are preserved through masked fusion:
+ˆHfused =i⊙H full + (1−i)⊙ ˆHraw.(8)
+691
+Transformer Encoder
+𝐜!
+𝐜"#$
+𝐜"
+𝐜"#!
+MLP
+𝐡!
+%&’(
+=𝐡!
+),𝐡!
+*
+𝐡"
+%&’(
+=𝐡"
+),𝐡"
+*
+𝐩!
+𝐞!
+𝐩"#$
+𝐩"
+𝐞"
+𝐩"#!
+Conv1D Temporal Refinement
+Reorder by direction
+𝐡!
+%&’(
+𝐡"
+%&’(
+𝐡’!
++,+
+𝐡’$
++,+
+Decoder
+ITD$! ILD$!
+ITD$" ILD$"
+ITD$"#! ILD$"#!
+ITD$"#$ ILD$"#$
+ITD/ILD 
+Heads 
+𝑓-&’.)
+Figure 2:Overview of the proposed HRIR-Former pipeline.Known HRIRs are projected into a latent space using an MLP-based
+signal encoder, while geometric embeddings derived from direction coordinates are independently projected and added to the signal
+features. The resulting tokens are processed jointly by a Transformer encoder to capture global spatial dependencies across measured
+and target directions. A shared MLP decoder maps contextual features to full-length binaural HRIRs for all directions, followed by
+masked fusion to preserve measured responses and a lightweight Conv1D for temporal refinement.
+To improve local temporal coherence of the HRIRs, we ap-
+ply a lightweight one-dimensional convolution. First, ˆHfused is
+reordered by rows via elevation descending then azimuth as-
+cending. Then, ˆH= Conv1D( ˆHfused), with residual blending
+controlled byito ensure exact preservation of observed HRIRs.
+Training Objective:We supervise reconstruction only at miss-
+ing directions, and define the reconstruction loss as:
+Lrec = 1
+N
+X
+ℓ:iℓ=0
+ˆhℓ− ¯hℓ
+
+2
+2
+.(9)
+To improve spectral fidelity, we compute the orthonormally
+normalized discrete Fourier transform (scaled by1/
+√
+K), de-
+noted byDFT(·), for the left (L) and right (R) ears separately:
+LHRTF =
+X
+c∈{L,R}
+DFT( ˆH(c))−DFT( ¯H(c))
+
+2
+2
+.(10)
+Auxiliary headsf head(·)predict dITDℓ and dILDℓ:
+dITDℓ, dILDℓ
+
+=f head(cℓ),(11)
+The corresponding ITD/ILD loss terms,L ITD andL ILD, are:
+Lhead = 1
+N
+X
+ℓ:i ℓ=0
+dheadℓ−head ℓ
+,head∈{ITD,ILD}.
+(12)
+The total training lossL total combines all components:
+Ltotal =L rec +λ HRTFLHRTF +λ ITDLITD +λ ILDLILD,(13)
+whereλ ITD,λ ILD, andλ HRTF are loss weights.
+4. Experiment and Validation
+4.1. Experimental Setup
+We evaluate the binaural HRIR spatial up-sampling perfor-
+mance ofHRIR-Formeron the SONICOM database [47], which
+contains measurements for over 200 subjects with 793 source
+directions per subject. Each HRIR is sampled at 48 kHz and
+represented withK= 256samples. For a fair comparison,
+we follow the protocol of [35]: the first 180 subjects are used
+for training and the subsequent 20 subjects are used for vali-
+dation; subjectP0079is excluded due to atypical ITD behav-
+ior [35]. SinceHRIR-Formerreconstructs HRIRs in the time
+domain and does not impose a MP assumption, we train and
+evaluate it on SONICOM free-field compensated HRIRs (no
+MP filtering applied) [47]. During training, we set the loss
+weightsλ ITD =λ ILD = 0.05andλ HRTF = 500. The encoder
+usesT=3layers with model dimensionD=256and4attention
+heads. The Conv1D temporal refinement applies a kernel of
+size 3, smoothing across spatially adjacent directions. We train
+HRIR-Formerusing AdamW [48] with learning rate3×10 −4
+and batch size 8 for 500 epochs on an NVIDIA A100 GPU.
+4.2. Evaluation Metrics
+To quantify binaural HRIR spatial up-sampling performance,
+we report four metrics: (1) ITD Error (ITD-E) [32], (2)
+ILD Error (ILD-E) [32], (3) Normalized Mean Squared Error
+(NMSE) [43], and (4) Cosine Distance (CD) [43, 49, 50]. For-
+mal definitions follow the referenced works. NMSE and CD
+evaluate time-domain waveform fidelity and shape alignment
+between the estimated and ground-truth HRIRs; CD measures
+scale-invariant similarity and ranges in[0,2], where CD= 0
+indicates identical waveform shapes [43]. ITD-E is the mean
+absolute error between reconstructed and ground-truth ITDs,
+reflecting binaural timing discrepancies relevant to localiza-
+tion [32]. ILD-E measures errors in interaural level differences
+across frequency and direction; larger ILD-E may lead to lat-
+eralization shifts or degraded spatial clarity [32]. Lower values
+indicate better performance for all metrics. All metrics are av-
+eraged overNtarget directions and subjects.
+4.3. Comparison Methods
+We compareHRIR-Formerwith six baselines: Nearest Neigh-
+bor (Nbr), HRTF-Sel-ITD, HRTF-Sel-LSD [35], NF-CbC [45],
+NF-LoRA [46], and RANF [35]. Since these methods primar-
+ily reconstruct HRTF magnitude responses in the frequency do-
+main, we focus on the shared binaural cues, ITD-E and ILD-E,
+for direct comparison with our time-domain approach. As we
+adopt the same training/evaluation protocol as [35], we use the
+ITD-E and ILD-E results reported in [35] for these baselines
+and summarize them in Table 1.
+4.4. Results
+Table 1 reports ITD-E and ILD-E under four measurement spar-
+sity levels (M= 3,5,19,100).HRIR-Formerachieves the
+lowest ILD-E across allM, indicating consistently accurate in-
+teraural level cues, and attains the best ITD-E in the most sparse
+regimes (M= 3andM= 5). For denser inputs (M= 19
+andM= 100),HRIR-Formerremains competitive, with ITD-
+E comparable to the strongest frequency-domain baselines. In
+692
+Table 1:ITD-E (µs) and ILD-E (dB) under different measurement sparsity levelsMon SONICOM. Bold indicates the best result per
+column. Baseline results are taken from [35].
+Method M= 3M= 5M= 19M= 100
+ITD-E (µs)↓ILD-E (dB)↓ITD-E (µs)↓ILD-E (dB)↓ITD-E (µs)↓ILD-E (dB)↓ITD-E (µs)↓ILD-E (dB)↓
+HRIR-Former(Proposed)18.5 1.14 16.4 1.1015.40.9510.60.70
+Nbr [35] 274.2 7.6 154.2 4.8 108.3 3.0 44.0 1.4
+HRTF-Sel-ITD [35] 26.3 1.4 24.5 1.5 23.2 1.6 20.0 1.4
+HRTF-Sel-LSD [35] 37.5 1.5 35.7 1.4 37.4 1.5 31.4 1.3
+NF-CbC [45] 22.1 1.5 20.7 2.0 14.8 1.8 11.8 1.7
+NF-LoRA [46] 28.6 1.3 24.7 1.4 14.7 1.19.11.1
+RANF [35] 20.5 1.2 18.7 1.214.21.0 10.0 0.8
+Table 2:NMSE and CD of HRIR-Former under different mea-
+surement sparsity levelsM.
+MetricM=3M=5M=19M=100
+NMSE (dB)↓-6.90 -7.35 -8.24-10.20
+CD↓0.233 0.210 0.1630.102
+Sample	Index
+50 100 150 200 250
+Amplitude
+-0.2
+0
+0.2 Ground Truth 7h(L)
+n Estimated ^h(L)
+n
+Figure 3:Left-ear HRIR reconstruction for subjectP0187at
+(ϕ,θ,r) = (90 ◦,20◦,1.5 m)underM= 19: estimated HRIR
+(dashed) versus ground-truth HRIR (solid). Angular distance to
+the nearest measured direction:35.2◦.
+contrast, the Nbr baseline yields substantially larger ITD-E and
+ILD-E across allM, highlighting the difficulty of spatial up-
+sampling from sparse measurements and the benefit of learned
+reconstruction [35].
+Table 2 summarizes time-domain reconstruction accuracy.
+Across allM,HRIR-Formerachieves NMSE below−6.90dB
+and CD below0.233, and both metrics improve asMincreases.
+Fig. 4 visualizes stacked binaural HRIRs across all 793 direc-
+tions, showing that the estimated HRIR field closely matches
+the ground truth globally. Fig. 3 shows an example (left ear)
+underM= 19, where the predicted waveform closely matches
+the ground truth in both onset timing and fine structure.
+Table 3:Ablation study of HRIR-Former underM= 5.
+Variant NMSE
+(dB)↓ CD↓ ITD-E
+(µs)↓
+ILD-E
+(dB)↓
+HRIR-Former(full) -7.35 0.21016.4 1.10
+w/o sinusoidal encoding -4.99 0.298 24.2 1.66
+w/o ITD/ILD-prediction heads-7.52 0.20719.4 1.11
+w/o Conv1D refinement -6.04 0.257 20.8 1.28
+w/oL HRTF -7.10 0.217 17.3 1.14
+w/ MP pre-processing -6.80 0.225 19.1 1.21
+4.5. Ablation Study
+We conduct ablation studies under theM= 5setting: (1) re-
+moving the sinusoidal direction-encoding module in Eq. 5, (2)
+removing the auxiliary ITD/ILD-prediction heads from the net-
+work outputs, (3) removing the post-Transformer Conv1D tem-
+poral refinement module, (4) removing the complex HRTF loss
+LHRTF, and (5) training and testing on MP-preprocessed HRIRs.
+Ground	Truth
+Direction	Index
+200 400 600 793
+Time	(samples)
+100
+200
+300
+400
+500
+Estimated
+Direction	Index
+200 400 600 793
+Time	(samples)
+100
+200
+300
+400
+500
+-0.2
+-0.1
+0
+0.1
+0.2
+Amplitude
+Figure 4:Stacked binaural HRIRs for subjectP0187under
+M= 19over 793 directions (each column: one direction;
+left/right ears concatenated along time). Ground truth (left) and
+estimation (right).
+Table 3 summarizes the results. Removing any component de-
+grades performance on multiple metrics, indicating that each
+design choice contributes to reconstruction quality.
+Removing the sinusoidal encoding causes the largest degra-
+dation across NMSE, CD, ITD-E, and ILD-E, highlighting the
+importance of rich geometric conditioning. In particular, sinu-
+soidal encoding provides a continuous representation ofx tgt
+n =
+(ϕ,θ,r), enabling grid-free inference at previously unseen di-
+rections. Training and testing on MP-preprocessed HRIRs de-
+grades performance versus the default setting, indicating that
+HRIR-Formerdoes not impose an MP assumption and does
+not benefit from MP pre-processing. The ITD/ILD-prediction
+heads primarily improve binaural-cue accuracy, while having
+a marginal effect on NMSE and CD. Finally, removing the
+Conv1D temporal refinement degrades all metrics, consistent
+with its role in improving local consistency across neighboring
+directions; as illustrated by the zoom-in region in Fig. 4, this re-
+finement mitigates local discontinuities (e.g., from small mea-
+surement inconsistencies such as slight head motion) that could
+otherwise manifest as audible clicks during binaural rendering.
+5. Conclusion
+We presentedHRIR-Former, a time-domain, grid-free binaural
+Transformer for continuous angular (azimuth–elevation) HRIR
+spatial up-sampling, reconstructing HRIRs at arbitrary target di-
+rections from sparse per-listener measurements.HRIR-Former
+combines sinusoidal direction encoding, auxiliary ITD/ILD pre-
+diction heads, a post-Transformer Conv1D temporal refinement
+module, and a complex HRTF lossL HRTF. Experiments on
+SONICOM free-field HRIRs show strong performance on time-
+domain metrics (NMSE, CD) and binaural-cue metrics (ITD-E,
+ILD-E). Ablations confirm the contribution of each component
+and suggest that explicit MP pre-processing is not required. Fu-
+ture work will include deeper model analysis and perceptual
+listening tests for binaural rendering.
+693
+6. Acknowledgments
+Shaoheng Xu and Chunyi Sun are each supported by an ANU
+PhD Scholarship and an ANU HDR Fee Merit Scholarship from
+The Australian National University.
+7. Generative AI Use Disclosure
+We used ChatGPT (OpenAI) for English-language editing and
+stylistic polishing. The tool was not used to generate techni-
+cal content, experimental results, or conclusions. All text was
+reviewed and approved by the authors.

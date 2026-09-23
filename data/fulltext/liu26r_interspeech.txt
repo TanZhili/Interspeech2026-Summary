@@ -1,0 +1,507 @@
+P-SED : Asymmetric Prototype Metric Learning for Weakly Supervised
+Speech Emotion Diarization
+Yumeng Liu, Yukun Sun, Jian Peng, Lixu Sun, Nurmemet Yolwas∗∗
+School of Computer Science and Technology, Xinjiang University, China
+liuym@stu.xju.edu.cn, sunyukun@stu.xju.edu.cn, pengj@stu.xju.edu.cn,
+sunlixu@stu.xju.edu.cn, nurmemet@xju.edu.cn
+Abstract
+Unlike Speech Emotion Recognition (SER), which predicts
+utterance-level labels, Speech Emotion Diarization (SED) mod-
+els fine-grained temporal dynamics. However, learning reliable
+emotion boundaries from utterance-level labels remains chal-
+lenging due to scarce frame-level annotations. We propose P-
+SED, a weakly supervised SED framework based on prototype
+metric learning that constructs a metric space via learnable emo-
+tion prototypes and introduces orthogonal regularization to en-
+hance inter-class separability. To mitigate sparse supervision
+and neutral background interference, we design a Class-aware
+Prototype Contrastive Loss (CPCL) combined with a Top-K
+ranking mechanism to mine salient emotion segments. Fi-
+nally, Total Variation Denoising (TVD) is applied during infer-
+ence to preserve steep emotion boundaries. Experiments on the
+ZED dataset show that P-SED significantly outperforms exist-
+ing weakly supervised models, achieving an Emotion Diariza-
+tion Error Rate (EDER) of 47.00%.
+Index Terms: speech emotion diarization, weakly supervised
+learning, prototype metric learning
+1. Introduction
+As a core technology in affective computing, SER plays a cru-
+cial role in human-computer interaction, mental health moni-
+toring, and intelligent customer service [1, 2]. However, main-
+stream SER research mostly focuses on utterance-level static
+classification, predicting a single label for an entire audio clip
+[3, 4, 5]. In fact, emotional expressions in real-world scenar-
+ios exhibit significant temporal dynamics, typically manifest-
+ing as events that appear, persist, and evolve within local time
+segments [6]. To capture such fine-grained dynamics, the task
+of SED [7] was introduced,aiming to precisely locate the start
+and end times, as well as the specific categories, of emotional
+events. This task provides a more refined temporal structure for
+dialogue-level emotion analysis and affective agents, holding
+significant application value.
+In the SED task, the scarcity of fine-grained frame-level an-
+notated data is a core challenge. The only publicly available
+frame-level emotion dataset, ZED [7], contains approximately
+17 minutes of speech, which is insufficient for training deep
+models in a fully supervised manner. Therefore, some stud-
+ies treat SED as a Multiple Instance Learning (MIL) [8] prob-
+lem, where models are trained directly using utterance-level la-
+bels. For example, the Emotion Neural Transducer (ENT)[9]
+introduces a lattice-max-pooling loss to bypass timestamp de-
+pendencies, but its supervision signal is dominated by a very
+few salient frames, making it too sparse for emotion events with
+**indicates the corresponding author.
+continuous spans. Another category of methods maps bag-level
+labels directly to all frames to provide dense supervision [7, 10],
+which performs well on stable emotion segments. However,
+real-world speech often contains silence or transition regions,
+and such global mapping struggles to adapt to local dynamic
+changes, potentially introducing label noise.
+To overcome the signal sparsity problem caused by extreme
+pooling, proportion-based salient instance mining methods,
+such as Top-K ranking [11] and max pooling [12], have been
+widely applied in fine-grained localization domains like medi-
+cal lesion localization and weakly supervised action detection
+[13, 14, 15]. This mechanism provides denser and more stable
+signals by retaining a certain proportion of high-confidence in-
+stances, which aligns well with the inherent property of speech
+emotions appearing as continuous segments. Meanwhile, Pro-
+totype Metric Learning [16], with its interpretable metric prop-
+erties, has been widely used in SER to construct highly cohe-
+sive feature spaces for effectively learning the central represen-
+tations of various emotion categories [17, 18, 19].
+To address the aforementioned challenges, this paper pro-
+poses a novel weakly supervised SED framework, P-SED. This
+method overcomes the bottleneck of sparse supervision sig-
+nals in traditional weakly supervised learning, achieving the
+localization of emotion events in speech streams using only
+utterance-level weak labels.
+The main contributions of this paper are as follows:
+• We construct a learnable emotion prototype metric space and
+introduce orthogonal regularization to enforce prototype sep-
+aration, improving intra-class compactness and inter-class
+discriminability while preventing representation collapse.
+• A bag-level asymmetric optimization loss and a frame-level
+Top-K salient instance mining mechanism are designed to
+suppress non-salient frames and neutral background interfer-
+ence, providing more reliable supervision under weak labels.
+• TVD [20] is applied during inference as a temporal post-
+processing module to smooth local prediction jitter while pre-
+serving sharp emotion transition boundaries.
+• P-SED achieves the best performance among the compared
+weakly supervised baselines on the ZED benchmark dataset.
+2. Model
+In the weakly supervised SED task, given an input audioX∈
+RTraw , the goal is to infer a continuous frame-level emotion
+sequence ˆY={ˆy 1,...,ˆyT}relying only on the utterance-level
+labelY∈Y. To this end, we propose the P-SED framework,
+as illustrated in Figure 1.
+Specifically, a pre-trained WavLM [21] extracts acoustic
+features from the raw waveformX. A projection head then
+517
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2388
+...
+Project
+WavLM
+Raw Audio
+Frame-level
+features
+Unit 
+vector
+Zt
+(Current 
+Frame)
+Hyper-spherical Metric Space
+𝓛orth
+Cosine
+Similarity
+Training Path
+Emotion
+Prototypes
+Classification
+Head
+𝓛topk𝓛cpcl
+∑Zt
+...
+...
+Inference Path
+TVD Smoothing
+Normalization
+...
+...
+Frame-level
+Logits
+EMA
+Frame-level
+Logits
+Frame
+Embeddings
+Utterance-level
+Global
+Representation
+Label YLabel Y
+Label YLabel Y
+Happy
+Sad
+AngryNeutral
+Neu-
+tralSadNeu-
+tral
+Figure 1:Illustration of the proposed P-SED framework, including the prototype metric space and asymmetric optimization strategy.
+maps these features onto a unit hypersphere viaL 2 normaliza-
+tion, forming frame-level embeddingsZ. Within this metric
+space, learnable emotion prototypes, including a neutral state,
+act as semantic anchors, regulated by orthogonal constraints
+(Lorth). Frame-level logits are generated by calculating the co-
+sine similarity betweenZand each prototype.
+During training, P-SED employs a multi-level asymmetric
+optimization framework: a Class-aware Prototype Contrastive
+Loss (L cpcl) performs differential alignment for neutral and
+emotion bags, while a Top-K ranking loss (Ltopk) mines salient
+emotion frames. Concurrently, frame embeddings are aggre-
+gated into an utterance-level global representation for an aux-
+iliary classification branch, enhancing feature robustness. Dur-
+ing inference, the frame-level logits undergo normalization and
+TVD smoothing, directly outputting the final diarization results.
+3. Proposed Method
+3.1. Prototype Metric Learning
+P-SED constructs a normalized metric space with learnable
+emotion prototypes. We define a prototype matrixP=
+{pk}K
+k=1∈R K×dz (dz = 128) forKemotion categories, in-
+cluding the neutral state. Frame-level featureszt and prototypes
+pk areL 2-normalized onto a unit sphere. The similarity score
+of frametto categorykis computed using temperature-scaled
+(τ) cosine similarity:
+ℓt,k = 1
+τ ˆz⊤
+t ˆpk,s.t. ˆzt = zt
+∥zt∥2
+, ˆpk = pk
+∥pk∥2
+.(1)
+Under weak supervision with severe class imbalance, mod-
+els tend to exhibit a “neutral-dominant collapse”, where emo-
+tion prototypes gradually shift toward the dominant neutral
+class and reduce angular separability. To alleviate this issue,
+P-SED introduces a full pairwise orthogonality constraint:
+Lorth = 1
+K(K−1)
+KX
+i=1
+X
+j̸=i
+(ˆpi· ˆpj)2 (2)
+This regularization encourages structural separation among
+category anchors and improves their angular discriminability.
+Combined withL 2 normalization, it forms a stable metric struc-
+ture for frame-level emotion prediction under weak supervision.
+3.2. Asymmetric Optimization under Weak Supervision
+To address the structural imbalance problem in weakly super-
+vised training where neutral frames dominate the temporal di-
+mension and emotion frames are locally distributed, P-SED
+constructs an asymmetric optimization framework composed of
+CPCL and a Top-K ranking loss, implementing differential con-
+straints at the bag and frame levels.
+3.2.1. Class-aware Prototype Contrastive Loss
+CPCL constitutes the bag-level asymmetric constraint. Based
+on the utterance-level labelY, the model divides the training
+samples into neutral bags(Y=n)and emotion bags(Y∈E),
+applying different contrastive strategies.
+For neutral bags, based on the temporal stationarity of emo-
+tion states, the model employs a standard multi-class cross-
+entropy loss, encouraging intra-bag frame features to align with
+the neutral category prototype to strengthen background mod-
+eling capabilities.
+For emotion bags, given the locality of emotional expres-
+sions, the model formulates it as a binary MIL problem. To
+avoid unreliable multi-class competition under weak supervi-
+sion, the model only focuses on the relative response intensity
+of frame-level features between the target emotionYand neu-
+trality, defined as∆l t =l t,Y−l t,n. During training, pseudo-
+labels are dynamically generated based on the current relative
+response difference :˜y t =I[∆l t >0]. A zero threshold is
+adopted to establish a relative discriminative relationship be-
+tween the target emotion and the neutral category, and the bi-
+nary cross-entropy loss is calculated:
+Lcpcl =
+
+
+
+− 1
+T
+TX
+t=1
+log exp(lt,n)P
+k exp(lt,k),ifY=n
+− 1
+T
+TX
+t=1
+
+˜yt logσ(∆l t)+
+(1−˜yt) log(1−σ(∆l t))
+
+,
+ifY∈E
+(3)
+Here,σ(·)is the Sigmoid function. This dynamic pseudo-
+label strategy constructs a binary contrast solely between the
+target emotion and the neutral category, effectively limiting the
+518
+pseudo-label search space and reducing the risk of confirmation
+bias amplification under weakly supervised conditions.
+3.2.2. Top-K Ranking Loss
+Although CPCL provides basic classification guidance, the
+model may still lean toward predicting the neutral category to
+avoid penalties in the absence of fine-grained annotations. To
+further strengthen the separation capability of salient emotion
+instances, P-SED introduces a Top-K based multiple instance
+ranking loss for emotion bags, achieving frame-level asymmet-
+ric sample mining.
+Considering that speech emotions exhibit temporal continu-
+ity, the model adopts Top-K as a more robust MIL aggregation
+mechanism. Assume the topp%of salient frames are selected
+from an emotion bag, wherepis a preset instance selection ra-
+tio used to control the intensity of salient frame mining. Specif-
+ically, the model calculates the logarithmic probability differ-
+encelogp t,Y−logp t,n for each frame in the bag and sorts them
+in descending order, then selects the topp%instances to form
+a salient setT top. Subsequently, a margin ranking constraint is
+applied to this set:
+Ltopk = 1
+|Ttop|
+X
+t∈Ttop
+max(0,m−(logp t,Y−logp t,n))(4)
+Here,p t,k is the Softmax probability, andmis a preset
+safety margin. This constraint forces the filtered salient emotion
+frames to form a clearer separation boundary from the neutral
+background in the metric space. Unlike CPCL, which focuses
+on overall discriminative trends,L topk applies local separation
+constraints exclusively to salient instances, forming a comple-
+mentary optimization mechanism.
+3.2.3. Total Optimization Objective
+To unify bag-level classification, instance mining, and metric
+space regularization, P-SED combines the full pairwise orthog-
+onal constraint (detailed in Section 3.1) with the utterance-level
+auxiliary classification loss(L ser). The final optimization ob-
+jective is defined as:
+Ltotal =L cpcl+λrankLtopk+λorth(t)Lorth+λserLser (5)
+Here,λ orth(t)employs a dynamic growth strategy.L ser
+extracts utterance-level global representations by applying
+emotion-aware weighted pooling to frame-level features and
+calculates the cross-entropy; this term only provides macro-
+scopic auxiliary supervision signals as a regularization term
+during the training phase to enhance the robustness of frame-
+level feature extraction. In this joint optimization framework,
+each loss term acts respectively on category alignment, salient
+instance mining, and prototype space structural constraints, en-
+abling collaborative optimization under weakly supervised con-
+ditions.
+3.3. Inference Refinement via TVD
+During inference, the frame-level probability sequenceP∈
+RT×K may exhibit spurious high-frequency fluctuations due
+to local acoustic perturbations. To suppress this noise while
+preserving sharp emotion transitions, P-SED applies TVD as a
+temporal post-processing module.
+For each emotion categoryc, TVD independently optimizes
+its probability sequenceu c∈R T to avoid cross-category cou-
+pling. The objective combines data fidelity and total variation
+regularization:
+u∗
+c = arg min
+uc
+1
+2∥uc−p c∥2
+2 +λ∥Du c∥1
+
+(6)
+wherep c is the raw probability sequence,λcontrols the
+smoothing strength, andDis the first-order difference oper-
+ator (Du c[t] =u c,t+1−u c,t). TheL 1 penalty encourages
+piecewise-constant solutions, which align with the stable states
+and sharp boundaries of emotion events.
+The optimization is solved using the primal-dual algorithm
+[22], followed by a non-negative projection. Since independent
+denoising may break probability normalization, row-wise nor-
+malization is applied at each time stept:
+ˆut,c = u∗
+t,c
+PK
+j=1u∗
+t,j
+(7)
+The final prediction is obtained byˆy t = arg max c ˆut,c, pro-
+ducing temporally coherent diarization results with clear bound-
+aries.
+4. Experiments and Analysis
+4.1. Experimental Setup
+4.1.1. Datasets
+ZED.To evaluate the model’s performance on the SED task,
+this study uses the ZED dataset as the test set. This dataset
+provides precise frame-level emotion annotations, objectively
+reflecting the model’s continuous emotion localization capabil-
+ity in real conversational flows. However, given its small scale,
+which is insufficient for training deep neural models, we only
+use it as a hold-out test set to verify the model’s generalization
+performance and fine-grained localization accuracy.
+IEMOCAP.We select the IEMOCAP [23] dataset as the
+training and validation corpus, choosing interactive speech an-
+notated with Happy, Angry, Sad, and Neutral as the core data.
+Following a speaker-independent protocol, Sessions 1-4 are al-
+located to the training set, and Session 5 to the validation set.
+Since this dataset only provides utterance-level labels, it is used
+exclusively as a global weak supervision signal during the train-
+ing phase.
+4.1.2. Evaluation Metric
+We evaluate the model using EDER [7], which measures four
+temporal prediction errors: False Alarm (FA, neutral predicted
+as emotion), Missed Emotion (ME, missed emotion events),
+Confusion (CF, emotion class confusion), and Overlap (OL,
+multi-label overlap):
+EDER= TF A +T M E +T CF +T OL
+TT otal
+(8)
+whereT F A,T M E,T CF , andT OL denote the total durations
+of the corresponding errors, andT T otal is the total utterance
+duration. Since the datasets use single-label annotations,T OL
+is zero but retained for consistency with the standard definition.
+4.1.3. Implementation details
+The model is trained on a single NVIDIA A40 GPU for 50
+epochs with a batch size of 8, using a fixed random seed and
+automatic mixed precision. A pre-trained WavLM-Large is se-
+lected as the backbone network. To prevent initial representa-
+tion shift, the backbone network is frozen for the first 5 epochs,
+519
+fine-tuning only the projection head and prototype layers, fol-
+lowed by end-to-end optimization of the entire network. For the
+optimization strategy, the model employs the AdamW optimizer
+(weight decay 0.05, peak learning rate5×10 −4), coupled with
+a cosine annealing schedule including a 5-epoch warmup, and a
+gradient clipping threshold set to 5.0. To stabilize metric space
+learning, the temperature coefficientτis linearly annealed from
+0.5 to 0.1 over the first 10 epochs; meanwhile, the orthogonal
+weightλ orth increases linearly from 0.1 to 1.0 over the first 15
+epochs to progressively strengthen the orthogonal separation of
+prototypes. The final test evaluation uses exponential moving
+average weights with a decay rate of 0.999 to ensure model pa-
+rameter stability. Our code is available on github1.
+4.2. Experimental Results and Analysis
+Table 1:EDER of various models and post-processing methods
+on the ZED test set. The best result is boldfaced.
+Model Loss Function Post-proc. EDER(%)↓
+Baseline
+frame-wise Cross-Entropy
+Loss ×56.52
+ENT [9] Lattice-Max-Pooling
+Loss
+×55.16
+FENT [9] Lattice-Max-Pooling
+Loss
+×54.37
+Ours (P-SED)
+P-SED (RAW) Proposed Joint
+Loss ×50.67
+P-SED + MA Proposed Joint
+Loss MA 49.60
+P-SED + GEP Proposed Joint
+Loss GEP 48.38
+P-SED + TVD Proposed Joint
+Loss TVD47.00
+Table 1 reports the EDER on the ZED test set. For fair com-
+parison, all models share the same WavLM backbone. Without
+post-processing, P-SED (RAW) achieves 50.67% EDER, reduc-
+ing the error by 3.7% compared with the best baseline FENT
+(54.37%). Lattice-max-pooling baselines (ENT, FENT) focus
+on local peaks and often ignore temporal continuity, whereas
+P-SED captures fine-grained emotional dynamics through joint
+optimization of the prototype metric space and Top-K ranking.
+Post-processing further improves performance. MA [24]
+and GEP [10] reduce EDER to 49.60% and 48.38%, respec-
+tively, but they often lead to over-smoothing that blurs true
+emotion transitions. In contrast, TVD achieves the best re-
+sult of 47.00%. Benefiting from edge-preservingL 1 regular-
+ization, TVD effectively suppresses high-frequency noise while
+preserving temporal structure.
+To evaluate statistical significance, a two-tailed paired t-test
+was conducted on utterance-level EDER. Results show that P-
+SED and its variants achieve statistically significant improve-
+ments (p<0.05) over all baseline methods.
+4.3. Ablation Study
+Table 2 reports the ablation results on the ZED test set. Replac-
+ing the prototype-based metric space with a standard linear clas-
+sifier (w/o Prototype) increases EDER to 53.95%. Retaining
+prototypes but removing the orthogonal constraint (w/oL orth)
+1https://github.com/LiuYumeng-Lemon/P-SED
+Table 2:Ablation study of the P-SED framework on the ZED
+test set. All variants are evaluated without post-processing to
+isolate the effect of each component.
+Variant Proto.
+Learn.
+Orth.
+Cons.
+Asym.
+CPCL
+Top-K
+Rank. EDER(%)↓
+Ours (Full)✓ ✓ ✓ ✓50.67
+w/o Prototype×–✓ ✓53.95
+w/oL orth ✓×✓ ✓52.82
+w/oL cpcl ✓ ✓×✓53.62
+w/oL topk ✓ ✓ ✓×54.60
+0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1
+50
+51
+52
+53
+54
+55
+56
+57
+58
+Hyperparameter Value
+EDER (%)
+Top-K ratioρ(λorth = 0.1,λser = 0.1)
+Weightλorth (ρ= 0.6,λ ser = 0.1)
+Weightλser (ρ= 0.6,λ orth = 0.1)
+Figure 2:The effect of key hyperparameters (ρ,λ orth, andλ ser)
+on the EDER performance.
+results in 52.82% EDER, indicating that prototype-based metric
+learning contributes to performance improvement. Removing
+the bag-level asymmetric constraint (w/oLcpcl) and frame-level
+salient instance mining (w/oL topk) increases EDER by 2.95%
+and 3.93%, respectively. These results show that all compo-
+nents provide complementary contributions to reducing EDER.
+Furthermore, to observe the impact of key hyperparameters
+on model performance, a single-variable control strategy was
+adopted to systematically adjustp,λ orth, andλ ser while keep-
+ing the other parameters fixed. As shown in Figure 2,pachieves
+the lowest EDER around 0.6;λorth shows a performance degra-
+dation trend as the weight increases;λ ser fluctuates minimally
+across different value ranges.
+5. Conclusion and Future Work
+This paper proposes P-SED, a weakly supervised SED frame-
+work that integrates an orthogonal prototype space, asymmetric
+instance mining, and TVD. Using only utterance-level labels,
+P-SED enables fine-grained emotion localization in continuous
+speech. Experiments on the ZED dataset show that P-SED sig-
+nificantly reduces EDER and outperforms existing weakly su-
+pervised baselines. Despite its effectiveness, the fixed-ratio in-
+stance mining mechanism struggles with highly variable and
+rapidly changing emotional transitions in real conversations. In
+addition, the small scale of the current test set limits compre-
+hensive evaluation of model generalization. Future work will
+explore adaptive instance mining and context-aware sequence
+modeling, as well as larger frame-annotated datasets combined
+with self-supervised learning to improve robustness.
+520
+6. Generative AI Use Disclosure
+Generative artificial intelligence tools were used solely for lan-
+guage polishing to improve the clarity and readability of the
+manuscript. All scientific content, experimental designs, and
+technical analyses were independently completed and verified
+by the authors. The authors assume full responsibility for the
+integrity and originality of this work.

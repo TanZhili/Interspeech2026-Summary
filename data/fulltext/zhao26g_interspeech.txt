@@ -1,0 +1,461 @@
+MSpoofTTS: Multi-Resolution Spoof-Guided Inference for Discrete Speech
+Synthesis
+Junchuan Zhao ID 1,∗, Minh Duc Vu ID 2,∗, Ye Wang ID 1
+1 School of Computing, National University of Singapore, Singapore
+2 Department of Statistics & Data Science, National University of Singapore, Singapore
+junchuan@u.nus.edu, minhduc.vu@u.nus.edu, dcswangy@nus.edu.sg
+Abstract
+Neural codec language models enable high-quality discrete
+speech synthesis, yet their inference remains vulnerable to
+token-level artifacts and distributional drift that degrade percep-
+tual realism. Rather than relying on preference optimization or
+retraining, we propose MSpoofTTS, a training-free inference
+framework that improves zero-shot synthesis through multi-
+resolution spoof guidance. We introduce a Multi-Resolution
+Token-based Spoof Detection framework that evaluates codec
+sequences at different temporal granularities to detect locally
+inconsistent or unnatural patterns. We then integrate the spoof
+detectors into a hierarchical decoding strategy, progressively
+pruning low-quality candidates and re-ranking hypotheses. This
+discriminator-guided generation enhances robustness without
+modifying model parameters. Experiments validate the effec-
+tiveness of our framework for robust and high-quality codec-
+based speech generation. Demos are available online1.
+Index Terms: speech synthesis, spoof detection, neural codec
+language models
+1. Introduction
+Neural codec language models have recently become a prac-
+tical and effective approach for zero-shot speech synthesis
+[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. By modeling speech as sequences
+of discrete codec tokens with autoregressive or transformer ar-
+chitectures, these systems streamline the synthesis pipeline and
+naturally adopt scalable decoding strategies from large language
+models. In practice, however, generation in the discrete token
+space can be fragile. Small inconsistencies at the token level
+may accumulate during autoregressive decoding, resulting in
+audible artifacts and a gradual drift away from natural speech
+characteristics [11]. Since next-token prediction objectives do
+not explicitly constrain such behavior, these issues are often dif-
+ficult to detect or correct during inference.
+To mitigate decoding instabilities, existing approaches gen-
+erally fall into two categories. One line of work introduces
+additional supervision or reward-driven objectives to better
+align model outputs with perceptual or distributional goals
+[11, 12, 13, 14, 15]. Although effective, these approaches
+typically require retraining or additional supervision, increas-
+ing computational cost and system complexity. Another line
+of work focuses on decoding-time adjustments, including rep-
+etition control, alignment constraints, and modified sampling
+strategies [16, 7, 17]. While these methods are simple to apply
+and avoid retraining, they mainly target specific decoding fail-
+*These authors contributed equally.
+1https://danny-nus.github.io/MSpoofTTS.
+github.io/
+ures rather than explicitly assessing whether generated token
+sequences remain globally consistent or locally natural.
+A related idea has been explored in controllable text gen-
+eration, where external classifiers are incorporated directly dur-
+ing decoding to guide model outputs without retraining the base
+language model [18, 19]. Instead of optimizing the genera-
+tor through reinforcement learning, these approaches influence
+generation at inference time by adjusting token probabilities or
+re-ranking candidate sequences based on auxiliary evaluation
+signals. Such strategies demonstrate that generation behavior
+can be steered through an explicit evaluation mechanism ap-
+plied during decoding, rather than by modifying model parame-
+ters. Motivated by this perspective, we introduce a spoof detec-
+tion model as an authenticity evaluator and integrate it into the
+decoding process to guide discrete speech generation.
+To this end, spoofed and deepfake speech detection pro-
+vides a natural foundation. Detection of synthetic or manipu-
+lated speech has been extensively studied in the continuous au-
+dio domain [20, 21, 22, 23, 24], with large-scale benchmarks
+such as the ASVspoof challenge series [25, 26, 27, 28] driv-
+ing substantial progress in waveform-level countermeasure de-
+sign. More recently, codec-based deepfake datasets have re-
+vealed additional challenges introduced by neural codec syn-
+thesis [29, 30, 31]. However, existing spoof detection systems
+are primarily formulated on reconstructed audio signals and are
+designed for post-hoc classification. They do not operate on
+discrete codec token sequences, nor are they intended to guide
+generation during decoding.
+Building on this perspective, we propose MSpoofTTS, a
+framework that integrates a separately trained multi-resolution
+token-level spoof detector into the decoding process for codec-
+based speech synthesis, while keeping the underlying language
+model fixed. The main contributions of this work are as follows:
+• We extend spoof detection to the token level by introducing
+a multi-resolution authenticity modeling approach tailored to
+discrete codec sequences.
+• We develop an inference-time decoding strategy that lever-
+ages spoof-based authenticity scores for candidate pruning
+and reranking, without retraining the base codec language
+model.
+• We demonstrate consistent improvements in perceptual qual-
+ity and robustness across diverse decoding configurations.
+2. Method
+2.1. Overview
+Pretrained codec-based language models have shown strong ca-
+pability in zero-shot speech synthesis by autoregressively mod-
+7441
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2159
+SpeechCodec
+Encoder
+ …
+…
+Cropping Sampling
+…
+ …
+ …
+…
+…
+…
+ …
+…
+…
+…
+ …
+L= 25L= 10L= 50L= 25L= 10
+L= 50
+c(50)
+c(25)c(10) ˜c(25)˜c(10)c(50)
+…
+…
+…
+ …
+ …c(25) c(10)c(50) ˜c(10)
+Model1
+ Model2
+ Model3
+ Model4
+ Model5
+˜c(25)
+Real/Fake Real/Fake Real/Fake Real/Fake Real/Fake
+…
+Embedding
++
+AdaptivePool
+Linear
+ReLU
+Dropout
+Linear
+FeedForward
+MHSA
+Convolution
+FeedForward
+LayerNorm
+p∈[0,1]
+Conformer
+Block
+Classifier
+Head
+(a)Multi-Resolution Token-Based Spoof Detection Framework (b)DiscreteTokenSpoofDetector
+Figure 1:Overview of multi-resolution token-based spoof detection framework. (a) Construction of token sequences at multiple tempo-
+ral resolutions for training separate real/fake detectors. (b) Conformer-based discrete token spoof detector architecture.
+Golden Tokens
+Synthetic Tokens
+(a)Full Utterance
+Golden Tokens
+Synthetic Tokens (b)Segment Length = 50
+Golden Tokens
+Synthetic Tokens
+(c)Segment Length = 25
+Golden Tokens
+Synthetic Tokens (d)Segment Length = 10
+Figure 2:t-SNE visualization of embedding distributions under
+different segment lengths.
+eling discrete codec tokens. In this work, we adopt NeuTTS 2
+[32], a pretrained codec-based TTS system, as the base gener-
+ator with all parameters fixed. While these models are trained
+with ground-truth tokens as context, inference relies on previ-
+ously generated tokens, introducing a training–decoding mis-
+match under which synthesized sequences may gradually de-
+viate from the natural codec distribution [11]. Following this,
+token embeddings are aggregated via mean pooling to obtain
+representations across multiple temporal resolutions.
+As shown in Fig. 2, the statistical gap between golden and
+synthesized tokens appears not only at the utterance level but
+also across segment lengths of 50, 25, and 10 tokens, suggesting
+that local token deviations accumulate during decoding and de-
+grade perceptual quality. Rather than modifying the pretrained
+TTS model, we model this discrepancy using a spoof detection
+framework. Specifically, spoof detection models are trained to
+distinguish golden and synthetic codec sequences across mul-
+tiple temporal scales, and their authenticity scores are incorpo-
+rated into inference-time guidance to progressively prune low-
+quality candidates and re-rank hypotheses during decoding.
+2https://github.com/neuphonic/neutts
+2.2. Multi-Resolution Token-Level Spoof Detection
+To explicitly model the distribution gap between golden and
+synthesized codec tokens, we propose a multi-resolution token-
+level spoof detection framework (Fig. 1). Given an utterance-
+level codec sequencec={c 1,...,c T}, token segments are
+constructed using two complementary strategies to expose dis-
+crepancies across temporal and structural scales. We first vary
+the temporal span by cropping the codec sequence to extract
+contiguous subsequences with lengthsL∈{10,25,50}. Short
+segments capture fine-grained local transitions, while longer
+segments reflect broader contextual dependencies. Second, in-
+spired by multi-scale discriminators (MSD) in neural vocoders
+[33, 34], we apply resolution-based skip sampling with down-
+sampling ratesr∈{1,2,5}to create coarser token representa-
+tions and reveal structural inconsistencies that may not appear
+at the original granularity.
+Each segment is processed by a Conformer-based discrim-
+inator consisting of an embedding layer, stacked Conformer
+blocks [35], and adaptive pooling followed by a lightweight
+classifier that predicts whether the segment is real or synthetic.
+The detectors are trained with the binary cross-entropy objec-
+tive independently of the TTS model. We train five models
+in total:M 50,M 25, andM 10 for contiguous segments, and
+M50←25 andM 50←10 for skip-sampled variants derived from
+50-token segments withr= 2andr= 5, respectively.
+2.3. Hierarchical Spoof-Guided Sampling
+To improve decoding robustness of autoregressive codec
+language models, we propose a hierarchical spoof-guided
+sampling framework that combines Entropy-Aware Sampling
+(EAS) with the multi-resolution spoof detectors introduced in
+Section 2.2. We adopt EAS, described in Algorithm 1, as the
+base decoding strategy. Compared with repetition-aware sam-
+pling (RAS) in V ALL-E 2 [16], which penalizes recently gen-
+erated tokens using heuristic repetition counts, EAS maintains
+a memory buffer of candidate tokens and modulates penalties
+using inverse-rank weighting and temporal decay, preventing
+over-suppression while preserving distributional diversity.
+Building on EAS, we introduce hierarchical spoof-guided
+pruning as shown in Algorithm 2. After generating a warmup
+7442
+Algorithm 1Entropy-Aware Sampling (EAS)
+Require:Textx, pre-trained AR modelθ AR, prefixc <t; top-
+pthresholdv, cluster sizek e, memory window sizeW;
+α,β,γ
+Ensure:Generated tokensc 1:T
+1:M←∅
+2:fort= 1,2,...,Tdo
+3:s t←p(·|x,c <t;θ AR)
+4:for all(i,r,a)∈Mdo
+5:π t(j)←min(γ, P
+(i,r,a)∈M, i=jα· 1
+1+r·β a)
+6:end for
+7:s ′
+t←s t−π t
+8:c t←NucleusSample(s′
+t;v)
+9:M←{(i,r,a+ 1) : (i,r,a)∈M, a+ 1≤W}
+10:K t←TopK(s′
+t,k e)∪{c t}
+11:forr= 1,···,|K t|do
+12:M←M∪{(K t[r],r,0)}
+13:end for
+14:c <t+1←c <t∪{c t}
+15:end for
+Algorithm 2Hierarchical Spoof-Guided Sampling
+Require:x,θ AR, spoof detection models
+{M10,M 25,M 50,M 50←25,M 50←10}, warmupL w,
+stages(L 1,L 2,L 3), beams(B 0,B 1,B 2),L max, weights
+(w50,w 25,w 10)
+Ensure:y
+1:y←x
+2:y←y∪EAS(y,L w;θ AR)
+3:while|y|<L max do
+4:B←{EAS(y,L 1;θ AR)}B0
+b=1
+5:B←TopB 1
+ 
+M10(B)
+
+6:Extendb i∈BtoL 2 using EAS (or other decoding)
+7:B←TopB 2
+ 
+M25(B
+
+)
+8:Extendb i∈BtoL 3 using EAS (or other decoding)
+9:s 50 ← M50(B),s 25 ← M50←25(B),s 10 ←
+M50←10(B)
+10:r 50,r 25,r 10←Rank(s 50,s 25,s 10)
+11:ˆ r←w 50·r 50 +w 25·r 25 +w 10·r 10
+12:y←y∪arg min bi∈B ˆ r[i]
+13:end whilereturny
+segment of lengthL w,B 0 candidate continuations are sam-
+pled using EAS and progressively pruned by multi-resolution
+discriminators. Specifically, candidates are first ranked by the
+short-span detectorM 10 and only the topB 1 beams are re-
+tained. Then they are extended and pruned by the mid-range
+detectorM 25 to keep topB 2 beams, before final extension.
+The surviving candidates are evaluated byM 50 and its sam-
+pled variantsM 50←25 andM 50←10, whose rankings are ag-
+gregated to select the final continuation. This coarse-to-fine
+multi-resolution pruning steers decoding toward natural token
+sequences without modifying or retraining the AR backbone.
+3. Experiments
+3.1. Datasets
+For spoof detection training, we use the LibriTTS [36] train-
+ing split (≈100 hours of clean read English speech). For each
+ground-truth utterance, three synthetic counterparts are gener-
+ated using the same transcript but different reference utterances
+from the same speaker under the default inference scheme. All
+real and synthetic waveforms are converted into discrete token
+sequences using the NeuCodec tokenizer. For evaluation, ex-
+periments are conducted on LibriSpeech [37] and LibriTTS test
+sets, covering diverse speakers and clean TTS-style speech. To
+assess robustness under challenging phonetic patterns, we fur-
+ther evaluate on the TwistList benchmark [38], which contains
+tongue-twister sentences with dense alliteration and repetitive
+phoneme structures. Speech is synthesized using the same con-
+ditioning and decoding pipeline as in the standard evaluation.
+3.2. Implementation Details
+The spoof detection models used model = 256, 8 attention
+heads, 4 Transformer layers, and a feedforward dimension of
+1024, with dropout set to 0.1. The discriminator is trained with
+AdamW using a learning rate of1×10 −4 and weight decay
+of1×10 −4 on a single NVIDIA L40S GPU. For decoding,
+the default baseline adopts top-ksampling withk= 50and
+temperature 1.0. Repetition-Aware Sampling (RAS) uses top-
+k= 50, top-p= 0.8, window sizeW= 25, and repetition
+penaltyτ r = 0.1. Entropy-Aware Sampling (EAS) follows Al-
+gorithm 1 with cluster sizek e = 3, memory windowW= 15,
+and hyperparametersα= 0.2,β= 0.7, andγ= 0.8, while us-
+ing top-p= 0.8, top-k= 50, and temperature 1.0. Hierarchical
+decoding follows Algorithm 2 with warm-up lengthL w = 20,
+stage lengths(L 1,L 2,L 3) = (10,25,50), and beam sizes
+(B0,B 1,B 2) = (8,5,3). Ranking weights(w 50,w 25,w 10)
+are set equally. Hierarchical RAS and EAS inherit the corre-
+sponding sampling hyperparameters.
+3.3. Evaluation Metrics
+For objective evaluation, we report ASR-based intelligibil-
+ity, speaker similarity, perceptual quality, and spoof detec-
+tion performance. Intelligibility is measured using Word Er-
+ror Rate (WER), computed with Whisper-large-v3 [39] 3 for all
+decoding schemes. Speaker similarity is evaluated using the
+WavLM [40]4 model by computing cosine similarity between
+L2-normalized embeddings of the generated utterance and an-
+other real utterance from the same speaker. Perceptual quality is
+assessed using neural MOS estimators, including NISQA [41]
+and MOSNet [42], both reflecting overall speech quality. In ad-
+dition, subjective evaluation is conducted using mean opinion
+scores for naturalness (MOS-N), quality (MOS-Q), and speaker
+similarity (SMOS). 15 participants rate audio samples from dif-
+ferent inference methods on a 1–5 scale, where higher scores
+indicate better perceptual quality.
+4. Results
+4.1. Evaluation on Standard Benchmarks
+We compare several inference strategies, including the default
+top-ksampling decoder (Original), repetition-aware sampling
+(RAS), entropy-aware sampling (EAS), and their hierarchical
+extensions (HierRAS and HierEAS). HierRAS and HierEAS
+integrate the proposed hierarchical spoof-guided sampling with
+RAS and EAS, respectively, with HierEAS corresponding to the
+proposed MSpoofTTS method.
+As shown in Table 1, both EAS and RAS outperform the
+3https://huggingface.co/openai/
+whisper-large-v3
+4https://huggingface.co/microsoft/
+wavlm-base-plus-sv
+7443
+Table 1:Objective evaluation on LibriTTS and LibriSpeech. HierEAS (MSpoofTTS) uses Hierarchical Spoof-Guided Sampling with
+EAS, while HierRAS replaces EAS with RAS under the same framework. Original refers to the vanilla nucleus sampling method. The
+best results are highlighted inbold, and the second-best results are underlined.
+LibriSpeech LibriTTS
+Inference Scheme WER↓SIM↑NISQA↑MOSNET↑WER↓SIM↑NISQA↑MOSNET↑
+Ground Truth 0.0337 0.915 4.620 4.5259 0.0430 0.904 4.593 4.4766
+Original 0.0694 0.894 4.462 4.3418 0.0715 0.872 4.397 4.1879
+RAS 0.06410.9054.553 4.2772 0.0657 0.880 4.425 4.2565
+EAS 0.0576 0.902 4.571 4.3298 0.0672 0.883 4.408 4.1937
+HierRAS 0.0591 0.902 4.596 4.3486 0.0628 0.8864.520 4.3277
+HierEAS0.05320.9014.602 4.41580.0633 0.883 4.562 4.3409
+Table 2:Objective evaluation on TwistList test set.
+Methods WER↓SIM↑NISQA↑MOSNET↑
+Original 0.1654 0.871 4.459 3.8692
+RAS 0.1572 0.820 4.477 3.8754
+EAS0.14330.876 4.465 3.9265
+HierRAS 0.1702 0.802 4.496 3.9566
+HierEAS 0.1531 0.877 4.513 3.9802
+original baseline on LibriSpeech and LibriTTS, confirming that
+entropy- and repetition-aware decoding improves token selec-
+tion. Incorporating hierarchical spoof-guided ranking further
+improves performance, particularly in perceptual quality met-
+rics such as NISQA and MOSNET. This suggests that multi-
+resolution discriminator guidance enhances structural consis-
+tency beyond local decoding refinements. Improvements in
+WER and SIM are relatively modest, likely due to the al-
+ready strong intelligibility and speaker consistency of the base-
+line. Nevertheless, hierarchical sampling maintains competitive
+WER and SIM while improving perceptual quality. Overall, Hi-
+erEAS (MSpoofTTS) achieves the best or second-best results
+across most metrics and datasets, demonstrating the effective-
+ness of the proposed approach.
+4.2. Evaluation under Challenging Conditions
+Table 2 reports results on the TwistList test set, which consists
+of phonetically dense tongue-twister utterances and serves as
+a stress test for decoding robustness. As expected, WER val-
+ues are higher across all methods compared to standard bench-
+marks, reflecting the increased difficulty of this dataset.
+The overall trend aligns with observations on LibriTTS and
+LibriSpeech. EAS and RAS consistently outperform the orig-
+inal nucleus sampling baseline in most metrics. In particular,
+EAS achieves the lowest WER on TwistList, slightly surpassing
+RAS, suggesting that entropy-aware regularization better bal-
+ances repetition control with legitimate phonetic recurrence un-
+der challenging conditions. While hierarchical variants do not
+always obtain the lowest WER in this setting, HierEAS main-
+tains competitive intelligibility and achieves the best perceptual
+quality scores in both NISQA and MOSNET. Notably, the rel-
+ative increase in WER remains moderate, indicating that the
+proposed method preserves lexical accuracy even under highly
+constrained phonetic structures.
+4.3. Subjective Listening Tests
+We conduct a subjective evaluation across different inference
+strategies, reporting MOS-N, MOS-Q, and SMOS to measure
+MOS-N MOS-Q SMOS
+1
+2
+3
+4
+5Score (1 5)
+GT Original RAS EAS HierRAS HierEAS
+Figure 3:Subjective evaluation of different inference strate-
+gies measured by MOS-N (naturalness), MOS-Q (quality), and
+SMOS (similarity).
+naturalness, overall speech quality, and speaker similarity, re-
+spectively. As shown in Figure 3, hierarchical spoof-guided de-
+coding consistently achieves higher perceptual scores than the
+baseline methods. In particular, the hierarchical variants (Hi-
+erRAS and HierEAS) demonstrate clear improvements in natu-
+ralness (MOS-N) over their non-hierarchical counterparts, sug-
+gesting that spoof-aware hierarchical decoding helps mitigate
+unnatural token patterns during generation. Similar trends are
+observed for overall quality (MOS-Q), where the hierarchical
+strategies achieve slightly higher scores, although the improve-
+ment remains modest. For speaker similarity (SMOS), all meth-
+ods maintain consistently high scores. Although our approach
+does not obtain the highest SMOS, the results indicate that the
+proposed inference strategy preserves speaker identity. Overall,
+these findings highlight the effectiveness of spoof-guided de-
+coding in improving perceptual realism without compromising
+speaker consistency.
+5. Conclusion
+We present MSpoofTTS, a training-free framework that im-
+proves discrete speech synthesis through hierarchical spoof-
+guided inference. We use multi-resolution spoof detectors to
+guide decoding and suppress locally inconsistent codec token
+patterns, without modifying the pretrained speech language
+model. Experiments on LibriTTS and LibriSpeech show con-
+sistent improvements in perceptual quality while maintaining
+competitive intelligibility and speaker similarity. Evaluation on
+the challenging TwistList dataset further demonstrates robust-
+ness under highly repetitive phonetic structures. Subjective lis-
+tening tests show improved perceptual naturalness without de-
+grading speaker identity, supporting spoof-guided inference as
+an effective approach to enhancing neural codec-based speech
+generation.
+7444
+6. Generative AI Use Disclosure
+Large language models (LLMs) were used in a limited capacity
+as auxiliary tools to assist with the proofreading and language
+polishing of the manuscript. All research ideas, methodological
+design, experiments, analyses, and final writing decisions were
+conducted and verified by the authors.

@@ -1,0 +1,468 @@
+MamTra: A Hybrid Mamba-Transformer Backbone for Speech Synthesis
+Tan Dat Nguyen1, Sangmin Bae1, Joon Son Chung1, Ji-Hoon Kim2,∗∗
+1 Korea Advanced Institute of Science and Technology, South Korea
+2 Chung-Ang University, South Korea
+tandat.kaist@kaist.ac.kr
+Abstract
+Despite the remarkable quality of LLM-based text-to-speech
+systems, their reliance on autoregressive Transformers leads
+to quadratic computational complexity, which severely limits
+practical applications. Linear-time alternatives, notably
+Mamba, offer a potential remedy; however, they often sacrifice
+the global context essential for expressive synthesis. In this pa-
+per, we propose MamTra, an interleaved Mamba-Transformer
+framework designed to leverage the advantages of Mamba’s
+efficiency and Transformers’ modeling capability. We also
+introduce novel knowledge transfer strategies to distill insights
+from a pretrained Transformer into our hybrid architecture,
+thereby bypassing the prohibitive costs of training from
+scratch. Systematic experiments identify the optimal hybrid
+configuration, and demonstrate that MamTra reduces inference
+VRAM usage by up to 34% without compromising speech
+fidelity–even trained on only 2% of the original training dataset.
+Audio samples are available at1.
+Index Terms: text-to-speech, speech synthesis, hybrid archi-
+tecture, state space model, mamba, MamTra
+1. Introduction
+The recent surge of Large Language Model (LLM)-based Text-
+to-Speech (TTS) systems has yielded near-human naturalness in
+expressive and multi-speaker speech generation [1, 2, 3, 4, 5, 6].
+However, this success remains fundamentally dependent on au-
+toregressive Transformer backbones. While their core self-
+attention mechanism effectively models global dependencies
+across the entire input sequences, it inherently incurs quadratic
+time and memory complexity with respect to sequence
+length [7]. In long-form synthesis scenarios, including pod-
+casts, audiobooks, and streaming dialogue agents, this quadratic
+scaling leads to high latency and large key–value (KV) cache
+memory, making deployment impractical on edge devices [8, 9].
+Efforts to mitigate the computational bottlenecks of self-
+attention have spanned both architectural modifications—such
+as grouped-query attention (GQA) [10], sparse attention [11],
+and pruning [12, 13]—and inference optimizations like KV
+cache compression [14, 15] and speculative decoding [16, 17].
+While effective, these methods fundamentally remain opti-
+mizations atop the quadratic attention mechanism rather than
+structural replacements. Consequently, linear attention mech-
+anisms have emerged as a scalable alternative computational
+primitive [18, 19, 20, 21, 22, 23]. In this context, State Space
+Models (SSMs)—most notably Mamba [20, 23]—have gained
+particular traction for their ability to combine linear-time
+**indicates the corresponding author.
+1Project page: https://mm.kaist.ac.kr/projects/mamtra/
+Transformer
+Transformer
+Transformer
+Mamba
+Transformer
+Mamba
+Linearization
+Teacher Student
+Multi-Level
+Distillation
+Figure 1: Overview of the hybrid Mamba-Transformer configu-
+rations for speech synthesis. Selective Transformer-to-Mamba
+layer transfer reduces training cost and accelerates conver-
+gence, while performance is recovered via knowledge distilla-
+tion using less than 2% of the teacher’s English training data.
+inference with strong local temporal modeling. This potential
+has driven recent adoption in a range of speech tasks, where
+Mamba-based architectures are demonstrating significant
+efficiency gains [24, 25, 8, 26, 27, 28, 29, 30]. However, this
+efficiency often comes at the cost of expressivity: pure SSMs
+still underperform Transformers at scale [31], particularly in
+in-context learning [32, 33], and long-context reasoning [34].
+To bridge this gap, hybrid architectures have become a
+promising solution, strategically interleaving Mamba blocks
+with Transformer blocks. These designs combine the computa-
+tional efficiency of Mamba for local acoustic modeling with the
+global semantic reasoning of Transformers [32, 35, 36, 37, 9].
+However, within the TTS domain, such hybrid designs remain
+largely unexplored. The only existing attempt [38] relies on
+inefficient pretraining from scratch, and its technical implemen-
+tation details have not been released. To prevent the high cost of
+pretraining, we leverage insights from recent model conversion
+techniques [39, 40, 41, 13]. Specifically, we hypothesize that
+a pre-trained Transformer can be transformed into a hybrid
+TTS model by replacing a subset of its blocks with Mamba
+layers via attention-to-SSM parameter transfer. This structured
+initialization ensures that the model retains teacher-level speech
+fidelity while achieving significantly faster inference.
+Our contributions are summarized as follows: (1) We
+introduce MamTra, the first systematic study of hybrid
+Mamba-Transformer architecture for speech synthesis. It
+reuses pretrained Transformer weights to initialize both
+6646
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1031
+Table 1: Architectural replacement strategies mapping Trans-
+former (blue blocks) and Mamba (orange blocks) layers.
+* BlockBeg stands for BlockBeginning.
+Category Strategy Structure
+Interleaved BlockBeg*
+BlockEnd
+Contiguous
+Front
+Middle
+Back
+Sandwich
+Data-Driven Importance
+retained Transformer layers and newly introduced Mamba
+blocks, enabling selective replacement without pretraining from
+scratch (Figure 1). (2) We conduct a speech-centric analysis of
+the hybrid design space, identifying where and how many to
+place Mamba layers and quantifying a clear efficiency–quality
+trade-off. Our results demonstrate a strong trade-off: using
+knowledge distillation on just 2% of the English data compared
+to baseline yields a 34% reduction in GPU memory with only a
+0.25% absolute increase in WER while maintaining the natural-
+ness and expressiveness of the teacher. (3) Finally, we validate
+MamTra’s efficiency through both extensive experiments and
+theoretical analysis, confirming sub-quadratic complexity and
+sub-linear KV-cache growth. This corresponds to a reduction
+of up to 1.4e11 FLOPs per token at a context length of 2,048.
+2. MamTra Hybrid Architecture
+2.1. Preliminaries
+Transformer [7] has become the dominant backbone for
+sequence modeling due to its ability to capture long-range
+dependencies through self-attention mechanism. Each to-
+ken attends to relevant context (e.g., preceding tokens in
+autoregressive models) by computing attention scores:
+Attention(Q, K, V) = softmax
+ QK⊤
+√dk
+
+V, (1)
+where Q, K, V∈ RL×d are the query, key, and value matrices
+for sequence length L and hidden dimension d. While caching
+the full KV history ensures precise global reasoning, its
+quadratic complexity O(L2) severely bottlenecks long-form
+generation [7].
+In contrast, Mamba [20, 23] builds upon SSMs, which
+map a 1D input sequence x(t) to an output y(t) through a latent
+state h(t). Unlike traditional time-invariant SSMs, Mamba
+introduces selectivity by making the state parameters functions
+of the current input xt. The sequence is modeled through a
+compressed hidden state ht∈ RN , updated recurrently:
+ht = Atht−1 + Btxt, yt = Ctht, (2)
+where At and Bt are obtained by discretizing the continuous
+system matrices via a zero-order hold (ZOH) [19] and the
+Euler method. By projecting the discretization parameters
+∆t, Bt, and Ct from the input xt, the model achieves a
+selective mechanism that dynamically propagates or forgets
+information based on the context [23]. Mamba leverages
+parallel scan algorithms [42, 43] for highly efficient parallel
+training, and ensures linearO(L) decoding time with constant
+O(1) memory footprint during inference.
+Transformer (Teacher) Mamba-2 (Student)
+Copy weights
+Figure 2: Following the alignment between Eq. 2 and Eq. 4, pro-
+jection weights for C, B, and x in Mamba are initialized with
+Transformer’s Q, K, and V projection weights, respectively.
+2.2. Hybridization Strategy
+We explore various Transformer-to-Mamba replacement strate-
+gies to balance global context modeling with local temporal
+efficiency. As summarized in Table 1, we categorize these
+into four design spaces: (1) Interleaved (BlockBeg / End),
+preserving periodic Transformer layers; (2) Contiguous
+(Front / Middle / Back / Sandwich), grouping layer types spa-
+tially into continuous blocks or at the model’s boundaries; and
+(3) Data-driven (Importance) [40], replacing less critical layers
+based on cosine similarity or WER criteria. Each strategy
+is evaluated across Transformer-Mamba ratios ranging from
+1:1 to an aggressive 1:11 to determine the optimal functional
+regions for each primitive.
+2.3. Linearization and Structural Mapping
+The transition from self-attention to the recurrent form can be
+interpreted as a linearization [24]. To bridge these architectures
+at timestep t, we apply a causal mask ms,t = 1 for s≤ t (0
+otherwise). Removing the softmax allows using associativity
+to decouple the query from historical context:
+yt = Q⊤
+t√dk
+
+X
+s≤t
+ms,tKsVs
+
+ . (3)
+This formulation reveals an underlying recurrence where the
+accumulated product ht = P
+s≤t ms,tKsVs serves as the
+latent state. Utilizing the property ms,t = mt−1,t· ms,t−1 for
+causal sequences (i.e., enabling ht to be updated recursively
+from ht−1), the update rule is expressed in a linear RNN form:
+ht = mt−1,tht−1 + KtVt, yt = 1√dk
+Q⊤
+t ht. (4)
+Comparing Eq. 2 and Eq. 4 reveals a direct structural alignment.
+Specifically, the key-value product ( KtVt) corresponds to
+the SSM’s input update ( Btxt), with the key ( Kt) mapping
+to the input-dependent parameter Bt and the value ( Vt) to
+the projected input xt. The query ( Qt) aligns perfectly with
+the output projection ( Ct). Leveraging this equivalence, the
+pretrained Transformer’s query, key, and value projection
+weights are directly transferred to initialize the corresponding
+Mamba layers for projections of Ct, Bt, and xt (Figure 2).
+2.4. Multi-Level Distillation
+While the closed-form weight transfer provides a strong
+structural initialization, relying solely on these weights is
+insufficient to preserve the teacher’s performance. Specifically,
+removing the softmax nonlinearity fundamentally alters the
+6647
+MamTra 1:1 Zonos-v0.1 CosyVoice 2 Llasa-1B
+0
+2
+4
+6
+8
+10
+12
+Figure 3: Memory usage (GB) on Seed-TTS-
+eval (using NVIDIA A6000). MamTra 1:1 re-
+duces VRAM by 34% and 17% compared to
+CosyVoice 2 and Zonos-v0.1, respectively.
+1:1 1:3 1:5 1:11
+Ratio (Transformer:Mamba)
+4.0
+4.2
+4.4
+4.6CE Loss
+1:1 1:3 1:5 1:11
+Ratio (Transformer:Mamba)
+0
+25
+50
+75
+100
+125WER (%)
+BlockBeg
+BlockEnd
+Back
+Middle
+Front
+WER
+Cosine
+Sandwich
+Figure 4: Cross-entropy (CE) loss and Word Error Rate (WER) on Seed-TTS-
+eval for hybrid Mamba-Transformer variants after 15 training epochs on Lib-
+riTTS (0.5k h). CE loss exhibits a consistent correlation with WER across dif-
+ferent ratios and placement strategies.
+256 512 1024 1536 2048 3072 4096
+Sequence Length
+0
+10
+20
+30
+40
+50Cache Memory (MB)
+Mamba State
+KV Cache
+1:1
+1:3
+1:5
+1:11
+Figure 5: Cache size growth in the hybrid model, where the
+sequence-length dependency scales with the number of remain-
+ing Transformer layers.
+attention dynamics, thereby reducing the model’s expressive
+capacity [40]. To bridge this performance gap, MamTra
+employs a multi-level distillation strategy designed to transfer
+both the representational structure and the generation behavior
+of the teacher Transformer into the hybrid student model. The
+overall training objective is defined as:
+L =LCE +Llogits +Lemb, (5)
+where LCE provides ground-truth output supervision via
+cross-entropy. To recover the generation behavior lost during
+linearization,Llogits minimizes the skew KL divergence [44]
+between the teacher’s and student’s logits. Finally, Lemb
+enforces a mean-squared error constraint on the token em-
+beddings per input sequence. Together, these objectives
+align the student’s representations with the teacher’s joint
+semantic-acoustic space, ensuring stable adaptation to the
+Mamba blocks despite the architectural substitution.
+3. Experimental Setup
+Datasets. We utilize the LibriTTS dataset [45] for model
+training, and the Seed-TTS-eval test-en benchmark [46]
+alongside the LibriTTS test-clean split for evaluation.
+While Seed-TTS-eval test-en spans a balanced target text
+length ranging from 3 to 27 words, we additionally construct
+a LibriTTS-based test set encompassing a significantly wider
+length range (1 to 62 words). This evaluates the robustness of
+MamTra under length-stressed conditions.
+Baselines. We compare our approach against three strong
+baselines: (1) CosyVoice 2 [6], built on the Qwen2.5 architec-
+ture [47]; (2) Llasa-1B [48], utilizing Llama-3.2 [49]; and (3)
+Zonos-v0.1 [38], which represents the first hybrid Transformer-
+SSM model for TTS, although its precise architectural details
+remain largely unreported.
+Table 2: Comparison of sequence-scaling computational and
+memory complexity across architectures. Here, L denotes se-
+quence length, d the hidden dimension, dkv the key-value di-
+mension in GQA [10] , and N the state size of Mamba.
+Model
+Compute Memory
+FLOPs Training Inference
+MHA O(L2d + Ld2) O(L2 + Ld) O(Ld)
+GQA O(L2d + Ld2) O(L2 + Ld) O(Ldkv)
+Mamba O(Ld2) O(Ld) O(dN)
+Training Details. We conduct the performance recovery and
+fine-tuning of MamTra based on the CosyV oice 2 backbone
+[6]. All models are trained on NVIDIA A6000 GPUs using
+the Adam optimizer with a learning rate of 1e−5 and a
+dynamic batch size of 40,000 tokens. While most experimental
+configurations are trained for 15 epochs to analyze architectural
+trends, models for the final rigorous comparisons (Table 3) are
+trained for 50 epochs to ensure full convergence.
+Evaluation Metrics. We comprehensively assess the models
+based on computational efficiency, alongside the intelligibility
+and perceptual quality. Computational efficiency is quantified
+using TFLOPs, GPU memory usage, and cache size. For in-
+telligibility, we report the Word Error Rate (WER). Perceptual
+quality is assessed via Speaker Similarity (SSIM), UTMOS,
+and Naturalness Mean Opinion Score (NMOS). All objective
+metrics are computed utilizing the versa toolkit [50]. For
+the subjective NMOS evaluation, 50 utterances are randomly
+sampled per model and rated by 15 independent listeners.
+4. Analysis
+4.1. Efficiency and Complexity Analysis
+The structural mapping between Attention and Selective SSMs
+yields significant scaling differences. As shown in Table 2,
+while GQA-based backbones like Llasa and CosyV oice 2 re-
+duce cache footprint, they retain quadratic O(n2d) complexity.
+Conversely, Mamba [20] achieves linear O(nd2) scaling. For
+MamTra, this hybrid integration enablessub-quadratic compu-
+tation and sub-linear cache growth, as complexity is dominated
+by the remaining Transformer layers. This is empirically con-
+firmed in Figure 5, where Mamba state remains nearly constant
+while KV-cache growth is significantly attenuated relative to se-
+quence length. In practice, MamTra reduces average inference-
+time memory by up to 34% compared to the CosyV oice 2 base-
+line, as demonstrated in Figure 3.
+6648
+Table 3: Comparison of TTS Models Across Quality and Efficiency Metrics in Seed-TTS-eval test-en and LibriTTS test-clean.
+We compute the FLOPs needed for the LLM backbone to infer one token with a context length of 2048 (1 TFLOP = 1e12 FLOPs). All
+default cache enabled. NMOS is computed with confidence interval of 95%.
+Model Hybrid Source Params Layers Data (kh) Ratio Strategy TFLOPs↓ NMOS↑
+Seed-TTS-eval test-en LibriTTS test-clean
+UTMOS↑ SSIM↑ WER↓ UTMOS↑ SSIM↑ WER↓
+Groundtruth – – – – – – – – 3.93± 0.15 3.52 1.00 1.47 4.14 1.00 1.85
+Llasa-1B × Public 1.3B 16 250 1:0 – 4.53 3.64± 0.19 4.13 0.46 3.54 4.30 0.40 3.07
+CosyV oice 2 × Public 0.5B 24 170 1:0 – 1.78 3.68± 0.16 4.15 0.66 2.03 4.35 0.74 2.04
+Zonos-v0.1 ✓ Public 1.6B 46 200 1:3 BlockBeg 7.32 3.18± 0.18 3.63 0.67 3.42 3.96 0.72 3.37
+✓ Finetuned 0.5B 24 0.5 1:1 BlockBeg 1.64 3.66± 0.16 4.16 0.72 2.28 4.35 0.75 2.26
+✓ Finetuned 0.5B 24 0.5 1:3 BlockBeg 1.57 3.65± 0.16 4.14 0.72 3.26 4.35 0.75 2.99
+✓ Finetuned 0.5B 24 0.5 1:5 WER 1.54 3.65± 0.16 4.13 0.72 2.53 4.36 0.75 2.28MamTra
+✓ Finetuned 0.5B 24 0.5 1:11 WER 1.52 3.27± 0.18 4.15 0.72 3.99 4.37 0.75 4.08
+Table 4: Impact of different loss components after 15 epochs.
+Components WER↓ CER↓ SSIM↑ UTMOS
+MamTra 1:1 3.48 2.86 0.72 4.16
+w/oLCE 6.70 4.32 0.72 4.15
+w/oLlogits 6.13 3.46 0.72 4.15
+w/oLemb 5.63 3.26 0.72 4.15
+4.2. Efficiency-Quality Tradeoff
+As shown in Figure 4, the BlockBeg scheme consistently
+achieves lower CE and WER across ratios, while alternative
+placements exhibit higher variance and reduced robustness as
+the Mamba ratio increases. Notably, as the degree of layer re-
+moval becomes more aggressive, the advantage of WER-based
+layer importance becomes increasingly pronounced, consistent
+with prior observations in structured pruning [13]. Based on
+these consistent findings under low-cost settings, we select the
+BlockBeg strategy as the replacement scheme for ratios of 1:1
+and 1:3; WER strategy for ratios 1:5 and 1:11.
+Table 3 illustrates MamTra’s quality–efficiency trade-off
+relative to Transformer-only and prior hybrid models. While
+the backbone network ( CosyVoice 2) provides high quality, it
+incurs significant attention-based overhead. By replacing at-
+tention layers with Mamba blocks, MamTra reduces per-token
+FLOPs by up to 1.4× 1011 at a 2048 context length while
+maintaining comparable NMOS, UTMOS, and speaker simi-
+larity. Specifically, the MamTra 1:1 configuration preserves
+strong intelligibility, matching the teacher’s perceptual metrics
+with only a modest 0.25% absolute WER increase. Other vari-
+ants, such as 1:3 and 1:5, offer further computational gains with
+manageable increases in word error rate. However, the most ag-
+gressive 1:11 ratio represents the upper bound of this trade-off,
+where intelligibility begins to degrade below the Zonos-v0.1
+baseline. Furthermore, MamTra achieves up to a 34% reduc-
+tion in average inference memory, consistent with the sub-linear
+cache scaling in Figure 5. These results demonstrate that Mam-
+Tra effectively balances naturalness with the efficiency required
+for memory-constrained, long-context TTS deployment.
+4.3. Sensitivity Under Length-Stress Conditions
+In the length-stress condition (1–62 words), the MamTra 1:5
+(WER) configuration demonstrates a remarkably stable
+efficiency-quality trade-off. Despite the aggressive substitution
+of attention layers for Mamba blocks, the importance-based
+WER selection strategy keeps the WER exceptionally low at
+2.28%. Notably, this configuration exhibits superior robustness
+compared to the more conservative 1:3 (BlockBeg) variant
+0 5000 10000 15000 20000
+Steps
+1.0
+1.5
+2.0
+2.5
+3.0Training Loss
+Kaiming
+Xavier
+Reused
+0 250 500 750 1000
+2.0
+2.5
+3.0
+Figure 6: Convergence speed after 15 epochs.
+(WER = 2 .99%) and achieves parity with the 1:1 (BlockBeg)
+baseline while maintaining high UTMOS of 4.36 and SSIM of
+0.75, consistently surpassing Zonos. This suggests that under
+length-stressed conditions, better layer placement is more
+effective than simply retaining more Transformer blocks.
+4.4. Training Dynamics and Loss Contributions
+Ablation studies summarized in Table 4 confirm that LCE,
+Llogits, andLemb are essential for effective knowledge trans-
+fer, primarily impacting linguistic accuracy rather than percep-
+tual quality. Removing ground-truth supervision (LCE) results
+in the most severe degradation in intelligibility, while the logit
+distillation loss (Llogits) using Skew KL-Divergence is critical
+for recovering the teacher’s nuanced generation behavior.
+Complementary to these objectives, the initialization strat-
+egy significantly impacts training efficiency. As illustrated in
+Figure 6, reusing pretrained Transformer weights for both at-
+tention and Mamba blocks facilitates much faster convergence
+and a lower final training loss compared to standard Xavier or
+Kaiming initialization. This “initialize-and-train” approach al-
+lows the hybrid model to maintain a clear performance gap from
+the outset, enabling successful performance recovery using less
+than 2% of the original teacher’s training data.
+5. Conclusion
+We proposed MamTra, a hybrid Mamba-Transformer frame-
+work designed for efficient and high-quality speech synthesis.
+Through rigorous analysis, we optimized the integration and
+introduced custom initialization with multi-level distillation.
+Our experimental results demonstrate that MamTra achieves
+up to a 34% reduction in inference memory and saves 1.4e11
+FLOPs per token without compromising generation quality.
+These findings suggest that MamTra serves as a practical and
+scalable solution for memory-efficient TTS systems. We hope
+that our comprehensive analysis provides a solid foundation for
+future research in hybrid modeling for speech tasks.
+6649
+6. Acknowledgement
+This work was supported by the IITP-ITRC grant funded by the
+Korea government (Ministry of Science and ICT, IITP-2026-
+RS-2023-00259991).
+7. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used
+Google’s Gemini as a writing assistant for editing, language
+polishing, and structural refinement. This tool was used solely
+to improve the readability and overall clarity of the prose.
+For implementation-level assistance, the authors utilized xAI’s
+Grok for code refinement and debugging, and Anthropic’s
+Claude for code cleaning ahead of public release and for project
+page creation. These tools were not involved in the design of the
+proposed methods, experimental protocols, or scientific inter-
+pretations. All content, code, and conclusions were reviewed,
+revised, and approved by the authors, who take full responsibil-
+ity for the integrity of the manuscript and its submission.

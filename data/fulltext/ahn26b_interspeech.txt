@@ -1,0 +1,441 @@
+Whisper-CD: Accurate Long-Form Speech Recognition
+using Multi-Negative Contrastive Decoding
+Hoseong Ahn ID 1, Jeongyun Chae ID 1, Yoonji Park ID 1, Kyuhong Shim ID 1
+1 Sungkyunkwan University, Republic of Korea
+{hoseong8115, jyunchae, yoonji4024, khshim}@skku.edu
+Abstract
+Long-form speech recognition with large encoder–decoder
+models such as Whisper often exhibit hallucinations, repeti-
+tion loops, and content omissions. These errors can accumu-
+late and be further amplified when the previous segment’s tran-
+scription is used as decoding context. We proposeWhisper-
+CD, a training-free contrastive decoding framework that con-
+trasts clean-audio logits against negative logits computed from
+three acoustically motivated perturbations: Gaussian noise in-
+jection, silence signal, and audio temporal shift. We aggregate
+these negatives via the log-sum-exp operator, building a unified
+multi-negative objective for token-by-token decoding. Across
+five English long-form benchmarks, Whisper-CD reduces WER
+by up to 24.3 pp on CORAAL and shows 48% faster token gen-
+eration throughput than beam search. Because Whisper-CD op-
+erates purely at inference time, it can be applied as a drop-in
+replacement to already-deployed Whisper systems without re-
+training.
+Index Terms: speech recognition, contrastive decoding, long-
+form asr, inference-time
+1. Introduction
+Large-scale encoder–decoder models, such as Whisper [1], have
+significantly advanced automatic speech recognition (ASR), yet
+long-form transcription remains error-prone. When such mod-
+els process recordings with prolonged silences, acoustic degra-
+dation, or distribution shifts, they often produce fluent but un-
+supported text. This phenomenon is broadly termedhalluci-
+nation[2, 3, 4, 5]. Such errors are difficult to detect because
+the model typically predicts them with high confidence. More-
+over, long-form audio is usually processed in a divide-and-
+conquer manner, which can propagate errors as decoding pro-
+ceeds across segments.
+In practice, hallucination in long-form ASR appears in
+three common patterns: (i) silence-region hallucination, where
+the model generates fictitious words during non-speech inter-
+vals; (ii) repetition loops that carry over between segments;
+and (iii) content omissions, where parts of the spoken con-
+tent are dropped. Architectural approaches for long-form pro-
+cessing [6, 7] improve segmentation and context utilization,
+but do not directly target these error patterns. Hallucination-
+specific mitigation techniques, such as V AD-based chunking,
+constrained decoding, and fine-tuning of hallucinatory attention
+heads [8], typically focus on a single error pattern while in-
+troducing additional components or requiring model retraining.
+This motivates a unified decoding-time method that can address
+diverse error patterns without parameter updates.
+Contrastive decoding [9] (CD) improves generation qual-
+ity and has been shown to reduce hallucinations in vision-
+language [10] and natural language processing tasks, includ-
+ing machine translation [11, 12, 13, 14]. By contrasting log-
+its from a target generation process against logits from a nega-
+tive process that amplifies undesirable behavior, CD steers to-
+ken selection away from incorrect outputs without modifying
+model parameters. For example, VCD [10] corrupts the input
+image with heavy noise to obtain negative logits that reflect
+weaker visual evidence, so tokens preferred under this condition
+are down-weighted during decoding. Analogously, the negative
+process can be instantiated through audio perturbations that re-
+duce speech evidence; to the best of our knowledge, we are the
+first to apply contrastive decoding to ASR.
+In this paper, we proposeWhisper-CD, a training-free
+ContrastiveDecoding framework for long-form ASR. Whisper-
+CD suppresses hallucinated generation by contrasting clean
+audio logits against multiple negative logits. Whisper-CD
+leverages three audio-specific negative signals: (i) Gaussian
+noise injection, (ii) silence-only input (all-zero waveform), and
+(iii) temporal shift of the input waveform. These perturbations
+are designed to capture common and distinct long-form ASR
+failure modes. The three negative logits are combined using the
+log-sum-exp operator with a single uniform contrastive coeffi-
+cientα, producing a unified multi-negative CD objective that
+addresses all three failure patterns. Experiments on five long-
+form ASR benchmarks show that Whisper-CD consistently re-
+duces word error rate (WER) and hallucinations compared to
+the baseline while adding substantially less computational over-
+head than beam search.
+2. Related Work
+2.1. Challenges in Long-form ASR
+Long-form ASR remains challenging even for large-scale mod-
+els trained on massive and diverse corpora [1]. Existing meth-
+ods include joint segmentation-and-decoding [15], factorized
+neural transducers [7], and masked chunking conformers [6].
+While effective, these approaches generally require architec-
+tural changes or retraining, which limits their applicability to
+already-deployed ASR systems.
+2.2. Hallucinations in Whisper ASR
+Whisper is known to hallucinate frequently on non-speech seg-
+ments, noisy audio, or out-of-distribution inputs [2, 3], mak-
+ing hallucination a serious concern in long-form transcription.
+A representative failure case is the so-calledbag of hallucina-
+tions[3], a set of stock phrases (e.g., “Thank you for watching”)
+that the model generates with high confidence when no gen-
+uine speech is present [2, 3]. Several mitigation strategies have
+been proposed, including fine-tuning hallucinatory attention
+804
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3058
+Long-FormAudio
+30s (Whisper Segment)
+Encoder Contrastive
+Decoding
+Previous
+Context
+Multi-Negative Input Perturbation Contrastive Decoding
+Original
+Gaussian 
+Noise
+AudioShift
+Silence
+𝑁(0,𝜎!)
+Whisper (Frozen)
+Original
+Autoregressive
+Decoder
+Refined
+Multi-Negative
+Figure 1:Overview of the proposed Whisper-CD. Each audio segment is processed through four parallel paths, comprising the orig-
+inal signal and three acoustically perturbed variants (Gaussian noise injection, silence signal, and audio temporal shift). Each path
+produces decoder logits conditioned on the corresponding encoder output, and contrastive decoding steers token selection away from
+hallucinated outputs such as repetition loops and content omissions.
+heads for non-speech segments [8] and timestamp-aware train-
+ing for more verbatim transcription [16]. In contrast, training-
+free decoding-time approaches that can address diverse halluci-
+nation patterns remain underexplored; in particular, contrastive
+decoding has not yet been applied to reduce ASR hallucination.
+2.3. Test-time Improvement in ASR
+A complementary line of research seeks to improve ASR qual-
+ity at inference time without retraining the model. Classical ex-
+amples include beam search, which explores multiple decoding
+hypotheses, and language model rescoring, which re-ranksn-
+best lists using an external language model. More recently, gen-
+erative error correction (GER) leverages LLMs to post-correct
+ASR transcripts [17, 18], and test-time adaptation methods in-
+stead update model parameters per utterance via entropy mini-
+mization [19] or sequential-level generalized entropy minimiza-
+tion [20]. However, these approaches have fundamental limita-
+tions. Beam search broadens the decoding space, but does not
+alter the model’s token distribution; when hallucinated tokens
+receive high probability, increasing the beam size can still con-
+centrate the probability mass onto the same incorrect transcript.
+GER operates after the initial decoding pass, and thus cannot
+directly influence token selection during decoding. In contrast,
+our method directly adjusts the token distribution at inference
+time.
+3. Whisper-CD
+3.1. Motivation
+Whisper processes long-form audio by splitting the input into
+30-second segments and decoding each. The previous seg-
+ment’s transcription can optionally be provided as context for
+consistency across segments (see Figure 1). Counterintuitively,
+Whisper’s performance often degrades when the previous con-
+text is given. This behavior is well known in practice, as the
+official documentation 1recommends disabling context passing
+when performance is unsatisfactory.
+We further quantify this effect: On Whisper Large-v3, con-
+ditioning on previous contextincreasesWER by over 190 pp on
+CORAAL [21] and over 500 pp on Earnings22 [22]. This degra-
+dation is mainly driven by error accumulation. Once an erro-
+1https://github.com/openai/whisper/blob/
+7858aa/whisper/transcribe.py#L278
+neous transcription (e.g., hallucinated text and repetition loops)
+is passed as context, it may bias the current segment’s decoding
+and propagate errors to subsequent segments. Such hallucina-
+tions are difficult to recover from, even with beam search, and
+are more prominent in larger decoders. Rather than disabling
+context passing, which sacrifices the model’s inherent ability
+to utilize long-range cues, we seek to preservecontext-aware
+decodingwhile suppressing errors. This motivates a logit-level
+decoding strategy based on contrastive decoding, which down-
+weights tokens that remain highly probable under deliberately
+degraded audio conditions.
+3.2. Contrastive Decoding for ASR
+Contrastive decoding steers token selection by contrasting the
+model logits under a target (positive) generation process with
+those under a negative process. We adapt this principle to ASR
+by deriving the negative signal fromacoustically perturbedver-
+sions of the input waveform, rather than from a weaker model.
+Letxdenote an input waveform andg(·)a perturbation func-
+tion that produces ˜x=g(x). At decoding stept, given the
+previously generated tokensy <t, we compute logits using two
+forward passes of the same ASR model:
+ℓpos
+t =f θ
+ 
+x,y<t
+
+, ℓ neg
+t =f θ
+ ˜x,y<t
+
+(1)
+wherefθ(·)outputs a logit vector over the vocabulary. The con-
+trastive logits are then defined as:
+ℓCD
+t = (1 +α)ℓ pos
+t −αℓ neg
+t (2)
+whereα >0controls the contrastive strength. Token selec-
+tion is performed fromℓ CD
+t . This procedure is training-free: it
+requires no parameter updates and can be applied to any token-
+by-token generation ASR model at inference time.
+3.3. Perturbation Strategies
+We design three perturbation functions to instantiate a negative
+generation process for contrastive decoding. The key idea is to
+deliberately reduce or distort acoustic evidence so that the re-
+sulting logits reflect the model’s biases or tendencies rather than
+the true speech content.
+3.3.1. Gaussian Noise Injection
+The input waveformxis corrupted with additive Gaussian noise
+calibrated to a target signal-to-noise ratio (SNR). Specifically,
+805
+Table 1:Speech recognition results of Whisper-CD across different Whisper model variants.
+Model Method WER(%)↓Throughput
+CORAAL V oxPopuli Earnings22 TED-LIUM REV-16 Speed (tokens/s)↑RTF↓
+Large-v3 Baseline 208.76 44.95 520.94 66.42 173.69 30.6 0.2886
++CD 45.77 19.86 57.08 25.62 21.3827.3 0.1655
+Large-v3-Turbo Baseline 38.75 30.63 33.25 12.93 19.82 168.9 0.0239
++CD 14.43 25.71 16.16 10.11 14.81144.2 0.0346
+the corrupted waveform is ˜x=x+ϵ, whereϵ∼N(0,σ 2I)
+andσis chosen to achieve the target SNR. This acoustic cor-
+ruption makes local phonetic evidence unreliable while retain-
+ing the coarse acoustic structure, producing negative logits that
+represent the model’s behavior under reduced acoustic clarity.
+3.3.2. Silence Signal
+The input spectrogram is set to all zeros, which removes spec-
+tral structure entirely. Under this condition, the decoder behaves
+as if it is continuing the text with minimal acoustic evidence,
+revealing its unconditional textual prior. The resulting logits
+tend to emphasize silence-region hallucination patterns, includ-
+ing the “bag of hallucinations” phrases reported in prior analy-
+ses [2, 3].
+3.3.3. Audio Temporal Shift
+The input waveform is shifted leftward by∆ s seconds to cre-
+ate a controlled misalignment between acoustic content and the
+segment’s temporal position. Concretely, the first∆s seconds of
+audio are discarded, and the same duration is zero-padded at the
+end, so the decoder receives future audio content earlier than ex-
+pected. This temporal mismatch disrupts the alignment between
+the decoder’s prefix context and the local acoustics, producing
+negative logits that represent segment-boundary failure tenden-
+cies.
+3.4. Multi-Negative Contrastive Decoding
+To simultaneously address multiple long-form failure patterns,
+we combineKnegative signals (K=3) into a single decoding
+step. We aggregate the negative logits using a log-sum-exp op-
+erator with a temperatureτ:
+ℓCD
+t = (1 +ατ)ℓ pos
+t −ατlog
+ 1
+K
+KX
+k=1
+exp
+ 
+ℓneg
+k,t / τ
+
+.(3)
+whereℓ neg
+k,t denotes the negative logits obtained from thek-th
+perturbed input ˜xk. SettingK=1andτ=1recovers Eq. (2). A
+smallτconcentrates influence on the dominant negative (ap-
+proximating a max), while a largeτapproaches a smoother av-
+erage. We setτ=1.0, corresponding to the log-sum-exp aggre-
+gation, and varyα∈[0.5,2.0].
+3.5. Inference
+For efficiency, we compute encoder outputs for the clean input
+and allKperturbed inputs in a single batched forward pass.
+During autoregressive decoding, we compute all paths in paral-
+lel by packing them along the batch dimension, requiring only
+a single batched decoder forward pass per step while reusing
+the same prefix tokensy <t. Since Whisper-CD intervenes only
+at the logit level, it preserves the model’s existing capabilities,
+such as language identification and timestamp generation, and
+remains compatible with standard inference pipelines, includ-
+ing beam search and token-level constraints.
+4. Experimental Results
+4.1. Setup
+Datasets.We evaluate on five English long-form bench-
+marks covering diverse speaking styles and acoustic conditions.
+CORAAL [21] uses 14 recordings (11.5 h) from the VLD re-
+gion. Earnings22 [22] is a 13-file subset (14.3 h) from the full
+125-file corpus (∼120 h), selected at regular duration intervals
+(every 3rd file when sorted by duration) to ensure uniform cov-
+erage. V oxPopuli [23, 24] is a 50-file subset (1.4 h) from the
+long-form reconstitution of the test split, filtered for record-
+ings between 60 and 300 seconds and sampled at every 9th file.
+TED-LIUM [24, 25] uses the full long-form reconstitution test
+set (11 files, 3.1 h). REV-16 [1] uses 16 recordings (16.1 h).
+Inference Setup.We employ Whisper’s long-form pipeline
+with 30-second segments and previous-context passing enabled,
+matching the default configuration. We use greedy decoding un-
+less otherwise specified and disable the temperature fallback
+mechanism to isolate the effect of contrastive decoding.
+Models.We conduct experiments on two Whisper model sizes:
+Large-v3 and Large-v3-Turbo. Both variants reuse the same
+weights for all negative paths, which are computed jointly in
+a single batched forward pass (Section 3.5). All analysis exper-
+iments are conducted on Whisper Large-v3-Turbo.
+Perturbation hyperparameters.We set SNR dB = 10for
+Gaussian noise injection. Audio temporal shift applies a left-
+ward shift of∆s = 7s.
+Metrics.We report word error rate (WER, %↓) as the primary
+metric. To assess computational cost, we additionally report
+decoding throughput in tokens-per-second and real-time factor
+(RTF), measured on a single NVIDIA A100 80GB PCIe with a
+batch size of 1.
+4.2. ASR Performance and Inference Efficiency
+Table 1 shows that Whisper-CD reduces WER across all five
+long-form ASR benchmarks. Note that the Large-v3 baseline
+WER exceeds 100% on several datasets because repetition
+loops inflate the output length well beyond the reference. CD
+suppresses these repetitions, though the WER remains above
+Turbo’s baseline; we discuss this gap in Section 4.3. Figure 2
+shows qualitative examples of how CD eliminates repetition
+loops and non-speech hallucinations.
+Regarding throughput, CD introduces three additional de-
+coding paths, yet the reduction in total generated tokens can off-
+set this cost. For Large-v3, eliminating repetition loops lowers
+overall wall-clock time, improving RTF over the baseline. For
+Large-v3-Turbo, the additional paths incur a modest slowdown
+806
+... So tell me about growing up, what you remember about Atlanta, or when you 
+moved to Atlanta, why y'all moved to Atlanta. So tell me a little bit (x 16)
+…SotellmeaboutgrowingupwhatyourememberaboutAtlantaorwhenyou
+movedtoAtlantawhyy'allmovedtoAtlanta.So tell me a little bit about growing
+up in Atlanta. Well growing up in Atlanta you know me as a kid we did a lot of things
+that kids normally do
+...We must pay attention that this report should stay balanced and should not 
+reflect only onepolicy area like employment. Anyhow, effectiveness of the.
+EU law should be made (x 32)
+…Wemustpayattentionthatthisreportshouldstaybalancedandshouldnot
+reflectonlyonepolicylikeemployment.AnyhoweffectivenessoftheEU law
+should be made through correct implementation reducing burdens for the SMEs
+and tackling unnecessary gold planting
+BaselineProposed
+Figure 2:Qualitative examples on the same audio inputs. The baseline falls into repetition loops (red), while Whisper-CD breaks the
+loop and recovers the correct transcription (green).
+Table 2:Ablation on contrastive decoding strength (α). Setting
+α= 0corresponds to the baseline without CD.
+α WER(%)↓
+CORAAL Earnings22 TED-LIUM
+0.0 38.75 33.25 12.93
+0.5 26.5816.1611.19
+1.014.4317.70 11.65
+1.5 19.65 19.4410.11
+2.0 20.82 21.77 11.00
+Table 3:Ablation on three audio perturbation strategies.
+Strategy WER(%)↓
+CORAAL Earnings22 TED-LIUM
+Gaussian 38.11 19.50 12.49
+Silence 18.99 17.41 21.62
+Audio Shift 18.77 15.54 13.81
+that remains substantially faster than beam search (Table 4).
+4.3. Analysis
+Impact ofα.Table 2 shows the effect of the contrastive
+strengthα. Datasets with higher baseline WER generally ben-
+efit from stronger contrastive signals, while the cleaner TED-
+LIUM is sensitive to over-subtraction and degrades beyond
+α=1.5. Notably, all nonzeroαvalues improve over the base-
+line on CORAAL and Earnings22, indicating that CD is broadly
+robust for hallucination-prone speech recordings.
+Individual strategies.Table 3 compares perturbation strategies
+by using each as the sole negative. No single strategy con-
+sistently improves performance across all datasets; for exam-
+ple, silence degrades TED-LIUM to 21.62% despite improv-
+ing CORAAL. In contrast, the multi-negative combination (Ta-
+ble 1) achieves lower WER than the single-strategy variants on
+most datasets, suggesting that the proposed aggregation effec-
+tively leverages complementary negative signals.
+Effect of model scale.Despite its larger capacity, Large-v3
+yields substantially higher WER under CD than Large-v3-
+Turbo (45.77% vs. 14.43% on CORAAL). We hypothesize that
+this gap stems from differences in failure severity and decoder-
+driven error propagation. In particular, Large-v3 often enters
+deep repetition loops that can push the baseline WER above
+200%. Once such loops are established, logit-level contrast
+alone may be insufficient to consistently steer decoding back
+to a correct trajectory, because the model assigns overwhelm-
+ing probability mass to self-reinforcing continuations. More-
+over, when a previous-segment context is provided as a prefix, a
+Table 4:Comparison with beam search (beam size = 5).
+Method WER(%)↓Throughput
+CORAAL TED-LIUM Speed↑RTF↓
+Baseline 38.75 12.93 174.3 0.0246
++ Beam Search 22.65 17.50 99.0 0.0436
++CD14.43 10.11 147.0 0.0302
+stronger decoder may rely more heavily on that textual context,
+which can amplify the impact of earlier mistakes.
+Comparison to beam search.Table 4 compares CD with
+beam search (beam size 5). Beam search improves performance
+on CORAAL but degrades TED-LIUM, whereas CD achieves
+lower WER on both datasets with higher throughput, offering a
+more favorable accuracy-throughput trade-off.
+4.4. Discussion and Future Work
+Dynamicα.Since the optimalαdiffers across datasets and
+model sizes (Tables 1 and 2), predicting and adjustingαdy-
+namically per segment or per token would improve robustness
+on diverse acoustic conditions.
+Additional perturbations.Our multi-negative framework is
+not restricted to a fixed set of negatives; other audio transforma-
+tions, such as frequency masking, chunk shuffling, or temporal
+warping, could potentially serve as additional negative signals.
+Decoder-only ASR models.Recent decoder-only ASR mod-
+els [26, 27] process audio and text in a single stream, making it
+less straightforward to inject perturbed audio while preserving
+the text prefix. Adapting the negative path construction to such
+architectures is a natural next step, building on the precedent of
+visual contrastive decoding in vision-language models.
+5. Conclusion
+We proposed Whisper-CD, a training-free contrastive decod-
+ing framework for long-form speech recognition. Whisper-CD
+contrasts clean-audio logits against three acoustically motivated
+negative signals: Gaussian noise injection, silence signal, and
+audio temporal shift. This multi-negative formulation mitigates
+long-form failure patterns, including non-speech hallucinations,
+repetition loops, and content omissions without any parame-
+ter update. Experiments on five English long-form ASR bench-
+marks show consistent WER reductions across model configu-
+rations, with up to a 24.3 pp improvement on CORAAL, while
+adding only modest computational overhead relative to greedy
+decoding and remaining substantially faster than beam search.
+807
+6. Acknowledgments
+This work was supported by Institute of Information &
+communications Technology Planning & Evaluation (IITP)
+grant funded by the Korea government (MSIT) (RS-2019-
+II190421, Artificial Intelligence Graduate School Program
+(Sungkyunkwan University)).
+7. Generative AI Use Disclosure
+The authors used large language models, specifically ChatGPT
+(OpenAI) and Claude (Anthropic), to assist with proofreading
+and improving the clarity and fluency of the manuscript.

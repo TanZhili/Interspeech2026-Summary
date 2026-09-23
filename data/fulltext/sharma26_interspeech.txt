@@ -1,0 +1,556 @@
+Robust Language Identification Using Semi-positive Contrastive Learning
+Shubham Sharma1, Padmanabhan Rajan1
+1 School of Computing and Electrical Engineering, Indian Institute of Technology Mandi, India
+s23044@students.iitmandi.ac.in, padman@iitmandi.ac.in
+Abstract
+Conventionally, Spoken Language Identification is modeled as
+a speech-based language identification task, ignoring the impor-
+tance of text data. This work addresses the cross-corpora gen-
+eralization issue for the low-resourced spoken language identi-
+fication (LID) problem. We propose Semi-positive Contrastive
+Learning (SpCL), a robust framework for LID that addresses
+domain shifts without requiring explicit domain adaptation or
+generalization. Our method uses a bi-modal audio-text en-
+coder to map speech waveforms and phoneme-based text cap-
+tions into a shared embedding space. By introducing a novel
+semi-positive contrastive loss, SpCL distinguishes strong posi-
+tive pairs (same language and domain) from semi-positive pairs
+(same language, different domains) using a controlled weight-
+ing scheme. We experimented on 12 Indian languages using
+multi-domain datasets that demonstrate that SpCL outperforms
+strong acoustic and phonetic baselines, achieving superior ac-
+curacy on both seen and unseen test domains. Furthermore, we
+conducted ablation studies that confirm the benefits of semi-
+positive weighting and dynamic captions, with Whisper-based
+audio encoders delivering the best robustness under domain
+mismatch. 1
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Spoken Language Identification (LID) is the task of identify-
+ing the language in a given speech utterance. It plays an im-
+portant role in many downstream applications, including Auto-
+matic Speech Recognition (ASR), speaker recognition and veri-
+fication etc. Designing a good LID system is important because
+errors at this stage will propagate to later stages, reducing the
+overall performance of the final application.
+LID systems often suffer from the domain shift problem,
+where a model’s performance degrades when the test data
+comes from a different distribution than the training data. This
+also applies to large-scale, state-of-the-art models such as Whis-
+per [1] and Wav2Vec2.0 [2]. This issue is more severe for low-
+resource languages, which rely on small datasets with limited
+variation. As a result, models overfit to domain-specific acous-
+tic patterns such as recording conditions [3], [4].
+To address this problem, researchers have used Domain
+Adaptation (DA) or sometimes, Domain Generalization (DG).
+Researchers have explored various signal processing and ar-
+chitectural enhancements to extract domain-invariant features,
+such as the Wavelet Scattering Transform (WST) [5] to capture
+1Code is available athttps://github.com/
+HeisenBug-07/Interspeech2026_SpCL
+high-frequency details, or Flow-based Regularization [6] to fil-
+ter environmental noise. Others have employed techniques like
+V oice Conversion (VC) [7]. These methods aim to improve ro-
+bustness by limiting domain-specific variation in the acoustic
+signal.
+Recently, there has been a shift toward using textual and
+phonetic information as anchors for learning language features.
+Here, ananchorrefers to a fixed linguistic signal such as text or
+phoneme sequences that remains stable across speakers, chan-
+nels, and domains, and serves as a reference point to guide
+and constrain the learning of speech representations. Joint pre-
+training frameworks like mSLAM [8], MuSeLI [9] achieve this
+by combining speech-based w2v-BERT with text-based Span-
+BERT to learn cross-lingual representations through connec-
+tionist temporal classification (CTC) losses, while MAESTRO
+[10] utilizes an RNN-Transducer framework to strictly align
+speech and text sequences, ensuring the model represents spo-
+ken and written language within the same embedding space.
+This multimodal approach is more effective in zero-supervised
+settings, as seen in Maestro-U [11], which leverages byte-level
+text representations and language embeddings to train mod-
+els using only unlabeled data. The paradigm has been further
+refined through techniques like soft prompt tuning in CLEP-
+DG [12], which uses learnable text prompts to simulate di-
+verse acoustic environments, and feature splitting in SimM-
+MDG [13], which decomposes data into modality-shared and
+modality-specific components to separate core linguistic infor-
+mation from domain-specific noise. However, while these mul-
+timodal approaches improve representation, they often treat all
+same-language samples identically, failing to explicitly model
+the variance introduced by domain shifts.
+In this research, we propose robust language identification
+using Semi-positive Contrastive Learning (henceforth termed
+SpCL.) Our approach integrates a bi-modal audio-text encoder
+architecture to map acoustic and phonetic information into a
+shared embedding space. A key component of our approach is
+a novel semi-positive contrastive loss, which builds upon con-
+cepts like Supervised Contrastive Learning [14], [15], [16] and
+Proxy-based Learning [17], [18]. We introduce dynamic cap-
+tions from phoneme sequences to increase structural variation
+in the language representations. Moreover, we distinguish be-
+tween strong “positive” pairs (same language/same domain) and
+“semi-positive” pairs (same language/different domain) using a
+control weightα. This encourages the model to cluster sam-
+ples of the same language from diverse domains closely but not
+identically, enabling effective generalization to unseen environ-
+ments without requiring explicit domain adaptation.
+In the following sections, we first describe the bi-modal ar-
+chitecture and explain how static and dynamic captions affect
+the latent space. Next, we outline our datasets and experimental
+2640
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2502
+Audio 
+Encoder
+Text 
+Encoder
+Projection
+ 
+Layer
+Projection
+ 
+Layer
+ 
+P
+T
+L
+con 
+: 
+Semi-positive 
+Contrastive 
+loss
+L
+cls
+: 
+Cross-Entropy 
+Loss
+L
+total
+:  
+?
+L
+con 
++ 
+(1-
+?)
+L
+cls 
+Classifier
+Audio 
+Input
+Batch 
+of 
+9 
+text 
+and, 
+9 
+audio 
+embeddings
+Audio
+Audio
+Text
+Text
+Text 
+Input
+Figure 1:Bi-modal audio–text encoder with contrastive and
+classification losses. In the batch, colours indicate classes,
+same color in various shades represents different domains. In
+T, yellow=1, purple=0 and green=α
+setup, report our main results and discuss our findings. Finally,
+we provide an ablation study. These controlled experiments an-
+alyze the impact of differentαvalues and compare the effec-
+tiveness of static versus dynamic captions.
+2. Methodology
+2.1. Language identification via contrastive learning
+We formulate spoken language identification (LID) as a con-
+trastive representation learning problem, where audio and text-
+derived views of an utterance are embedded into a shared latent
+spaceZ=R 512. The dataset is defined as
+D={(x i,c i,y i,d i)}M
+i=1,
+wherex i denotes the audio waveform,c i the corresponding text
+caption,y i∈Ythe language label, andd i∈D dom the domain
+label. Audio and text inputs are encoded by modality-specific
+encoders followed by projection headsg a andg t that map both
+modalities intoZ.θ a andθ t are the parameters of the audio and
+text encoders, respectively.
+Standard contrastive learning uses binary weights [14],
+[16]. For each anchor, it pulls one positive closer and pushes
+all negatives away. This setup creates compact clusters when
+the anchor stays fixed. These compact clusters reduce variation
+within a class and can hurt generalization across domains.
+To address this, we introduce SpCL, where supervision is
+expressed through a target matrixT. For two samples(i,j),
+Tij =
+
+
+
+1, y i =y j, di =d j,
+α, y i =y j, di̸=d j,(0<α<1)
+0, y i̸=y j,
+This formulation distinguishes positives (same class, same do-
+main), semi-positives (same class, different domain), and neg-
+atives (different classes), allowing the model to bring together
+samples of the same language but different domains with re-
+duced strength.
+2.2. Architecture: bi-modal audio–text encoder
+Figure 1 shows the training architecture. The model has two
+branches: audio and text. The audio branch uses a pretrained
+audio encoder, of which the top encoder layers are fine-tuned.
+A small projection head maps audio features to a shared embed-
+ding space. The resulting audio embeddings also pass through
+a classifier. Similarly, the text branch uses a pretrained text en-
+coder, with the top layers fine-tuned. A matching projection
+c) 
+SpCL 
+with 
+Dynamic 
+Caption
+b) 
+SpCL 
+with 
+Static 
+Caption
+Anchor 
+class-3
++ve 
+Sample
+,     
+-ve 
+Sample
+Semi 
++ve 
+Sample
+Anchor 
+class-1
++ve 
+Sample
+,     
+-ve 
+Sample
+Semi 
++ve 
+Sample
+strong 
+pull 
+(+ve 
+sample)
+push 
+(-ve 
+sample)
+weak 
+pull 
+(semi 
++ve 
+sample)
+Anchor 
+class-2
++ve 
+Sample
+,     
+-ve 
+Sample
+Semi 
++ve 
+Sample
+a) 
+Traditional 
+Contrastive 
+Learning
+Figure 2:Comparison of contrastive learning schemes: (a) tra-
+ditional contrastive learning with binary positive–negative re-
+lations; (b) static-caption weighted contrastive learning intro-
+ducing semi-positive samples with weaker attraction; and (c)
+dynamic-caption weighted contrastive learning with more an-
+chors.
+head maps text features to the same embedding space as the
+audio.
+During training, audio and text embeddings are pooled
+within a mini-batch. As shown in Figure 1, the target matrix
+Tis constructed over each pair of audio-text embeddings, and a
+contrastive loss is applied over the predicted matrixP. This is
+defined as
+Lcon =− 1
+N
+NX
+i=1
+NX
+j=1
+Tij logp ij, p ij = exp(sij)P
+k exp(sik),
+wheres ij denotes the similarity between embeddingifrom one
+modality and embeddingjfrom the other modality,p ij are the
+scores in the predicted matrixP, andT ij are the corresponding
+values in the target matrix. This controls cluster compactness
+and improves domain generalization. Instance-level alignment
+within a batch has been shown to improve representation struc-
+ture and generalization by leveraging large numbers of implicit
+negatives [19], [20].
+The classification branch uses a cross-entropy loss:
+Lcls =−
+X
+c
+yc log ˆyc.
+The total loss, shown on the right side of Fig. 1, is defined as
+Ltotal =λL con + (1−λ)L cls,
+whereL con denotes the contrastive loss andL cls denotes the
+cross-entropy classification loss.λdecides the trade-off be-
+tween the classification objective and the contrastive objective.
+We setλ= 0.3in all experiments. It is to be noted that dur-
+ing inference, only the audio encoder and classifier branches are
+utilized; text inputs are required only during training.
+2.3. Static and dynamic captions
+We distinguishstaticanddynamiccaptions based on how the
+text captionc i is constructed.
+2641
+A static caption is independent of the utterance content. For
+an audio sample of languagel 1 from domaind 2, the caption
+is: “this audio clip is in languagel 1 and domaind 2.” All ut-
+terances from the same language–domain pair share the same
+caption and thus the same anchor. Under semi-positive con-
+trastive learning (Figure 2(b)), the anchor strongly pulls posi-
+tives, weakly pulls semi-positives, and pushes negatives. Al-
+though this relaxes binary constraints, samples are still clus-
+tered around a few centers, reducing within-language variation.
+This is consistent with findings that fixed class-level anchors or
+proxy-based objectives reduce intra-class variance by collaps-
+ing samples toward representative centers [18].
+In contrast, a dynamic caption is derived from the utterance
+itself, typically as a phoneme sequence [21]. Different utter-
+ances of the same language produce different captions and text
+embeddings, resulting in a more spread embedding space (Fig-
+ure 2(c)). Each anchor pulls its positives and semi-positives
+while pushing negatives, and these combined forces spread
+samples across a wider space.
+Geometrically, static captions pull samples toward a sin-
+gle center, reducing variance but risking collapse and weaker
+domain transfer. Dynamic captions distribute attraction across
+multiple anchors. Semi-positive weights bring samples from
+the same language but different domains closer without mak-
+ing them identical, suppressing domain effects while preserving
+phonetic structure.
+3. Experiments and Results
+This section describes the experimental setup and results. We
+analyze results in detail on an Indian language dataset, and addi-
+tionally evaluate the performance over larger standard datasets.
+3.1. Indian Languages Dataset
+We use a set of 12 Indian languages: Assamese, Bengali, In-
+dian English, Gujarati, Hindi, Kannada, Malayalam, Marathi,
+Odia, Punjabi, Tamil, and Telugu. These languages cover dif-
+ferent geographic regions but share many sounds, making them
+suitable for testing how well the model separates closely re-
+lated languages with limited training data. The speech sam-
+ples come from multiple corpora–EkStep,DatasetM 2, and
+IndicVoices, and are suitable for domain mismatch condi-
+tions. Table 1 gives an overview of the datasets.
+•Ekstep and DatasetM.Ekstep is a multi-domain broadcast
+and TV collection split intoekstep mdandekstep tv
+[22]. It includes audio from TV shows covering sports, tech-
+nology, religion, and education. DatasetM contributes two
+subdomains:rs(studio speech from All India Radio; at least
+15 speakers per language) andyt(YouTube recordings such
+as teaching videos, interviews, and vlogs) [23]. For training
+we groupekstep md,ekstep tv, andrs;ytis held out
+as an unseen test domain.
+•IndicVoice.This dataset contains 7,348 hours from 16,237
+speakers across 145 districts and 22 languages. About 9% is
+read speech, 74% is extempore, and 17% is conversational.
+Here we use a subset of the same 12 languages, and the
+indicVoicedataset is also held out as an unseen test do-
+main.
+2DatasetM : IIT Mandi dataset
+Table 1:Summary of datasets used in the experiments.
+Dataset Used for Type Files Duration
+Ekstep Train Multi-
+domain
+42,800 57.7h
+Train TV news 19,800 59.7h
+DatasetM Train Read
+speech
+22,300 64.1h
+Test YouTube 4,380 14.1h
+IndicV oice Test Multi-
+domain
+38,800 69.1h
+V oxlingua107 [24] Train Multi-
+domain
+2,101,255 5,483h
+V oxlingua33 Test Multi-
+domain
+1609 4.5h
+Training and evaluation: Indian language dataset.Train-
+ing uses only theseenpartitions: 80% of (ekstep md+
+ekstep tv+rs). Seen test sets are the complementary 20%
+splits from the same sources; they measure in-domain perfor-
+mance. Unseen test sets areytandindicVoice; they mea-
+sure out-of-distribution generalization under shifts in channel,
+topic, or collection method.
+3.2. Experiment Details
+3.2.1. Proposed Models
+The proposed SpCL contrastive framework is designed to align
+high-capacity audio encoders with a text-based semantic space.
+We utilise two distinct audio encoders to determine the impact
+of pre-training objectives on domain robustness.
+•SpCL w2v2: We utilize a phoneme-centric variant of
+wav2vec 2.0 [21] to extract dense phonetic features (392×
+time). To balance the preservation of universal phonetic rep-
+resentations with the need for domain-specific flexibility, we
+fine-tune the top four Transformer layers while keeping the
+lower convolutional layers frozen.
+•SpCL whisp: Given its weak supervision on vast multilin-
+gual data [1], Whisper provides a robust linguistic prior. We
+fine-tune the final two encoder blocks.
+Both audio encoders are fine-tuned with the train data in
+an end-to-end manner via the SpCL pipeline. The text encoder
+employs RoBERTa, following the CLAP architecture [14]. This
+encoder maps our static and dynamic captions (phoneme se-
+quences) into the shared embedding space. All encoders are
+followed by projection layers, as shown in Figure 1.
+3.2.2. Baseline Models
+To evaluate the effectiveness of semi-positive weighting and dy-
+namic captions, we compare our system against four baseline
+architectures:
+•B1: MFCC-Conformer: A standard end-to-end LID base-
+line using traditional MFCC features and a Conformer en-
+coder [25]. This represents a purely acoustic approach with-
+out phonetic or textual grounding.
+•B2: ConfPhoneme: This model utilizes phoneme poste-
+riors extracted from wav2vec2 phoneme [21] passed to a
+conformer. It tests whether explicit phonetic labels, in the
+absence of a contrastive framework, are sufficient to over-
+come domain shift. A data augmented version of this model
+(termed B2a) is also evaluated, to determine the effectiveness
+of data augmentation in handling domain shift. Augmenta-
+tion is done with noise and reverberation augmentation using
+2642
+MUSAN [26] and BUT RIR [27].
+•B3: Explicit Domain-Adapted Baseline: To establish an
+upper bound, we explicitly trained ConfPhoneme on the mis-
+matchedytdataset using gradient reversal layer (GRL) [28].
+This baseline measures how closely our SpCL approach can
+approach the performance of unsupervised domain adapta-
+tion (UDA.)
+•B4: WhisperEncoder: We fine-tuned last 4 layers of the
+Whisper-base encoder, pooled the outputs over time, and
+passed them through two fully connected layers with 256 and
+12 units, respectively. Fixed-length padding of 3,000 frames
+was applied. The purpose of this baseline is to evaluate the
+capability of the Whisper encoder.
+3.3. Results and Discussion
+Table 2 summarizes performance across seen and unseen test
+sets. Across most settings, the SpCL models outperform the
+baseline systems.
+Phoneme-based baselines (B2) perform better than MFCC
+on unseen data. This suggests that phoneme posteriors carry
+more stable language cues. Unsupervised domain adaptation
+(B3) and data augmentation (B2b) improve robustness on sig-
+nificantly. The best performing baseline (B4) uses the Whis-
+per encoder, drawing on it’s large-scale pre-training and fine-
+tuning. We conclude that Whisper is a model that overcomes
+domain shift to a large extent.
+The proposed SpCL models achieve strong generalization
+without explicit domain adaptation. SpCL w2v2, which aligns
+wav2vec2 phoneme with text using contrastive learning, im-
+proves accuracy on seen data. Its performance drops on In-
+dicV oice unseen data, which suggests sensitivity to larger shifts
+in domain and language distribution.
+SpCL whisp achieves the best results across all test sets.
+This indicates that as seen in B4, Whisper-based representa-
+tions capture more domain-invariant acoustic cues. Alignment
+with phonetic representations further strengthens this effect. All
+considered models struggle with the IndicV oice dataset.
+Table 2:Performance (in accuracy %) comparison across seen
+and unseen test sets.
+Model Seen DatasetM yt IndicVoice
+B1 (MFCC) 92.7 17.7 10.4
+B2a (ConfPhon.) 82.4 72.4 40.9
+B2b (ConfPhon augm.) 95.4 82.3 50.2
+B3 (UDA) 85.6 83.2 47.6
+B4 (Whisp.) 97.9 88.1 40.1
+SpCL w2v2 (dynamic) 97.5 67.49 34.33
+SpCL whisp (dynamic)98.76 91.42 54.52
+3.4. Other datasets
+We also train and evaluate on the standard V oxLingua dataset
+[24]. To create explicit domain information, we augment the
+train partition of V oxLingua (107 classes) with MUSAN and
+BUT RIR data. We evaluate the dev partition of V oxLingua
+(33 classes) using SpCL whisp both with static and dynamic
+captions. We compare results with the attentive pooling based
+MuSeLI [9]. Results in Table 3 show the competitive perfor-
+mance of the proposed methods.
+Table 3:Performance comparison on voxDev dataset.
+Model V oxlingua33
+SpCL whisp (Static) 92.5
+SpCL whisp (Dynamic) 93.0
+MuSeLI (Attentive Pooling)[9] 96.1
+3.5. Ablation Studies
+We ran experiments to analyze each component of the con-
+trastive loss, focusing on static versus dynamic captions and
+different semi-positive weightsα. We also evaluate standard
+contrastive learning without semi-positive weights (α= 0). We
+report ablation results on the EkStep and IndicV oice datasets in
+Table 4.
+In both caption settings, adding semi-positive labels im-
+proves performance over standard contrastive learning across
+most experiments. Whisper-based models perform better on all
+splits. Even with static captions, Whisper shows strong unseen
+results. Dynamic captions further improve performance, espe-
+cially on IndicV oice, with gains across all weight settings. This
+indicates that Whisper features handle domain shift well and
+benefit from added text variation.
+The semi-positive weight also influences performance.
+Moderate values, such asα=0.3 andα=0.5, achieve higher un-
+seen accuracy than hard positives alone. This trend is consis-
+tent across encoders and caption strategies. Lower weights give
+small gains, while very high weights show no consistent im-
+provement. A weight of 0.7 gives the best unseen accuracy.
+Overall, the results show that dynamic captions and semi-
+positive contrastive learning complement each other and im-
+prove SLID under domain mismatch.
+Table 4:Ablation of contrastive weights and caption strategies.
+Results shown in accuracy (%).
+Model Split α= 0 α= 0.5 α= 0.3 α= 0.7
+SpCL w2v2
+(static)
+Seen 94.97 97.82 97.57 97.43
+YT 57.21 63.08 62.99 62.01
+IV 28.68 30.92 30.98 32.08
+SpCL whisp
+(static)
+Seen 98.95 98.76 98.69 98.65
+YT 87.65 89.36 88.63 90.15
+IV 49.44 51.47 51.22 52.38
+SpCL w2v2
+(dynamic)
+Seen 96.79 97.53 97.39 97.50
+YT 64.51 67.14 64.87 67.49
+IV 32.21 33.47 33.00 34.33
+SpCL whisp
+(dynamic)
+Seen 99.00 98.77 98.84 98.76
+YT 90.58 88.53 89.19 91.42
+IV 51.55 53.11 52.12 54.52
+4. Conclusion
+The proposed SpCL method utilized information from the
+shared text-audio embedding space, resulting in better cross-
+domain performance. The use of dynamic captions along with
+Whisper encoder, along with semi-positive contrastive learning
+weights show tangible benefits. Unlike methods which use ex-
+plicit domain adaptation, SpCL implicitly brings domain invari-
+ance in its loss function. The current work uses only the audio
+encoder for inference; future work will attempt this in the joint
+embedding space.
+2643
+5. Acknowledgment
+This work was partially supported by the Ministry of Electron-
+ics and Information Technology (MeitY), Government of In-
+dia, under the National Language Translation Mission (NLTM)
+project.
+6. Generative AI Use Disclosure
+We used generative AI tools to paraphrase and improve the clar-
+ity of some sentences in this manuscript. All scientific content,
+ideas, analyses, and conclusions are our own. All authors re-
+viewed the final text and take full responsibility for the work.

@@ -1,0 +1,465 @@
+Whisper Hallucination Detection and Mitigation via Hidden Representation
+Steering and Sparse AutoEncoders
+Georgii Aparin1,2, Vadim Popov1,3, Tasnima Sadekova1,3, Assel Yermekova1
+1 AI Foundation and Algorithm Lab
+2 National University of Science and Technology MISIS
+3 National Research University Higher School of Economics
+aparingm@gmail.com
+Abstract
+Whisper, a widely adopted ASR model, is known to suffer
+from hallucinations — coherent transcriptions generated for
+non-speech audio entirely disconnected from the input. We in-
+vestigate whether hallucinations can be detected and mitigated
+through Whisper’s internal representations. We extract audio
+encoder activations and evaluate two representation spaces: raw
+Whisper activations and Sparse AutoEncoder (SAE) latents. We
+show that both spaces encode linearly separable hallucination-
+related information, with discriminative power concentrated in
+a sparse feature subset and increasing toward deeper encoder
+layers. We propose two steering strategies: activation-space
+steering and SAE latent-space steering. SAE-based steering re-
+duces hallucination rate from 72.63% to 14.11% for Whisper
+small and from 86.88% to 27.33% for Whisper large-v3 on the
+full non-speech test set, with small WER degradation on speech
+data, approaching the performance of fine-tuning-based meth-
+ods.
+Index Terms: Automatic Speech Recognition, Hallucinations,
+Whisper, Sparse AutoEncoder, Activation Steering
+1. Introduction
+Automatic Speech Recognition (ASR) is a speech processing
+task with a long history, evolving from classic machine learning
+algorithms such as hidden Markov models (HMMs) [1, 2] and
+finite-state transducers [3] to more accurate hybrid approaches
+combining HMMs with multi-layer perceptrons [4, 5]. Cur-
+rently state-of-the-art ASR algorithms are solely based on more
+sophisticated artificial neural networks trained on large speech
+corpora [6]. Moreover, now ASR models are used not only to
+solve this particular task in dedicated applications on devices
+[7], but also as an integral part of various speech processing
+pipelines [8, 9] composed of multiple modules and used to en-
+sure high quality of data provided for training speech LLMs
+[10, 11], the new frontier in speech communication between
+humans and top-notch chat-bots. As for dedicated ASR ap-
+plications, specific scenarios such as streaming [7, 12, 13] and
+long-form ASR [12, 14] are now considered more and more fre-
+quently.
+However, despite their superior performance compared to
+algorithms based on classic machine learning, neural-based
+ASR has been recently shown to suffer from the so-calledhal-
+lucinationssimilar to NLP models [15, 16]. Although there is
+no a common and well-agreed definition of what a hallucination
+of an ASR model is, we stick to a reasonable definition given
+in [17] suggesting that a hallucination is a “fluent and coherent
+outputs of neural models entirely disconnected from the input”.
+Such a definition allows for further classification of ASR hallu-
+cinations, but in this paper we consider their most popular type
+[18, 19], namely assigning coherent transcripts to non-speech
+segments.
+There are various possible ways of overcoming the men-
+tioned drawback of ASR models. They can roughly be catego-
+rized in several classes that are not mutually exclusive: applying
+pre-processing to the input speech by means of non-ASR mod-
+els [19], post-processing of text transcriptions [19] or interme-
+diate outputs of an ASR model [20], or fine-tuning specific neu-
+rons responsible for hallucinations [18]. In this paper, we con-
+sider one of the most popular ASR models called Whisper [6]
+and check the hypothesis that its intermediate hidden represen-
+tations can be used to predict whether the generated transcript
+is going to contain hallucinations. Then, we provide an efficient
+mechanism of fixing the hallucinations by means of steering the
+corresponding hidden representations or their respective activa-
+tions obtained from Sparse AutoEncoder (SAE) trained on these
+hiddens. Through extensive experiments, we demonstrate that
+both raw activations and SAE latent representations encode lin-
+early separable hallucination-related information, with classi-
+fication performance improving toward deeper encoder layers.
+We further show that SAE-based steering consistently outper-
+forms activation steering in hallucination reduction, achieving
+results competitive with fine-tuning-based methods without any
+modification of model parameters.
+Our main contributions can be summarized as follows:
+• We demonstrate that hallucination-prone inputs are linearly
+separable from non-hallucinating ones in both raw Whisper
+encoder activations and SAE latent representations, with dis-
+criminative information concentrated in a sparse subset of
+features and increasing toward deeper encoder layers.
+• We propose two fine-tuning-free steering strategies and show
+that SAE-based steering achieves consistent hallucination re-
+duction across all evaluated non-speech datasets and both
+model variants, approaching the performance of fine-tuning-
+based methods.
+• We provide a comprehensive empirical comparison across
+two Whisper model variants, multiple non-speech and speech
+datasets, and two languages, revealing consistent trade-offs
+between hallucination reduction and ASR metric preserva-
+tion under steering.
+2. Background
+In this section we briefly overview Sparse AutoEncoders and
+steering – two concepts we will extensively use for analysis of
+Whisper’s hallucinations and ways of fixing them.
+631
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1989
+2.1. Sparse AutoEncoders
+Sparse AutoEncoders (SAEs) are a class of neural network
+models originally developed in the context of mechanistic inter-
+pretability to decompose dense, polysemantic activation vectors
+into sparse, human-interpretable latent representations for NLP
+models [21, 22]. They were further adopted to image [23, 24]
+and audio [20, 25] domains. The key motivation is the super-
+position hypothesis: neural networks are believed to represent
+more features than they have dimensions by encoding multiple
+concepts in overlapping directions, which makes direct analy-
+sis of raw activations difficult. SAEs address this by projecting
+activations into a much higher-dimensional latent space while
+enforcing sparsity, encouraging each latent dimension to corre-
+spond to a single interpretable concept.
+Formally, given an input activationh∈R d, a SAE encodes
+it into a sparse latent representationz∈R m, wherem≫d,
+and reconstructs the original activation via a linear decoder:
+z=σ(W enc h+b enc), ˆh=W dec z+b dec
+whereσ(·)denotes a sparsity-inducing activation function (e.g.
+ReLU or TopK). The model is trained to minimize a combina-
+tion of reconstruction loss and a sparsity penalty on the latent
+activations:
+L=||h− ˆh||2
+2 +λΩ(z)
+whereλcontrols the trade-off between reconstruction fidelity
+and sparsity, andΩ(z)is a sparsity penalty term, typically the
+L1 norm||z|| 1 or a related regularizer depending on the specific
+SAE variant employed.
+2.2. Steering
+Activation steering is a technique for intervening on a neural
+network’s internal representations at inference time, with the
+goal of influencing the model output behavior in a controlled
+and targeted manner. The core idea is to identify a direction
+in the model’s activation space that corresponds to a desired
+behavioral change, and then add a scaled version of the vec-
+tor corresponding to this direction to the hidden states during
+the forward pass. This approach allows for direct manipulation
+of the model behavior without any modification to the model
+weights, making it a lightweight and fine-tuning-free alterna-
+tive to parameter-level interventions.
+Steering has been extensively studied in LLMs for senti-
+ment control, toxicity reduction, truthfulness improvement, and
+suppression of undesirable behaviors [26, 27, 28, 29], and has
+been extended beyond language to diffusion models [30] and
+audio generation [31]. The steering vector is typically derived
+as the difference between mean activations of two contrastive
+input sets, a method known as Contrastive Activation Addition
+(CAA) [29].
+More recently, steering has been extended to operate in the
+latent space of SAEs, offering a more interpretable and disen-
+tangled alternative to raw activation steering [32]. Rather than
+intervening on dense, polysemantic activation vectors, SAE-
+based steering targets individual sparse latent dimensions that
+have been identified as relevant to the behavior of interest, pro-
+viding finer-grained control over the model’s outputs.
+3. Methodology
+3.1. Whisper Hallucinations
+Whisper is a Transformer-based ASR model trained on a large-
+scale weakly supervised dataset of 680,000 hours of audio col-
+lected from the Internet. While this training paradigm en-
+ables remarkable generalization across languages, domains, and
+acoustic conditions, it also introduces a well-known failure
+mode: hallucinations. Since the training data is not manually
+curated, audio segments with no meaningful speech content
+(such as silence, background noise, or music) may be paired
+with arbitrary text transcriptions, leading the model to learn
+spurious correlations between non-speech inputs and fluent text
+outputs. As a result, Whisper tends to produce coherent but en-
+tirely fabricated transcriptions when presented with non-speech
+audio.
+To mitigate this behavior, Whisper employs an internal fil-
+tering mechanism based on two scalar quantities computed dur-
+ing inference. The first isno speech prob, the probabil-
+ity assigned by the model to a special<|nospeech|>token,
+which serves as an explicit indicator of whether the input seg-
+ment contains speech. The second isavg logprob, the aver-
+age log-probability of the generated tokens, which reflects the
+model’s overall confidence in the produced transcription. Seg-
+ments are suppressed whenno speech probexceeds a fixed
+threshold andavg logprobfalls below another threshold.
+However, this heuristic filtering is insufficient in practice: hallu-
+cinated outputs are often generated with high confidence, result-
+ing in elevatedavg logprobvalues, while the corresponding
+no speech probremains unexpectedly low — both condi-
+tions allowing the hallucinated segment to pass the filter unde-
+tected. This motivates the need for more principled approaches
+to hallucination detection and suppression.
+We define the Detection Rate (DR) as a general metric ap-
+plicable to both speech and non-speech data:
+DR(D) = 1
+|D|
+|D|X
+i=1
+I{pi <τ p ∨l i >τ l}(1)
+wherepandldenoteno speech probandavg logprobre-
+spectively,τ p andτ l are their corresponding thresholds, and
+I{·}is the indicator function. DR quantifies the fraction of sam-
+ples classified as speech-containing, and is used to derive the
+Hallucination Rate (HR): for non-speech data HR=DR, re-
+flecting the proportion of hallucinated outputs; for speech data
+HR= 1−DR, capturing the proportion of genuine speech sam-
+ples incorrectly suppressed. We will refer to non-speech sam-
+ples incorrectly identified by Whisper’s internal filters as speech
+as hallucinating samples.
+To ensure both effective hallucination reduction and reliable
+control over ASR performance, we collect representations from
+two complementary data sources. Non-speech data is used to
+analyze and steer the model’s behavior on hallucination-prone
+inputs, while speech data is used to monitor the impact of our
+interventions on the model’s transcription quality, measured via
+Word Error Rate (WER) for English and Character Error Rate
+(CER) for Chinese. This dual-data strategy allows us to opti-
+mize for hallucination suppression while preserving the model’s
+core ASR capabilities.
+3.2. Representations
+In this work, we consider two representation spaces for hallu-
+cination analysis: raw activations extracted directly from Whis-
+632
+per’s audio encoder, and sparse latent representations obtained
+from a SAE trained on those activations. The former pro-
+vides direct access to the model’s internal states, while the latter
+projects these representations into a higher-dimensional, over-
+complete basis under a sparsity constraint, yielding a disentan-
+gled decomposition that may expose structure not readily ap-
+parent in the dense activation space.
+3.2.1. Whisper Activations
+We collect internal representations the residual stream, captur-
+ing the hidden states after each layer’s residual addition. For-
+mally, leth l∈R T×d denote the residual stream activation at
+layerl, whereTis the sequence length anddis the model’s
+hidden dimension. These activations are aggregated across the
+temporal dimension with average pooling to obtain a fixed-size
+representation per audio segment.
+3.2.2. SAE Representations
+We adopt the SAE training methodology of [20], which trains
+SAEs across all encoder layers of Whisper on a diverse cor-
+pus of audio data. The resulting sparse latent representationsz
+capture acoustic, semantic, and paralinguistic information in a
+somewhat disentangled manner. To obtain fixed-size represen-
+tations, we aggregatezacross the temporal dimension via non-
+zero average pooling, computing the mean exclusively over ac-
+tive (non-zero) elements to preserve the sparsity structure. We
+use these representations as a complementary view to raw Whis-
+per activations for both hallucination classification and steering
+experiments.
+3.3. Classification
+Before proposing steering strategies, we first investigate
+whether Whisper’s internal representations encode sufficient in-
+formation to distinguish hallucination-prone inputs from non-
+hallucinating ones. This classification task serves as a neces-
+sary diagnostic step: if the representations carry discrimina-
+tive information about hallucinations, it validates the premise
+that targeted intervention in the activation space can meaning-
+fully reduce hallucination prevalence. Of particular importance
+is whether hallucinating and non-hallucinating samples form
+linearly separableclusters in the representation space, as lin-
+ear separability is a prerequisite for the effectiveness of linear
+steering methods: a reliable linear decision boundary implies
+the existence of a well-defined direction in the activation space
+along which the model’s behavior can be steered. To this end,
+we employ linear classifiers and evaluate their discriminative
+performance as a proxy for the linear structure of hallucination-
+related information in the representations.
+Classification is performed on diverse non-speech data,
+where ground-truth hallucination labels are assigned per sam-
+ple according to the DR rule defined in Section 3.1. As the pri-
+mary evaluation metric, we compute the AUC Score between
+the probability distributions assigned by the classifier to hallu-
+cination and non-hallucination classes, providing a threshold-
+independent measure of separability between the two groups.
+For SAE latent representations, the classification step serves an
+additional purpose: we exploit the classifier’s feature impor-
+tance scores to identify the top-kmost discriminative SAE la-
+tent dimensions, which are subsequently used to construct the
+steering mask for SAE-based intervention.
+3.4. Steering
+In this work, we apply both activation space steering and SAE
+latent space steering to Whisper’s audio encoder representa-
+tions, with the goal of suppressing hallucinations on non-speech
+inputs while preserving transcription quality on genuine speech.
+3.4.1. Whisper Activations Steering
+Activation steering is performed by computing a steering vec-
+torv∈R d from contrastive sets of Whisper encoder activations
+and adding a scaled version of it to the residual stream at a se-
+lected layerlduring inference. The steering vector is derived
+as the difference between the mean activations computed over
+a set of hallucinating samplesHand a set of non-hallucinating
+samplesN:
+v= 1
+|N|
+X
+i∈N
+h(i)
+l − 1
+|H|
+X
+i∈H
+h(i)
+l
+whereh (i)
+l ∈R d denotes the residual stream activation of sam-
+pleiat layerl. The resulting vectorvpoints in the direction that
+shifts representations away from the hallucination-prone regime
+toward the non-hallucinating regime in the activation space.
+At inference time, the steering intervention is applied by
+modifying the residual stream at layerlfor each input token
+positiont:
+˜h(t)
+l =h (t)
+l +α·v
+whereα∈Ris a scalar coefficient controlling the magnitude
+of the intervention, andvis the steering vector. A positiveα
+steers the representations toward the non-hallucinating direc-
+tion, while the magnitude ofαdetermines the strength of the
+intervention. The modified activation ˜h(t)
+l is then passed to the
+subsequent Transformer block, propagating the steering effect
+through the remainder of the encoder.
+3.4.2. SAE Representations Steering
+SAE-based steering operates directly in the sparse latent space
+rather than in the dense activation space. Given a sparse latent
+representationz∈R m obtained from the SAE encoder, we in-
+tervene on the latent dimensions identified as most discrimina-
+tive by the classifier, and then reconstruct the steered activation
+via the SAE decoder for injection back into the residual stream.
+Letβ∈R m denote the vector of feature importance scores
+obtained from the hallucination classifier, where positive values
+ofβ j indicate that thej-th latent dimension contributes posi-
+tively to the hallucination label. Since hallucinating samples
+are labeled as 1 and non-hallucinating samples as 0, a positive
+importance score corresponds to a feature that increases hallu-
+cination probability. We select the top-kmost representative
+features based on the absolute values ofβ, retaining only the
+kdimensions with the largest|β j|. Letβ topk denote the sparse
+vector containing thesekvalues and zeros elsewhere. To steer
+away from hallucinations, we define the steering direction as:
+s=−sign(β topk)∈{−1,0,1} m
+wheresis a sparse direction vector retaining onlyknon-
+zero entries, with the sign flipped to intervene against the
+hallucination-promoting direction.
+We further define ¯Z∈R m as the vector of average SAE
+latent activations computed over a reference dataset, which pro-
+vides a data-driven estimate of the typical activation magnitude
+633
+per latent dimension and is used to calibrate the scale of the
+intervention.
+We propose and compare two steering strategies. Thead-
+ditivemethod shifts the latent representation along the steering
+direction by a scaled offset:
+z′ =z+α·s⊙ ¯Z
+whereα∈Ris a scalar coefficient controlling the interven-
+tion strength, and⊙denotes element-wise multiplication. This
+formulation ensures that the magnitude of the additive shift is
+proportional to the typical activation scale of each latent dimen-
+sion, preventing disproportionate perturbations in dimensions
+with naturally small activations.
+Themultiplicativemethod instead scales the latent repre-
+sentation along the steering direction:
+z′ =z⊙α s
+whereα s denotes element-wise exponentiation of the scalar
+αby the entries ofs. Sinces∈ {−1,0,1} m, this oper-
+ation yields1/αfor dimensions wheres j =−1(suppress-
+ing hallucination-promoting features),αfor dimensions where
+sj = 1(amplifying non-hallucination-promoting features), and
+1for dimensions wheres j = 0(leaving unselected dimen-
+sions unchanged). The steered latentz ′ is then passed through
+the SAE decoder to reconstruct the modified activation ˆh′ =
+Wdec z′ +b dec, which is subsequently injected into the resid-
+ual stream in place of the original encoder activation.
+4. Experimental Setup
+4.1. Models
+We conduct all experiments on two Whisper model variants:
+Whisper small and Whisper large-v3. This choice is motivated
+by the desire to evaluate our proposed methods across models
+of substantially different scales, allowing us to assess whether
+the observed effects generalize beyond a single model size.
+For inference, we use greedy decoding with default Whis-
+per decoding options, setting temperature to zero and disabling
+beam search.
+For SAE inference, we use the corresponding AudioSAE
+Hugging Face checkpoints: Whisper small SAE 1 and Whisper
+large-v3 SAE2. We use the Batch-Top-kSAE architecture im-
+plementation released in the GitHub repository3.
+The SAE checkpoints use an expansion coefficient of 8 and
+k= 50. The expansion coefficient defines the ratio between
+the SAE latent dimensionmand the encoder hidden dimension
+d, yielding latent spaces of dimensionm= 8×768 = 6144
+andm= 8×1280 = 10240for Whisper small and large-v3
+respectively. The Top-kparameterk= 50enforces that exactly
+50 latent dimensions are active per token, providing a fixed and
+consistent sparsity level across all inputs and model variants.
+4.2. Dataset
+Our experimental setup relies on two different types of data:
+non-speech data, used for hallucination analysis, classifier train-
+ing and steering vector calculation, and speech data, used for
+monitoring ASR metric quality. The dataset splits are strictly
+1https://huggingface.co/Egorgij21/
+Audio-SAE-Whisper-small
+2https://huggingface.co/Egorgij21/
+Audio-SAE-Whisper-large-v3
+3https://github.com/audiosae/audio-sae
+Table 1:Overview of datasets used in experiments.
+Dataset Subset Type Split N Samples
+MUSAN Noise noise 930
+WHAM! tr 20000
+FSD50k dev Non-speech Train 40966
+FSD50k-filtered dev 38607
+FULL — 61896
+UrbanSound8K — 8732
+WHAM! cv / tt 8000
+FSD50k eval Non-speech Test 10231
+FSD50k-filtered eval 9127
+FULL — 26963
+LibriSpeech test-clean Speech (EN) 2620
+LibriSpeech test-other Speech (EN) 2939
+FLEURS en Speech (EN) Test 647
+FLEURS zh Speech (ZH) 945
+AISHELL-1 — Speech (ZH) 141600
+defined to prevent any leakage between training and evaluation:
+all classifiers are trained, steering vectors are computed, and
+steering hyperparameters are tuned solely on the non-speech
+train split, with ASR metrics monitored on speech data. The
+non-speech test split is reserved exclusively for final evaluation
+to assess the generalization of the proposed methods to unseen
+non-speech domains. A complete overview of all datasets used
+in our experiments is provided in Table 1.
+4.2.1. Non-Speech Data
+The non-speech train split comprises three datasets covering
+a wide variety of acoustic conditions: MUSAN [33] noise,
+WHAM! [34] training subset, and the development subset of
+FSD50k [35]. The non-speech test split consists of Urban-
+Sound8K [36], the validation and test subsets of WHAM!, and
+the evaluation subset of FSD50k. To ensure that no speech-
+like content contaminates the non-speech experiments, we ad-
+ditionally define FSD50k-filteredfor both splits as the subset of
+FSD50k obtained by removing all samples annotated with la-
+bels containingspeech,music, orhumancategories, resulting in
+3,463 retained samples in both train and test splits. We further
+defineFULLtrain and test datasets as the union of all samples
+from the respective non-speech splits, where the unfiltered ver-
+sion of FSD50k is used.Fulldatasets contain 61896 and 26963
+samples for train and test respectively.
+4.2.2. Speech Data
+All speech data is used to evaluate the impact of our steering
+interventions on ASR performance. For English, we use Lib-
+riSpeech [37] test-clean and test-other and the English subset
+of FLEURS [38]. For Chinese, we use the Chinese subset of
+FLEURS and AISHELL-1 [39]. We evaluat transcription qual-
+ity via WER and CER for English and Chinese respectively.
+4.2.3. Distributions
+To gain insight into the hallucination behavior of both Whisper
+variants across the collected datasets, we analyze the joint dis-
+tribution of the two internal filtering parameters:avg logprob
+andno speech prob. Following the default thresholds used
+in the original Whisper inference code, we setτ l =−1.0for
+avg logprobandτ p = 0.6forno speech prob, defining the
+hallucination region as samples satisfying Equation 1 for non-
+634
+Table 2:Hallucination Rate (HR, %) per dataset and model
+variant, computed on train and test splits of non-speech data.
+Dataset Whisper small Whisper large-v3
+T

@@ -1,0 +1,510 @@
+AudioGround: Fine-Grained Temporal Grounding in Audio via Deterministic
+Boundary Supervision
+Mingi Kim ID 1,∗, Minchol Kwon ID 1,∗, Junyeong Kim ID 1,∗∗
+1 Department of AI, Chung-Ang University, Seoul, Republic of Korea
+mingi8233@cau.ac.kr, welchs3576@cau.ac.kr, junyeongkim@cau.ac.kr
+Abstract
+Current Large Audio Language Models (LALMs) can describe
+the sounds present in audio but cannot localize their occur-
+rence—a critical gap for applications. Prior efforts to add tem-
+poral reasoning either rely solely on coarse multi-choice dis-
+tinctions or depend on LLM-inferred timestamps whose accu-
+racy is unverifiable. We address this with a time-aware audio
+instruction-tuning dataset, AudioGround-IT, that provides de-
+terministic boundary supervision, yielding 49.9K instructions
+over 835 hours of audio across four temporal tasks. To lever-
+age this supervision for temporal grounding in LALMs, we pro-
+pose AudioGround, a lightweight extension of SALMONN that
+uses a sliding-window Q-Former to compress encoder features
+and receives timestamp conditioning and absolute time em-
+beddings. Evaluations on multiple temporal grounding bench-
+marks show that AudioGround substantially outperforms prior
+LALMs, demonstrating that deterministic boundary supervision
+transfers effectively to real-world audio.
+Index Terms: temporal audio grounding, audio moment re-
+trieval, large audio language models, boundary supervision
+1. Introduction
+Large Audio Language Models (LALMs) have demonstrated
+remarkable capabilities across a range of audio understanding
+tasks, from captioning and classification to open-ended ques-
+tion answering [1, 2, 3, 4, 5]. Yet in many real-world scenarios,
+understanding which sounds are present is only half the prob-
+lem; knowing when they occur is equally critical [6]. A secu-
+rity system must pinpoint the exact moment a window shatters
+within hours of surveillance audio; a meeting assistant must
+locate when a decision was made in a lengthy recording. De-
+spite its practical importance, current LALMs struggle with this
+fine-grained temporal grounding. They can describe an acoustic
+scene holistically, but when asked, “When does the dog bark?”,
+they either respond vaguely or provide inaccurate time bound-
+aries.
+Prior work has addressed temporal localization in audio
+through various angles. A Sound Event Detection (SED) sys-
+tem can localize events, but it assumes a fixed closed vocab-
+ulary [7, 8]. Audio Moment Retrieval (AMR) extends this to
+natural language queries over minute-long audio [9], yet it is
+typically implemented as a task-specific pipeline rather than
+as a capability embedded in general-purpose LALMs. A re-
+cent line of work has begun injecting temporal reasoning into
+LALM training, but the supervision remains insufficient for
+fine-grained grounding. Existing approaches either cast tem-
+*These authors contributed equally.
+**indicates the corresponding author.
+Figure 1:Existing temporal supervision for LALMs is either
+coarse or unverified (top). We construct deterministic boundary
+annotations across four tasks (bottom left) and achieve com-
+parable performance to 267K-sample baselines with only 49K
+samples (bottom right).
+AudioGround(Ours)
+4x fewer
+samples
+Audio 
+Flamingo2
+TimeAudio
+AudioSkills
+Q: When does the dog bark?
+(a) Beginning (b) Middle (c) End
+AQA-Te m p
+Q: When does the dog bark?
+A: “The dog barks at around 3 seconds”
+Existing Temporal Supervision: Coarse & Unverified
+Ours: Fine-grained & Deterministic
+(A) Grounding
+Q: When does ‘the dog barking’ occur?
+A: The given query occurs at 20 -30 seconds.
+(B) Duration
+Q: How long does ‘the dog barking’ last?
+A: It lasts 9 seconds from 0 -15 seconds.
+(C) Frequency
+Q: How many times does ‘the dog barking’ occur?
+A: It occurs 2 times, at 11 –20 seconds, and …
+(D) Ordering
+Q: Which sound event occurred first, ‘the dog barking’ or …?
+A: ‘The dog barking’ … , at 24 -30 seconds,… Training Samples
+R1@0.7 on UnAV-100 subset
+poral questions as multi-choice problems without boundary la-
+bels [4], rely on LLM-inferred captions whose accuracy is hard
+to verify [10]. Even when architectures explicitly target fine-
+grained grounding [11], the training signal remains limited, in-
+herited from short-clip labels [12] or caption-style supervision
+with limited temporal precision [13]. In short, the bottleneck is
+not the amount of temporal data a model sees, but whether each
+sample provides a precise, verifiable grounding signal. Figure 1
+summarizes this gap.
+In this paper, we aim to equip LALMs with fine-
+grained temporal grounding capabilities by leveraging dedi-
+cated instruction-tuning data with deterministic labels. We con-
+struct AudioGround-IT, a time-aware audio instruction tuning
+(IT) dataset, whose core principle is boundary supervision:
+given a natural-language query and an audio clip, the model
+must output exact start and end timestamps. The dataset is con-
+structed using a controlled synthesis pipeline that concatenates
+AudioCaps [14] clips to generate longer audio with determin-
+istic event boundaries, ensuring ground truth accuracy without
+relying on LLM-generated captions or timestamps. Beyond the
+primary grounding task, we include three tasks — duration es-
+timation, event ordering, and frequency counting — that re-
+quire the model to use the same boundary information under
+varying reasoning demands, thereby reducing the risk of learn-
+ing shortcuts tied to any single question format. To handle the
+resulting audio inputs effectively, we introduce a lightweight
+architectural modification to SALMONN [15] that extends Q-
+Former [16] with sliding-window compression and absolute
+time embedding, thereby preserving temporal resolution.
+Our central question is whether fine-grained supervision
+887
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3467
+improves temporal grounding. To answer this, we evaluate on
+established temporal grounding benchmarks [9, 17] and assess
+whether grounding performance generalizes beyond the syn-
+thetic training distribution to real-world audio. Our contribu-
+tions are as follows: (1) a time-aware audio instruction tuning
+dataset that provides direct boundary supervision for tempo-
+ral grounding; (2) AudioGround, a simple architectural exten-
+sion of SALMONN with temporal awareness components; and
+(3) empirical evidence that fine-grained grounding supervision
+substantially improves LALM temporal localization on multi-
+ple benchmarks compared to existing approaches.
+Table 1:Features of existing audio temporal dataset and
+AudioGround-IT.
+Dataset Response Boundary Query # Tasks Train
+Type Sup. Source Size
+AudioSkills [4] Multi-choice✗Template 4 188k
+AQA-Temp [10] Free-text✗GPT-4 5 16k
+Clotho-Moment [9] Timestamp✓Human 1 33k
+CASTELLA [18] Timestamp✓Human 1 1k
+AudioGround-ITFree-text + Timestamp✓Human 4 49k
+2. Audio Temporal Grounding
+Temporal grounding aims to localize the time interval rele-
+vant to a natural-language query within an untrimmed record-
+ing [19]. In the video domain, this task has been extensively
+studied as moment retrieval [20, 21], and recent Video LLMs
+incorporate timestamp tokens and time-aware instruction tuning
+to improve boundary prediction [22, 23, 24]. In audio, temporal
+localization has primarily been addressed through sound event
+detection [7, 8, 25], which predicts boundaries for a fixed vocab-
+ulary of event classes. Audio moment retrieval (AMR) [9, 18]
+extends to open-vocabulary queries, but these methods remain
+task-specific pipelines separate from general-purpose LALMs.
+Recent works have begun incorporating temporal understand-
+ing into LALM training [4, 10]. However, neither provides the
+direct boundary supervision needed for fine-grained temporal
+grounding.
+3. AudioGround-IT
+We construct our dataset with a controlled synthesis pipeline
+to equip LALMs with fine-grained temporal grounding capa-
+bilities. Table 1 summarizes the key differences from existing
+audio temporal datasets.
+3.1. Data Overview
+Our key principle is that, regardless of the question type, the
+model must answer with explicit start-end timestamps[t s,t e]
+or a set of such intervals. By repeatedly learning to localize ev-
+idence segments in the audio, the model is encouraged to in-
+ternalize “what happens when” reasoning rather than producing
+ungrounded free-form text. The dataset comprises four temporal
+tasks:Grounding(localizing a queried sound event),Duration
+(estimating its temporal span),Frequency(counting occur-
+rences), andOrdering(inferring precedence by grounding both
+events). The resulting dataset comprises 49.9K instruction-
+tuning samples totaling over 835 hours of audio. Detailed per-
+task statistics are summarized in Table 2. Despite differing rea-
+soning requirements, all four share a unified output: the tem-
+poral interval(s)[t s,t e]that support the answer. This consistent
+supervision target provides steady training pressure toward tem-
+poral localization across diverse temporal phenomena.
+Table 2:Dataset statistics by task category.
+Grnd. Dur . Ord. Freq. Total
+# Samples 16.2K 15.2K 9.3K 9.1K 49.9K
+Avg. audio length (s) 56.5 56.0 66.5 67.7 60.3
+Avg. query words 14.5 14.5 21.5 16.2 16.2
+Total audio (hours) 252.7 235.8 175.6 171.2 835.6
+Figure 2:Distribution of audio lengths and normalized answer
+positions in AudioGround-IT.
+20 - 40 40 - 60 60 - 90 90 - 120
+0
+10
+20
+30
+27.0% 26.7%
+21.6%
+24.7%
+0.0 - 0.2 0.2 - 0.4 0.4 - 0.6 0.6 - 0.8 0.8 - 1.0
+0
+10
+20
+30
+21.1%
+26.1%
+16.7%
+26.4%
+9.7%
+Audio Length(s) Normalized Answer Position
+Distribution (%)
+While grounding is the primary evaluation goal, the three
+auxiliary tasks require the model to reason about the same
+boundary information in distinct ways, preventing it from over-
+fitting to a single question pattern.
+3.2. Data Construction
+Source and query design.We build the dataset on the Audio-
+Caps [14] training split, using its human-written captions di-
+rectly as natural language queries.
+Clip composition.Each AudioCaps sample (∼10 s) serves as
+an atomic building clip. We concatenate multiple clips with
+short silence gaps (0.3-0.5 s) to construct audio samples rang-
+ing from 20 to 120 seconds. Since we control the concatenation
+order, every event boundary is deterministically known from the
+construction process, requiring no post-hoc annotation.
+A key concern in composition is semantic ambiguity: if
+two co-occurring clips describe similar events, the model can-
+not learn to distinguish them as separate targets. Therefore, we
+compute sentence embeddings for all captions using Sentence-
+BERT [26], and apply a cosine similarity thresholdτto govern
+clip pairing. Filler clips within the sample must satisfy pairwise
+similarity belowτ, ensuring that non-target events remain easily
+distinguishable. Conversely, when constructing a longer target
+span from multiple clips, we select clips with similarity above
+τso that the composed segment is semantically coherent. We
+setτ= 0.33, corresponding to approximately one standard de-
+viation above the mean of the pairwise similarity distribution
+(µ= 0.21,σ= 0.12).
+Bias Control.Temporal grounding models are sensitive to dis-
+tributional biases in training data [27, 28]. We control two
+sources of bias at the dataset level. For temporal position, we
+divide the normalized answer onset into five equal bins and bal-
+ance sample counts across them, preventing the model from de-
+faulting to early or late segments. For length, we similarly strat-
+ify total audio lengths and answer span durations into prede-
+fined bins and sample them approximately uniformly to reduce
+overfitting to a narrow duration range. As shown in Figure 2
+(left), this yields an almost uniform distribution of total audio
+lengths across four bins, except the last one.
+4. AudioGround
+AudioGround-IT requires models to process long audio while
+preserving fine-grained temporal boundaries, motivating a time-
+aware architecture. We build our model AudioGround upon
+888
+Figure 3:Data synthesis pipeline (left): AudioCaps clips are concatenated with silence gaps to produce 20-120 s audio with determin-
+istic event boundaries, supporting four temporal QA tasks. AudioGround architecture (right): a time-aware Q-Former compresses long
+audio with implicit temporal conditioning. Then, absolute time embeddings are added to provide explicit temporal information.
+“People clapping”“Birds chirping” “Water running”“Water flushed”
+Concatenation
+Synthesized Long Audio (20-120s)
+Time (s)
+Silence gap
+Ground-Truth Boundary
+5.7 12.512.8 20.821.0 30.530.7
+……
+36.7
+0.0
+… …
+Text 
+Instruction Prompt
+Frame-level interpolation
+Whisper
+Encoder
+BEATs
+Encoder
+Time-aware 
+Q-Former
+Absolute 
+time embedding
+❄
+❄
+🔥Q-Former
+“from 0.0 –0.33”
+TE: “0.165seconds”
+🔥
+🔥
+Large Language Model
+❄
+🔥Q-Former
+“from 0.33–0.66”
+TE: “0.495 seconds”
+🔥
+🔥
+ 🔥Q-Former
+“from 0.66–0.99”
+TE: “0.825 seconds”
+🔥
+🔥
+Beats feature
+Whisper feature Tuned parameters
+Element-wise addition
+Audio embedding
+Text embeddingFrozen parameters
+❄
+🔥
+LoRA
+🔥
+Fine-Grained Temporal Grounding QA
+Durationestimation,Eventordering, Frequency counting and Grounding
+SALMONN [15] and introduce temporal awareness through
+three components: (i) time-level interpolation to align frame-
+level features from multiple encoders on a shared temporal grid;
+(ii) a time-aware Q-Former that performs sliding-window com-
+pression conditioned on textual timestamps; and (iii) an abso-
+lute time embedding that explicitly injects continuous temporal
+information into the compressed representations.
+4.1. Frame-level Interpolation
+AudioGround employs a dual-encoder setup consisting of a
+Whisper speech encoder and a BEATs audio encoder, both
+operating at 50Hz. For long audio, inputs are split into non-
+overlapping 30-second chunks, encoded independently, and
+concatenated along the temporal axis, yielding
+ D
+30
+
+×1,500
+frame-level features for aD-second input.
+Since Whisper and BEATs may produce different frame
+counts for the same audio, we linearly interpolate BEATs fea-
+tures to match the Whisper frame length, ensuring frame-level
+alignment before subsequent processing.
+4.2. Time-aware Q-Former
+As the concatenated encoder representationZgrows linearly
+with audio length and is computationally expensive for direct
+LLM consumption, we adopt a sliding-window Q-Former for
+local temporal compression and temporally aware window-level
+representations.
+Sliding Window CompressionA window ofW sec seconds
+slides overZwith strideS sec, producingLwindows for aD-
+second audio. Within each windowl, a fixed set ofN Q learn-
+able query tokensQcross-attend to the local encoder frames
+Zl, yieldingN Q compressed tokens per window andL×N Q
+tokens in total. The compression rate remains constant regard-
+less of audio duration, ensuring that longer inputs do not suffer
+disproportionate information loss.
+Timestamp ConditioningSliding-window compression alone
+does not provide the Q-Former with information about the abso-
+lute temporal location of each window. To incorporate such tem-
+poral awareness, we condition the Q-Former on textual times-
+tamp descriptions. For windowl, we generate a textual times-
+tamp descriptiont l, defined as“This segment is froms l toe l
+seconds, ”wheres l = (l−1)S sec ande l =s l +W sec.
+This string is tokenized and provided to the Q-Former as ad-
+ditional text input alongside the learnable query tokens, follow-
+ing the approach of TimeChat [23]. As a result, the Q-Former
+produces time-aware query representations at the window level.
+4.3. Absolute Time Embedding
+Building on the time-aware Q-Former, which implicitly cap-
+tures temporal information via timestamp-conditioned queries,
+we further introduce an explicit absolute time embedding. This
+embedding provides a continuous, global temporal reference
+and is added to each window’s output tokens. Specifically, for
+windowlwith start times l and durationW sec, the center time is
+defined asc l =s l +W sec/2. We compute ad LLM-dimensional
+hybrid time embedding forc l.
+The sinusoidal base follows standard positional encod-
+ing [33]:
+TEsin(c)2k = sin(ω kc),TE sin(c)2k+1 = cos(ω kc),(1)
+whereω k = 10000−2k/dLLM fork∈[0, dLLM
+2 −1].
+To allow lightweight adaptation of the fixed sinusoidal time
+encoding to downstream temporal grounding tasks, we apply a
+zero-initialized residual MLP with SiLU activation (σ) directly
+on top of the sinusoidal base:
+TEhybrid(c) = TE sin(c) +W 2σ(W 1 TEsin(c) +b 1) +b 2,
+(2)
+whereW 1,W 2∈R dLLM×dLLM. Due to the zero initialization
+ofW 2 andb 2,TE hybrid initially reduces to the pure sinusoidal
+embedding and gradually learns adaptations.
+This embedding is shared across allN Q query tokens
+within a window and is additively injected into the projected
+outputH l using a learnable time-embedding scaling factorβ:
+H′
+l =H l +β·TE hybrid(cl).(3)
+5. Experiment
+5.1. Implementation Detail
+We fine-tune our AudioGround model on AudioGround-IT for
+6K steps with an effective batch size of 24 across 8 NVIDIA
+A6000 (48GB) GPUs. The Whisper and BEATs encoders
+889
+Table 3:Retrieval performance on three datasets under Original and Clipped settings. AM-DETR is evaluated in a supervised setting,
+while all LALMs are evaluated in zero-shot setting. Bold values indicate the best performance among LALMs for each column.
+Model
+Clotho-Moment UnA V-100 subset TUT-Sound Events 2017
+Original Clipped Original Clipped Original Clipped
+R1@0.5 R1@0.7 R1@0.5 R1@0.7 R1@0.5 R1@0.7 R1@0.5 R1@0.7 R1@0.5 R1@0.7 R1@0.5 R1@0.7
+AM-DETR [9] 87.50 81.86 57.96 29.40 61.00 39.00 40.00 19.00 14.42 5.77 13.46 6.73
+LALMs
+Qwen2-Audio-Instruct [29] 0.86 0.22 0.99 0.25 4.11 2.74 12.50 4.17 3.88 0.47 11.11 5.56
+Qwen2.5-Omni [30] 8.60 1.27 9.84 2.90 9.80 1.9626.00 14.004.48 2.06 2.92 1.12
+GAMA [31] 0.09 0.00 0.08 0.02 1.01 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+DeSTA2.5-Audio [32] 10.06 4.02 11.75 7.61 20.37 11.11 2.17 0.00 2.31 1.858.70 8.70
+SALMONN [15] 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00
+AF2 [4] 4.51 1.43 3.11 0.97 3.41 1.14 0.90 0.30 7.32 2.44 6.10 1.12
+Ours 27.47 12.68 43.22 14.76 23.23 14.1421.21 12.1210.78 4.904.90 1.96
+are frozen throughout training. We use non-overlapping 0.33-
+second sliding windows with a single query token per window.
+We optimize the window-level Q-Former and the linear projec-
+tion layer, while adapting the frozen LLM via LoRA [34] mod-
+ules with rank 32 (α= 64). Training is performed using the
+AdamW [35] optimizer with a learning rate of3×10 −5 and
+0.1K warmup steps. We initialize the learnable time-embedding
+scaling factorβto0.05.
+5.2. Datasets
+We evaluate on three benchmarks from prior work [9], Clotho-
+Moment, UnA V-100 subset, and TUT-Sound Events 2017.
+Since most LALMs can process only up to 30 seconds, we con-
+struct the clipped setting by extracting a 30-second segment that
+contains the ground-truth interval, enabling a fairer zero-shot
+evaluation. To avoid additional temporal biases, we clip each
+recording to 30 seconds by preserving the ratio of the answer
+position to the total audio length, so that the clipping process
+does not shift the answer toward a particular temporal region.
+5.3. Evaluation
+We adopt Recall1 (R1) as the primary metric, measuring
+whether the Intersection over Union (IoU) between the top-
+predicted segment and the ground truth exceeds a threshold
+θ∈{0.5,0.7}[9, 21]. Since LALMs generate free-form text
+rather than structured tuples, we apply heuristic parsing rules to
+extract predicted timestamps from the model’s responses [23].
+Outputs may contain varied phrasings, units, or extraneous text;
+our parser handles these variations to ensure consistent metric
+computation across all models.
+5.4. Overall Result
+Table 3 shows that AudioGround consistently achieves the best
+zero-shot moment retrieval among LALMs across all three
+benchmarks in the original setting. Existing LALMs largely fail
+at this task; for example, SALMONN fails to follow the ground-
+ing instruction, resulting in near-zero retrieval performance and
+indicating a lack of temporal grounding ability. The clipping
+setting can boost some baselines by shortening the temporal
+search space, but the effect is consistent across models, sug-
+gesting limited robustness. While AM-DETR remains a strong
+upper bound, AudioGround substantially narrows the gap in a
+zero-shot setting.
+Table 4:Ablation study of absolute time embedding variants un-
+der a timestamp-conditioned Q-Former. Absolute time embed-
+dings improve performance over timestamp-only conditioning,
+and the proposed hybrid embedding (ATE h) consistently out-
+performs sinusoidal and learned variants. The best scores in
+each column are bolded.
+Setting Clotho-Moment UnA V-100 subset TUT-SE2017
+R1@0.5 R1@0.7 R1@0.5 R1@0.7 R1@0.5 R1@0.7
+SALMONN 2.30 0.00 11.00 0.00 0.00 0.00
++ FI + Timestamp 26.65 12.33 18.18 11.11 7.84 1.96
++ FI + Timestamp + ATEs 26.82 11.9923.23 14.149.80 4.90
++ FI + Timestamp + ATEl 25.41 10.57 20.2014.148.82 3.92
++ FI + Timestamp + ATEh (Ours)27.47 12.68 23.23 14.14 10.78 4.90
+5.5. Ablation
+As seen in Table 4, incorporating absolute time embed-
+dings improves performance compared to using a timestamp-
+conditioned Q-Former alone. We further compare three abso-
+lute time embedding variants for timet∈R: (i)Sinusoidal:
+ATEs(t) = [sin(ω kt),cos(ω kt)]d/2
+k=1, whereω k follows the
+standard Transformer formulation; (ii)Learned:ATE l(t) =
+MLP(t); and (iii)Hybrid (Ours):ATE h(t) = ATE s(t) +
+ϕ(ATEs(t)), which adds a lightweight learnable residual on
+top of the sinusoidal encoding.
+Compared to sinusoidal embeddings, the hybrid design
+augments them with a lightweight learnable residual, enabling
+task-specific adaptation and yielding consistent performance
+gains across benchmarks. Conversely, directly encoding times-
+tamps with an MLP treats time more discretely, making it less
+effective at capturing continuous temporal relationships.
+6. Conclusion
+We present AudioGround-IT, a time-aware instruction-tuning
+dataset with deterministic boundary supervision across four
+temporal tasks, and AudioGround, a lightweight temporal ex-
+tension of SALMONN that combines timestamp conditioning
+with absolute time embedding. With only 49.9K samples, Au-
+dioGround substantially outperforms all prior LALMs on zero-
+shot moment retrieval across three benchmarks, demonstrating
+that deterministic segment supervision is the key bottleneck for
+temporal grounding in LALMs.
+890
+7. Acknowledgments
+This work was partially supported by the Institute of Infor-
+mation & Communications Technology Planning & Evalua-
+tion(IITP) grant funded by the Korea government(MSIT) [RS-
+2026-25523056] and partially supported by the Institute of In-
+formation & Communications Technology Planning & Evalua-
+tion (IITP) grant funded by the Korea government (MSIT) [RS-
+2021-II211341, Artificial Intelligence Graduate School Pro-
+gram (ChungAng University)].
+8. Use of Generative AI Disclosure
+Generative AI tools (Claude, ChatGPT) were used to edit and
+polish the manuscript. All scientific content, experimental de-
+sign, and results were produced by the authors.
+9. References
+[1] W. Chen, Z. Ma, X. Li, X. Xu, Y . Liang, Z. Zheng, K. Yu, and
+X. Chen, “Slam-aac: Enhancing audio captioning with paraphras-
+ing augmentation and clap-refine through llms,” inICASSP 2025-
+2025 IEEE International Conference on Acoustics, Speech and
+Signal Processing (ICASSP). IEEE, 2025, pp. 1–5.
+[2] R. Huang, M. Li, D. Yang, J. Shi, X. Chang, Z. Ye, Y . Wu,
+Z. Hong, J. Huang, J. Liuet al., “Audiogpt: Understanding and
+generating speech, music, sound, and talking head,” inProceed-
+ings of the AAAI Conference on Artificial Intelligence, vol. 38,
+no. 21, 2024, pp. 23 802–23 804.
+[3] Z. Kong, A. Goel, R. Badlani, W. Ping, R. Valle, and B. Catanzaro,
+“Audio flamingo: A novel audio language model with few-shot
+learning and dialogue abilities,”arXiv preprint arXiv:2402.01831,
+2024.
+[4] S. Ghosh, Z. Kong, S. Kumar, S. Sakshi, J. Kim, W. Ping, R. Valle,
+D. Manocha, and B. Catanzaro, “Audio flamingo 2: An audio-
+language model with long-audio understanding and expert r

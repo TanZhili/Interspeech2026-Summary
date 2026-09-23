@@ -1,0 +1,500 @@
+Fed-SpeechLLM: Federated Learning Speech Language Models for
+Multilingual ASR
+Mohamed Nabih Ali ID 1, Daniele Falavigna ID 1, Alessio Brutti ID 1
+1 Center for Augmented Intelligence, Fondazione Bruno Kessler, Italy
+mnabih@fbk.eu, falavi@fbk.eu, brutti@fbk.eu
+Abstract
+SpeechLLMs show strong promise for multilingual ASR, yet
+centralized training conflicts with privacy constraints over dis-
+tributed, linguistically diverse data. This paper presents Fed-
+SpeechLLM, a federated learning framework for multilingual
+SpeechLLM-based ASR evaluated on a bilingual English and
+Italian setting. We study federated optimization under com-
+pounded non-IID conditions from acoustic and cross-lingual
+heterogeneity. Standard FL methods degrade when clients
+hold language-skewed distributions. Moreover, we propose
+language-aware gradient aggregation and a sampling clustering-
+based method to mitigate multilingual imbalance, using selec-
+tive aggregation of speech encoders and projection layers with
+a frozen LLM backbone. Results confirm competitive perfor-
+mance against centralized training.
+Index Terms: Federated Learning, Speech Recognition, Large
+Language Models, SpeechLLM
+1. Introduction
+Large language models (LLMs) have driven significant progress
+in natural language processing, with recent innovations extend-
+ing these capabilities to speech through multimodal architec-
+tures [1]. Speech language models (SpeechLLMs) integrate
+pretrained LLMs with speech encoders via learned projection
+layers (Figure 1(a)), demonstrating strong performance across
+speech recognition, translation, and spoken question answer-
+ing [2, 3]. A compelling frontier for these models is multi-
+lingual speech understanding, enabling a single system to pro-
+cess speech across typologically distinct languages, which dif-
+fer substantially in phonology, morphology, and prosodic struc-
+ture [4]. However, these models rely on centralized training
+that aggregates vast, linguistically diverse corpora in a single
+location, raising critical concerns about data privacy, regulatory
+compliance, and data sovereignty [5]. In multilingual settings,
+this problem is especially severe: speech data across languages
+is inherently siloed across different institutions, jurisdictions,
+and devices, each subject to distinct regulatory constraints that
+prohibit centralized aggregation.
+Federated learning (FL), depicted in Figure 1(b), partially
+addresses these challenges by enabling collaborative training
+across distributed datasets without centralizing raw data [6, 7].
+Yet applying FL to multilingual SpeechLLMs introduces com-
+pounded non-IID challenges: client data varies not only in
+acoustic conditions and speaker demographics, but also along a
+fundamentally new axislinguistic heterogeneity[8, 9]. Clients
+may hold data in a single language or in heavily imbalanced lan-
+guage mixtures, causing local updates to reflect divergent lin-
+guistic statistics that severely degrade convergence and cross-
+lingual generalization [10, 11]. Furthermore, the multimodal
+Speech Encoder
+Projector
+Large Language Model
+ Prompt  
+"Transcribe speech"
+LORA
+Speech
+Embeddings
+Text
+Embeddings
+Input
+Speech
+(a)
+ Agg = (     +     +     ) / N
+client (1) client (2) client (N)
+Clients Server (b)
+Figure 1:(a) SpeechLLM architecture. (b) Fed-SpeechLLM.
+architecture comprising speech encoders, projection layers, and
+LLM backbones complicates decisions about which compo-
+nents to aggregate across linguistically diverse clients, while
+communication costs remain prohibitively high [12, 13].
+Despite successful FL applications to monolingual ASR
+models [14], federated optimization for multilingual Speech-
+LLMs remains entirely unexplored [15]. Existing federated
+ASR methods are predominantly monolingual and architec-
+turally simpler, while SpeechLLM systems are trained centrally
+without addressing the linguistic and acoustic heterogeneity of
+real-world multilingual deployments. No existing framework
+simultaneously tackles federated training, SpeechLLM archi-
+tecture, and multilingual non-IID distributions.
+To bridge this gap, we introduceFed-SpeechLLM, the
+first federated framework for multilingual SpeechLLM-based
+ASR, evaluated on a bilingual English and Italian setting. Fed-
+SpeechLLM supports selective aggregation of projector train-
+able parameters, while keeping the speech encoder and LLM
+backbones frozen to preserve its pretrained multilingual linguis-
+tic knowledge. This enables efficient federated optimization un-
+der both linguistic and acoustic heterogeneity, without sacrific-
+ing the expressive power of the underlying language model.
+We conduct a comprehensive empirical study evaluating
+federated optimization strategies for speech-language models
+in terms of convergence, communication efficiency, and robust-
+ness to data heterogeneity. The main contributions of this paper
+are summarized as follows:
+• We present a systematic study of FL for SpeechLLM-based
+multilingual ASR.
+• We propose a communication-efficient strategy for large
+speech-language models that aggregates only trainable pa-
+rameters on the server.
+• We provide an extensive evaluation on different FL client se-
+lection approaches for multilingual ASR tasks, demonstrat-
+ing the effectiveness and stability of the proposed approach.
+Our findings reveal that federated SpeechLLM can ap-
+4757
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-689
+proach centralized performance in both monolingual settings,
+but multilingual non-IID data causes cross-lingual interference.
+Effective client selection and early language-aware biasing sig-
+nificantly reduce this gap.
+2. Model Architecture
+2.1. Overview of SpeechLLM Architecture
+The SpeechLLM architecture [3, 16], shown in Figure 1(a),
+combines a frozen speech encoder with a pre-trained LLM via a
+trainable projector. The input includes speech, a task instruction
+prompt, and ground-truth text. Raw 16kHz audio is encoded
+into the encoder dimensional embeddings, which are projected
+and pooled by the projector into LLM-dimensional represen-
+tations with pooling factork. The prompt and ground truth
+(training only) are tokenized and embedded in the same LLM
+dimensional space. All embeddings are concatenated along the
+sequence dimension and fed into the LLM for text generation.
+2.2. Speech Encoder
+Our Fed-SpeechLLM adopts WavLM-Large [17] as the speech
+encoder, a self-supervised model trained on 94K hours of un-
+labeled speech comprising 24 transformer layers (317M pa-
+rameters) that processes 16kHz raw audio. WavLM achieves
+strong performance across ASR, speaker verification, and emo-
+tion recognition [18]. The encoder remains frozen during feder-
+ated training, with only the projector updated, enabling efficient
+adaptation while preserving pre-trained representations.
+2.3. Large Language Model
+We employ TinyLlama-1.1B-Chat-v1.0 [19] as our LLM back-
+bone, a 1.1B-parameter instruction-tuned model trained on 3
+trillion tokens following the Llama 2 architecture, with a hid-
+den size of 2048 matching our adapter output. Its compact size
+ensures efficient training while maintaining competitive perfor-
+mance for resource-constrained settings. We fine-tune it using
+LoRA [20], which approximates weight updates via low-rank
+matrices:∆W=AB, whereA∈R d×r andB∈R r×dk
+withr≪d[21].
+2.4. Projector
+To bridge the dimensional mismatch between the speech en-
+coder and the language model, we use a lightweight linear
+adapter composed of a projection layer followed by 1D average
+pooling [22]. The projection maps 1024-dimensional WavLM
+embeddings to TinyLlama’s 2048-dimensional input space. We
+then apply average pooling with kernel size and stridek= 2
+along the temporal dimension, reducing sequence length and
+computational cost while aggregating local temporal informa-
+tion. The projector is trained from scratch, with both the speech
+encoder and LLM kept frozen, enabling efficient adaptation be-
+tween the two pre-trained components [23].
+3. Experimental Setup
+3.1. Dataset
+For English, we use LibriSpeech-100(LS)[24], comprising
+≈100 hours of read speech evaluated ontest-clean. For Italian,
+we use the Italian portion of Multilingual LibriSpeech(MLS)
+[25], comprising 247 hours of read speech from LibriV ox audio-
+books. Table 1 summarizes dataset statistics in terms of hours
+Table 1:Statistics (duration in hours, and the number of speak-
+ers) of LibriSpeech and MLS datasets.
+LibriSpeech
+ MLS
+hours # Spks. hours # Spks.
+Train 100 251 247.38 65
+Test 5.4 40 5.27 10
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+Federated Learning
+Central Training
+(a)
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+Federated Learning
+Central Training (b)
+Figure 2:WER with Monolingual SpeechLLM (a) LS. (b) MLS.
+and speakers. The imbalance between the two datasets in both
+hours and speaker risks client drift, biasing the global model to-
+ward specific acoustic patterns. This may hinder cross-lingual
+generalization.
+3.2. Federated Learning Setup
+We implement our FL framework using Flower [26]. We de-
+ploy a client for each speaker in the datasets. In each round,
+30%of the clients are randomly instantiated and trained for 10
+local epochs. The resulting gradients are centrally agglomer-
+ated usingFedAvgstrategy [27]. FL is applied for 100 rounds.
+All FL results marked as—-,—-for LS and MLS, respec-
+tively, are compared with those achieved with central training
+marked as⋆,⋆for LS and MLS, respectively, using the Adam
+optimizer. More details related to training hyperparameters are
+publicly available in our GitHub repository. 1.
+4. Results
+4.1. Monolingual FL Scenario
+To the best of our knowledge, state-of-the-art research has not
+yet investigated FL for SpeechLLM architectures; therefore, we
+provide the first systematic analysis of federated adaptation in
+this setting by examining the Word Error Rate (WER) across
+federated rounds in the monolingual scenario as shown in Fig-
+ure 2, using a trainable projector with frozen backbones and
+LoRA-based adaptation on the LLM side. On LS, WER drops
+sharply from approximately100%to approximately6-7%by
+round 100, closely matching centralized training (approxi-
+mately6%), confirming that federated adaptation nearly ap-
+proaches the centralized performance. Turning to MLS Italian,
+Fed-SpeechLLM achieved WER≈22%by round 100 versus
+≈20%obtained centrally, with the small residual gap likely
+attributable to FL hyperparameter sensitivity. Unlike conven-
+tional ASR models that struggle to converge under FL from
+scratch [6, 15, 28, 29], Fed-SpeechLLM converges stably with
+low communication and computational overhead.
+1https://github.com/mnabihali/Fed-SpeechLLM
+4758
+4.2. Bilingual FL with Random Client Selection
+To study the impact of client participation and training strate-
+gies in bilingual FL, we consider three scenarios. The Full-
+Client scenario includes all 316 clients. Client-Balanced sce-
+nario, where an equal number of speakers from each dataset
+(65 per dataset) are used. The Full-Client with server-side fine-
+tuning scenario further optimizes the aggregated global model
+for the target language at the server.
+❶Full-client Scenario:This scenario uses all LS and MLS
+speakers, preserving the original dataset composition while in-
+creasing the number of LS clients. This implies that the client
+distribution per language is skewed towards English data while
+each Italian client has more training hours. Figure 3(a) shows
+the evolution of the WER between rounds. Starting from 100
+WER, the federated model quickly reduces errors and gradu-
+ally converges. By round 100, WER reaches 16.8 for LS and
+19.7 for MLS, corresponding to absolute reductions of 83.2 and
+80.3 points, respectively. The LS dataset exhibits slightly higher
+variability, while MLS remains stable. Compared to centralized
+training and the monolingual scenario, the federated model has
+an absolute gap of≈10 WER for LS. This gap is due to the
+non-IID distribution between both languages. While for MLS,
+the gap is 1.3 of WER, showing effective model convergence.
+❷Client-balanced Scenario:The client-balanced federated
+learning scenario (Figure 3(b)) considers equal numbers of
+speakers (65 per dataset) from LS and MLS to control client
+participation in a cross-lingual federated SpeechLLM setting.
+Although this strategy equalizes the number of participating
+clients, the data distribution remains heterogeneous, as MLS
+provides substantially more speech hours per speaker than LS.
+Compared to centralized training (6.1 WER on LS and 18.4
+WER on MLS), federated training converges to 33.8 WER on
+LS and 22.7 WER on MLS after 100 communication rounds.
+While MLS performance remains relatively close to the central-
+ized baseline, LS exhibits pronounced degradation and higher
+variability across rounds. This observed performance degrada-
+tion can be attributed to the limited training hours available in
+the LS dataset. In general, these results indicate that balancing
+client counts alone is insufficient to mitigate data and language
+imbalance, motivating language-aware aggregation and person-
+alization strategies for federated multilingual ASR.
+❸Full-clients with server fine-tuning Scenario:In this sce-
+nario, we attempt to mitigate the gap introduced in the last
+scenario, especially on LS. In detail, this scenario extends the
+full-clients FL setup by introducing a lightweight server-side
+fine-tuning step after each model aggregation. Specifically, fol-
+lowing aggregation, the global model is fine-tuned on the LS
+dev-cleandataset for English for up to three epochs. The
+WER evolution across communication rounds is shown in Fig-
+ure 3(c). Starting from a WER of 100 the model exhibits rapid
+error reduction in early rounds and converges to 12.1 WER on
+LS and 21.1 WER on MLS by round 100. This corresponds to
+absolute WER reductions of 87.9 and 78.9 points, respectively.
+Compared to the full-clients scenario without server fine-tuning,
+server-side adaptation further improves LS performance and re-
+duces variability across rounds, while MLS performance re-
+mains relatively stable. When contrasted with centralized train-
+ing, the remaining absolute gap is reduced to 6.0 WER for LS,
+whereas the gap for MLS increases slightly to 2.7 WER. Over-
+all, these results indicate that limited server-side fine-tuning can
+effectively bias the global model toward a target language and
+improve convergence for that language, while at the cost of a
+modest degradation on non-target languages.
+4.3. Bilingual FL with Clustering Client Selection approach
+❶Full clients with sample-clustering Scenario.To mitigate
+client-level data imbalance, we use size-aware sampling and ag-
+gregation [30, 31]. Clients are partitioned into small and large
+groups based on the median dataset size. At each round, client
+selection is biased toward smaller clients, with approximately
+70% sampled from the small group. Motivated by the adaptive
+fairness-aware reweighting approach proposed in [32], we mod-
+ify FedAvg by scaling each client’s contribution using a simple
+static schemew k =α knk, wheren k denotes the number of
+local samples andα k = 1.5for small clients andα k = 1
+otherwise. This server-side adjustment increases the influence
+of smaller clients without changing local training. Results are
+shown in Figure 4(a). Compared to centralized training, the
+federated setup achieves 9.7 on LS and 19.6 on MLS. Con-
+sequently, the obtained results highlight the superiority of the
+clustering-based approach over random client selection, demon-
+strating that FL remains competitive in such scenarios.
+❷Full clients with language-clustering Scenario.We inves-
+tigate two temporal strategies for language biasing in federated
+SpeechLLM training:Late Biasing(round 30 onset) andEarly
+Biasing(round 5 onset). The gray vertical lines, as depicted in
+Figure 4, mark the transition points of the English-biased client.
+•Late Biasing
+Pre-biasing Performance (Rounds 0-30):Prior to round
+30, client participation is balanced at 50% English and 50%
+Italian. This demonstrates rapid initial convergence from 100%
+WER, with FL MLS Italian achieving≈25% WER by round 20
+and FL LS English reaching 32% WER by round 30. This bal-
+anced participation boosts the performance of both languages
+prior to biasing to the target language.
+Post-biasing Performance (Rounds 30-100):Following
+English bias initiation at round 30, where 80% of participat-
+ing clients are English and 20% Italian. FL LS English im-
+proves significantly from 30% to 15% WER, while FL MLS
+Italian slowly improves from 25% to 20% WER. Despite this
+controlled adaptation, a persistent 12-15 percentage point gap
+on LS remains compared to centralized training (6.1% WER),
+indicating limited effectiveness of delayed biasing.
+•Early Biasing
+Pre-biasing Performance (Rounds 0-5):In the initial 5
+rounds, client participation remains balanced at 50% English
+and 50% Italian. In this stage, the WER achieved on both LS
+and MLS are 35% and 48%, respectively.
+Post-biasing Performance (Rounds 5-100):Early English
+biasing produces superior convergence, as illustrated in Figure
+4(c). FL LS achieved a WER of 9.5% WER by round 100, sub-
+stantially outperforming Late biasing. Fig 4(b) highlights that
+client distribution shifts dramatically: LS drops from 35.3% to
+9.5%. This aggressive early re-balancing reduces the federated-
+centralized gap from∼12-15 percentage points (Late bias-
+ing) to∼5 percentage points, demonstrating that early cross-
+language exposure is critical for optimal federated SpeechLLM
+performance despite initial balanced participation. Finally, f we
+summarize the results in the different FL scenarios in Table 2
+4.4. Ablation Study: Whisper as the Speech Encoder
+To systematically investigate the role of the speech encoder,
+we conduct an ablation using Whisper-Medium [33], a 769M-
+parameter multilingual model trained on 680K hours of weakly
+supervised data, supporting transcription in 99 languages. We
+limited our experiments to the sample client-clustering selec-
+4759
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS
+(a)
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS (b)
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS (c)
+Figure 3:Bilingual WER using random selection strategies: (a) Full clients, (b) Clients Balanced, (c) Full clients with server-finetuning.
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS
+(a)
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS (b)
+0 20 40 60 80 100
+Round
+0
+20
+40
+60
+80
+100WER (%)
+FL LS English
+FL MLS Italian
+Central Training LS
+Central Training MLS (c)
+Figure 4:Bilingual WER using clustering strategies: (a) Sampling, (b) Late biasing, (c) Early biasing.
+Table 2:WER summary across FL approaches. Central training
+(upper bound) in yellow; best in green.
+Dataset Training Scenario LS MLS
+Central Training Monolingual 6.1 20.1
+Multilingual 6.1 18.4
+Monolingual FL 6.4 22.6
+FL Random Selection
+Client-Balanced 33.8 22.7
+Full-Clients 16.8 19.7
+Full-Clients + FT 12.1 21.1
+FL Cluster Selection
+Sample Clustering 9.7 19.6
+Late Biasing 15.2 19.7
+Early Biasing 9.5 21.4
+tion approach. As shown in Table 3, WavLM-Large and Whis-
+per achieve competitive WER relative to the centralized upper
+bound, validating the effectiveness of Sample Clustering across
+both languages. Whisper demonstrates strong performance on
+both LS and MLS Italian, fully closing the gap to central train-
+ing on the multilingual setting while also delivering competi-
+tive English recognition. Notably, Whisper converges in sig-
+nificantly fewer rounds than WavLM, highlighting its superior
+communication and computational efficiency in the federated
+setting, which is a critical advantage when minimizing client-
+server exchanges and local computation overhead. Overall,
+these results demonstrate that encoder choice is a key design
+decision in multilingual federated SpeechLLMs, impacting not
+only final accuracy but also convergence speed and training ef-
+ficiency across languages.
+Table 3:Performance comparison of WavLM vs. Whisper. Cen-
+tral training (upper bound) in yellow; best in green.
+WavLM
+Round=100
+Whisper
+Round=40
+LS MLS LS MLS
+Central Training 6.1 18.4 6.4 16.4
+FL Sample Cluster 9.7 19.6 7.7 16.4
+5. Conclusion
+In this work, we introduced Fed-SpeechLLM, a federated
+framework tailored for SpeechLLM-based multilingual ASR
+that enables privacy-preserving decentralized training through
+selective parameter aggregation. Extensive experiments across
+monolingual and bilingual scenarios demonstrate that feder-
+ated adaptation of lightweight components can closely match
+centralized training in homogeneous settings, while heteroge-
+neous multilingual conditions require careful client selection
+and biasing strategies. Our results show that clustering-based
+sampling and early language-aware biasing significantly reduce
+the federated–centralized performance gap, providing practical
+guidelines for deploying SpeechLLMs in real-world, privacy-
+sensitive environments. Future work will explore adaptive ag-
+gregation, personalized federated strategies, and broader multi-
+lingual scalability to further mitigate cross-lingual interference
+and improve robustness.
+4760
+6. Acknowledgments
+We acknowledge that this work was supported by Ministero
+delle Imprese e del Made in Italy (IPCEI Cloud DM 27 giugno
+2022 - IPCEI- CL-0000007) and European Union (Next Gener-
+ation EU).
+This work has received funding from the European Union’s
+Horizon Europe research and innovation programme under the
+project ELOQUENCE (Grant Agreement No. 101135916).
+7. Use of Generative AI Disclosure
+The authors used generative AI tools for minor language editing
+and grammar correction. All scientific content, analyses, inter-
+pretations, and conclusions were developed and verified by the
+authors. The authors take full responsibility for the accuracy
+and integrity of the manuscript.

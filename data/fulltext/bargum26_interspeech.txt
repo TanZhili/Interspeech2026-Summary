@@ -1,0 +1,443 @@
+Improving Model Expressivity and Speaker Matching in
+Low-Latency V oice Conversion
+Anders R. Bargum ID 1,2,∗∗, Simon Lajboschitz2, Stefania Serafin ID 3, Cumhur Erkut ID 1
+1 Aalborg University, Copenhagen, Denmark
+2 Khora & Heka VR, Copenhagen, Denmark,
+3 Technical University of Denmark, Ballerup, Denmark
+arba@create.aau.dk, simon@khora.dk, stefse@dtu.dk, cer@create.aau.dk
+Abstract
+Real-time voice conversion systems struggle to achieve high
+speaker similarity in zero-shot scenarios, especially under
+lightweight computational constraints. This challenge stems
+from a lack of model expressivity and the difficulty of capturing
+comprehensive speaker-relevant information within the strict la-
+tency requirements. We propose a real-time voice conversion
+framework that addresses this limitation by adding lost prosody
+explicitly through an excitation signal and by fusing comple-
+mentary information into the conventional global speaker em-
+beddings. To ensure robust feature disentanglement, we fur-
+thermore employ an encoder-specific information perturbation
+strategy during training. Our approach maintains causal infer-
+ence requirements and preserves prosodic and linguistic con-
+tent while operating under low-latency constraints. Experimen-
+tal evaluations demonstrate improvements in speaker-matching
+metrics over state-of-the-art real-time baselines.
+Index Terms: voice conversion, speech representation learn-
+ing, real-time, speech generation
+1. Introduction
+V oice conversion (VC) systems aim to modify speaker iden-
+tity while preserving linguistic content, requiring the disentan-
+glement of speaker-specific traits from phonetic and prosodic
+information. For low-latency VC models, such factorization
+is particularly advantageous: by explicitly separating speech
+components, architectural bottlenecks and low-capacity sub-
+networks can be constrained to encode only their designated
+factors. This reduces representational redundancy and enables
+resynthesis under real-time and memory constraints [1].
+However, advances in large language models (LLMs) and
+self-supervised learning (SSL) have enabled representations
+that unify acoustic and linguistic information [2, 3, 4]. Con-
+sequently, SSL-based features have largely replaced traditional
+VC encoders and disentanglement methods built on automatic
+speech recognition (ASR) and automatic speaker verification
+(ASV). Particularly, many modern VC pipelines utilize content
+and speaker embeddings derived from intermediate SSL repre-
+sentations or their discretized variants [5, 6, 7, 8]. Although
+SSL-based models offer performance advantages in VC, their
+non-causal nature and computational complexity pose chal-
+lenges for real-time deployment. StreamVC [9] addresses this
+through knowledge distillation, using a causal encoder to ap-
+proximate HuBERT units. In contrast, RT-VC [10] employs
+articulatory synthesis with a differentiable digital signal pro-
+cessing (DDSP)-based synthesizer and a frozen WavLM CNN
+**indicates the corresponding author.
+feature extractor as its speaker encoder. While both systems
+enable real-time VC, they exhibit lower speaker similarity than
+non-real-time approaches. We identify two contributing factors:
+(1) Lightweight architectures lack the capacity to encode com-
+prehensive speaker-specific characteristics beyond static global
+embeddings. (2) Content representations based on discrete units
+or articulatory synthesis discard prosodic information, creat-
+ing a representational gap where time-varying speaker features
+must be recovered elsewhere in the pipeline.
+This paper addresses the inherent trade-off between latency,
+expressivity, and speaker similarity in real-time VC. First, to
+compensate for the degraded prosodic information in the con-
+tent embeddings, we explicitly inject an excitation signal, in-
+creasing the effective model capacity without adding significant
+architectural overhead. Second, inspired by the pipelines in [11]
+and [12], we model speaker identity as conditioned on both con-
+tent and prosody. Concretely, we introduce a lightweight com-
+plementary speaker encoder alongside a global speaker embed-
+ding to capture residual speaker characteristics, which are re-
+trieved by fusing speaker, content, and prosody information us-
+ing causal multi-head attention (MHA). Finally, we encourage
+disentanglement between speaker and content representations
+by applying factor-specific perturbations during training. The
+paper is organized as follows: 2 describes the proposed pipeline,
+3 presents training and evaluation details, and 4 presents and
+discusses the results. The main contributions are:
+• A VC framework with improved zero-shot performance at
+low operational latency.
+• An excitation signal injection to restore prosody information
+lost in parallel embeddings.
+• A complementary speaker encoder capturing time-varying
+and time-invariant characteristics beyond static global em-
+beddings under real-time constraints.
+• An encoder-specific training perturbation strategy enhancing
+feature disentanglement via targeted input manipulation.
+2. Method
+We exhibit a parallel encoder-decoder architecture as illustrated
+in Fig. 1. All sub-networks follow the traditional architectures
+of neural audio codecs [13, 14], i.e., blocks of dilated, residual,
+1D convolutions (CNNs) used for compression or up-sampling.
+2.1. Content Encoder & Decoder
+The content encoderC Enc consists of 4 CNN downsampling
+blocks with hidden dimensionsC= [512,256,128,64]and
+downsampling ratios ofR= [8,4,4,2]. As shown in Fig. 1,
+the content encoder is trained to extract linguistically relevant
+7570
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-796
+Figure 1:Proposed model pipeline.Xdenotes the input, ˆXis the reconstruction andYdenotes the target sample used during inference.
+LNdenotes layer normalization,l(·)denotes linear projection andCEdenotes categorical cross entropy.
+representations through knowledge distillation. This is done by
+predicting 100 discrete (soft) speech units derived from a pre-
+trained HuBERT model, 1 following the training procedures in
+[8, 9]. The decoder is a mirrored version of the content encoder,
+with snake activations inserted from [15]. It takes the content
+embeddingZconcatenated with the speaker embeddingS Emb
+as input. Between each residual convolutional block, we inject a
+downsampled version of the excitation signal to compensate for
+prosodic information not captured by the content embedding.
+2.2. Prosody Encoder
+We provide prosody explicitly through an excitation sig-
+nal based on fundamental frequencyF 0, periodicityP,
+voiced/unvoiced flagsV/U v, and loudnessL. While all these
+features could be extracted using digital signal processing, we
+estimate them using a prosody encoderP Enc.P Enc follows
+a similar architecture asC Enc, with reduced dimensionsC=
+[128,64,32,16]for faster inference. From the prosody features
+we create a sinusoid-plus-noise excitation signalE[n]:
+E[n] =
+(
+L(Pη[n]),iff 0[n] = 0,
+L(Uv(sin(ϕ[n]))),otherwise, (1)
+ϕ[n] = 2π
+nX
+m=0
+f0[m]
+fs
++ϕ 0,(2)
+wherefs is the sampling rate,η∼N(0,1)is Gaussian noise
+with zero mean and unit variance andϕ 0 is the initial phase.
+During inference, we transfer input pitch to the target register:
+f0 scaled =f0· µtg
+µin
+,(3)
+whereµ tg is the target speaker’s mean pitch andµ in is the
+source speaker’s mean pitch. We use the pitch training strat-
+egy from [16] and train the prosody encoder similar to [17].
+2.3. Speaker Encoder
+We create a speaker encoderS Enc pretrained on the V ox-
+Celeb dataset [18] as described in [19]. It consists of 3
+causal convolutional downsampling blocks of dimensionsC=
+[128,256,256], with downsampling ratios ofR= [4,4,2]
+and multi-layer feature aggregation (MFA). Attentive statistics
+pooling (ASP) is finally used to combine the remaining time
+frames into a 256-dimensional speaker embeddingS Global.
+1https://github.com/bshall/hubert
+2.4. Complementary Speaker Encoder
+As noted in [11], speaker timbre is not strictly static but varies
+with time-dependent factors such as linguistic context and pitch.
+Under the causal and low-complexity constraints required for
+real-time VC, encoding such cues into a single global speaker
+embedding is challenging. At the same time, auxiliary represen-
+tations may lack sufficient capacity to compensate for it. For
+example, if the content embedding is limited to linguistic in-
+formation, prosodic features like speaking style and pitch range
+must be inferred solely from the speaker embedding, which may
+be missing for low capacity models.
+To address this, we propose a synergistic combination that
+fuses global speaker embeddings with dynamic, time-varying
+features. More specifically, we introduce a complementary
+speaker encoder,S 2Enc , which extracts time-varying acous-
+tic features that the model may inadequately represent. We
+employ a similar architecture toP Enc and use MHA to tok-
+enize the output, forming speaker tokensS T oken. These to-
+kens are then fused with time-varying features andS Global
+via a causal cross-attention mechanism, yielding a task-specific
+speaker representationS Emb. Specifically, we useS T oken as
+valuesV, the concatenation[Z;F 0 ;A p ;L]as the queryQ, and
+50 trainable latent vectors as keysK. Although time-varying,
+attention-based embeddings have been explored in prior work
+[11, 20, 12, 21, 22], such works rely on non-causal or higher-
+latency architectures. Instead, we demonstrate that effective
+speaker–content–prosody fusion can be achieved with only two
+MHA blocks, explicitly designed for strict real-time operation
+via causal masking. Despite operating under streaming con-
+straints, this minimal encoder and attention stack proves suf-
+ficient to model extra identity cues. It adds only≈1.7M pa-
+rameters, preserving the lightweight architecture required for
+real-time deployment.
+2.5. Information Perturbation
+Rather than relying solely on knowledge distillation, pretrain-
+ing, or bottlenecks to achieve disentanglement, we directly ma-
+nipulate the input data to force each encoder to learn its in-
+tended representation. We propose two strategies. First, we
+address the fact that content representations may retain speaker
+or prosodic information, stemming from inaccurate encoder ap-
+proximations (due to reduced capacity) or from speaker traits
+that may still be embedded in the discrete teacher labels, as
+noted in [23]. To mitigate this, we disrupt speaker cues in
+the content encoder input through timbre perturbation, applying
+pitch-shifting (ps), noise addition (na), and parametric equaliza-
+7571
+Table 1:Parameter Ranges for the Perturbation Processes.
+Type Parameter Range Description
+Pitch-Shift∆F0(st)±6Random shift ap-
+plied per utterance.
+Additive Noise SNR (dB) 10 - 25 Randomly chosen
+coloured noise.
+Parametric EQ Gain (dB)±153-band EQ with cen-
+ters (100Hz–3kHz).
+Time-Masking Units (%) 25 Unit-classes chosen
+at frame level.
+tion (peq), yielding a modified inputˆx=na(peq(ps(x))). We
+augment the audio with additive noise rather than environmen-
+tal noise, allowing the model to learn more robust F0 estimation
+across all frequencies. Secondly, we prevent phonetic leakage
+intoS Global andS T oken through unit-based time-masking, en-
+couraging the speaker encoders to capture traits independent of
+phonetic content. [24] showed that masking time frames corre-
+sponding to specific discrete units improves intelligibility when
+extracting speaker information. Inspired by this finding, we ap-
+ply the same masking strategy to the inputs of both the global
+and complementary speaker encoders.
+3. Experiment
+We adopt similar datasets and evaluation procedures as the
+state-of-the-art (SOTA) baselinesStreamVC[9] andRT-VC
+[10]. Thus, the model is trained on alltrainsubsets of the Lib-
+riTTS dataset [25], which contain 555 hours of speech from
+2311 speakers. For the zero-shot conversion evaluation, we re-
+trieve the same 377 unseen source utterances in the LibriTTS
+test-cleansubset. Similarly, we select the same 6 unseen target
+speakers (3 male and 3 female) from the VCTK dataset. Lastly,
+we perform an ablation analysis to highlight the improvements
+of the proposed methods. The ablations consist of the proposed
+model without perturbation (w.o perturbation), as well as the
+model conditioned only on the static global embedding.
+3.1. Training Details
+The model is trained using a combination of losses from
+[13, 14]; a multi-resolution, mel-spectrogram lossL mel, an ad-
+versarial (GAN) lossL adv and a feature lossL f eat. We addi-
+tionally add the cross-entropy-based content lossL C:
+L=αL mel +L adv +βL f eat +L C,(4)
+whereαandβare loss weights of12.0and2.0respectively. We
+train the model at 16kHz for 800k steps, with a batch size of 32,
+using the AdamW optimizer and a learning rate of 2e-4 for both
+the model and the discriminators. For the MHA blocks, we use
+8 heads with a hidden dimension of 128. During training, we
+apply the perturbations listed in Table 1.
+3.2. Metrics
+The conversions are evaluated across intelligibility, speaker
+similarity, andF0consistency. Intelligibility is assessed via
+WER and CER, using the HuBERT-Large ASR model2 against
+normalized ground-truth transcriptions. Speaker similarity is
+measured using cosine similarity (SECS) between processed
+2https://huggingface.co/facebook/hubert-large-ls960-ft
+and target speaker embeddings from Resemblyzer 3. Prosody
+is evaluated via Pearson correlation coefficient (PCC) between
+input and convertedF0contours.Due to the limited number of
+publicly available baseline samples, we conduct a constrained
+5-scale MOS listening test restricted to the 6 shared examples
+available across all models. To reduce fatigue and isolate per-
+ceptual dimensions, quality (Q-MOS) and speaker similarity
+(S-MOS) were assessed separately from naturalness (N-MOS),
+where naturalness specifically targets human-likeness indepen-
+dent of audio quality. Two independent groups of 20 partici-
+pants were recruited via Prolific and convenience sampling (to-
+taln= 40), yielding 120 ratings per condition. Full listener
+instructions are provided in the Appendix.
+4. Results
+We present the evaluation results in Tables 2 and 3. Statistical
+significance is analyzed and reported when relevant using the
+Kruskal-Wallis H-test, followed by post-hoc pairwise compar-
+isons with the Bonferroni-corrected Dunn’s test.
+Table 2:Objective metrics for the test conversions. Ablation
+models are illustrated in italic. The objective scores for the
+baseline models are retrieved from their published works.
+Intelligibility SpeakerF0Sim
+WER↓CER↓SECS↑PCC↑
+Target - - 88.30% -
+Source 4.49% 1.02% 60.37% 1.000
+RT-VC6.69% 2.12% 76.65% 0.865
+StreamVC 6.22% 2.17% 77.81% 0.842
+Proposed6.54%2.03%80.83%0.885
+Proposed w.o. perturb4.92% 1.61% 77.61% 0.883
+SGlobal w. perturb6.54% 2.04% 75.36% 0.872
+SGlobal w.o. perturb5.30% 1.44% 70.64% 0.854
+Table 3:Subjective evaluation results with 95% confidence in-
+tervals. Evaluation samples are retrieved from published works.
+Subjective Latency
+Q-MOS↑N-MOS↑S-MOS↑CPU↓
+Source 3.18±0.21 4.03±0.17 1.91±0.19 -
+RT-VC3.36±0.21 3.16±0.24 2.96±0.2361.4ms
+StreamVC 3.66±0.183.67±0.21 3.16±0.22 70.8ms
+Proposed3.60±0.18 3.44±0.213.25±0.21 64.9ms
+4.1. Objective Evaluation
+As illustrated in Table 2, the models demonstrate compara-
+ble levels of intelligibility. With respect to the WER metric,
+StreamVC achieves the best performance at6.22%, whereas the
+proposed model attains superior CER at2.03%. Notably, both
+ablation variants that exclude perturbation yield improved intel-
+ligibility, which we attribute to residual integration of content
+and acoustic information within the content latent, conversely
+diminishing speaker similarity through information leakage.
+3https://github.com/resemble-ai/Resemblyzer
+7572
+Figure 2:Visual comparison of the global speaker embeddings
+(a) and time-varying speaker embeddings (b).
+Figure 3:Example utterance: L2 divergence betweenS Global
+andS Emb, relative to the speech featuresF0and loudnessL.
+The objective metrics indicate improved speaker similarity
+for unseen target speakers, with the proposed model achieving
+a substantial increase in SECS (80.83%), corresponding to im-
+provements of3.02%and4.18%over RT-VC and StreamVC,
+respectively. The perturbation strategy yields consistent SECS
+gains of3.22and4.72percentage points in the full andS Global-
+only variants respectively, confirming its effectiveness indepen-
+dent of the complementary encoder. More broadly, adding the
+complementary speaker encoder consistently outperforms the
+SGlobal-only variant both with and without perturbations. Sim-
+ilar tendencies are seen forF0similarity, which we attribute to
+the excitation signal and explicit disentanglement.
+4.2. Subjective Evaluation
+As shown in Table 2, the speaker-similarity patterns observed
+in the objective metrics are supported by human listeners. Our
+proposed model achieves the highest similarity ratings (mean =
+3.25), followed by StreamVC (3.16) and RT-VC (2.96). How-
+ever, no statistical significance can be proven. In terms of
+Q-MOS, StreamVC (3.66) is slightly better than the proposed
+model (3.60). Statistical analysis shows a significant differ-
+enceH(3) = 82.64,p= 0.005with a small effect size
+(ϵ2 = 0.021). Dunn’s post hoc test reveals that StreamVC
+and the proposed model are rated significantly higher than the
+source (p = 0.01 and p = 0.037, respectively), with no other sig-
+nificant differences observed. StreamVC achieved the highest
+N-MOS among all models, with Dunn’s tests showing signif-
+icant differences between the source (best) and all converted
+models. Moreover, StreamVC was rated significantly more nat-
+ural than RT-VC (p <0.001). We attribute StreamVC’s ad-
+vantage in naturalness to its more elaborate training procedure.
+Furthermore, its frame-level prosody conditioning may bene-
+fit naturalness through implicitly learned representations; how-
+ever, this appears to come at the cost of SECS and F0 PCC. We
+note that all models adopt the ”quality” of the target sample, as
+evidenced by lower Q-MOS scores for the source speech.
+4.3. Inference Latency
+We use a cached configuration for real-time usage [26], avoid-
+ing multi-frame lookahead. With a 256-sample frame (16 ms at
+16 kHz) and an average processing time of 48.9 ms per chunk
+on an Intel® Xeon® CPU, the total latency is 64.9 ms. We addi-
+tionally calculate the real-time factor for a buffer of 2048 sam-
+ples, yielding 1/RTF = 2.7 on the CPU and 11.05 on a TITAN
+X GPU. A demonstration is provided on the webpage.
+4.4. Visual Inspection
+Finally, we visualize global and fused embeddings using t-
+distributed Stochastic Neighbor Embeddings (t-SNE). Since
+SEmb is time-varying, we aggregate it into a single vector by
+mean-pooling over voiced frames. We sample 30 utterances
+from 20 unseen VCTK speakers for clarity. As shown in Fig. 2,
+the fused embeddings in panel (b) exhibit tighter intra-speaker
+clusters, suggesting that the complementary encoder captures
+additional speaker-discriminative characteristics beyond those
+encoded in the static global embedding. Additionally, we show
+an example of the time-varying divergence betweenSGlobal and
+SEmb, measured with the L2 norm, in Fig. 3 (chosen as it cap-
+tures both directional and magnitude variation in the embed-
+dings). As shown,S Emb fluctuates over time, keepingS Global
+as a reference point.
+5. Discussion
+While our results demonstrate significant improvements in
+speaker similarity, the enhanced performance does not prove the
+extraction of ”dynamic” timbre information as characterized in
+related works [5, 12]. This is evident in Fig. 3, which shows that
+even thoughS Emb clearly contains different information than
+SGlobal, no exact relationship to speech events can be detected.
+Rather, our findings suggest that the complementary speaker
+encoder captures speech features that the model fails to repre-
+sent, thereby increasing expressivity and creating a model better
+matched to the VC task. This interpretation aligns with the ob-
+servation that discrete unit representations, while beneficial for
+disentanglement, inherently discard prosodic information, such
+as F0 and energy variations, which must be represented else-
+where. Thus, by explicitly incorporating prosodic features into
+the model, both as an excitation signal and a fused speaker em-
+bedding, our approach addresses the representational gap intro-
+duced by real-time architectural constraints.
+6. Conclusion
+This paper introduces a lightweight voice conversion model ca-
+pable of real-time operation. Compared to baseline systems,
+our approach maintains intelligibility and audio quality while
+improving speaker matching in zero-shot scenarios. In particu-
+lar, the combination of a complementary embedding, an excita-
+tion signal, and perturbation strategies yields measurable gains
+in speaker similarity metrics and pitch contour preservation. We
+attribute the improved performance to increased expressivity.
+7573
+7. Ethical Considerations
+We fully acknowledge the ethical concerns around real-time VC
+and do not condone any exploitation of this technology. To mit-
+igate misuse, such as impersonation and privacy risks, we will
+only release code to reproduce the paper’s results, provide a
+TorchScript export with fixed speaker targets, and a demo. For
+the review process, we have added source code to reproduce
+metrics and try the model in the supplementary material.
+8. Generative AI Use Disclosure
+This paper has been supported by the use of generative AI,
+specifically large language models LLMs, more specifically,
+Anthropic’s Claude 4.5. The model was primarily utilized for
+grammatical refinement, polishing, and debugging during the
+implementation stage.
+9. Appendix: Listener Instructions
+Participants were asked to rate each recording on a 5-point lik-
+ert scale across three perceptual dimensions:Naturalness (N-
+MOS)targeting human-likeness:“How natural (i.e. human-
+sounding) is the recording?”(5 = Completely natural, 1 =
+Completely unnatural).Quality (Q-MOS)targeting overall au-
+dio quality independent of naturalness:“Rate the audio quality
+of the source audio“(5 = Excellent Quality, 1 = Bad Quality).
+Similarity (S-MOS)asked participants to rate how closely the
+converted voice matched a provided target speaker reference:
+“How similar does the source and reference speaker sound. ”(5
+= Same Speaker, 1 = Not Similar) 4.
+10. References
+[1] A. R. Bargum, S. Serafin, and C. Erkut, “Reimagining speech: a
+scoping review of deep learning-based methods for non-parallel
+voice conversion,”Frontiers in Signal Processing, vol. V olume 4,
+2024.
+[2] W. Hsu et al., “Hubert: Self-supervised speech representation
+learning by masked prediction of hidden units,”IEEE/ACM Trans.
+Audio, Speech and Lang. Proc., vol. 29, p. 3451–3460, oct 2021.
+[3] A. B. et al., “XLS-R: Self-supervised cross-lingual speech repre-
+sentation learning at scale,” inInterspeech, 2022, pp. 2278–2282.
+[4] S. C. et al., “WavLM: Large-scale self-supervised pre-training for
+full stack speech processing,”IEEE Journal of Selected Topics in
+Signal Processing, vol. 16, no. 6, pp. 1505–1518, 2022.
+[5] H. Choi, J. Lee, W. Kim, J. Lee, H. Heo, and K. Lee, “Neural anal-
+ysis and synthesis: Reconstructing speech from self-supervised
+representations,” inProc. Conf. Neural Information Proc. Sys.
+(NeurIPS), 2021.
+[6] J. Kim, J. Kim, Y . Choi, T. D. Nguyen, S. Mun, and J. S. Chung,
+“AdaptVC: High quality voice conversion with adaptive learn-
+ing,” inProc. Intl. Conf. Acoustics, Speech and Signal Processing
+(ICASSP), 2025, pp. 1–5.
+[7] J. Y . et al., “StableVC: Style controllable zero-shot voice conver-
+sion with conditional flow matching,”Proc. AAAI Conf. Artificial
+Intelligence, 2025.
+[8] B. van Niekerk et al., “A Comparison of Discrete and Soft Speech
+Units for Improved V oice Conversion,” inProc. Intl. Conf. Acous-
+tics, Speech, and Signal Proc. (ICASSP), 2022, pp. 6562–6566.
+[9] Y . Y . et al., “STREAMVC: Real-time low-l

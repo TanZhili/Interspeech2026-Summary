@@ -1,0 +1,571 @@
+What Do Neural Networks Learn for TDOA Estimation?
+A Cross-Architecture Probing Study
+Yaozhong Kang, Jiang Wang, Runwu Shi, Takeshi Ashizawa, Benjamin Yen, and Kazuhiro Nakadai
+Department of Systems and Control Engineering, Institute of Science Tokyo, Japan
+{kangyaozhong, wangjiang, shirunwu, ashizawa, benjamin, nakadai}@ra.sc.eng.isct.ac.jp
+Abstract
+Neural networks outperform classical GCC-PHAT for Time-
+Difference-of-Arrival (TDOA) estimation in noise and reverber-
+ation, yet their internal strategy remains unexplored. To uncover
+it, we turn GCC-PHAT’s mathematical steps into diagnostic tar-
+gets, probing hidden layers of three architectures (MLP, CNN,
+Transformer) and complementing with gradient attribution and
+causal frequency masking. We find that cross-power compu-
+tation consistently emerges across all architectures and condi-
+tions, while PHAT whitening, the defining step of GCC-PHAT,
+fails to emerge. Instead, networks learn a magnitude-aware fre-
+quency weighting that preserves per-frequency reliability infor-
+mation discarded by PHAT. This makes PHAT an information
+bottleneck: removing it from both classical and neural GCC
+pipelines improves performance under additive noise. On real-
+world reverberant data, PHAT remains the best classical weight-
+ing, but end-to-end networks achieve lower error by learning
+data-adaptive weighting.
+Index Terms: TDOA estimation, GCC-PHAT, representation
+analysis, probing, neural network interpretability
+1. Introduction
+Time-difference-of-arrival (TDOA) estimation is a core prim-
+itive for sound source localization with microphone arrays,
+with applications from hearing aids to meeting transcription
+and mobile robotic platforms [1, 2]. The dominant classi-
+cal method, generalized cross-correlation with phase transform
+(GCC-PHAT) [3], estimates delay in three steps: (i) forming
+the cross-power spectrum of two microphone signals, (ii) ap-
+plying PHAT “whitening” to normalize each frequency bin to
+unit magnitude, and (iii) taking the inverse Fourier transform
+and selecting the peak. The whitening step is well-motivated
+under spatially white noise at high SNR [4], yet it degrades un-
+der colored noise and behaves unpredictably under reverbera-
+tion [5, 6].
+To overcome these limitations, modern sound source lo-
+calization systems increasingly rely on neural networks, either
+compact models that learn spectral weighting in the frequency
+domain [7, 8, 9], or large-scale architectures that jointly esti-
+mate source location and sound event type [10, 11]. For de-
+terminism and computational efficiency, many practical sys-
+tems adopt a hybrid design that combines classical signal pro-
+cessing with a neural back-end [8, 9]. However, fixed signal-
+processing steps may discard information that the neural com-
+ponent could otherwise exploit. Understandingwhatneural net-
+works learn internally is critical for principled design of such
+hybrid pipelines, yet this question remains largely unexplored.
+Code: https://github.com/york1to/cross-power-is-all-you-need
+𝑥!𝑛
+𝑥"[𝑛]
+STFT
+…
+Re X!
+Im X!
+Re X"
+Im X"
+Narrowband Observation Vectors
+Probe Layer 1
+Layer 2
+⠇
+Layer 𝑁 
+Probe
+Probe
+̂𝜏 
+⠇
+Neural Networks
+Does each layer learn?
+𝐶𝑟𝑜𝑠𝑠#$[𝑘] 𝑝ℎ𝑎𝑡%&’[𝑘]𝑝ℎ𝑎𝑡’()[𝑘]𝐶𝑟𝑜𝑠𝑠(*[𝑘]
+Linear Probing   
+τ
+GCC-PHAT Ground Truth τ
+Figure 1:Probing framework overview.Dual-channel signals
+are transformed via STFT into narrowband observation vectors,
+processed by one of three network architectures, and probed
+at each layer for GCC-PHAT intermediate variables: cross-
+power, PHAT whitening, and the learned magnitude-aware
+weighting alternative.
+We address this question by turning GCC-PHAT from a
+baseline into a diagnostic tool. Specifically, we apply repre-
+sentation probing [12, 13, 14], which trains a simple linear
+model on hidden-layer activations to predict a target variable;
+a high linear decodability indicates the variable is learned in
+the representation [15]. This methodology has revealed inter-
+pretable structure in language models [13, 14], mathematical
+reasoning [16], and speech representations [17, 18]. GCC-
+PHAT is especially suited for probing because each algorithmic
+step is mathematically specified, yielding exact ground-truth
+targets. Unlike algorithm unrolling [19], which constrains net-
+work architecture to follow a known algorithm, we keep archi-
+tectures unconstrained and analyze what computations emerge
+from data-driven learning. To disentangle per-frequency and
+cross-frequency computation, we study three architectures with
+systematically different frequency connectivity (per-bin MLP,
+1D-CNN, and Transformer), and complement probing with
+gradient-based attribution [20] and causal frequency-masking
+intervention [21].
+First, we find that cross-power computation consistently
+emerges across all architectures and conditions, while PHAT
+whitening fails to emerge in any decodable form.Second,
+we show that networks instead learn a magnitude-aware fre-
+quency weighting that amplifies high-energy bins (the oppo-
+site of PHAT normalization), confirmed causally via single-bin
+6058
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3246
+masking.Third, we demonstrate that PHAT whitening acts
+as an information bottleneck: removing it from both classical
+and neural GCC pipelines improves performance under additive
+noise, while end-to-end networks that retain full magnitude in-
+formation outperform all fixed-weighting methods across con-
+ditions.
+2. Method
+2.1. Network architectures
+We select three architectures with systematically varying fre-
+quency connectivity. All networks receive the same narrowband
+observation vector. For each frequency bink, we construct a 4-
+dimensional input:
+t[k] =
+[︁
+Re(X1[k]),Im(X 1[k]),
+Re(X2[k]),Im(X 2[k])
+]︁ (1)
+whereX 1[k]andX 2[k]are the complex STFT coefficients of
+the two microphone channels at frequency bink, andRe(·)
+andIm(·)denote real and imaginary parts. This represen-
+tation is chosen so that the cross-power spectrumG 12[k] =
+X1[k]·X ∗
+2 [k], with(·) ∗ denoting complex conjugation, is a
+bilinear function oft[k], computable by a single feedforward
+layer, matching the first algorithmic step of GCC-PHAT by con-
+struction.
+We train three architecturally distinct networks, wheredde-
+notes hidden dimension and each “layer” refers to one feedfor-
+ward block (MLP), convolutional block (CNN), or transformer
+block (Transformer). TheMLP-per-bin(3 layers,d=64, 8.8k
+params) applies an independent shared-weight MLP to each to-
+ken, isolating per-frequency computation: it can compute any
+function oft[k]but lacks the cross-frequency pathway needed
+for delay aggregation. We additionally train an MLP with
+d=256(133k params) to control for capacity. The1D-CNN
+(4 layers,d=64, kernel 5, 129k params) applies convolutions
+along the frequency axis, providing local cross-frequency mix-
+ing that expands with depth. TheTransformer[22] (4 lay-
+ers,d=64, 209k params) uses global self-attention with a learn-
+able CLS token, enabling all-to-all frequency interaction from
+the first layer. All networks output a scalar delay estimateˆτ,
+whereτdenotes the ground-truth inter-channel delay in sam-
+ples andτ max=30samples bounds its range. The regression
+target isτ/τ max∈[−1,1], and we report mean absolute error
+MAE =|ˆτ−τ|in samples.
+2.2. Probing framework
+Our probing strategy (Fig. 1) exploits the fact that GCC-PHAT’s
+intermediate computations are fully specified, so each algorith-
+mic step yields a ground-truth target. GCC-PHAT estimates
+TDOA in three stages.
+First, the cross-power spectrum:
+G12[k] =X 1[k]·X ∗
+2 [k].(2)
+Second, PHAT whitening normalizesG 12 to unit magnitude:
+GPHA T
+12 [k] = G12[k]
+|G12[k]| =e j∠G12[k].(3)
+where∠denotes the complex phase.
+Third, an inverse FFT ofG PHA T
+12 followed by peak-picking
+yieldsˆτ. If a network follows GCC-PHAT internally, then at
+some layerlits representationf l(x)should encodeG 12; if
+it further applies whitening, it should encode the phase∠G 12
+while discarding the magnitude|G 12|.
+Following the probing classifiers framework [13], we test
+these hypotheses by training a probeg:f l(x)↦→zfrom each
+layer’s hidden states to each algorithmic target. We use Ridge
+regression (α=1.0) as our linear probe. To quantify decodabil-
+ity, we measure the coefficient of determination:
+R2 = 1−
+∑︁
+i(yi−ˆyi)2
+∑︁
+i(yi−¯y)2 ,(4)
+wherey i is the ground-truth target valuezfor test samplei,
+ˆyi is the probe prediction, and¯yis the mean of the targets. A
+highR 2 indicates that the target islinearly accessiblein the
+representation, i.e., available without additional nonlinear com-
+putation [12]. To verify that low linearR 2 reflects genuine ab-
+sence rather than nonlinear encoding, we also train nonlinear
+MLP probes (2 hidden layers, dimension 128) as controls, fol-
+lowing [23].
+For each frequency bink, we define four per-frequency tar-
+gets:
+crossre[k] = Re(G12[k]),cross im[k] = Im(G12[k]),(5)
+phatcos[k] = cos( 2πkτ
+NFFT
+),phat sin[k] = sin( 2πkτ
+NFFT
+),(6)
+whereN FFT=256is the FFT length, andphat cos andphat sin
+are the theoretical pure-phase values that ideal PHAT whiten-
+ing would produce in the noiseless case. Together, these targets
+form a diagnostic pair: if a network follows GCC-PHAT inter-
+nally, both should be decodable; if it computes cross-power but
+stops short of whitening, only (5) should yield highR 2. We
+additionally probe the scalarτfrom the global (CLS or mean-
+pooled) token at each layer.
+Becausephat cos measures thetheoreticalnoiseless PHAT,
+low decodability might simply reflect noise corruption rather
+than absence of whitening. To address this, we define two
+supplementary targets: the observed (noisy) PHAT phase
+Re(G12[k]/|G12[k]|)and the cross-power magnitude|G 12[k]|.
+If the network encodes both cross-power and magnitude sepa-
+rately, observed PHAT is linearly reconstructible as their ratio
+without the network ever performing explicit division.
+2.3. Attribution and causal masking
+Probing revealswhatthe network represents, but nothowit
+weights frequencies during aggregation; we therefore compute
+gradient-based frequency attribution [20]:
+w[k] =
+⃦⃦∂ˆτ/∂t[k]
+⃦⃦
+2,(7)
+yielding an effective importance weight per frequency bin, av-
+eraged over the test set. If the network has learned PHAT-like
+weighting,w[k]should correlate with1/|G 12[k]|; if it favors
+high-energy bins, with|G 12[k]|. We quantify this via Pearson
+correlationr.
+Gradient attribution is correlational [24]. To establish
+whether the highlighted binscausallyaffect performance, we
+apply single-bin frequency masking [21]: for each bink, we
+zero out the input tokent[k]at test time and measure the change
+in MAE:
+∆MAE[k] =MAE\k−MAE full.(8)
+If gradient attribution faithfully reflects the network’s strategy,
+the masking sensitivity∆MAE[k]should correlate withw[k].
+6059
+Emb L1 L2 L3 L4
+0.00
+0.25
+0.50
+0.75
+1.00
+Probe R 2
+Cross-power PHAT TDOA
+10
+ 5
+ 0 5 10 20
+0.00
+0.25
+0.50
+0.75
+1.00
+Probe R 2 (best layer)
+Cross-power PHAT
++20 +10 +5 0 5
+ 10
++20
++10
++5
+0
+5
+10
+Profile SNR (dB)
+0.25 0.26 0.40 1.4 4.3 10.4
+0.25 0.25 0.27 0.58 2.6 9.0
+0.25 0.25 0.26 0.53 2.5 8.9
+0.25 0.25 0.26 0.43 2.1 8.5
+0.25 0.25 0.26 0.46 2.2 8.4
+0.25 0.25 0.26 0.47 2.5 8.5
+*
+Emb L1 L2 L3 L4
+0.0
+0.2
+0.4
+0.6
+Probe R 2
+Cross-power PHAT TDOA
+100
+101
+MAE
+(a) Layer-wise (synthetic) (b) SNR phase transition (c) SNR mismatch (colored) (d) Layer-wise (LOCATA)
+Figure 2:Summary of core findings.(a) Layer-wise probingR 2 (Transformer, colored noise, 0 dB): cross-power emerges at layer 1
+and persists, while PHAT phase remains low throughout. (b) SNR phase transition: cross-powerR 2 is stable across SNR while PHAT
+collapses. (c) SNR mismatch (colored noise): a single profile trained at 0 dB (dashed box) generalizes across all test SNRs; squares
+mark the matched-SNR diagonal. (d) LOCATA [25] real recordings: the same qualitative pattern holds despite lower absoluteR 2.
+3. Experiments and Results
+3.1. Setup
+All models are trained with AdamW, cosine schedule, Huber
+loss, and batch size 1024 for 120 epochs; the default condition
+is colored noise at0dB. Probes are trained on 3000 samples
+(70%/30% train/test split).
+3.1.1. Synthetic data
+Synthetic data provides exact ground-truth delays and precise
+control over SNR, noise type, and source signal. We generate
+dual-channel signals as
+x1[n] =s[n] +w 1[n], x 2[n] =s[n−τ] +w 2[n],(9)
+wheres[n]is a spectrally shaped noise source,τ∼
+Uniform[−τmax,τ max], andw i[n]are independent white or
+colored (1/f) noise processes at a specified SNR. Signals are
+transformed via a 256-point STFT (hop size 128), yielding
+F= 129frequency bins per channel. For each condition
+we generate 50k training and 5k validation samples with fixed
+seeds.
+3.1.2. Validation data
+To verify generalization beyond synthetic conditions, we pro-
+gressively increase realism along two axes.
+Speech with simulated channels:we replace the shaped-
+noise source with utterances from LibriSpeech [26] and test un-
+der both direct-path delay and simulated reverberation using py-
+roomacoustics [27] (ShoeBox rooms,T 60∈{0.2,0.4,0.6}s);
+delays and room geometry remain synthetically controlled.
+Real multi-channel recording:we use the LOCATA Chal-
+lenge [25] Task 1 (static speaker, DICIT 15-mic planar array),
+where delays arise from physical microphone positions and
+ground truth is computed geometrically from motion capture
+with inherent measurement error. We enumerate all
+(︁15
+2
+)︁
+=105
+mic pairs across 3 recordings (224 pairs with0.5<|τ|≤30),
+segmented at 16 kHz intoT=256non-overlapping frames (72k
+total).
+3.2. Results and analysis
+We first identifywhichGCC-PHAT steps networks replicate,
+then characterizewhatalternative strategy they adopt, and fi-
+nallywhat this impliesfor pipeline design.
+Cross-power is replicated; PHA T whitening is bypassed.
+We probe per-frequency hidden states for cross-powercross re
+Table 1:ProbingR 2 at best layer across synthetic (top) and
+validation (bottom) conditions.
+Conditioncross re phatcos τMAE
+Synthetic data
+(a) Cross-architecture (direct path, 0 dB)
+MLP-per-bin (8.8k) 0.84 0.11 0.89 2.32
+MLP-per-bin (133k) 0.90 0.12 0.96 1.58
+CNN (129k) 0.42 0.21 0.99 1.05
+Transformer (209k) 0.94 0.12 0.98 1.53
+(b) Reverberation (Transformer, 10 dB)
+T60=0.2 s 0.80 0.19 0.86 3.23
+T60=0.4 s 0.81 0.07 0.60 6.68
+T60=0.6 s 0.62 0.02 0.44 8.42
+Mixed 0.75 0.07 0.59 6.52
+Validation data (Transformer)
+(c) Speech + simulated channel [26]
+Direct path (0 dB) 0.64 0.17 0.97 2.88
+Reverb (10 dB) 0.44 0.00 0.36 9.59
+(d) Real multi-channel recording [25]
+LOCATA 0.26 0.02 0.61 5.75
+and PHAT phasephat cos at each layer. Table 1 reportsR 2 at
+the best layer.
+Cross-power is linearly decodable after the first nonlin-
+ear layer in all three architectures (Table 1a; CNN’s lower
+R2 reflects convolutional mixing; nonlinear probes recover
+R2=0.86, Table 2). The layer-wise trajectory (Fig. 2a) shows
+cross-power emerging at layer 1, withτbuilding progressively
+through deeper layers. This pattern holds across all conditions,
+withphat cos consistently near zero: reverberation (b), speech
+sources (c), real recordings (d; Fig. 2d), and SNR from+20
+to−10dB (Fig. 2b). Under reverberation,τdecodability de-
+grades with increasingT 60 (R2:0.86→0.44), but cross-power
+remains robust.
+In contrast,phat cos remains poorly decodable in every con-
+dition of Table 1 (R 2≤0.21). Table 2 consolidates the con-
+trol analyses: nonlinear probes raisephat cos only toR 2=0.23,
+and increased model capacity (8.8k→133k parameters) leaves
+it unchanged, confirming that PHAT whitening fails to emerge
+rather than being nonlinearly hidden. The network retains mag-
+nitude information because it encodes per-frequency signal re-
+liability. Bins with higher|G 12[k]|carry stronger signal energy
+relative to noise, making them more informative for delay es-
+timation. PHAT discards exactly this information by normaliz-
+ing all bins to unit magnitude. Probing for the observed PHAT
+6060
+Table 2:Control probes (Transformer, colored noise, 0 dB, best
+layer, unless noted). Nonlinear probes are 2-layer MLPs.
+Probe target LinearR 2 Nonlin.R 2
+crossre 0.94 0.94
+phatcos (theoretical PHAT) 0.12 0.23
+Observed PHATRe(G 12/|G12|)0.69 –
+Magnitude|G 12|0.82 –
+crossre (CNN) 0.42 0.86
+phatcos (MLP-per-bin, 8.8k / 133k) 0.11 / 0.12 –
+20 40 60 80 100 120
+Frequency bin k
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Normalized weight
+Learned
+|G12|
+1/|G12|
+r(Learned, |G12|) = +0.53
+r(Learned, PHAT) = -0.13
+Figure 3:Frequency-domain weighting profiles (Transformer,
+colored noise, 0 dB).The learned gradient-based weighting
+(orange) tracks cross-power magnitude|G 12|(gray dashed)
+and is anti-correlated with PHAT weighting1/|G 12|(blue
+dashed). All profiles normalized to[0,1].
+phaseRe(G 12/|G12|)yieldsR 2=0.69, but this is a compo-
+sitional artifact: the network separately encodes cross-power
+(R2=0.94) and magnitude (R 2=0.82; Table 2), from which
+observed PHAT is linearly reconstructible.
+Networks adopt two-phase computation with magnitude-
+aware weighting.The MLP-per-bin architecture pro-
+cesses each frequency independently, revealing the computa-
+tional structure. Its hidden states faithfully encode per-bin
+cross-power (Phase 1), soτremains highlyprobe-decodable
+(R2=0.89–0.96, Table 1): the linear probe reads the full hidden
+state and aggregates per-bin features externally, much as GCC-
+PHAT recoversτvia the IFFT. The network itself, however,
+aggregates only through a uniform mean-pool head and lacks
+adaptive, data-dependent cross-frequency weighting (Phase 2).
+This deficit appears in task error rather than probeR 2: MAE
+2.32 at 8.8k parameters versus 1.05 for the CNN (129k), and
+still 1.58 at matched capacity (133k). CNN and Transformer
+realize Phase 2 internally: the CNN’s receptive field grows with
+depth, while the Transformer uses global attention from the
+first layer. This mirrors GCC-PHAT: the network substitutes
+a learned weighting for PHAT in Phase 1 and a learned aggre-
+gation for IFFT+argmax in Phase 2.
+Gradient attribution (7) reveals the nature of this weight-
+ing (Fig. 3): it is positively correlated with cross-power mag-
+nitude (r= + 0.53) and anti-correlated with PHAT weight-
+ing (r=−0.13), resembling maximum-likelihood (ML)/Wiener
+weighting [28]. The pattern holds across SNR levels and for
+speech sources. Single-bin masking (8) confirms this causally:
+∆MAE[k]correlates with gradient attribution (r= + 0.94)
+and magnitude (r= + 0.69), and is anti-correlated with PHAT
+(r=−0.66).
+PHA T whitening is an information bottleneck for neural
+pipelines.We compare four GCC weighting functionsW[k]
+inˆτ= arg max IFFT(W[k]G 12[k]):PHA T(W=1/|G 12|),
++5 0 −5 −10 0 −5 −10
+100
+101
+MAE (samples)
+Colored White
+(a) Classical GCC
+0.26
+0.67
+7.94
+15.4
+0.27
+6.74
+17.8
+0.25
+0.28
+1.77
+11.7
+0.25
+2.92
+16.7
+0.26
+0.31
+1.68
+10.9
+0.29
+4.64
+17.4
+0.26
+0.43
+2.21
+8.51
+0.82
+9.21
+18.0
+PHAT Flat Magnitude Learned
++20 0 −5 −10 +20 0 −5 −10
+100
+101
+MAE (samples)
+White Colored
+(b) Neural GCC
+0.56
+1.93
+10.3
+15.2
+0.54
+1.02
+4.26
+10.9
+0.49
+1.31
+7.74
+14.5
+0.46
+0.67
+2.04
+8.37
+1.07
+2.40
+9.25
+14.8
+0.56
+1.19
+2.70
+8.61
+0.56
+2.28
+9.11
+14.7
+0.48
+0.94
+2.48
+8.12
+0.82
+5.58
+12.5
+14.4
+0.52
+1.37
+3.29
+8.46
+PHAT Flat Magnitude Learned Transformer
+Figure 4:GCC and NGCC benchmark (MAE in samples; ex-
+act values above bars).(a) Classical GCC with four weight-
+ings: Flat outperforms PHAT in all 7 conditions. (b) Neural
+GCC (NGCC): Flat preprocessing outperforms PHAT in all 8
+conditions shown (11 of 12 in the full SNR sweep, Sec. 3.2).
+Lower is better; log scale.
+Flat(W=1, plain cross-correlation),Magnitude(W=|G 12|),
+andLearned(the gradient-attribution profile of Eq. (7)). In
+the classical setting (Fig. 4a), Flat outperforms GCC-PHAT in
+all seven conditions, PHAT is the worst of the four weight-
+ings in every colored-noise condition at≤0dB, and the learned
+weighting achieves44.8%MAE reduction over PHAT at
+−10dB colored noise. A single learned profile generalizes
+across SNR levels (Fig. 2c): the spectral shape of magni-
+tude weighting is SNR-invariant. This information loss is ir-
+recoverable even with a downstream network. In the neural
+GCC (NGCC) setting [9], the weighted correlation is fed to
+a neural estimator instead of the argmax; all variants share
+the same 3-layer MLP and differ only inW[k](Fig. 4b).
+Flat preprocessing outperforms PHAT in 11 of 12 conditions
+across{+20,+10,+5,0,−5,−10}dB×{white, colored},
+with up to52%MAE reduction; the sole exception is white
+noise at+10dB (Fig. 4b shows eight conditions). This di-
+rectly challenges architectures built on GCC-PHAT preprocess-
+ing [9]. On LOCATA real-world data, all classical methods ap-
+proach chance level (MAE13.9–17.4), with GCC-PHAT best
+among them, consistent with PHAT suppressing reverberation
+artifacts [6, 29]; the Transformer achieves2.4×lower MAE
+(5.75) by retaining magnitude information and learning a data-
+adaptive weighting.
+4. Conclusions
+By probing neural networks against GCC-PHAT’s steps, we
+find that cross-power computation is a robust, architecture-
+shared inductive bias, while PHAT whitening consistently fails
+to emerge; networks instead learn magnitude-aware weighting
+that preserves the per-frequency reliability PHAT discards. In
+practice, removing PHAT from classical and neural pipelines
+improves performance under additive noise. However, our tar-
+gets assume a single source, and whether these representa-
+tions emerge in waveform-domain models is open. Theτ-
+decodability drop withT 60 (Table 1b) further hints that rever-
+beration may push networks toward features beyond GCC, e.g.,
+implicit dereverberation, a target for future probing.
+6061
+5. Acknowledgments
+This study was carried out using the TSUBAME4.0 supercom-
+puter at Institute of Science Tokyo.
+6. Generative AI Use Disclosure
+Claude Code (Anthropic) was used to assist with editing the
+experiment code. All experimental designs, analyses, and the
+manuscript text were produced and verified by the authors.

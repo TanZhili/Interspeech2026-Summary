@@ -1,0 +1,448 @@
+Dual-Granularity Orthogonal Disentanglement for Generalizable Audio
+Deepfake Detection
+Zhuodong Liu ID 1, Hugen Lv1, Xiangyu Li ID 2,∗∗, Chunhong Yuan ID 3
+1 Beijing Jiaotong University, China
+2 Shanghai Jiao Tong University, China
+3 ITMO University, Russia
+22711104@bjtu.edu.cn, 23722056@bjtu.edu.cn, xiangyuli@sjtu.edu.cn, 521031@niuitmo.ru
+Abstract
+Audio deepfake detectors often fail to generalize across speak-
+ers, as they learn speaker-identity features rather than synthesis
+artifacts, known as implicit identity leakage. Existing methods
+address this but incur architectural complexity or training insta-
+bility. This paper proposes a dual-granularity orthogonal disen-
+tanglement framework enforcing feature independence at two
+levels: sample-level cosine orthogonality captures directional
+decorrelation, while batch-level cross-covariance regularization
+eliminates linear correlations across embedding dimensions. A
+curriculum disentanglement schedule progressively strength-
+ens the orthogonality constraint without auxiliary networks or
+adversarial dynamics. Experiments on ASVspoof 2019 LA,
+ASVspoof 2021 DF, and In-the-Wild datasets demonstrate that
+the proposed method achieves 1.35%, 7.88%, and 21.58% equal
+error rates (EER), respectively, surpassing gradient reversal dis-
+entanglement by 2.60% absolute on cross-dataset transfer.
+Index Terms: audio deepfake detection, disentangled represen-
+tation, cross-domain generalization, orthogonality constraint
+1. Introduction
+Advances in voice conversion [1, 2] and text-to-speech [3, 4]
+have enabled highly realistic synthetic speech, threatening
+speaker verification systems and enabling fraud and misinfor-
+mation. While state-of-the-art detectors achieve below 2%
+equal error rates (EER) on ASVspoof 2019 LA [5, 6, 7], per-
+formance degrades to over 20% EER on real-world data [8, 9],
+a gap largely attributed to implicit identity leakage—detectors
+capturing speaker-specific characteristics rather than synthe-
+sis artifacts [10, 11, 12]. Models exploit spurious speaker-
+label correlations instead of learning transferable artifact fea-
+tures [13], as further evidenced by the ASVspoof 5 chal-
+lenge [14], where crowdsourced recordings with severe statisti-
+cal mismatch caused widespread performance degradation.
+Early audio deepfake detection relied on handcrafted fea-
+tures such as LFCCs with GMM backends [15], while recent
+end-to-end architectures like AASIST [5] and RawNet2 [6]
+achieve strong in-domain performance. Self-supervised repre-
+sentations from Wav2Vec2 [16] and WavLM further improve
+robustness [17, 18], with recent work demonstrating that atten-
+tive merging of hidden layers [19] and lightweight nested back-
+ends [20] can further narrow the generalization gap. Speaker
+embedding techniques such as x-vectors [21] and ECAPA-
+TDNN [22] have also been adapted for spoofing detection. De-
+spite these advances, cross-dataset evaluation reveals persistent
+generalization failures [8, 11, 23] attributed to implicit iden-
+**indicates the corresponding author.
+tity leakage, where models memorize speaker-specific patterns
+rather than transferable artifacts [10].
+Several disentanglement approaches have emerged to ad-
+dress identity leakage [24, 25]. Adversarial methods em-
+ploy gradient reversal for domain-invariant representations:
+ASDG [12] targets codec invariance, while ALDEN [26] com-
+bines adversarial training with reconstruction-based learning
+and meta-learning to achieve robust cross-vocoder generaliza-
+tion. The Beyond Identity framework [10] achieves implicit
+disentanglement through frequency-domain swaps and time-
+domain manipulations, and reconstruction-based approaches
+like SafeEar [27] separate acoustic and semantic components
+through auxiliary generation tasks. In the broader speech
+domain, mutual information minimization has been widely
+adopted for content-speaker disentanglement [28, 29], and
+orthogonal transformations have been explored for speaker
+anonymization [30]. Though being effective, these methods
+typically require substantial complexity: multiple encoders,
+auxiliary networks, MI estimators, or carefully engineered aug-
+mentation pipelines. Orthogonality constraints have proven ef-
+fective for feature independence in adjacent domains, including
+speech emotion recognition [31] and face anti-spoofing [32],
+but have not been explored for speaker-artifact disentanglement
+in audio deepfake detection.
+To address these limitations without incurring additional
+architectural overhead, we propose a dual-granularity orthogo-
+nal disentanglement framework. Unlike single-level constraints
+that address only directional alignment, the proposed approach
+enforces feature independence at two complementary granular-
+ities: sample-level cosine orthogonality eliminates directional
+correlation between individual embedding pairs, while batch-
+level cross-covariance regularization, inspired by decorrelation
+principles in self-supervised learning [33], removes linear cor-
+relations across embedding dimensions within each mini-batch.
+A curriculum disentanglement schedule progressively increases
+constraint strength, informed by our empirical finding that pre-
+mature aggressive disentanglement degrades performance. This
+framework provides three advantages over prior disentangle-
+ment methods: deterministic optimization without adversarial
+instability, multi-level independence enforcement without aux-
+iliary MI estimators, and minimal overhead allowing integration
+into existing pipelines.
+The main contributions of this paper are as follows. First,
+we introduce dual-granularity orthogonal disentanglement com-
+bining sample-level cosine orthogonality with batch-level cross-
+covariance regularization, representing the first multi-level ge-
+ometric enforcement of speaker-artifact independence in au-
+dio deepfake detection. Second, we propose a curriculum dis-
+entanglement schedule that progressively strengthens orthogo-
+1058
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-836
+Figure 1:Overview of the proposed dual-branch architecture
+with dual-granularity orthogonal disentanglement.
+nality constraints, preventing premature feature collapse while
+achieving stronger final disentanglement. Third, we demon-
+strate through comprehensive experiments that this approach
+achieves 1.35% and 7.88% EER on ASVspoof 2019 LA and
+2021 DF [34], respectively, and 21.58% EER on In-the-Wild,
+performance comparable to self-supervised models with over
+300M parameters using only 2.1M parameters, while outper-
+forming gradient reversal adversarial training by 2.60% abso-
+lute on cross-dataset transfer.
+2. Proposed Method
+2.1. Problem Formulation
+LetX∈R F×T denote the log-mel spectrogram of an input
+utterance withFmel frequency bins andTtime frames. Given
+a labeled training setD={(X i,yi,si)}N
+i=1, whereyi∈{0,1}
+indicates spoofed or bonafide ands i ∈ {1,...,K}denotes
+speaker identity, the goal of this paper is to learn a detector that
+generalizes to unseen speakers by preventing implicit identity
+leakage, i.e., ensuring that detection relies on synthesis artifacts
+rather than speaker-dependent features.
+We decompose the representation into a content embed-
+dingz c∈R d capturing synthesis artifacts and an identity em-
+beddingz s ∈R d capturing speaker characteristics, and en-
+force orthogonalityz c⊥z s so that the content branch is ge-
+ometrically prevented from encoding speaker information. Let
+θ={θ sh,θc,θs,θ cls}denote the parameters of the shared en-
+coder, content branch, identity branch, and classification heads.
+The learning objective is written as:
+min
+θ
+Lnat(zc,y)| {z }
+detection
++αL id(zs,s)| {z }
+speaker supervision
++β(t)L dis(zc,zs)| {z }
+orthogonality
+,(1)
+whereαcontrols the identity supervision strength, andβ(t)∈
+[0,β max]follows a curriculum schedule that progressively
+strengthens the orthogonality constraint during training (Sec-
+tion 2.4).L id is computed on bonafide samples only (y i=1)
+to learn genuine speaker characteristics without contamination
+from synthesis artifacts. The specific forms of all loss terms are
+detailed in Sections 2.3 and 2.4.
+2.2. Architecture Overview
+As shown in Figure 1, the proposed architecture comprises a
+shallow shared encoderE sh, a content branchE c with multi-
+head self-attention, and an identity branchE s with statistics
+pooling. The complete model contains 2.1M parameters and
+requires 0.89 GFLOPs per inference.
+The shared encoder consists of 3 convolutional blocks (3×
+3conv, batch normalization, ReLU,2×2max pooling) with
+channels1→64→128→256, reducing spatial dimensions
+by8×. We keep this encoder shallow to preserve fine-grained
+acoustic details before branching.
+The content branch comprises 2 additional convolutional
+blocks (256→512→512) followed by multi-head self-
+attention (MHSA) with 8 heads:
+Hattn = MHSA(H′,H′,H′) +H′,(2)
+whereH′ is the reshaped feature sequence from the last con-
+volutional block, serving as queries, keys, and values in self-
+attention. A linear projection with global average pooling yields
+zc∈R d withd= 256.
+The identity branch shares the same convolutional config-
+uration but replaces attention with mean statistics pooling over
+the frequency and time dimensions of the feature map:
+µ= 1
+F′T′
+X
+f,t
+H:,f,t,(3)
+whereF′ andT′ denote the frequency and time dimensions af-
+ter downsampling. A linear projection yieldsz s∈R d, captur-
+ing global speaker characteristics such as vocal tract properties
+and prosodic patterns.
+2.3. Dual-Granularity Disentanglement
+We note that single-level disentanglement constraints are in-
+sufficient: sample-level cosine similarity captures directional
+alignment but ignores cross-dimensional dependencies, while
+batch-level statistics alone may miss per-sample entanglement.
+Sample-level cosine orthogonality.We minimize the ab-
+solute cosine similarity between content and identity embed-
+dings for each sample:
+Lcos =E
+
+zc·zs
+∥zc∥∥zs∥
+
+
+.(4)
+Batch-level cross-covariance regularization.Within a
+mini-batch ofBsamples, we compute mean-centered embed-
+ding matrices ¯Zc, ¯Zs∈R B×d and minimize the squared Frobe-
+nius norm of the cross-covariance matrixC= 1
+B−1
+¯Z⊤
+c ¯Zs:
+Lccov = 1
+d2∥C∥2
+F = 1
+d2
+dX
+i=1
+dX
+j=1
+C 2
+ij.(5)
+This penalizes correlations betweenindividual dimensions
+across the two spaces, capturing fine-grained second-order de-
+pendencies (linear correlations) that cosine orthogonality alone
+cannot detect. Inspired by decorrelation in self-supervised
+learning [33], the formulation in this paper differs by en-
+forcing cross-space decorrelation between semantically distinct
+branches. The combined disentanglement loss is represented as:
+Ldis =L cos +γL ccov,(6)
+whereγ= 1.0balances the two granularities, with robust per-
+formance observed acrossγ∈[0.5,2.0], confirming that the
+two constraints are complementary rather than redundant. Sub-
+stituting into Eq. (1), the total training objective expands as:
+L=L nat +αL id +β(t) (L cos +γL ccov),(7)
+whereβ(t)is a curriculum weight defined below.
+1059
+2.4. Training Objectives
+The naturalness loss employs binary cross-entropy on the con-
+tent embedding:
+Lnat =−[ylogσ(f c(zc)) + (1−y) log(1−σ(f c(zc)))].
+(8)
+The identity loss uses AAM-Softmax [35] on bonafide samples
+only (yi=1):
+Lid = AAM(zs,si;m,s),(y i = 1).(9)
+Curriculum disentanglement schedule.The analysis
+(Section 4.4) shows that aggressive early disentanglement de-
+grades performance. We adopt a cosine warm-up for the disen-
+tanglement weight:
+β(t) =β max· 1
+2
+
+1−cos
+πt
+T
+
+,(10)
+allowing branches to first establish discriminative representa-
+tions before progressively enforcing independence. While sim-
+ilar scheduling exists for adversarial adaptation [24], our appli-
+cation to geometric constraints addresses a different challenge:
+preventing embedding collapse under orthogonality pressure
+rather than stabilizing minimax dynamics. The AAM-Softmax
+and BCE losses jointly prevent collapse by requiring discrimi-
+native representations in both branches.
+3. Experimental Setup
+We evaluate on ASVspoof 2021 DF [34], which contains
+bonafide speech and spoofed samples from over 100 differ-
+ent synthesis systems including VCC2018 and VCC2020 voice
+conversion submissions. The training set contains 22,617
+bonafide and 22,296 spoofed utterances from 107 speakers. For
+cross-dataset evaluation, we test models trained on ASVspoof
+2021 DF directly on In-the-Wild [8], a challenging collection of
+31,779 real-world deepfakes from diverse online sources with
+unknown generation methods.
+All audio is resampled to 16 kHz and converted to 80-
+dimensional log-mel spectrograms using 512-point FFT with
+160-sample hop length (10ms frame shift). Models are trained
+for 50 epochs using AdamW optimizer with learning rate10−4,
+weight decay10 −4, and batch size 32. Hyperparameters are
+set asα= 0.1,β max = 0.5,γ= 1.0, AAM-Softmax mar-
+ginm= 0.2and scales= 30. We compare against tradi-
+tional methods (LFCC-GMM, LFCC-LCNN [36]), end-to-end
+architectures (RawNet2 [6], AASIST [5]), self-supervised ap-
+proaches (Wav2Vec2-AASIST [18], WavLM-MLP), and dis-
+entanglement methods including GRL adversarial training [24]
+and domain generalization via aggregation-separation [13]. All
+baselines are reimplemented under the preprocessing pipeline
+for fair comparison, except SSL-based methods which use their
+respective raw waveform frontends.
+4. Results and Discussion
+4.1. In-Domain Detection
+Table 1 presents detection performance on ASVspoof 2019 LA
+and 2021 DF. On ASVspoof 2019 LA, the proposed method
+achieves 1.35% EER, ranking second among non-pretrained
+methods behind AASIST (0.83%), which benefits from graph-
+based spectro-temporal modeling optimized for in-domain con-
+ditions. The proposed method substantially outperforms all
+Table 1:In-domain detection performance on ASVspoof 2019
+LA and 2021 DF evaluation sets. Bold indicates best among
+methods of comparable scale (≤5M parameters).
+Method ASV19-LA ASV21-DF
+EER t-DCF EER t-DCF
+LFCC-GMM 8.09 0.2116 22.38 0.5765
+LFCC-LCNN 5.06 0.1000 15.62 0.4567
+RawNet2 5.13 0.1175 15.14 0.4198
+Res-TSSDNet 1.64 0.0480 9.81 0.3105
+RawGAT-ST 1.06 0.0335 10.75 0.3218
+AASIST 0.83 0.0275 12.83 0.3624
+Wav2Vec2-AASIST† 0.52 0.0165 8.54 0.2876
+WavLM-MLP† 0.43 0.0148 7.95 0.2708
+LCNN Baseline 5.00 0.0510 15.30 0.4482
+GRL Baseline 5.30 0.0670 8.91 0.2953
+DG-Agg [13] 1.87 0.0382 8.26 0.2814
+Cosine Only 1.50 0.0220 8.23 0.2762
+Full Model (Proposed) 1.35 0.0208 7.88 0.2689
+† SSL-based methods with>300M parameters.
+disentanglement-based approaches, including the GRL base-
+line (5.30%) and DG-Agg (1.87%). SSL-based methods
+(Wav2Vec2-AASIST, WavLM-MLP) achieve lower EER, as ex-
+pected, given their more than 300 M parameters and large-scale
+pretraining data. On ASVspoof 2021 DF, the proposed method
+achieves 7.88% EER, comparable to WavLM-MLP (7.95%) de-
+spite using approximately 150×fewer parameters, suggesting
+that explicit identity disentanglement can partially compensate
+for the acoustic coverage that self-supervised pretraining pro-
+vides. Notably, this is achieved with 2.1M parameters and 0.89
+GFLOPs, representing approximately 150×parameter reduc-
+tion with less than 0.1% absolute EER difference on ASVspoof
+2021 DF, highlighting the parameter efficiency of explicit disen-
+tanglement. DG-Agg [13] achieves competitive in-domain per-
+formance (8.26%) but inferior cross-dataset transfer (Table 2),
+indicating that identity-level disentanglement addresses a com-
+plementary generalization bottleneck beyond domain-level ag-
+gregation.
+4.2. Cross-Dataset Generalization
+Table 2 evaluates cross-dataset transfer from ASVspoof 2021
+DF to In-the-Wild without fine-tuning [9, 23]. The proposed
+method achieves 21.58% EER, comparable to WavLM-MLP
+(21.85%) while outperforming the GRL baseline by 2.60%
+absolute under identical architecture, confirming that multi-
+granularity geometric constraints provide more robust disen-
+tanglement than adversarial training. DG-Agg [13] achieves
+22.73%, suggesting that identity-level and domain-level gen-
+eralization address complementary aspects of distribution shift.
+The progression from single-branch (25.86%) to no-disentangle
+(23.48%) to cosine-only (22.16%) to the full model (21.58%)
+demonstrates cumulative benefits at each stage of framework.
+We note that ALDEN [26] and Beyond Identity [10] repre-
+sent closely related disentanglement approaches; however, di-
+rect numerical comparison is not straightforward as ALDEN
+evaluates primarily on cross-vocoder settings with different data
+splits, and Beyond Identity employs task-specific augmentation
+pipelines with distinct evaluation protocols. Both methods re-
+quire substantially more architectural complexity (auxiliary re-
+construction networks and meta-learning for ALDEN; multi-
+stage augmentation for Beyond Identity), whereas the proposed
+1060
+Table 2:Cross-dataset generalization. Models trained on
+ASVspoof 2021 DF and evaluated on In-the-Wild without fine-
+tuning.
+Method ASV21-DF (%) ITW (%)
+AASIST 12.83 27.41
+Res-TSSDNet 9.81 26.14
+RawGAT-ST 10.75 25.83
+Wav2Vec2-AASIST† 8.54 23.17
+WavLM-MLP† 7.95 21.85
+GRL Baseline 8.91 24.18
+DG-Agg [13] 8.26 22.73
+Single Branch 10.17 25.86
+No Disentangle 9.05 23.48
+Cosine Only 8.23 22.16
+Full Model (Proposed) 7.88 21.58
+† SSL-based methods with>300M parameters.
+Table 3:Ablation study on ASVspoof 2019 LA evaluation set.
+Configuration EER (%)∆EER
+Full Model 1.35 –
+w/o Identity Branch 5.65 +4.30
+w/oL cos &L ccov 2.84 +1.49
+w/oL ccov (cosine only) 1.85 +0.50
+w/oL cos (ccov only) 2.38 +1.03
+w/o Curriculum (fixedβ) 1.73 +0.38
+w/o AAM-Softmax 5.39 +4.04
+w/o Self-Attention 3.52 +2.17
+approach achieves competitive generalization through two ad-
+ditional loss terms alone.
+4.3. Ablation Study
+Table 3 quantifies each component’s contribution on ASVspoof
+2019 LA. The identity branch and AAM-Softmax cause the
+largest degradations when removed (+4.30%and+4.04%),
+confirming that explicit speaker modeling is essential for the
+content branch to focus on artifacts. Among disentanglement
+components, cosine orthogonality contributes more than cross-
+covariance alone (1.85% vs. 2.38% EER), yet combining both
+yields 1.35%, confirming complementary coverage of direc-
+tional and cross-dimensional dependencies. The curriculum
+schedule further improves over fixedβby+0.38%, validating
+the progressive strengthening strategy.
+4.4. Sensitivity and Disentanglement Analysis
+Figure 2 shows the sensitivity toβ max on ASVspoof 2021 DF.
+Without orthogonality (βmax = 0), the average cosine similar-
+ity between embeddings reaches 0.342, indicating substantial
+information overlap between the two branches. Asβ max in-
+creases, cosine similarity decreases monotonically, confirming
+effective orthogonality enforcement. Notably, dual-granularity
+disentanglement with curriculum scheduling broadens the opti-
+mal range toβ max∈[0.3,0.8], compared to a narrow peak at
+β= 0.5under cosine-only with fixed weighting, substantially
+improving robustness to hyperparameter selection. The optimal
+βmax = 0.5achieves 0.048 cosine similarity and 7.88% EER.
+Per-attack analysis on ASVspoof 2019 LA further shows below
+2% EER on 12 of 13 conditions, with A17 (waveform concate-
+nation) the most challenging at 3.41%.
+Figure 2:Sensitivity of EER and cosine similarity toβ max on
+ASVspoof 2021 DF . Dual-granularity with curriculum (solid)
+vs. cosine-only with fixedβ(dashed).
+(a) Colored by authenticity
+ (b) Colored by speaker identity
+Figure 3:t-SNE visualization of content embeddingsz c on In-
+the-Wild.
+Figure 3 visualizes content embeddings on In-the-Wild via
+t-SNE to qualitatively validate the disentanglement effect. Em-
+beddings form clearly separable clusters when colored by au-
+thenticity (a), confirming discriminative power on unseen data.
+Crucially, the same embeddings show no discernible speaker-
+level structure when colored by speaker identity (b), with all
+speakers uniformly distributed across both clusters. This con-
+firms that the orthogonality constraint effectively eliminates
+identity leakage from the content branch. Leave-one-speaker-
+out cross-validation (10 folds over 107 speakers) provides fur-
+ther quantitative evidence: the proposed method yields a mean
+EER of 9.87%±1.24%, compared to cosine-only at 10.52%±
+1.53% and AASIST at 14.82%±3.21%. The lower mean and
+substantially reduced variance confirm that multi-granularity
+disentanglement produces more consistent performance across
+speaker configurations, reducing speaker-dependent overfitting
+beyond what single-level constraints achieve.
+5. Conclusion
+This paper presented a dual-granularity orthogonal disentangle-
+ment framework combining sample-level cosine orthogonality
+with batch-level cross-covariance regularization under a cur-
+riculum schedule, enforcing speaker-artifact separation with-
+out auxiliary networks or adversarial training. This lightweight
+approach (2.1M parameters) achieves competitive performance
+with self-supervised models while outperforming adversarial
+disentanglement by 2.60% absolute on cross-dataset transfer.
+Future work includes extending to codec variability, controlled-
+variable validation of identity leakage, and integration with self-
+supervised frontends.
+6. Generative AI Use Disclosure
+Generative AI tools were used for English language polish-
+ing and LATEX formatting assistance during manuscript prepa-
+ration. All scientific content, experimental design, implementa-
+tion, analysis, and conclusions are the sole work of the authors.
+1061

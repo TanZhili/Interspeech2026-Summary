@@ -1,0 +1,592 @@
+A Fast Solver for Interpolating Stochastic Differential Equation Diffusion
+Models for Speech Restoration
+Bunlong Lay ID 1,2, Timo Gerkmann ID 1
+1 University of Hamburg, Signal Processing (SP), Bundesstr. 56b, Hamburg, Germany
+2 HITeC-Hamburg, Bundesstr. 56b, Hamburg, Germany
+bunlong.lay@uni-hamburg.de, timo.gerkmann@uni-hamburg.de
+Abstract
+Diffusion Probabilistic Models (DPMs) are a well-established
+class of diffusion models for unconditional image genera-
+tion, while SGMSE+ is a well-established conditional diffusion
+model for speech enhancement. One of the downsides of dif-
+fusion models is that solving the reverse process requires many
+evaluations of a large Neural Network. Although advanced fast
+sampling solvers have been developed for DPMs, they are not
+directly applicable to models such as SGMSE+ due to differ-
+ences in their diffusion processes. Specifically, DPMs trans-
+form between the data distribution and a standard Gaussian
+distribution, whereas SGMSE+ interpolates between the target
+distribution and a noisy observation. This work first develops
+a formalism of interpolating Stochastic Differential Equations
+(iSDEs) that includes SGMSE+, and second proposes a solver
+for iSDEs. The proposed solver enables fast sampling with as
+few as 10 Neural Network evaluations across multiple speech
+restoration tasks.1
+Index Terms: speech restoration, diffusion model, fast sampler
+1. Introduction
+The goal of Speech Restoration (SR) is to retrieve the clean
+speech signal from a degraded signal that has been affected
+by some corruption. Traditional methods attempt to leverage
+the statistical relationships between the clean speech signal and
+the degraded signal. Various machine learning techniques have
+been suggested, treating SR as a predictive learning task [1, 2].
+Diverging from predictive approaches, which establish a
+direct mapping from degraded to clean speech, generative ap-
+proaches focus on learning a prior distribution over clean speech
+data. Recently, a category of generative models known asdif-
+fusion models(orscore-based generative models) has been in-
+troduced to the realm of SR [3, 4, 5, 6]. In [3, 4], the concept
+involves gradually adding Gaussian noise to the data through
+a discrete and fixed Markov chain, referred to as theforward
+process, thereby transforming the data into a tractable distribu-
+tion like a Gaussian distribution. Subsequently, a Neural Net-
+work (NN) is trained to reverse this diffusion process in a so-
+calledreverse process[7]. As the step size between two discrete
+Markov chain states approaches zero, the discrete Markov chain
+transforms into a continuous-time stochastic differential equa-
+tion (SDE) under mild constraints. The use of SDEs provides
+greater flexibility and opportunities compared to methods based
+on discrete Markov chains [8]. For SR, a SDE has been origi-
+nally proposed in [5, 6]. Notably, SDEs enable the application
+of general-purpose SDE solvers for numerically integrating the
+1Published codehttps://github.com/sp-uhh/fast_
+solver_interpolating_sde
+reverse process, thereby influencing performance and the num-
+ber of iteration steps. An SDE can be viewed as resulting in
+a transformation between two specified distributions, with one
+designated as the initial distribution and the other as the ter-
+minating distribution of the SDE. In the context of SGMSE+
+[6], recently different SDEs [6, 9] have been introduced, with
+the initial distribution being the clean speech data and the ter-
+minating distribution being centered around the noisy mixture.
+Hence, these SDEs result in a stochastic interpolation between
+the clean speech signal and the noisy mixture. Within mild con-
+straints, it is possible to identify a reverse ordinary differential
+equation (ODE), known as the probability flow ordinary differ-
+ential equation (PF-ODE) [10], and different reverse SDEs [11]
+for each forward SDE that effectively reverses the forward pro-
+cess. This reverse ODE/SDE starts from the degraded signal
+plus some Gaussian noise and ends at an estimate of the clean
+speech. The key difference between a reverse SDE and a reverse
+ODE is that the reverse SDE adds Gaussian noise during the re-
+verse process, which enables the sampler to explore different
+regions of the model’s learned distribution, rather than collaps-
+ing to one deterministic trajectory. As this process assumes that
+the degraded signal is available, we call this formulationcondi-
+tional diffusion process. In contrast, inunconditional diffusion
+process, the terminating distribution is an uninformed standard
+Gaussian and thus independent of the degraded signal. Solv-
+ing the reverse PF-ODE generates a conditional estimate of the
+clean speech signal.
+Since the success of the SGMSE+’s [5, 6] conditional dif-
+fusion process formulation [4], many other interpolation SDEs
+(iSDEs) [9, 12, 13, 14, 15, 16] have been applied for score-
+based SR. Even some Schrödinger Bridges [17, 18, 19] can be
+formulated as an iSDEs. However, no general mathematical for-
+mulation has been developed to unify these iSDEs. In this work,
+we develop a formalism for arbitrary interpolating SDEs from
+which all iSDEs can be derived. Under this formalism, the un-
+conditional generation task becomes a special case, where the
+mean interpolates towards 0, instead of towards a degraded sig-
+nal as proposed in SGMSE+. For unconditional diffusion pro-
+cesses, many fast sampling methods [20, 21, 22, 11] have been
+developed, where [20] is one of the first prominent fast solvers,
+known as theDPM-SolverorDPM-pS. All fast sampling meth-
+ods achieved better quality with fewer number of function eval-
+uations (NFEs), where NFEs denotes the number of times a NN
+is called when solving the reverse process. However, these fast
+solvers can not be directly applied to iSDEs, as the solvers were
+only derived for the unconditional diffusion process. Hence, in
+this work, we develop a novel solver, based on DPM-Solver, for
+the conditional diffusion process formulated by iSDEs. The for-
+mulation of iSDEs in combination with the novel solver paves
+the road for future work to develop other DPM-Solver variants
+5186
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2582
+[21, 22] for conditional diffusion.
+The DPM-Solver [20] is a fast ODE solver that has
+demonstrated its superiority over other solvers, such as Euler-
+Maruyama (EuM) or "classical RK45" [23]. An essential idea
+of the DPM-Solver is to adopt the so-called exponential Runge-
+Kutta (expRK), a well-known family of ODE solvers, to the
+PF-ODE. Different from classical Runge-Kutta (RK) methods,
+the expRK method allows to exactly integrate the linear part of
+the solution, instead of only approximating it. As a result, the
+DPM-Solver achieves better quality with fewer reverse steps for
+unconditional diffusion. Inspired by [20], in this work, based on
+the expRK solvers, we derive a novel solver for conditional dif-
+fusion tasks such as SGMSE+. To this end, we develop a fast
+ODE sampler for solving the PF-ODE for a wide class of iSDEs
+and provide an analysis of this fast sampler against different
+samplers from the literature on various audio tasks. We exper-
+iment on SR tasks such as Noise reduction, bandwidth exten-
+sion (BWE), Declipping, MP3 decoding, and Dereverberation.
+We show that the proposed solver requires only 10 NFEs for
+restoring the clean speech target, achieving similar performance
+as the higher-order adaptive RK45 solver, which has more than
+40 NFEs.
+2. Diffusion Models
+2.1. Stochastic Differential Equations
+Letsbe clean speech andybe a degraded version ofs. Fol-
+lowing the approach in [6, 9], we model the forward process
+of the score-based generative model with an SDE defined on
+0≤t<T max:
+dxt =f t(xt,y)| {z }
+A(t)xt+a(t)
+dt+g(t)dw,(1)
+whereA(t),a(t)are continuous functions int. Since the drift
+coefficientft and diffusion coefficientghave only linear depen-
+dency onx t, we call such an SDE a linear SDE. Furthermore,
+wis the standard Wiener process [24],x t is the current pro-
+cess state with initial conditionx 0 =s, andtis a continuous
+diffusion time-step variable that describes the progress of the
+process that ends in the last diffusion time-stepT max. The term
+ft(xt,y)dtcan be integrated by Lebesgue integration [25], and
+g(t)dwfollows Itô integration [24]. In the considered SDEs,
+the diffusion coefficientgregulates the amount of Gaussian
+noise that is added to the process, and the drift coefficientf
+affects the mean and standard deviation ofxt. With this model,
+the process statext follows a Gaussian distribution [26, Ch. 5],
+called theperturbation kernel:
+p0t(xt|x0,y) =N
+ 
+xt;µt(x0,y),σ 2
+tI
+
+.(2)
+We callµ t(x0,y)themean-evolutionandσ 2
+t thevariance-
+evolutionas they describe how the mean and variance of the
+process statext evolve over the diffusion timet. If we can find
+closed-form solutions for the mean and variance evolution, then
+(2) allows us to efficiently compute the process statext for each
+tby calculating
+xt =µ t(x0,y) +σ tz,(3)
+withz∼N(0,1).
+2.2. Interpolating SDEs: Unifying Conditional Diffusion
+In this work, we are interested in iSDEs. These are SDEs,
+whose mean-evolution interpolates between the degraded ob-
+servation and the clean speech:
+µt(x0,y) = (1−k(t))x 0 +k(t)y(4)
+=x 0 +k(t)(y−x 0)(5)
+with0≤k(t)≤1being a monotonically increasing continu-
+ous interpolation function, andk(0) = 0andlim t→Tmaxk(t) =
+1. Eq. (5) shows that gradually the differencey−x 0 is added
+to the clean speech signalx 0. This difference has different
+meanings for different audio tasks. For example, in Speech En-
+hancement/Noise reduction, the differencey−xcorresponds
+to environmental noise that has to be removed. This means
+that for Noise reduction,µ t is a noisy mixture depending on
+the corrupted signaly, but with a higher signal-to-noise ra-
+tio (SNR). For BWE, the differencey−xcorresponds to the
+high-frequency content that has to be restored.
+As a novelty, here we unify the formulations of different
+iSDEs from popular approaches such as in [9, 12, 13, 14, 15,
+16, 17]. We show in the Appendix (Section 7.1) that all iSDEs
+must have the following drift coefficient:
+ft(xt,y) =γ(t)(y−x t)(6)
+with
+Rt
+0 γ(s)ds→∞fort→T max, andγ(t)≥0. We callγ(t)
+the stiffness function of the iSDE. The converse is also true and
+can be computed from [24, (6.10)], meaning if (6) is the drift
+coefficient, then the resulting mean-evolution is interpolating
+betweenx 0 andy.
+Moreover, we can even connect the interpolation function
+k(t)to the stiffness factorγ(t). We have that the stiffness pa-
+rameterγ(t)and the interpolation functionk(t)are connected
+via the following equations:
+γ(t) = k′(t)
+1−k(t) ,(7)
+wherek ′(t)denotes the derivative ofk(t)with respect tot.
+Solving fork(t)in (7), we can equivalently write
+k(t) = 1−e −
+Rt
+0 γ(s)ds.(8)
+In the following, we provide a recipe for how to find drift
+and diffusion coefficients of a linear SDE, given an interpolating
+mean with interpolation functionk(t)and given the standard
+deviationσt. Given an interpolating mean, we can already find
+the drift coefficient from (7). If the diffusion coefficientg(t)in
+(1) is given, then in the case of linear SDEs, the varianceσ2
+t can
+be computed from [24, Eq. (6.11)]:
+σ2
+t =e−2
+Rt
+0 γ(s)ds
+Z t
+0
+e2
+Ru
+0 γ(s)dsg(u)2du.(9)
+Conversely, if one wants to design an interpolating SDE process
+with a desired variance, we can solve (9) forg(t)to obtain:
+g2(t) = d(σ2
+t·e 2
+Rt
+0 γ(s)ds)
+dt e−2
+Rt
+0 γ(s)ds.(10)
+Therefore, for a given process defined by its meanµ t and vari-
+anceσ 2
+t evolution, we find a linear SDE (1) with the desired
+mean and variance by computing the drift coefficientf t in (6)
+from (7), and the diffusion coefficientg(t)from (10).
+In Table 1, we provide a list of popular iSDEs for SR
+tasks, defined by their diffusion coefficientg(t)and drift co-
+efficientf t. By (6), for the drift coefficientf t, it is enough
+to state the stiffness factorγ(t). Hence, in Table 1, we only
+5187
+Table 1:Summary of existing iSDEs for audio tasks. The SDE is defined by(1), where onlyγ(t)is needed to define the diffusion
+coefficientft(xt,y)(see(6)). The distribution ofx t is given by its mean and variance-evolutionµt,σt, where the interpolation function
+k(t)determines the mean-evolutionµ t (see(4)).c,r>0,σ min,σ max,γ 0 >0are parameters of the diffusion and drift coefficient.
+Name Tmax T γ(t) g(t) k(t) σt
+fOUVE ∞ 1 γ0 σmin(σmax
+σmin
+)t
+q
+2 ln(σmax
+σmin
+) + 2γ0 1−e −γ0t σmin(σmax
+σmin
+)t
+OUVE [5, 6] ∞ 1 γ0 σmin(σmax
+σmin
+)t
+q
+2 ln(σmax
+σmin
+) 1−e −γ0t
+q
+[(σmax
+σmin
+)2t−e−2γ0t]K
+K=σ min
+q
+ln(σmax/σmin)
+(γ0+ln(σmax/σmin))
+BBED [9] 1 0.999 1
+1−t crt t analytically not solvable
+Optimal Transport [16] 1 0.999 1
+1−t σmax
+q
+2t
+1−t t σmax·t
+Brownian Bridge [13, 14] 1 0.999 1
+1−t 1 t t(1−t)
+showγ(t). The resulting closed-form solution of the mean and
+variance-evolution are indicated by the interpolation function
+k(t)and the standard deviationσ t. It is interesting to see that
+ifT max <∞, the drift coefficient becomes numerically unsta-
+ble, as it can be seen for BBED and Optimal Transport. In fact,
+this is a general implication of iSDEs which can be explained
+as follows.
+By condition written below (5), we havelim t→Tmaxk(t) =
+1. Hence, from (8), we must have that exponential term be-
+comes 0. This implies,
+Rt
+0 γ(s)dsapproaches∞, whent→
+Tmax. Therefore,γ(t)diverges ast→T max, which leads to
+numerical instability near the terminal time. We can evade the
+numerical instability forγ(T max), if we construct an SDE such
+that the last diffusion time-step is unbounded, i.e.T max =∞.
+Such an SDE is given by the Ornstein-Uhlenbeck Variance Ex-
+ploding (OUVE) SDE in Table 1. One design issue of the
+OUVE is that the introduced parametersσ max,σ min do not fol-
+low what their name suggests. That is,σ max (orσ min) is not the
+maximalσ t (or minimalσ t). To fix this issue, we construct
+fixed Ornstein-Uhlenbeck Variance Exploding (fOUVE) SDE.
+To this end, we set the drift coefficient as for OUVE, but the
+desired standard deviation isσ min(σmax
+σmin
+)t. The corresponding
+diffusion coefficient can be computed from (10) and its result
+provided in Table 1. For fOUVE we have now that the maximal
+σt is indeed given byσ max, likewiseσ min ismin
+t
+σt. Therefore,
+fOUVE matches the intuitive meaning ofσ min,σ max, and facili-
+tates a grid-search ofσ max,σ min as discussed in Section 4.4.
+Next, we want to derive a fast sampler for the class of intro-
+duced iSDEs. To this end, we introduce the reverse process and
+the corresponding PF-ODE and reverse SDE in the next section.
+In addition, in Section 3, we explain fast solvers from the liter-
+ature and how to apply them to the proposed class of iSDEs in
+Section 3.2.
+2.3. Reverse Process
+Under mild constraints [27, 11], a (forward) SDE can be re-
+versed in time. This means there exists a reverse SDE starting
+int=T max, and ending int= 0, that has the same marginals
+as its forward SDE [8]. In fact, [11] shows that there even exists
+a family of reverse SDEs parameterized by0≤κ≤1:
+dxt =
+
+ft(xt,y)− 1 +κ 2
+2 g(t)2∇xt logpt(xt|y)
+
+dt(11)
++κg(t)d ¯w,
+whered ¯wis a Wiener process going backwards in time. For
+κ= 1, we obtain the reverse SDE by Anderson [27], and for
+κ= 0, we obtain the so-called PF-ODE.
+To solve this reverse SDE, we must set a finiteT≲T max.
+This is because, in the case of finiteT max, the drift coefficient
+f(xt,y) =γ(t)(y−x t)becomes numerically unstable as
+γ(t)→∞, ift→T max as discussed in Section 2.2. Obviously,
+in the caseT max =∞, we must also set a finiteT < T max. We
+start sampling from an initialx T =µ T (x0,y) +σ Tmaxz, since
+µT (x0,y)depends onx 0 which is unknown during inference,
+we simply approximateµ T (x0,y)≈yassuming thatTis suf-
+ficiently close toT max. The score∇ xt logpt(xt|y)is unknown
+during inference, and is typically approximated by a NN. To ap-
+proximate the score, we can train on the denoising score match-
+ing (DSM) loss. That is, givenx t =µ t(x0,y) +σ tz, with
+z∼N(0,1), and∇ xt logpt(xt|y,x 0) =− ϵ
+σt
+, we optimize
+on:
+LDSM =E t,(x0,y),ϵ,xt|(x0,y)
+
+∥sθ(xt,y,t) + ϵ
+σt
+∥2
+2
+
+.(12)
+Another option is to directly estimateϵwith a NNρ θ which
+yields theϵloss:
+Lϵ =E t,(x0,y),ϵ,xt|(x0,y)
+
+∥ρθ(xt,y,t)−ϵ∥ 2
+2
+
+.(13)
+With a trainedρ θ, we can approximate∇ xt logpt(xt|y)≈
+−ρθ(xt,y,t)
+σt
+. In the following, to simplify notation, we use
+ˆsθ(xt,y,t)≈ ∇ xt logpt(xt|y)to comprise boths θ and
+−ρθ(xt,y,t)
+σt
+.
+3. Runge-Kutta ODE Solvers
+In this section, we first setκ= 0in (11) to particularly address
+ODE solvers as they are well-established in the literature [23].
+In Section 3.2, we present our proposed to solution to address a
+wide class of iSDEs with0≤κ≤1.
+Equipped with a trained NN estimating the score, we fix a
+reverse diffusion-time schedule:T=t N >···> t 1 > t0 =
+0. Then, starting withx T , for each diffusion time-step fromt i
+toti−1, we aim to solve the integral:
+xti−1 =x ti +
+Z ti
+ti−1
+ft(xt,y)− 1
+2g(t)2ˆsθ(xt,y,t)dt(14)
+A widely used method is the RK method. For RK, the inte-
+gral (14) is solved by evaluating the integrand atp∈Nspe-
+cific intermediate points, yielding a local truncation error of
+5188
+O((ti−ti−1)p+1). For instance, the Midpoint method evaluates
+the integral at each time-step (ti tot i−1) att i and additionally
+at the midpoint
+ti+ti−1
+2 . Therefore, this method has 2 evalua-
+tions of the integrand per time-step. The Midpoint method is an
+RK2 method and has a cubic local truncation error.
+Instead of directly evaluating the integral at intermediate
+points, we can integrate the linear termf t(xt,y)out of the in-
+tegral to obtain
+L(xti,y,t i,ti−1) :=x ti +
+Z ti−1
+ti
+ft(xt,y)dt
+= Ψ(ti−1,ti)xti + (1−Ψ(t i−1,ti))y,
+(15)
+where fors>t,
+Ψ(s,t) =e −
+Rt
+s γ(τ)dτ = 1−k(t)
+1−k(s) (16)
+is the so-called fundamental solution of the homogeneous
+equation. As the linear term is exponentially weighted by
+e−
+Rt
+s γ(τ)dτ , we refer to this solver as expRK. We define the
+integral over the second term containingˆsθ in (14) as the non-
+linear part. The non-linear part can be rewritten as
+N(ti,ti−1) =
+Z ti
+ti−1
+Ψ(τ,ti)1
+2g2(τ)ˆsθ(xτ,y,τ)dτ.(17)
+In summary, we can write the solution
+xti−1 =L(x ti,y,t i,ti−1) +N(t i,ti−1),(18)
+which separates the solution into a linear and a non-linear part.
+Since the linear partL(x ti,y,t i,ti−1)is exactly integrated in
+(15), we are left with integrating the non-linear part (17). The
+DPM-Solver [20], abbreviated DPM-pS, is a solver that fol-
+lows the scheme of separating the linear from the non-linear
+term, and has been proposed for unconditional diffusion pro-
+cesses (meaningy= 0) and has local truncation error of order
+p. Briefly explained, DPM-pS proposes two ideas for how to
+integrate the non-linear part: 1) Taylor expandˆs θ, and pull it
+out of the integral, and 2) simplify the integral of the remaining
+non-linear part with a substitution rule, which we will explain
+in more detail in the following.
+3.1. Existing Fast DPM-Solver
+In this section, we explain the fast ODE sampler, called DPM-
+pS [20], which is based on (18) withy= 0. Therefore, it can
+be understood as a direct application of expRK [28]. The linear
+term then results in
+L(xti,ti,ti−1) = 1−k(t i−1)
+1−k(t i) xti.(19)
+In the notation from (19), we removeyfrom the input ofL,
+whenever it is independent ofy(i.e.y= 0). Computing the
+non-linear part is more problematic than computing the linear
+part, as we need to integrate over the NN. For DPM-pS, the
+ϵ-loss is employed, together with the change-of-variablesλ t =
+log( 1−k(t)
+σt
+)the non-linear part from (17) becomes
+N(ti,ti−1) = (1−k(λ ti−1))
+Z λti−1
+λti
+e−λρθ(xλ,λ)(20)
+To avoid integration of the NN, the(p−1)-th degree Taylor
+power series is employed as:
+ρθ(xλ,λ)≈
+p−1X
+n=0
+(λ−λ ti)n
+n! ρ(n)
+θ (xλti,λti),(21)
+whereρ (n)
+θ refers to then-th total derivative of the modelρθ(·).
+Replacing the NN in the integral of the non-linear part with the
+Taylor power series yields:
+Np(xti,ti,ti−1) :=(1−k(λ ti−1))·R p(xti,ti,ti−1)(22)
+Rp(xti,ti,ti−1) :=
+p−1X
+n=0
+ρ(n)
+θ (xλti,λti)wn(λti,λti−1),
+(23)
+withNp(xλti,λti,λti−1) =N(λ ti,λti−1)+O((ti−ti−1)p).
+In addition, the weightsw(λ ti,λti−1)are given by
+wn(λti,λti−1) =
+Z λti−1
+λti
+e−λ (λ−λ ti−1)n
+n! dλ.(24)
+A key observation of [20] is that the change-of-variable trick
+introduced byλ t eliminates direct dependencies on the diffu-
+sion and drift coefficients, as these coefficients do not directly
+appear anymore in the integral form in (24). Consequently, the
+integral in (24) can be solved in closed form. Therefore, solv-
+ing (22) only boils down to computing then-th total derivative
+ρ(n)
+θ (xλti,λti)for which the authors of [20] refer to literature
+[29, 30]. The whole (truncated) form can be written as
+xti−1≈L(x ti,ti,ti−1) +Np(xti,ti,ti−1).(25)
+3.2. Proposed Fast ISDE-Solver
+As a contribution, we derive a fast solver similar to DPM-pS
+for the proposed wide class of iSDEs (with some examples in
+Table 1). This novel solver solves (11) with0≤κ≤1. There
+are two important distinctions to make. First, the drift coeffi-
+cient depends on the noisy observationy̸= 0. Second, often
+the DSM loss is employed [9, 6] instead of theϵloss for SR
+tasks. Since the drift coefficient depends ony, the linear term is
+now of the form:
+L(xti,y,t i,ti−1) =1−k(t i−1)
+1−k(t i) xti
++
+
+1− 1−k(t i−1)
+1−k(t i)
+
+y.(26)
+Compared to (19), we see that this linear term also includes
+a term depending ony. For the non-linear part and in con-
+trast to DPM-pS, the change-of-variablesλ t = log
+
+1−k(t)
+σt
+
+does not eliminate the dependence onσ t when the score is di-
+rectly approximated using∇ xt logpt(xt|y)≈s θ opposed to
+∇xt logpt(xt|y)≈− ρθ
+σt
+. However, following the idea of us-
+ing a Taylor power series, we can pull the NN out of the integral:
+Nκ
+p (xti,ti,ti−1) :=(1−k(t i−1))·R κ
+p(xti,ti,ti−1)(27)
+Rκ
+p(xti,ti,ti−1) :=(1 +κ 2)
+p−1X
+n=0
+s(n)
+θ (xti,y,t i)wn(ti,ti−1).
+(28)
+5189
+As before, this truncated non-linear form approximates the true
+non-linear part asN κ
+p (xti,ti,ti−1) =N(t i,ti−1) +O((ti−
+ti−1)p). However, the weights differ now from (24):
+wn(ti,ti−1) =
+Z ti−1
+ti
+g(τ) 2
+2(1−k(τ))
+(τ−t i)n
+n! dτ.(29)
+While for DPM-pS,wn is solved in closed form for any choice
+of diffusion and drift coefficient, for the proposed solver, this is
+not generally possible. This is because the integrand includes
+the standard deviationσ t, which depends on the diffusion and
+drift coefficients. In those cases, one can make use of numeri-
+cal integral solvers [31] whose computational expenses are very
+small compared to computing then-th total derivatives of the
+NNs (n)
+θ . However, for certain choices of the drift and diffu-
+sion coefficients,wn can be solved analytically. In fact, in Ap-
+pendix 7.2, we derived closed-form solutions for fOUVE and
+OUVE. Unlike DPM-pS, we allow0≤κ≤1. Therefore,
+the solutionx ti−1 after taking one step fromt i tot i−1 can be
+written as
+xti−1≈L(x ti,y,t i,ti−1)+Nκ
+p (xti,ti,ti−1)+κI(ti,ti−1)z,
+(30)
+wherezI(t i,ti−1)is the exactly integrated Itô-integral inject-
+ing random Gaussian noisez∼ N(0,1). The computations
+of this Itô-integral for fOUVE can be found in the Appendix
+7.3. We call the resulting solver iSDE-pS-κ, where, as be-
+fore,prefers here to the truncation error, andκregulates how
+much Gaussian noise is injected at each time-step. Forκ= 0,
+this solver solves the PF-ODE and follows as the DPM-pS the
+expRK formulation in (18). For0<κ≤1, this solver solves a
+reverse SDE.
+In Algorithm 1, we show such a solver forp= 2. In line
+4 of Algorithm 1, the solution at the midpoints i is computed
+withp= 1which requires the evaluation ofs θ(xti,y,t i)in
+N0
+1 (xti,y,t i). Another score-model evaluation is due to line 5,
+as we computesθ(xsi,y,s i). Both score-model evaluations are
+then reused in line 6 for computingN 2(xti,y,t i). Therefore,
+the NFE is2N, as we haveNtime-steps, and 2 NFE per time-
+step. In the last line, we add Gaussian noisez∼N(0,1)to the
+process ifκ>0.
+Algorithm 1iSDE-2S-κ
+Require:x T , time-stepsT=t N > ...t 1 = 0, score model
+sθ
+1:x ti←x T
+2:fori=N,...,0do
+3:s i←
+ti+ti−1
+2
+4:x si←L(x ti,y,t i,si)

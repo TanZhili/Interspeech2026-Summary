@@ -1,0 +1,541 @@
+Activation Steering for Accent Adaptation in Large Audio Language Models
+Jinuo Sun1,∗, Yang Xiao1,∗, Sung Kyun Chung1, Qiuchi Hu1, Gongping Huang2, Eun-Jung Holden1,
+Ting Dang1
+1 School of Computer Science, The University of Melbourne, Australia
+2 Wuhan University, China
+jinuosun@gmail.com, yxiao9550@student.unimelb.edu.au, ting.dang@unimelb.edu.au
+Abstract
+Accent variability remains a major source of errors in automatic
+speech recognition, yet most adaptation methods rely on param-
+eter fine-tuning without understanding where accent informa-
+tion is encoded. We treat accent variation as an interpretable
+subspace in hidden representations and investigate whether it
+can be identified and controlled directly in activation space. We
+extract layer-wise encoder activations and estimate mean-shift
+directions capturing accent-induced representation shifts. By
+injecting these directions into individual layers and measuring
+how they align accented and standard embeddings, we derive a
+layer-wise accent sensitivity profile, revealing that accent infor-
+mation concentrates in a narrow band of middle encoder layers.
+Leveraging this structure, we further introduce parameter-free
+accent steering that modifies representations during inference
+without updating model weights. Experiments across eight ac-
+cents show consistent word error rate reductions.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Accent variability remains a persistent challenge for automatic
+speech recognition (ASR) systems [1]. Systematic differ-
+ences in phoneme realization, prosody, and phonotactic patterns
+across regional and non-native accents often lead to recogni-
+tion errors that disproportionately affect certain speaker popu-
+lations [2, 3]. In real-world deployments, including voice as-
+sistants, call centers, and educational technologies, such per-
+formance disparities degrade user experience and raise impor-
+tant concerns regarding fairness and accessibility [4]. Despite
+advances in large-scale pretraining and robust acoustic model-
+ing [5], recognition gaps across accents continue to be observed.
+Conventional accent adaptation techniques typically rely
+on supervised fine-tuning, accent-specific modeling, or data
+augmentation [6–9]. While effective in traditional ASR set-
+tings, these approaches become increasingly costly and opera-
+tionally restrictive in the era of foundation-scale speech mod-
+els. Full-parameter adaptation is computationally expensive
+and may compromise generalization across diverse accents and
+tasks [10–12]. As modern speech systems are frequently de-
+ployed as shared, large-scale backbones, there is growing need
+for lightweight and scalable adaptation mechanisms.
+Recent large audio language models (LALMs), such as
+Whisper [13], combine powerful acoustic modeling with large
+language modeling to achieve strong zero-shot generalization.
+While Parameter-Efficient Fine-Tuning (PEFT) methods and
+bottleneck adapters [14–17] offer a more lightweight adaptation
+*These authors contributed equally.
+approach by adding only a small number of trainable parameters
+on top of a frozen base model, these approaches still optimize
+the added parameters heuristically [18–21]. Without explic-
+itly localizing or constraining updates to layers and subspaces
+that are most sensitive to accent-related variation, these meth-
+ods may perform unnecessary adaptation in accent-insensitive
+regions of the model and risk entangling accent compensation
+with higher-level semantic representations, limiting both effi-
+ciency and control.
+Understanding how accent variation is organized in repre-
+sentation space is critical for designing scalable and control-
+lable adaptation strategies. If accent corresponds to identifiable
+subspaces in hidden activations, then targeted representation-
+level interventions may offer an alternative to parameter-
+intensive fine-tuning [22]. Recent studies in large language
+models show that high-level attributes, such as sentiment, style,
+or safety [23–27], can align with approximately linear direc-
+tions in activation space. These directions, often referred to
+as steering vectors, are typically constructed as mean activa-
+tion shifts between contrasting concepts [28, 29]. When added
+to hidden states at selected layers, they nudge representations
+toward desired regions of the space, enabling controllable be-
+havioral modulation at inference time without modifying model
+parameters. This perspective motivates the central question of
+this work:Does accent variation correspond to a structured
+and controllable subspace in LALMs?
+In this paper, we first conduct a layer-wise analysis of hid-
+den activations to understand the geometric structure of ac-
+cent variations. This investigation serves two primary purposes.
+From aninterpretabilityperspective, it reveals how the model
+distributes accent information across layers. Furthermore, from
+acontrollabilityperspective, it determines whether these ac-
+cent features are organized enough to allow direct adjustments.
+Based on this foundation, we construct steering vectors to ad-
+just accent representations during model inference. Our method
+inserts learned accent directions into specific hidden states. We
+subsequently evaluate their effectiveness in automatic speech
+recognition (ASR) tasks across diverse pronunciations. To the
+best of our knowledge, this is the first study to systematically
+analyze and apply vector steering for accent-robust automatic
+speech recognition. Our extensive experiments on the VCTK
+and L2-ARCTIC datasets demonstrate the middle-to-late layers
+are the most sensitive to accent-induced representation shifts.
+Moreover, mean shift steering significantly improves the word
+error rate across eight distinct accents without updating model
+parameters. We observe that interventions in the middle layers
+provide the most effective control. This study offers a principled
+and scalable way to reduce accent-induced recognition dispar-
+ities in speech foundation models, advancing both robustness
+and fairness in real-world ASR deployment.
+4634
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2166
+2. Accent Subspace Analysis and Steering
+2.1. Layer-wise Accent Subspace Analysis
+We analyze how accent-related variation is organized across en-
+coder layers and quantify how strongly each layer responds to
+accent-specific representation shifts. This yields a layer-wise
+sensitivity profile that highlights which layers are most suitable
+for subsequent accent steering.
+2.1.1. Accent Representation Perturbation
+We construct text-matched utterance pairs to isolate accent-
+related acoustic variation from linguistic content. For each tar-
+get accent, we create two types of pairs: (i)cross-standard-
+accentpairs(x s,x a), wherex a is an accented utterance and
+xs is a standard-English utterance with an identical transcript,
+and (ii)within-single-accentpairs(x a,x a)formed by differ-
+ent speakers from the same accent group. The cross-standard-
+accent pairs capture systematic accent-induced differences,
+while the within-single-accent pairs serve as a control to ac-
+count for speaker-specific factors such as timbre or prosody,
+helping us separate accent effects from general inter-speaker
+variation. Given accented speech samplesx a and standard
+speech samplesx s, our layer-wise analysis then quantifies, at
+each encoder layer, how the latent representations of accented
+speech differ from those of standard English, and how effec-
+tively a layer supports aligning these two clusters. Concretely,
+for each layerl, we first extract the token-level hidden activa-
+tionsH (l). For each speech samplei, we apply mean pooling
+over time for comparing across layers to obtain an utterance-
+level representation ¯h(l)
+i . Based on these pooled representa-
+tions, we compute an accent mean-shift direction from a source
+accent groupsto a target accent groupa:
+d(l)
+s→a = 1
+|Gs|
+X
+j∈Gs
+¯h(l)
+j − 1
+|Ga|
+X
+i∈Ga
+¯h(l)
+i (1)
+whereG s andG a denote the sample sets corresponding to the
+standard and accent speech, respectively. This vectord (l)
+s→a
+characterizes the accent shift between the two representation
+clusters at layerl. To probe the sensitivity of layerlto this ac-
+cent direction, we apply a controlled perturbation to its hidden
+activations: ˜H(l) =H (l) +α·d (l)
+s→a,(2)
+whereαis optimized to1.0, corresponding to a one-unit accent
+mean-shift perturbation, andd (l)
+s→a is broadcast across all time
+steps ofH (l). The resulting perturbed activations ˜H(l) are then
+propagated through the remaining encoder and projector layers.
+2.1.2. Quantifying Layer Sensitivity via Accent Alignment
+Score (AAS)
+Given the layer-wise perturbation defined above, we quantify
+how much each layer contributes to reducing the representation
+gap between accented and standard speech. Our analysis is con-
+ducted on the audio encoder of Qwen2-Audio-7B [30], which
+consists of 32 Whisper-style encoder layers followed by a multi-
+modal projector. Since accent variation is primarily expressed
+through acoustic patterns, we focus on hidden-state transforma-
+tions within the audio encoder and measure their propagated
+effects in the projector space, which provides the final speech
+representation passed to the downstream language model.
+For each source-target speech pair, we apply the mean-shift
+displacementd (l)
+s→a at audio encoder layerland measure its
+propagated effect in the multi-modal projector space. Because
+the projector output remains time-dependent, we further apply
+mean pooling over the projector time steps to obtain a single
+utterance-level representation for each sample, on which cosine
+similarity is computed.
+We define the Accent Alignment Score (AAS) as the change
+in cosine similarity between the perturbed source representation
+and the target representation:
+AAS(l)
+s→a = cos (˜z a,(l)
+proj ,z b
+proj)−cos (z a
+proj,z b
+proj)(3)
+Here, ˜z a,(l)
+proj denotes the projector output of the source speech
+sample after applying the layer-lperturbation. Meanwhile,
+z a
+proj andz b
+proj represent the baseline projector outputs for the
+source and target speech samples, respectively. A positiveAAS
+indicates that the layer-wise perturbation moves the source rep-
+resentation closer to the target accent representation.
+We apply the same procedure to both cross-standard-accent
+and within-single-accent pairs, and compute their AAS values
+at each layer. Specifically for within-single-accent pairs, we
+calculated a within accent mean-shift vectord(l)
+a→a between two
+speakers of the same accent, following the same AAS calcula-
+tion procedure.
+To isolate the additional alignment gain observed in cross
+pairs beyond general speaker variation, we compute the speci-
+ficity score, which measures the amount of the patching effect
+that truly comes from the accent:
+Spec(l) = AAS
+(l)
+cross− AAS
+(l)
+within (4)
+whereSpec (l) denotesSpecificityscore at layerl, and AASde-
+notes the average score across all evaluated speech pairs in their
+respective sets. The subscriptcrossdenotes cross-standard–
+accent pairs, whilewithindenotes within-accent pairs. A pos-
+itiveSpec (l) value indicates that the patching effect at this
+specific layer is indeed caused by accent differences. Conse-
+quently, it is not caused by other speaker-level variations. Based
+on this logic, the layer sensitivity scoreSensitivity(l) is defined
+asmax(0,Spec (l))which is used for ranking across layers. In
+addition, our layer-wise analysis adopts a bidirectional design
+(standard→targetandtarget→standard) to reduce direction-
+specific bias and provide a more robust estimate of layer sensi-
+tivity. Each direction is computed independently and then aver-
+aged.
+2.2. Inference-Time Accent Steering
+The layer-wise sensitivity analysis identifies candidate layers
+for controllable accent intervention. Building on the analysis,
+we next construct steering vectors to modulate accent-related
+representation during inference. We then test whether steering
+at these layers can produce measurable shifts that improve the
+downstream ASR performance of accented speech toward that
+of standard speech. To extract the generalized steering vector
+and avoid the effect of speakers and sentences, we design an
+extraction setand anevaluation set. They are isolated from the
+speakers and texts. This design ensures that the steering vector
+is estimated from data that shares neither speaker identity nor
+text content with the evaluation data.
+For steering, we reuse the mean-shift direction defined in
+(1), but compute it only from the extraction set. Before injec-
+tion, we normalize the directiond (l)
+s→a to unit norm:
+ˆd(l)
+s→a = d(l)
+s→ad(l)
+s→a
+
+(5)
+This separates direction from magnitude and makes the steering
+strength parameterαcomparable across layers. During infer-
+ence, we inject the normalized steering vector into the hidden
+states at the selected layerl:
+4635
+˜H(l) =H (l) +α ˆd(l)
+s→a (6)
+whereαcontrols the steering strength. The vector ˆd(l)
+s→a is
+broadcast across all time steps ofH (l). We implement this in-
+tervention using a forward hook, so no model parameters are
+modified. We propose that the vector of an accent direction es-
+timated from a subset of speech data can generalize effectively
+to unseen speakers and unseen utterances. The evaluation is in
+the Results section.
+3. Experiment Settings
+3.1. Datasets and Accents
+Native accents:We adopt the VCTK dataset [2], a high-fidelity
+corpus featuring speakers with diverse regional accents, to study
+native English variations. Specifically, we select Scottish, South
+African, Canadian, Irish, and Northern Irish accents for our ex-
+periments. As VCTK includes a standard English group, we
+utilize this subset directly as our reference for comparison.
+Non-native accents:We utilize the L2-ARCTIC corpus [3],
+which provides manual phonetic-level annotations of speech
+from diverse linguistic backgrounds. In this study, we focus on
+Hindi, Arabic, and Spanish accents. Since L2-ARCTIC lacks
+an internal native reference, we draw native speakers from its
+source, the CMU-ARCTIC dataset [31], which consists of pho-
+netically balanced sentences designed for speech synthesis. Be-
+cause both datasets utilize identical reading scripts, the CMU-
+ARCTIC data serve as an ideal, matched reference group.
+3.2. Pair Construction and Data Splits
+Accent Subspace Analysis:For each of the above accents,
+we construct 1000 cross-standard-accent pairs and 500 within-
+single-accent pairs. No data split is required.
+Inference-Time Accent Steering:For each of the above target
+accents, we adopt a strict data splitting protocol:80%of the
+speakers are assigned to the extraction set, while the remaining
+20%are reserved for the evaluation set. We further enforce
+no transcript overlap between extraction pairs and evaluation
+utterances to avoid text leakage. For each accent group, we
+randomly sample 1,000 speech pairs from the extraction set to
+estimate the mean-shift vector.
+3.3. Evaluation Protocol
+We evaluate steering in a single-layer sweep across 32 encoder
+layers, where each layer and each steering strengthαare tested
+independently. We chooseα= [0.5, 1, 2, 5] to cover different
+scale of steering strength. Steering effectiveness is evaluated by
+the resulting change in Word Error Rate (WER).
+To reduce bias from difficulty, the evaluation set is con-
+structed by balanced sampling: We first input the candidate ut-
+terances to the trained model. Then we select half of the target
+utterances from samples withWER = 0, and the other half
+from samples withWER>0. In the default setting, we sample
+100 utterances from each group, yielding 200 evaluation utter-
+ances in total. We use the same balanced subset and evaluation
+protocol for the steering results in Sec. 4 and for the Base, Steer,
+and PEFT comparison in Table 1.
+4. Results and analysis
+4.1. Accent Subspace Analysis
+To reduce scale differences, each accent group is normal-
+ized independently. Layer 31 is excluded as it directly pre-
+cedes the linear multi-modal projector. Sensitivity analysis on
+VCTK shows a shared pattern: low sensitivity in early layers
+(0–14), an emerging peak near layer 15, and a sharp rise to
+global maximums from layer 21 onward. L2-ARCTIC exhibits
+similar trends but with stronger global fluctuations, suggest-
+ing non-native accents induce more distributed representational
+changes. The steering window is divided into early (0–14), mid-
+dle (15–19), and late (20–30) stages. Early layers process low-
+abstraction acoustic information [32, 33]; native accents show
+weak sensitivity here, while non-native accents trigger higher
+peaks due to stronger low-level acoustic deviations. This makes
+early intervention less controllable. Based on this observation,
+the middle to late layers are identified as more promising target
+locations for steering vectors.
+4.2. Analysis of Layer-Wise Steering Dynamics
+4.2.1. Steering Effect on Native Accents
+We first analyze the layer-wise steering effect on the VCTK
+dataset to understand native accent representations. As shown
+in Figure 1b, we observe a consistent trend across the Scottish,
+South African, Canadian, Irish, and Northern Irish groups. In
+the early layers, the intervention yields minimal impact on the
+mean word error rate. However, the middle layers have the most
+evident WER reductions. The strongest gains are concentrated
+in middle layers, reaching up to about 30%∆WER for some
+accents on the balanced subset. By contrast, late-layer steering
+is unstable and often harmful. For example, layer 31 experi-
+ences massive error increases across all groups. This geometric
+pattern suggests that native accent characteristics are primar-
+ily encoded in intermediate representations. Therefore, targeted
+interventions in these middle sections provide optimal control
+without disrupting higher-level semantic understanding.
+4.2.2. Steering Effect on Non-native Accents
+We extend our analysis to non-native speech using the L2-
+ARCTIC corpus. We evaluate the mean shift steering effect
+on Hindi, Arabic, and Spanish variations. Similar to the native
+setup, the performance changes reveal a distinct spatial struc-
+ture as shown in Figure 1e. The early layers show relatively
+stable performance with minimal metric fluctuations. Subse-
+quently, the middle layers again demonstrate a clear improve-
+ment in recognition accuracy. Although the error reduction is
+smaller than that of native speech, reaching around 5%∆WER
+drop, the localized trend remains highly consistent. Further-
+more, steering in the final layers causes severe degradation.
+Specifically, layer 31 alone adds approximately 4.0 to the er-
+ror rate across all three linguistic backgrounds. This structure
+confirms that non-native accent variations also occupy a con-
+trollable subspace. Consequently, applying targeted steering to
+specific middle layers offers a scalable pathway for adaptive
+systems.
+4.2.3. Cross-Accent Steering Pattern and Insights
+Empirical results reveal consistent layer-wise patterns for both
+native and non-native accents. Layers 0–14 are largely unre-
+sponsive to steering, yielding minimal metric changes. Con-
+versely, the middle layers (15–19) emerge as the optimal win-
+dow, showing consistent, significant error reductions across all
+linguistic backgrounds. This suggests middle-layer representa-
+tions are not yet fixed, allowing accent perturbations to propa-
+gate stably and confirming these intermediate states effectively
+isolate accent characteristics for controllable steering. Late-
+layer steering produces highly unstable, divergent results. For
+4636
+0 5 10 15 20 25 30
+Layer
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Normalized Sensitivity (max=1)
+Early Layers Mid Late Layers
+Layer-wise Sensitivity on VCTK Accents
+Scottish
+South African
+Canadian
+Irish
+Northern Irish
+(a)Layer-wise sensitivity (VCTK)
+0 5 10 15 20 25 30
+Layer Index
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+0.4
+Mean WER
+Early Layers Mid Late Layers
+Layer 31 (omitted):
+  Scottish: +4.9
+  South African: +2.5
+  Canadian: +4.7
+  Irish: +1.5
+  Northern Irish: +5.8
+VCTK Native-Accent Steering Effect ( =5)
+Scottish
+South African (4-fold CV)
+Canadian
+Irish
+Northern Irish (b)Steering∆WER (VCTK)
+0 5 10 15 20 25 30
+Layer Index
+0.25
+0.20
+0.15
+0.10
+0.05
+0.00
+Mean WER
+Early Layers Mid Late Layers
+Layer 31 (omitted):
+  =0.5: +0.33
+  =1: +0.57
+  =2: +0.70
+  =5: +3.90
+VCTK Native-Accent Steering: Alpha Sensitivity
+(avg 5 accents)
+ = 0.5
+ = 1
+ = 2
+ = 5
+ (c)Avg.∆WER vs.α(VCTK)
+0 5 10 15 20 25 30
+Layer
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0Normalized Sensitivity (max=1)
+Early Layers Mid Late Layers
+Layer-wise Sensitivity on L2-Arctic Accents
+Arabic
+Hindi
+Spanish
+(d)Layer-wise sensitivity (L2-ARCTIC)
+0 5 10 15 20 25 30
+Layer Index
+0.05
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+Mean WER
+Early Layers Mid Late Layers
+Layer 31 (omitted):
+  Hindi: +3.7
+  Arabic: +3.9
+  Spanish: +4.2
+L2-ARCTIC Non-Native Accent Steering Effect ( =5)
+Hindi (4-fold CV)
+Arabic (4-fold CV)
+Spanish (4-fold CV) (e)Steering∆WER (L2-ARCTIC)
+0 5 10 15 20 25 30
+Layer Index
+0.05
+0.00
+0.05
+0.10
+0.15
+0.20
+Mean WER
+Early Layers Mid Late Layers
+Layer 31 (omitted):
+  =0.5: +0.66
+  =1: +0.84
+  =2: +1.03
+  =5: +3.94
+L2-ARCTIC Non-Native Steering: Alpha Sensitivity
+(avg 3 accents)
+ = 0.5
+ = 1
+ = 2
+ = 5
+ (f)Avg.∆WER vs.α(L2-ARCTIC)
+Figure 1:Layer-wise accent subspace analysis and steering results with an alpha sweep. Top row: VCTK; bottom row: L2-ARCTIC.
+non-native accents, it frequently causes representation collapse;
+even for native accents, gains do not exceed those of the middle
+layers. This poor controllability likely stems from increasingly
+fixed representations, leaving too few layers to reorganize in-
+jected directions. Finally, terminal layer 31 consistently causes
+massive performance degradation, confirming the tail layer is
+unsuitable for injection.
+4.2.4. Steering Strength Analysis
+To compare how differentαvalues affect performance, we com-
+pute, for both native and non-native accents, the mean∆WER
+steering effect under eachαinjection strength. Figures 1c
+and 1f illustrate the resultingα-parameter sensitivity trends. We
+observe that asαincreases, the layer-wise steering effect ex-
+hibits larger fluctuations and higher improvement peaks. No-
+tably, once the steering strength exceeds a critical threshold,
+both native and non-native accents show signs of an accelerated
+collapse starting from around layer 27.
+Specifically, for native accents,α= 2yields strong steer-
+ing effects in the late layers with a generally depth-progressive
+trend, but performs poorly in the mid layers. In contrast, with
+α= 5, the mid-layer performance improves substantially, sur-
+passing the late layers and reaching higher peaks, while the late
+layers display stronger oscillations and clearer collapse behav-
+ior. For non-native accents, the overall trend is more consistent:
+the mid layers constitute the globally optimal intervention win-
+dow, whereas the collapse in the late layers becomes increas-
+ingly pronounced asαgrows, with the collapse onset shifting
+toward earlier layers. Overall, theαsweep further corrobo-
+rates that the mid layers (15-19) form a shared and most suit-
+able steering window across both native and non-native accents.
+We stop the sweep atα= 5because this regime already shows
+clear instability in deeper layers.
+4.3. Comparable study with PEFT Baseline
+Table 1 compares the fine-tuning approach with our proposed
+steering method. Analysis reveals a critical link between train-
+ing sample size and adaptation efficacy. Fine-tuning excels
+with large datasets, such as the Arabic, Hindi, and Spanish
+sets containing approximately 800 training pairs. Conversely,
+Table 1:Comparison of steering and PEFT on the balanced
+evaluation subsets defined in Sec. 3.3. Lower WER is bet-
+ter. Base denotes the unadapted WER on the balanced subset;
+Steer and PEFT denote WER after inference-time steering and
+parameter-efficient fine-tuning on the same subset.∆WER is
+reported relative

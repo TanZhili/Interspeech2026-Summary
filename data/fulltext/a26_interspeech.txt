@@ -1,0 +1,539 @@
+MTC-A VSR: Compressed-Token-based Audio-Visual Speech Recognition and
+Translation with Contrastive Language Alignment
+Lusi A ID 1,2,3, Zhiyong Duan ID 4, Jiang Li ID 1,2,3, Feilong Bao ID 1,2,3,∗∗
+1 College of Computer Science, Inner Mongolia University, China
+2 National Local Joint Engineering Research Center of Intelligent Information Processing
+Technology for Mongolian, China
+3 Inner Mongolia Key Laboratory of Multilingual Artificial Intelligence Technology, China
+4 College of Arts and Technology, Inner Mongolia Arts University, China
+22409015@mail.imu.edu.cn, duanmingbai2022@163.com
+Abstract
+Audio-visual speech recognition (A VSR) has achieved robust
+accuracy by fusing lip motion with acoustic cues; however,
+state-of-the-art systems still rely on high-resolution multimodal
+sequences, imposing prohibitive computational costs on large
+language models. Recent attempts to compress tokens remain
+confined to single-task recognition. We address the open ques-
+tion of whether the same compressed tokens can simultaneously
+support speech recognition and speech-to-text translation with-
+out retraining the encoder. We propose MTC-A VSR, a multi-
+task model built upon minimal multimodal speech (MMS) to-
+kens. The framework couples an MMS-style token compressor
+with a prompt-conditioned LLM for single-stream inference,
+introduces a lightweight language adapter module (LAM) that
+maps compressed, source-aligned tokens into multilingual rep-
+resentations, and presents the token-contrastive alignment loss
+(TCAL) to align adapter outputs with a multilingual lexicon via
+contrastive learning. Experiments show that our model achieves
+a word error rate (WER) of 0.74% on LRS3 (on par with SOTA)
+while setting new records on MuA ViC En-X tasks: English-
+Spanish BLEU 28.1, French BLEU 26.3, and Portuguese BLEU
+21.8, all state-of-the-art, validating the residual linguistic capac-
+ity of compressed tokens under joint audio-visual speech recog-
+nition and translation scenarios.
+Index Terms: multi-modal processing, noise-robust, audio-
+visual speech recognition, large language model, multilingual
+1. Introduction
+Numerous researches have demonstrated that visual informa-
+tion can provide effective cues to aid speech recognition, es-
+pecially in such complex acoustic environments where the au-
+dio is corrupted or unavailable. Therefore, Audio-visual speech
+recognition (A VSR), incorporating video modality (e.g. lip mo-
+tion and facial expression) into automatic speech recognition
+(ASR), has been extensively developed [1, 2, 3].
+Recent advances in A VSR have been driven by large-scale
+datasets [4], architectural improvements: from recurrent [5] to
+transformer-based models [6], and multimodal learning tech-
+niques such as self-supervised pre-training [7] and cross-modal
+distillation [8]. Staged training strategies [9] have further im-
+proved performance, and recent integration of large language
+models (LLMs) as decoders has enhanced contextual reasoning
+significantly [10]. Despite the superior contextual capabilities
+afforded by LLM-based A VSR, the requisite high-resolution
+**indicates the corresponding author.
+token sequences inevitably inflate computational budgets and
+latency. Although LLM-based A VSR achieves strong recog-
+nition, the long token sequences increase computation and
+latency.While token compression methods like MMS-
+LLaMA [11] and LLaV A-Mini [12] reduce cost without sac-
+rificing accuracy, two key issues remain: (a)Prior stud-
+ies have focused exclusively on audio-visual speech recogni-
+tion, leaving unexplored whether compressed tokens retain suf-
+ficient cross-task semantic information to support a joint recog-
+nition and translation objective.(b)The compressed tokens are
+aligned only to the source language, and rarely has previous
+work explored mapping them into a multilingual space to sup-
+port multilingual translation without expanding the parameters
+of the large language model.
+To address these issues, We propose MTC-A VSR, a multi-
+task framework that integrates compressed multimodal tokens
+with a prompt-conditioned LLM. Our contributions are twofold:
+(a) we extend token compression to joint audio-visual speech
+recognition and translation, demonstrating that a single stream
+of 3.5 tokens per second suffices for both tasks without encoder
+retraining. (b) we introduce a lightweight language adapter that
+recodes source-aligned tokens using a jointly optimized mul-
+tilingual lexicon, enabling zero-shot language switching with
+the LLM kept frozen, along with a token-contrastive alignment
+loss that explicitly maps adapter outputs to their correspond-
+ing lexical entries for joint training of both the adapter and the
+QLoRA [13] adapters. Through the above two works, we pro-
+vide feasible solutions to the two aforementioned problems.
+2. Proposed Method
+2.1. Overview
+The overall framework of our proposed MTC-A VSR model is
+depicted in Fig. 1. The pipeline is divided into three concep-
+tual stages: multimodal compression, language adaptation, and
+task-conditioned decoding. The responsibilities of each stage
+are as follows. (I) In the multimodal compression stage, the
+model extracts audio and video features separately and per-
+forms feature fusion and compression operations. (II) In the lan-
+guage adaptation stage, the compressed tokens are re-encoded
+via LAM against a multilingual lexicon to incorporate multilin-
+gual cues. (III) Finally, in the task-conditioned decoding stage,
+a frozen LLM fine-tuned by QLoRA adapter receives each to-
+ken sequence prefixed by a task-specific prompt and generates
+either source transcripts or target translations. The overall ob-
+jective combines two components: a cross-entropy (CE) loss
+on the LLM outputs for ASR and each translation target, and
+a separate token-contrastive alignment loss (TCAL); they are
+7511
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-266
+AVST OUTPUT
+AVSR OUTPUTAVSR OUTPUT
+Embedding
+2×
+Tanh Gating
+Cross Attention
+Cross Attention
+Tanh Gating
+Query Key, Value
+Language Adaptation
+Embedding
+RECO
+GNIZE EN EOTSOT RECO
+GNIZE EN EOTSOT
+TRAN
+SLATE ES/FR/IT/PT EOTSOT TRAN
+SLATE ES/FR/IT/PT EOTSOT
+RECO
+GNIZE EN EOTSOT
+TRAN
+SLATE ES/FR/IT/PT EOTSOT
+Task-Conditioned Decoding
+OUTPUTOUTPUT
+Multilingual 
+Representation
+Multilingual 
+Representation
+Multilingual Lexicon
+▁de
+▁the
+▁olá
+▁bonjour
+▁a
+▁mundo
+.
+.
+.
+ly
+ement
+▁ami
+ç ã o
+Multilingual Lexicon
+▁de
+▁the
+▁olá
+▁bonjour
+▁a
+▁mundo
+.
+.
+.
+ly
+ement
+▁ami
+ç ã o
+LLM
+ QLoraLLM
+ QLora
+multimodal compression
+Multimodal 
+Compressed Tokens
+AV-Fusion
+AV Q-Former
+Allocated 
+Queries
+Audio features     (25Hz)
+Visual Encoder Audio Encoder
+Visual features     (25Hz)
+... ...... ...
+Length Adapter
+Audio features     (25Hz)
+Visual Encoder Audio Encoder
+Visual features     (25Hz)
+... ...
+Length Adapter
+AV-Fusion
+AV Q-Former
+Allocated 
+Queries
+Audio features     (25Hz)
+Visual Encoder Audio Encoder
+Visual features     (25Hz)
+... ...
+Length Adapter
+Figure 1:An overview of the proposed MTC-AVSR.
+balanced by an annealing factorλ. ensuring the adapter learns
+multilingual alignment before the LLM.
+2.2. Multimodal Compression
+To obtain compact yet linguistically rich representations, our
+model processes inputs through modality-specific front-ends
+followed by a dynamically query-allocated A V-QFormer. The
+visual front-end extracts aligned lip-motion embeddings, while
+the audio front-end produces mel-filterbank features resampled
+to the visual time scale. These features are fused via multi-
+head cross-attention into a unified representationXav, which is
+then fed into the A V-QFormer using the query-allocation strat-
+egy from MMS-LLaMA. Specifically, we employ a learnable
+query bankQ∈R N×D , whereNis the total number of queries
+andDis the embedding dimension. The number of queries
+allocated to an input is computed asN alloc =⌊f Q·Tv/Fv⌋,
+wherefQ = 3.5tokens/s (which is validated by MMS-LLaMa
+as achieving the best trade-off between efficiency and perfor-
+mance),T v is the frame count, andF v is the frame rate. The
+firstN alloc queries formQ alloc∈R Nalloc×D, which along with
+the fused featuresX av are processed by the A V-QFormer to
+produce multimodal speech tokensM∈R Nalloc×D as follows:
+M=Q-Former(Q alloc,X av).(1)
+Finally, two linear projection layers mapped the tokens into
+the embedding space of the LLM, ready for downstream task
+conditioning.
+2.3. Language Adaptation
+To enable cross-lingual expressivity in the compressed multi-
+modal tokens, we introduce a Language Adaptation Module
+(LAM) between the A V-QFormer and the LLM decoder. The
+LAM consists of a multilingual lexicon and a two-layer gated
+cross-attention network. The shared lexiconE∈R |V|×D is
+formed by merging the source and four target language sub-
+vocabularies, where each entrye∈Eis initialized from the
+corresponding LLM embedding and fine-tuned as a learnable
+parameter. The adapter uses two gated cross-attention layers:
+the queries are the compressed tokensm∈M, while the
+keys and values are drawn fromE. Following Flamingo [14],
+the output multilingual representationz∈Zis computed
+via a gated cross-attention block, which incorporates multi-
+head cross-attention (Attn), LayerNorm [15] (LN), and a feed-
+forward network (FFW).The calculation process is as follows:
+m′ =m+ tanh (α xattn )×Attn(LN(m),e)(2)
+Z=m ′ + tanh (αmlp )×FFW(LN(m ′))(3)
+To explicitly constrain the output space of the language
+adapter, we introduce the Token-Contrastive Alignment Loss
+(TCAL). TCAL attracts each adapter outputz t∈R D toward
+its target lexicon entrye yt and repels all other entries via con-
+trastive learning on a hypersphere. Unlike cross-entropy, TCAL
+optimizes cross-lingual alignment directly in the vector space
+using cosine similarity and temperature scaling, without explicit
+sequence probability modeling. The loss function is calculated
+as follows:
+LTCAL =− 1
+Nalloc
+NallocX
+t=1
+log exp (sim (zt,eyt)/τ)P
+k∈|V| exp (sim (zt,ek)/τ)
+(4)
+wheree k denotes other negative entries in the Lexicon,
+sim(·,·)denotes cosine similarity andτ= 0.07is a tem-
+perature hyper-parameter. During training,L TCAL is back-
+propagated exclusively through the lexicon and the adapter,
+ensuring that the LLM and the upstream compressor remain
+frozen.
+2.4. Task-Conditioned Decoding
+Inspired by Whisper’s multitask training format [16], we
+prepend explicit task-control tokens to steer the frozen LLM.
+The prompt starts with a<sot>token, followed by either
+<recognize><En>for ASR or<translate><lang>for trans-
+lation, and ends with<eot>. Here,<lang>is selected from
+the set{Spanish (Es),French (Fr),Portuguese (Pt),
+Italian (It)}. During training, each chunk is randomly prefixed
+with a task token to balance both objectives. At inference,
+switching between tasks is done by altering the prompt prefix.
+2.5. Training Strategy
+To ensure stability and to disentangle the responsibilities of
+compression, alignment, and cross-lingual adaptation, we adopt
+a rigorously staged training regime. Each stage is executed only
+once and is terminated by an explicit checkpoint; parameters
+frozen at the end of a stage remain frozen thereafter, guaran-
+teeing that subsequent stages cannot inadvertently disturb the
+representations already acquired.
+7512
+2.5.1. Stage-1 Token Source Language Alignment
+In this initial stage, the objective is to align the compressed to-
+kens with source-language transcripts. Only the upstream en-
+coder stack and QLoRA adapters are unfrozen, and the entire
+sequence is trained with the cross-entropy loss until validation
+WER ceases to improve, at which point the encoder chain and
+QLoRA weights are frozen and locked for subsequent stages.
+Lalign =−
+TX
+t=1
+logPθ
+
+ysrc
+t |h LLM
+t
+
+(5)
+whereTrepresents the maximum sequence length during LLM
+decoding,y src
+t denotes the ground-truth source transcript,h LLM
+t
+denotes the hidden state output generated byZin the LLM.
+After training, all encoder parameters were frozen and check-
+pointed.
+2.5.2. Stage-2 Cross-Lingual Adaptation
+Using the frozen token cache generated in Stage-1, we streamed
+compressed tokens together with parallel source and four
+target-language transcripts through a newly unfrozen Language
+Adapter. Only the adapter, its multilingual lexicon, and QLoRA
+adapters received gradients. The LLM multi-task loss and over-
+all training target are defined as below.
+LLLM =
+
+
+
+−PT
+t=1 logPϕ
+ 
+ysrc
+t |h LLM
+t
+
+,(recognize)
+−PT
+t=1 logPϕ
+ 
+ytgt
+t |h LLM
+t
+
+,(translate)
+(6)
+Ltotal =L LLM +λL TCAL (7)
+withλlinearly annealed from 1.0 to 0.3 across the entire train-
+ing schedule. This progressive schedule is motivated by the
+need to balance two competing gradients.
+3. Experiments
+3.1. Experimental Setup
+To train our models, we use LRS3 [4] and augment the training
+set with 1,326h of English videos from V oxCeleb2 [17], whose
+transcripts are generated using Whisper Large-v2 [16]. For En-
+X translation, we use MuA ViC [18], which provides translations
+of LRS3 into four languages. All audio and video are resampled
+to 16 kHz and 25 fps, respectively. Mouth regions of size 96 ×
+96 are cropped using RetinaFace [19], converted to grayscale,
+and horizontally flipped for augmentation. Audio is mixed with
+babble noise from MUSAN [20] with 75% probability. We re-
+tain target-language translations to support multi-task learning
+under consistent input conditions. The decoder uses a frozen
+LLaMA3-3B backbone [21] with QLoRA adapters applied to
+the query, key, value, and output projections.
+All trainable modules use AdamW withβ 1 = 0.9,β 2 =
+0.98, weight decay 0.01. A cosine scheduler starts at1e −4,
+warms up over 0.5k steps, and decays to1e −5 across 30k total
+steps. Stage-2 employs the linear annealing schedule forλfrom
+1.0 to 0.3. Gradient clipping is set to 1.0. Inference uses beam
+search (beam=5, temperature=0.3).
+3.2. Comparison to Improvement of Different A VSR Mod-
+els
+To evaluate the proposed method on the A VSR task, we bench-
+marked our model against previous state-of-the-art approaches
+Table 1:Comparisons with state-of-the-art methods on the
+LRS3 dataset. The clean condition is evaluated on the origi-
+nal test set, while the noisy condition is evaluated on a test set
+with babble noise added at 0-SNR
+Method Training Data (h) WER↓
+Noisy Clean
+CM-seq2seq [22] 433 — 2.3
+CMA [23] 433 4.4 1.5
+A V-data2vec [24] 433 6.7 2.5
+auto-avsr [8] 1902/3448 — 1.0/0.9
+LP Conformer [25] 100K1.90.9
+Whisper-Flamingo [26] 433/1759 5.6/5.6 1.1/0.76
+MMS-LLaMa [11] 17591.9 0.74
+MTC-A VSR1759 2.00.74
+on the LRS3 dataset, as summarized in Table 1. Conven-
+tional systems such as CM-seq2seq [22], CMA [23], and A V-
+data2vec [24] typically adopt Conformer or Transformer back-
+bones and rely on large-scale corpora to boost performance.
+Notably, LP Conformer [25] achieved a 0.9% WER using 100K
+hours of training data. Recent large-scale pretrained models,
+including Whisper-Flamingo [26]and MMS-LLaMA [11], re-
+ported WERs of 0.76% and 0.74%, respectively. Our model,
+trained on 1,759 hours, attained a WER of 0.74%, on par with
+the current best-performing A VSR systems. Under noisy condi-
+tions (0 dB babble), the proposed method also retained robust-
+ness with a WER of 2.0%, demonstrating competitive general-
+ization across acoustic degradations.
+Table 2:Result for En-X translation on MuAViC. Babble noise
+is added at 0-SNR (Noisy)
+Method BLEU↑
+Es Fr It Pt
+Speech-to-Text Translation (Clean Audio)
+Bilingual A V-HuBERT [18] 26.6 25.3 20.7 20.5
+Whisper-Flamingo (Small) [26] 27.0 24.7 20.7 21.3
+Whisper-Flamingo (Middle) 28.0 26.122.521.3
+Whisper-Flamingo (Large) 27.9 25.9 22.121.8
+MTC-A VSR 28.1 26.322.421.8
+Speech-to-Text Translation (Noisy Audio)
+Bilingual A V-HuBERT [18] 24.823.820.0 20.0
+Whisper-Flamingo (Small) [26] 22.1 21.1 17.1 18.3
+Whisper-Flamingo (Middle) 24.5 21.6 18.8 18.6
+Whisper-Flamingo (Large)25.422.4 19.3 19.9
+MTC-A VSR25.2 23.520.3 20.5
+3.3. Comparison for En-X Translation on MuA ViC
+Table 2 summarises En-X speech-to-text translation results on
+the MuA ViC dataset under clean and noisy acoustic conditions.
+In the clean-audio partition, MTC-A VSR achieved competi-
+tive BLEU [27] scores, consistently outperforming the Bilin-
+gual A V-HuBERT [18] baseline across all four target languages
+and matching the Whisper-Flamingo family. Our proposed
+model attained an average BLEU of 24.65, surpassing the best
+Whisper-Flamingo variant (Middle) by +0.22 and the Small
+variant by +1.22. Under noisy conditions, however, Bilingual
+A V-HuBERT retained the highest robustness on the En-Fr trans-
+lation task, reaching a 23.8 BLEU score, while MTC-A VSR
+trailed by only -0.3 BLEU. It should be noted that the noisy au-
+7513
+Table 3:Ablation study result for various component and LLM sizes in MTC-AVSR. Babble noise is added at 0-SNR (Noisy)
+Setting LLM Version GPU Memory
+Usage (GB) Flops(T) BLEU (Es)↑WER↓
+Noisy Clean Noisy Clean
+Baseline
+LLaMa3.2-1B
+9.9 1.20 23.8 26.7 2.47 0.85
++ LAM 10.2 1.21 24.4 27.3 2.24 0.79
++ Multi-Lexicon 10.2 1.21 24.7 27.5 2.19 0.78
++ TCAL Loss 10.3 1.22 24.9 27.7 2.13 0.77
+Baseline
+LLaMa3.2-3B
+12.4 1.51 24.3 27.4 2.36 0.81
++ LAM 12.7 1.52 24.6 27.8 2.16 0.78
++ Multi-Lexicon 12.7 1.52 25.1 28.0 2.07 0.75
++ TCAL Loss (MTC-A VSR) 12.8 1.5325.3 28.12.040.74
+Baseline
+LLaMa3.1-8B
+16.8 2.19 24.1 27.1 2.33 0.83
++ LAM 17.1 2.20 24.5 27.4 2.14 0.78
++ Multi-Lexicon 17.1 2.20 24.9 27.9 2.05 0.76
++ TCAL Loss 17.2 2.21 25.2 28.02.020.75
+dio files are not publicly released, preventing a direct like-for-
+like comparison. Moreover, MTC-A VSR uses a single model
+to handle both En-X translation and English transcription, in
+contrast to Bilingual A V-HuBERT, which is separately fine-
+tuned per language pair. Despite this, MTC-A VSR achieves the
+highest average BLEU under babble noise among all Whisper-
+Flamingo variants and performs best on Italian and Portuguese,
+showing that the compressed-token pipeline preserves linguistic
+information even under acoustic degradation.
+3.4. Ablation Study
+3.4.1. Validation of Component-Wise Efficiency and LLM Size
+Impact
+To dissect the contribution of each component within MTC-
+A VSR, we conducted a step-wise ablation study on the MuA ViC
+En-Es track, using Spanish BLEU and English WER as evalu-
+ation metrics; all experiments were run on the full 1,759 hour
+dataset, and the results are reported in Table 3. Starting with a
+frozen LLM using only prompts (no LAM, no TCAL), Spanish
+BLEU remains low (27.4) despite strong English transcription
+(WER 0.81), revealing a severe cross-lingual alignment gap.
+Adding the LAM improves BLEU to 27.8 and reduces WER
+to 0.78, confirming that LAM successfully maps tokens into
+the multilingual embedding space without harming recognition.
+Multilingual Lexicon further refines semantic correspondence,
+pushing BLEU to 28.0 and WER to 0.75. Finally, enabling
+the TCAL yields the best trade-off (BLEU 28.1, WER 0.74),
+demonstrating that token-level contrastive supervision explic-
+itly tightens the token-to-word correspondence.
+Furthermore, to investigate how the model size of LLMs
+affects A VSR performance, we conducted experiments using
+three models based on LLaMA with 1B, 3B, and 8B parame-
+ters. Under clean-audio conditions, LLaMA 3.2-3B achieves
+the best WER of 0.74 and the highest BLEU of 28.1 on the
+En-Es translation task, outperforming both 1B and 8B mod-
+els. However, under noisy conditions, the LLaMA3.1 8B model
+achieved the best WER of 2.02 and consistently outperforms the
+1B model. These results suggest that larger model might per-
+form better under the challenging environment. As expected,
+the larger model incurs higher GPU memory usage and com-
+putational costs. Given its comparable performance to the 8B
+model, we report results using the LLaMA3.2-3B model for
+other experiments due to its significantly lower computational
+requirements.
+Table 4:Comparison of different language alignment strategies.
+CMT means Full Cross-Modal Transformer
+method GPU Memory
+Usage (GB) Flops(T) BLEU (Es)↑
+Noisy Clean
+Addition 0.05 1.52 24.8 27.8
+Concatination 0.08 1.52 25.1 27.9
+LoRA-based
+Injection 0.01 1.51 24.6 27.5
+CMT 0.60 1.55 24.4 27.3
+LAM(Ours) 0.30 1.5325.3 28.1
+3.4.2. Comparison of different language alignment strategies
+To validate the computational efficiency and effectiveness of
+the proposed LAM module, we compare five alignment strate-
+gies across three dimensions. Here, “GPU Memory Usage” de-
+notes the extra memory consumption introduced by each strat-
+egy on top of a shared baseline (12.4 GB). As shown in Ta-
+ble 4, LoRA-based injection, while highly parameter-efficient,
+underperforms due to its static, global, and non-selective fu-
+sion mechanism. Our LAM module incurs only a modest in-
+crease of approximately 0.3 GB in GPU memory significantly
+less than the 0.6 GB overhead of the CMT. Although LAM ex-
+hibits slightly higher memory and FLOP costs compared to the
+other three strategies, it consistently achieves substantial perfor-
+mance gains in noisy (BLEU 25.3) and clean conditions (BLEU
+28.1). Notably, despite its larger parameter count and higher
+computational demand, CMT treats the multilingual lexicon as
+a generic sequence and applies self-attention indiscriminately.
+In contrast, LAM leverages cross-attention and Tanh gating to
+achieve precise, context-aware alignment while maintaining rel-
+atively low resource overhead. This design not only avoids the
+inefficiencies of brute-force fusion but also strikes an optimal
+balance between model capability and computational economy.
+4. Conclution
+In this work, we present MTC-A VSR, a multitask framework
+that couples ultra-compressed MMS tokens with a prompt-
+conditioned LLM to perform simultaneous ASR and En-X
+translation. A lightweight language adapter and the proposed
+TCAL loss align tokens to a multilingual lexicon without reac-
+tivate the encoder. On LRS3, the system achieves WER 0.74%;
+on MuA ViC, it sets new SOTA BLEU scores of 28.1 (Es), 26.3
+(Fr) and 21.8 (Pt), validating the residual linguistic capacity of
+compressed multimodal representations under joint training.
+7514
+5. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used a
+large language model (e.g., ChatGPT and Qwen) solely for
+proofreading and improving the clarity and fluency of the En-
+glish text. All scientific content including problem formulation,
+methodology design, experimental implementation, data analy-
+sis, and interpretation was conceived, conducted, and validated
+entirely by the human authors. The generative AI tool was not
+involved in any aspect of research design or decision-making,
+and it is not considered an author of this work.
+6. Acknowledgment
+This work is partially supported by the National Natu-
+ral Science Foundation (62566045), Inner Mongolia Au-
+tonomous Region Major Special Science and Technology
+Project (2025ZDSF0029), Inner Mongolia Autonomous Region
+Natural Science Foundation Project (2026QAYX002), Inner
+Mongolia Autonomous Region Science and Technology Plan
+Project (2026YFHH0006, 2025KYPT0041, 2025KYPT0064),
+Inner Mongolia Autonomous Region First-Class Discipline Sci-
+entific Research Special Project (YLXKZX-ND-036).

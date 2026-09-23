@@ -1,0 +1,452 @@
+Who Synthesized This? Joint Deepfake Detection and Generative Source
+Attribution
+Vishal Kumar ID 1, Vinayak Abrol ID 1, Mathew Magimai Doss ID 2
+1 Department of Computer Science, IIIT-Delhi, India
+2 IDIAP Switzerland
+vishalku@iiitd.ac.in, abrol@iiitd.ac.in, mathew@idiap.ch
+Abstract
+We propose a few-shot, open-set framework for joint deep-
+fake detection and generative source attribution. Addressing
+the rapid evolution of synthetic speech, we introduce a tempo-
+ral evaluation strategy using the MLAAD v9 dataset, partition-
+ing models by launch year and architectural family. Our model
+utilizes a WavLM-Large model with targeted LoRA adapters,
+optimized via-a hierarchical metric learning objective: Condi-
+tional AAM Softmax + Center Loss. We simulate real-world
+forensic deployment by performing prototype-based inference
+on unseen 2025+ model families, establishing new class cen-
+troids with only 12 samples. Evaluated on the ASVspoof 5.0
+benchmark, our framework achieves SOTA performance with
+0.49% EER and 0.09 minDCF, while attaining 99% accuracy
+in tracing generated speech to its source. These results demon-
+strate that hierarchical representation learning and few-shot pro-
+totype adaptation provide a robust, scalable defense against the
+shifting landscape of audio synthesis.
+Index Terms: Anti-Spoofing, Synthetic Speech Attribution,
+Open-World Recognition
+1. Introduction
+Driven by advances in neural codecs and deep generative mod-
+eling, speech synthesis has transitioned to autoregressive, dif-
+fusion, and flow-matching architectures [1, 2] capable of gen-
+erating perceptually indistinguishable speech. By directly opti-
+mizing latent manifolds under perceptual loss objectives, these
+systems systematically suppress the spectro-temporal artifacts,
+phase discontinuities, spectral smearing, unnatural pitch con-
+tours that legacy discriminators historically exploited. This es-
+calates voice cloning and zero-shot [3] identity spoofing into
+severe operational threats against ASV , while the architectural
+diversity of modern synthesis systems, codec-based autoregres-
+sive models [4], diffusion pipelines, and end-to-end variational
+architectures imposes structurally distinct inductive biases on
+the generated signal, producing a heterogeneous threat surface
+that no single detection strategy can uniformly cover. The field
+has consequently shifted toward self-supervised speech repre-
+sentations [5, 6, 7], which acquire rich hierarchical encodings
+spanning low-level spectro-temporal texture through to abstract
+phonetic and speaker discriminative structure from large unla-
+beled corpora. Models trained under joint masked prediction
+and denoising objectives [7] are particularly consequential in
+this context, where, by reconstructing clean speech from cor-
+rupted inputs, representations are encouraged to preserve fine-
+grained generative characteristics that survive acoustic pertur-
+bation. Critically, projecting diverse acoustic signals into a uni-
+fied high-dimensional latent space disentangles natural intra-
+speaker variance from residual generative fingerprints, provid-
+ing a theoretically principled foundation for downstream attri-
+bution that purely feature-level approaches cannot offer.
+Detection alone, however, is no longer a sufficient forensic
+objective. The more consequential and technically demanding
+problem is finegrained attribution, determining not merely that
+a recording is synthetic, but identifying which model produced
+it, including systems entirely absent from the training set. This
+constitutes the open world recognition [8] problem, where con-
+ventional classifiers fail categorically by assigning high confi-
+dence predictions to novel, unseen generators rather than with-
+holding judgment. The temporal dimension of this problem is
+equally important synthesis systems are released continuously,
+meaning that any attribution framework must accommodate an
+expanding class inventory without periodic retraining a require-
+ment that static architectures are structurally incapable of satis-
+fying. Metric learning [9] addresses this by training networks to
+produce embeddings in a space where geometric proximity re-
+flects semantic similarity, enabling inference via nearest neigh-
+bor search over an open and extensible class inventory. Proto-
+type networks [10] formalize this principle further, representing
+each class through a mean embedding centroid so that newly
+emerged synthesis systems can be registered from a small num-
+ber of samples without any modification to model parameters a
+property indispensable for realistic deployment. The hierarchi-
+cal organization of synthesis systems[11] by architectural fam-
+ily further motivates a structured metric space, where coarse
+family level boundaries and finegrained model level clusters
+jointly govern the embedding geometry. The principal contri-
+butions of this work are as follows:
+• Dual-Tier Hierarchical Metric Learning: Joint optimiza-
+tion of dynamically conditioned AAM-Softmax margins and
+EMA-anchored Center Loss to resolve both broad synthesis
+families and fine grained syntesizer fingerprints.
+• Dynamic Prototype Anchoring: A few-shot prototype mech-
+anism for inference time attribution of emergent, zero-day
+generative architectures without parameter updates.
+• Empirical State-of-the-Art: Establishing a new benchmark
+on the open-set ASVspoof Track 1 evaluation with a 0.49%
+EER and 0.09 minDCF.
+2. Related Works
+The ASVspoof challenge series has been the principal bench-
+mark driving anti-spoofing research [12]. It evolves from hand-
+crafted spectral features such as LFCCs and CQCCs [13] paired
+with GMM classifiers, to end-to-end neural detectors built on
+self-supervised learning (SSL) backbones. The recently re-
+leased ASVspoof 5 [14] raises the bar considerably by incor-
+porating diverse modern generative systems, adversarial con-
+2324
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2442
+(LoRA)
+Wavlm-Large
+Prototype Registration 
+(Synthetic Models)
+LoRA Tuned
+Wavlm-Large
+Prototype Registration
+(Real)
+Prototype Registration 
+(New Synthetic Models)
+LoRA Tuned
+Wavlm-Large
+Predicted Class
+Model Family
+Accuracy
+Synthetic Model
+Accuracy
+Set 1
+(< 2025)
+Phase - 1
+Set 2
+(> 2025)
+Real
+Data
+Phase - 2
+EmbeddingPreComputed
+Prototypes
+Cosine Similarity
+Phase - 3
+Figure 1: Illustration of proposed framework. (Phase 1) LoRA finetuning of Wavlm-Large with Hierarichal Training Curiculum on
+Set-1, (Phase 2) Prototype registration with real data and Set-2, (Phase 3) Inference strategy
+ditions, and in-the-wild recordings, exposing the limitations
+of detectors trained on earlier, more constrained benchmarks.
+Beyond binary detection, source attribution has emerged as a
+distinct forensic task. [15, 16] proposed open-set extensions
+via threshold based rejection over closed set classifiers, while
+the Patchout Spectrogram Attribution Transformer (PSAT) [11]
+achieved over 95% closed set accuracy on ASVspoof 2019 and
+DARPA SemaFor datasets. Self-supervised transformer based
+systems [17] have further demonstrated 99.8% closed-set ac-
+curacy with open-set generalization exceeding 90%. The het-
+erogeneous threat surface introduced by ASVspoof 5 under-
+scores the need for attribution frameworks that generalize be-
+yond closed-set assumptions.
+The adoption of SSL speech models wav2vec 2.0 [5], Hu-
+BERT [6], and WavLM [7] has fundamentally expanded the
+feature landscape for forensic tasks, yielding representations
+that encode hierarchical phonetic and speaker-level structure
+without label supervision. Deeper transformer layers cap-
+ture abstract, task-agnostic structure while earlier layers re-
+tain finegrained spectro-temporal detail, a stratification partic-
+ularly valuable for attribution. On the metric learning side,
+Prototype Networks [10] formalized few-shot generalization
+through embedding centroids, while ArcFace [18] demonstrated
+the efficacy of additive angular margin losses for hyperspheri-
+cal discrimination, subsequently confirmed in speaker verifica-
+tion [19] to outperform softmax-based objectives. Parameter-
+efficient fine-tuning via LoRA [20] enables targeted adaptation
+of large SSL backbones to specialized forensic tasks while pre-
+serving pretrained representations, a property critical in low-
+data settings where full fine-tuning risks catastrophic forgetting
+of the generic acoustic structure essential for generalization to
+unseen synthesis systems.
+3. Temporal Source Tracing via Few-Shot
+Prototype Adaptation
+We formulate synthetic speech attribution as a hierarchical
+open-world recognition problem. The system must not only dis-
+criminate among known generative paradigms but also extend
+attribution to zero-day architectures at inference time, with-
+out retraining. As illustrated in Figure 1, the pipeline oper-
+ates across three phases, (Phase 1) Training, (Phase 2) Regis-
+tration, and (Phase 3) Inference, unified by three core novelties:
+(1) Dual-Tier hierarchical metric learning that jointly resolves
+architectural families and finegrained synthesizer fingerprints,
+(2) Dynamic Prototype anchoring that registers emergent gen-
+erative models at inference time via few-shot centroid compu-
+tation, and (3) A LoRA-adapted SSL backbone that preserves
+pretrained acoustic generalizability while specializing the latent
+manifold for open-set deepfake attribution.
+1. Phase 1: Hierarchical Metric Learning (Training)
+• The backbone is WavLM-Large [7], selected for its denois-
+ing pre-training objective that preserves finegrained gener-
+ative fingerprints under acoustic perturbation. Rather than
+full finetuning which risks catastrophic forgetting of the
+pretrained representations essential for open-set general-
+ization, LoRA is applied exclusively to the feature pro-
+jection and attention output projection layers, constraining
+adaptation to a low-rank parameter subspace while retain-
+ing the backbone’s broad acoustic generalizability.
+• The embedding space topology is governed by a joint geo-
+metric objective, our first core novelty that simultaneously
+optimizes inter-class separability and intra-class compact-
+ness via Conditional AAM-Softmax [18] with dynamically
+trainable margins (my) and via Center Loss with EMA sta-
+bilized centroid updates, mitigating high variance gradient
+noise from class imbalanced mini-batches respectively.
+• Training follows a two-stage hierarchical curriculum moti-
+vated by the manifold hypothesis. Stage 1 forces the LoRA
+adapters to discriminate broad architectural families like
+LLM-Codec, Diffusion, Flow-Matching, FastSpeech, and
+VITS establishing a coarse, globally discriminative mani-
+fold. Stage 2 refines this topology by resolving finegrained
+intra-family synthesizer identities, building upon the estab-
+lished family-level geometry rather than optimizing from a
+flat class structure. Upon completion, the mean embedding
+of each model class and architectural family is cached as
+a prototype vector, initializing the attribution registry (Fig-
+ure 1, Phase 1).
+2. Phase 2: Dynamic Prototype Anchoring (Registration)
+To counter the continuous emergence of zero-day generative
+architectures our second core novelty is novel synthesis mod-
+els from Set 2 that are registered into the prototype store
+without any parameter update or retraining (Figure 1, Phase
+2). For each new model class c,K support samples are pro-
+jected through the frozen backbone to compute a new proto-
+type centroid. Empirically we confirmK≈ 36 as the critical
+threshold for centroid stabilization within a bounded cosine
+radius across diverse synthesis families. The prototype reg-
+istry thereby scales monotonically with the threat landscape,
+absorbing zero-day models as they emerge, without disrupt-
+ing the established hyperspherical geometry. Bonafide proto-
+types are registered analogously from V oxCeleb 2 [21] using
+2325
+gender conditioned centroids independent male, female, and
+mixed prototypes to robustly model the multimodal distribu-
+tion of natural intra-speaker variance.
+3. Phase 3: Nearest-Prototype Retrieval (Inference)
+During deployment, a test utterance is projected into the la-
+tent space through the frozen backbone, and attribution is
+executed via nearest-neighbor retrieval against the full pro-
+totype registry (Figure 1, Phase 3). Cosine similarity is
+strictly employed over Euclidean distance to maintain met-
+ric consistency with the hyperspherical topology induced by
+the AAM-Softmax training objective. This parameter free
+retrieval mechanism eliminates class-specific threshold cali-
+bration entirely, yielding simultaneous architectural family-
+level and individual synthesizer-level attribution decisions at
+negligible computational overhead establishing a new state-
+of-the-art on the ASVspoof 5 Track 1 open-condition evalu-
+ation.
+4. Experimental Setup
+Dataset & Partitioning Details: Three strictly disjoint
+datasets are employed across training, registration, and
+evaluation. MLAAD v9 [22] serves as the primary corpus,
+partitioned temporally into Set 1 (pre-2025 models) for
+backbone fine-tuning and initial prototype computation, and
+Set 2 (post-2025 models) both sets are subdivided into family
+stratified subsets to simulate the incremental emergence of
+zero-day synthesis architectures. VoxCeleb 2 [21] provides
+genuine speech samples for bonafide prototype construction,
+sourced externally to eliminate acoustic bias toward evaluation
+conditions and prevent data leakage. ASVspoof 5 Track 1
+(open condition) is reserved exclusively for evaluation no
+portion of this corpus is exposed during training, finetuning, or
+registration with performance reported via EER and minDCF
+consistent with standard ASVspoof evaluation protocols [23].
+WavLM-Large [7] is selected as the SSL backbone owing to
+its masked speech prediction and denoising pretraining objec-
+tive, which instills representations sensitive to both speaker
+identity and finegrained acoustic artifacts. Properties directly
+relevant to synthesizer fingerprint discrimination, and empiri-
+cally demonstrated to outperform HuBERT and wav2vec 2.0
+on speaker and spoofing related downstream tasks [7]. The
+backbone is adapted via Low-Rank Adaptation (LoRA) [20]
+with rank r = 8 and scaling factor α = 16 .0, applied se-
+lectively to the feature projection.projection and
+attention.attention.out proj layers a configura-
+tion determined through systematic ablation over alternative
+layer combinations and rank settings. The complete codebase
+is implemented in PyTorch and all experiments are conducted
+on a multi-GPU server equipped with three NVIDIA RTX 3090
+(24 GB VRAM each) GPUs and 512 GB system RAM.
+5. Results, Discussion & Ablation
+In this section, we present findings across two evaluation axes:
+(1) spoofing detection on ASVspoof 5 Track 1 open condition,
+and (2) fine-grained synthetic speech attribution on MLAAD
+v9, assessing identification of both architectural family and
+individual generative model (last column of Table 2). As
+MLAAD v9 provides no standardized train-test split, all par-
+titions follow the temporal and architectural family-based split-
+ting strategy described previously, ensuring strict separation be-
+tween training, prototype construction, and evaluation data.
+5.1. ASVspoof 5 Performance
+Table 1 reports the performance of the proposed system along-
+side all competitive submissions on the ASVspoof 5 Track 1
+open-condition evaluation. The proposed system achieves an
+EER of 0.49% and a minDCF of 0.09 as a single system sub-
+mission, surpassing the best ensemble system (T45: minDCF
+= 0.07, EER = 2.59%) and the best single system submission
+(T31: minDCF = 0.14, EER = 5.56%) by substantial margins,
+establishing a new state-of-the-art on this benchmark.
+Table 1: Performance comparison on the ASVspoof 5 Track 1
+open condition evaluation set. Results for baseline and chal-
+lenge systems are reported from [23].• denotes ensemble sys-
+tem,◦ denotes single system ▲ uses pre-trained SSL models,△
+does not.
+System Type minDCF actDCF EER (%)
+Baselines [23]
+B01 ◦△ 0.8266 0.9922 36.04
+B02 ◦△ 0.7106 0.9298 29.12
+Challenge Systems [23]
+T47 •△ 0.26 0.33 9.18
+T19 ◦▲ 0.17 0.30 6.06
+T31 ◦▲ 0.14 0.22 5.56
+T23 •▲ 0.11 1.00 4.16
+T27 •▲ 0.09 0.13 3.42
+T36 •▲ 0.09 1.00 3.41
+T45 •▲ 0.07 1.00 2.59
+Proposed System
+Ours ◦▲ 0.09 0.97 0.49
+The near-zero EER is particularly meaningful in open-set
+detection theory, it implies widely separable score distributions
+between genuine and spoofed speech. A property difficult to
+achieve when the test distribution contains synthesis systems
+unseen during training, as in the ASVspoof 5 open-condition
+evaluation. The low minDCF of 0.09 corroborates this, confirm-
+ing that the optimal decision threshold incurs minimal weighted
+cost across both error types. However, the elevated actDCF of
+0.97 reveals a score calibration gap consistent with metric learn-
+ing systems, where cosine similarity scores cluster near the unit
+hypersphere boundary rather than spanning the full range. This
+is addressable through post-hoc normalization such as adaptive
+s-norm or Platt scaling, which we identify as future work. No-
+tably, this calibration gap does not reflect a failure of embed-
+ding geometry but rather an inherent property of hyperspher-
+ical metric spaces that is decoupled from discriminative per-
+formance. The performance gap between SSL-based ( ▲) and
+non-SSL systems (△) further validates optimality of WavLM-
+Large as a backbone. Its denoising pretraining disentangles nat-
+ural speech variation from synthesis artifacts. A discriminative
+foundation non-SSL architectures cannot recover through archi-
+tectural complexity alone, as evidenced by T47’s comparatively
+poor minDCF of 0.26 despite being an ensemble system.
+5.2. Synthetic Speech Attribtion Performance & Ablation
+The ablation study spans three complementary analyses: (1)
+temporal robustness, evaluated by incrementally introducing
+Set 2 models at 30%, 60%, and 100% of the full inventory
+and reporting EER, minDCF, and actDCF at each stage on
+ASVspoof 5 Track 1 directly simulating continuous emergence
+2326
+of novel synthesis systems. (2) Family and model classifica-
+tion accuracy within the same incremental setting and (3) t-SNE
+visualization of the learned embedding space to qualitatively
+assess well separated regions betwen fake and genuine speech
+clusters. Table 2 presents the progressive open-world evalua-
+tion as Set 2 models are incrementally registered at 30%, 60%,
+and 100% of the full inventory, under both single (1-way) and
+gender conditioned (3-way) real prototype configurations.
+Table 2: Progressive open-world evaluation across three stages
+of Set 2 model registration. EER, minDCF , and actDCF are
+evaluated on the ASVspoof 5 Track 1 open-condition evaluation
+set at each stage.
+Metric 1-way Real Prototypes Full System
+30% Set 2 60% Set 2 100% Set 2 Ours (3-way)
+Family Acc. (%) 87.6 88.2 92.0 99.0
+Model Acc. (%) 82.8 83.4 90.3 97.0
+EER (%) 2.31 1.67 0.69 0.49
+minDCF 0.17 0.09 0.09 0.09
+actDCF 0.98 0.98 0.97 0.97
+• Attribution Accuracy: Monotonic improvement from
+87.6%/82.8% at 30% to 92.0%/90.3% at 100% reflects de-
+creasing prototype estimation variance as the registry grows.
+Early stage prototypes, computed from sparse model popu-
+lations, insufficiently cover the synthetic embedding mani-
+fold, causing boundary misassignments. As architecturally
+diverse classes are registered, the hyperspherical space be-
+comes more uniformly populated, reducing nearest prototype
+misassignment. The consistently higher family-level accu-
+racy over model-level accuracy at every stage confirms that
+the hierarchical curriculum successfully encodes coarser ar-
+chitectural boundaries more robustly than finegrained model-
+level distinctions.
+• Detection Performance: The parallel EER improvement
+from 2.31% to 0.69% across registration stages reflects the
+registry completeness effect unregistered synthetic classes
+create score distribution leakage toward real speech proto-
+types, which resolves as coverage increases. minDCF stabi-
+lizes at 0.09 from 60% onward, indicating that score distribu-
+tion separability saturates once sufficient prototype coverage
+is achieved.
+• Efficacy of Multiple Real Prototypes: The most significant
+performance jump arises solely from replacing the unified
+real prototype with 3-way gender conditioned prototypes.
+This confirms that genuine speech occupies a bimodal, non-
+isotropic region of the embedding space, where a single mean
+prototype introduces systematic misassignment for speak-
+ers deviating from the population centroid. At inference,
+the real-class similarity score for an incoming query embed-
+ding is computed as the maximum cosine similarity across
+all three gender prototypes ensuring that the query is eval-
+uated against its nearest geometrically homogeneous subre-
+gion rather than a blended centroid. Gender conditioned pro-
+totypes thereby partition the real speech manifold into geo-
+metrically homogeneous subregions, directly sharpening the
+real-versus-synthetic decision boundary and driving the final
+EER to 0.49% and accuracy to 99.0%/97.0%.
+Figure 2 presents a t-SNE projection of the learned em-
+bedding space, qualitatively validating the metric learning ob-
+jective. The most salient observation is the clean macro-level
+separation between genuine speech and the synthetic manifold.
+Figure 2: 2D-TSNE plot of real prototypes (left clusters (orange,
+blue and green)) and synthetic audio prototypes (right clusters.)
+Emerging entirely from learned geometry without explicit bi-
+nary supervision. Within the genuine cluster, male, female,
+and mixed subgroups form geometrically distinct yet proximate
+sub-clusters, directly corroborating gender conditioned proto-
+type construction. A unified prototype would sit at the trimodal
+centroid rather than accurately representing any subgroup. On
+the synthetic side, five architectural families form coherent
+macro-clusters with discernible inter-family separation, while
+individual model classes exhibit compact intra-class groupings
+a hierarchical structure directly reflecting the two stage training
+curriculum. Partial overlap between architecturally proximate
+systems such as flow-matching and diffusion-based models is
+consistent with the residual model-level attribution errors ob-
+served in Table 2.
+6. Conclusion
+This work addressed finegrained synthetic speech attribution in
+an open-world setting, where binary detection and closed-set
+classification frameworks are fundamentally inadequate. We
+proposed a hierarchical, continually extensible attribution sys-
+tem built on a LoRA adapted WavLM-Large backbone, trained
+under a joint Conditional AAM-Softmax and EMA anchored
+Center Loss that simultaneously optimizes inter-class angu-
+lar separability and intra-class compactness. A two-stage cur-
+riculum organizes the learned manifold at architectural fam-
+ily and model granularity. While few-shot prototype registra-
+tion accommodates unseen synthesis systems without retrain-
+ing, the core novelty enabling true open-world generalization.
+On MLAAD v9 and ASVspoof 5 Track 1, the system achieves
+99.0% family-level and 97.0% model-level attribution accuracy
+with an EER of 0.49% and minDCF of 0.09, surpassing all
+single-system and ensemble submissions. Progressive evalua-
+tion further revealed that the genuine speech manifold is non-
+isotropic, necessitating gender conditioned prototyping at infer-
+ence time. Future work will target post-hoc score calibration,
+continual prototype refinement over deployment, and robust-
+ness against adversarially perturbed synthetic speech.
+7. Generative AI Use
+Generative AI is used solely for polishing, editing and structural
+refinement of this manuscript prior to submission.
+2327
+8. Acknowledgement
+This work was partially supported by the Swiss National Sci-
+ence Foundation through the project “Pathological Speech Syn-
+thesis (PaSS)” (grant agreement no. 219726), Nebius Research
+Grant and by Infosy

@@ -1,0 +1,495 @@
+Align-Consistency: Improving Non-autoregressive and Semi-supervised ASR
+with Consistency Regularization
+Wanting Huang, Weiran Wang∗∗
+Department of Computer Science
+University of Iowa
+Iowa City, IA, USA
+{wanting-huang,weiran-wang}@uiowa.edu
+Abstract
+Consistency regularization (CR) improves the robustness and
+accuracy of Connectionist Temporal Classification (CTC) by
+ensuring predictions remain stable across input perturbations.
+In this work, we propose Align-Consistency, an extension of
+CR designed for Align-Refine—a non-autoregressive (non-AR)
+model that performs iterative refinement of frame-level hy-
+potheses. This method leverages the speed of parallel infer-
+ence while significantly boosting recognition performance. The
+effectiveness of Align-Consistency is demonstrated in two set-
+tings. First, in the fully supervised setting, our results indi-
+cate that applying CR to both the base CTC model and the
+subsequent refinement steps is critical, and the accuracy im-
+provements from non-AR decoding and CR are mutually addi-
+tive. Second, for semi-supervised ASR, we employ fast non-AR
+decoding to generate online pseudo-labels on unlabeled data,
+which are used to further refine the supervised model and lead
+to substantial gains.
+Index Terms: consistency regularization, non-autoregressive
+decoding, semi-supervised ASR, self-training
+1. Introduction
+End-to-end (E2E) automatic speech recognition (ASR) can
+be roughly divided into categories: autoregressive models
+such as attention-based encoder-decoder [1, 2] and RNN-
+Transducer [3], and non-autoregressive (non-AR) models, with
+a prominent example being Connectionist Temporal Classifica-
+tion (CTC, [4]). Due to the language modeling component (the
+decoder) in autoregressive models, decoding is performed in a
+left-to-right fashion by beam search. On the other hand, non-
+autoregressive (non-AR) decoding models aim to update many
+(or all) positions in parallel, offering a simple and efficient in-
+ference procedure [5, 6, 7]. Despite strong results, E2E ASR de-
+pends heavily on labeled speech, and performance can degrade
+significantly in low-resource conditions. This motivates semi-
+supervised learning that leverages abundant unlabeled speech,
+commonly through self-training with pseudo-labels [8, 9].
+On the other hand, consistency regularization (CR) is a re-
+cently proposed method that enforces invariance of model pre-
+dictions under stochastic perturbations, and it has yielded sub-
+stantial accuracy improvement for CTC [10]. However, its ap-
+plication to other models remains largely under-researched.
+Motivated by these developments, we propose to combine
+benefits of non-AR decoding and strong regularization, and fur-
+ther extend their usage to the semi-supervised setting, for build-
+ing a stronger ASR model. Our contributions are as follows.
+**indicates the corresponding author.
+• We propose Align-Consistency, which extends CR to Align-
+Refine [6], a non-AR decoding based on iterative refinements
+of hypothesis alignment. By enforcing consistency through-
+out the entire refinement process, we achieve significant ac-
+curacy improvement. The same learning objective is ap-
+plied to the semi-supervised setup, where we initialize from
+a fully supervised model, and use the fresh model to gen-
+erate pseudo-labels on the fly, based on which the model is
+finetuned. The effectiveness of our method is demonstrated
+through evaluations in two different settings.
+• Supervised: On LibriSpeech, in both low-resource (LS-100)
+and high-resource (LS-960) settings, iterative refinement and
+consistency each reduces WER, while combining them yields
+the best result. Compared with CR-CTC, Align-Consistency
+improves test WERs from12.2/26.7to10.0/22.9on LS-
+100, and from4.3/9.9to3.3/7.4on LS-960.
+• Semi-supervised: In self-training with unlabeled LibriSpeech
+960h or LibriLight 6000h, Align-Consistency greatly bene-
+fits from unlabeled data and achieves substantial WER re-
+ductions over the initialization, suggesting robustness of CR
+to noisy supervision. From the LS-100 model, we reduce test
+WERs from10.0/22.9to4.3/9.6with 960h unlabeled data,
+and further to3.8/9.1with additional 6000h unlabeled data.
+From the LS-960 model, we reduce test WERs from3.3/7.4
+to2.5/5.7with 6000h unlabeled data.
+2. Related Work
+2.1. Non-autoregressive decoding and iterative refinement
+Non-autoregressive (non-AR) decoding avoids strictly left-to-
+right generation and enables parallel updates over multiple or
+all output positions. A common strategy is iterative refine-
+ment, where the model revises an initial hypothesis over sev-
+eral steps to gradually incorporate label dependencies and im-
+prove accuracy. Existing non-autoregressive methods can be
+broadly grouped into those that perform iterative refinement
+on label sequences versus those focusing on frame-level align-
+ments. Label-sequence based approach typically follows the
+mask-predict paradigm [5] and iteratively edits low-confidence
+positions. Mask-CTC initializes from CTC outputs and re-
+fines masked tokens [11], and related non-autoregressive trans-
+formers perform parallel editing on the label sequence [12].
+Alignment-based approach instead operates on a frame-level to-
+ken path and supports insertions and deletions without explicit
+length prediction. Representative methods include Imputer [13]
+and Align-Refine [6], as well as its streaming extension [7].
+Our method is based on the Align-Refine model, which
+consists of a CTC module and an additional transformer de-
+coder. Letxbe an input utterance withTacoustic frames, and
+3096
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1471
+letVdenote the token set augmented with the blank. We use
+a= [a 0,...,a T ]to denote an alignment sequence of length
+T. Let ˆa(0) be the greedy hypothesis from the CTC module,
+containing the most probably tokens from per-frame posteriors:
+ˆa(0)
+t = arg max
+v∈V
+pctc(at =v|x), t= 1,...,T.(1)
+Align-Refine then iteratively predicts an improved frame-level
+hypothesis using the transformer decoderDec, conditioned on
+the previous hypothesis alignment (with full attention context in
+this work) and the audio features from the encoder shared with
+CTC:h= Enc(x). For refinement steps= 1,...,S, we have
+p(s)(a| ˆa(s−1),x) = Dec( ˆa(s−1),h),(2)
+ˆa(s)
+t = arg max
+v∈V
+p(s)(at =v| ˆa(s−1),x).(3)
+Both the CTC module (considered as steps= 0, witha (−1) be-
+ing empty) and the refinement steps are trained by maximizing
+the log-likelihood of label sequence under CTC:
+logp (s)(y|x) = log
+X
+a∈B−1(y)
+p(s)(a| ˆa(s−1),x),
+whereB−1(y)is the set of alignments that reduce toyafter re-
+ducing repetitions and blanks. All components of Align-Refine
+model are trained jointly with the following non-AR loss
+Lnar(x,y;θ) :=−α·logp ctc(y|x)
+−(1−α)· 1
+S
+SX
+s=1
+logp (s)(y| ˆa(s−1),x)(4)
+whereθdenotes all parameters of the model. Throughout this
+work, we setα= 0.3andS= 2.
+2.2. Self-training and pseudo-labeling for ASR
+Self-training has a long history in ASR, where unlabeled speech
+is decoded by a seed model and the resulting pseudo-labels are
+used as supervision [14, 15, 16, 17]. With neural acoustic mod-
+els, selection and agreement criteria were studied to control la-
+bel noise [18, 19, 20]. For end-to-end ASR, [9] proposed an
+online self-training procedure based on CTC, which repeatedly
+generates pseudo-labels on mini-batches and updates the model
+immediately, which can be interpreted as alternating optimiza-
+tion over pseudo-labels and model parameters. For a dataset
+withN l labeled utterances andN u unlabeled utterances, the
+objective of [9] can be written as
+min
+θ,{yj}Nu
+j=1
+1
+Nl
+NlX
+i=1
+L(xi,yi;θ) + γ
+Nu
+NuX
+j=1
+L(xj,yj;θ),(5)
+where{y j}are pseudo-labels obtained by decoding with the
+current model (CTC in their case) and held fixed when updat-
+ingθ. Related work further showed that strong seed models,
+stable decoding, and appropriate filtering improve robustness at
+scale [21, 8]. In this paper, we show that Align-Refine leads to
+more accurate pseudo-labels than CTC and therefore leads to
+better ASR performance with self-training.
+3. Method
+We propose a new learning objective, named Align-
+Consistency, which integrates alignment-based iterative refine-
+ment (Align-Refine) with consistency regularization for end-to-
+end ASR, and then extend its use to semi-supervised learning.
+3.1. Align-Consistency: Align-Refine with CR
+Let ˜x1 and ˜x2 be two augmented versions of the clean input, ob-
+tained by applying SpecAugment [22] twice on the same clean
+inputx(with different random seeds), and letybe the ground
+truth label sequence ofx. We forward the non-AR model on
+both ˜x1 and ˜x2, and letp (s)
+1 andp (s)
+2 be frame-level posteriors
+produced by the stepsof our non-AR model on ˜x1 and ˜x2 re-
+spectively, fors= 0,...,S, withs= 0corresponding to the
+base CTC model. See (2) for the definition of these posteriors,
+here we omit alignments and input for brevity. We use consis-
+tency regularization (CR, [10]) onp (s)
+1 andp (s)
+2 to enforce their
+agreement, with the following symmetric KL loss:
+Lcr(p(s)
+1 ,p (s)
+2 ) :=
+1
+2
+TX
+t=1
+
+KL
+
+sg(p(s)
+1,t ),p (s)
+2,t
+
++ KL
+
+sg(p(s)
+2,t ),p (s)
+1,t
+
+(6)
+wheresg(·)denotes the stop-gradient operation. We note that
+the computation of CR does not require the ground truth label
+and can thus be applied to unlabeled data.
+We apply CR to both the base CTC and the refinement steps
+in our non-AR model. We refer to the resulting modelAlign-
+Consistency, with the following loss for supervised learning:
+LAC(˜x1, ˜x2,y) := 1
+2 (Lnar(˜x1,y) +L nar(˜x2,y))
++λ 0·L cr(p(0)
+1 ,p (0)
+2 ) +λ 1· 1
+S
+SX
+s=1
+Lcr(p(s)
+1 ,p (s)
+2 )(7)
+whereλ 0 andλ 1 denote the CR loss weight for the base CTC
+and refinement steps respectively.
+3.2. Semi-supervised self-training with Align-Consistency
+We follow the end-to-end self-training method of [9] for semi-
+supervised learning. For each unlabeled utterancex, its pseudo-
+label ˆyis generated from thecleaninput (to obtain the most
+accurate decoding result) with our non-AR model. Intuitively,
+given the refinement steps have lower WER than the base CTC,
+it is better to use decoding results of the last step as pseudo-
+labels than that of CTC. This is verified by our ablation study
+(see Sec 4.4.1) and we use the last step hypotheses by default.
+Once ˆyis determined, we compute the Align-Consistency
+loss on the unlabeled data similarly to (7). That is, we create
+two augmented versions ˜x1 and ˜x2, and compute theLnar terms
+using ˆy, and theL cr terms without labels.
+For a dataset withN l labeled utterances andN u unlabeled
+utterances, our final semi-supervised loss is defined as
+minL semi := 1
+Nl
+NlX
+i=1
+LAC(˜xi,1, ˜xi,2,yi)
++ γ
+Nu
+NuX
+j=1
+LAC(˜xj,1, ˜xj,2, ˆyj).
+We findγ= 1to work well in practice, as observed by [9].
+Unless otherwise mentioned, we use the same loss weights
+(λ0,λ 1)within both the supervised and unsupervised losses.
+4. Experiments
+4.1. Datasets
+We evaluate Align-Consistency on LibriSpeech [23] and Libri-
+Light [24]. LibriSpeech is a widely used benchmark of approx-
+3097
+Table 1:Fully-supervised results on LibriSpeech development
+sets (WER↓).s= 0corresponds to the base CTC,s= 2uses
+2 refinement steps on top of base CTC. Note Align-Consistency
+reduces to CR-CTC forα= 1.0.
+Datasetλ 0 λ1
+s= 0s= 2
+clean other clean other
+LS-100
+α= 1.0
+0.0 12.5 27.2
+0.1 12.2 26.6
+0.2 12.0 26.2
+0.3 12.1 26.3
+α= 0.3
+0.0 0.0 11.6 24.9 10.4 24.0
+0.2 0.0 10.8 24.4 10.0 23.2
+0.0 0.2 10.7 24.3 10.2 23.0
+0.2 0.2 10.3 24.0 9.6 22.5
+0.1 0.3 10.8 24.5 10.1 23.4
+0.3 0.1 10.9 24.2 10.3 23.0
+LS-960
+α= 1.0
+0.0 4.5 10.4
+0.1 4.1 9.5
+0.2 3.9 9.2
+0.3 3.9 9.5
+α= 0.3
+0.0 0.0 3.8 8.7 3.2 7.6
+0.2 0.0 3.5 8.4 3.0 7.4
+0.0 0.2 3.6 8.3 3.1 7.2
+0.2 0.2 3.4 8.1 2.9 6.9
+0.1 0.3 3.6 8.3 3.1 7.1
+0.3 0.1 3.6 8.5 3.0 7.4
+imately 1000 hours of read English speech derived from Lib-
+riV ox audiobooks. For supervised training, we use two standard
+labeled subsets: train-clean-100 (LS-100) and train-960 (LS-
+960). For semi-supervised self-training, we additionally lever-
+age the 6k-hour subset of Libri-Light (LL-6000) as unlabeled
+speech. All models are evaluated on the standard LibriSpeech
+development and test sets using word error rate (WER).
+4.2. Modeling Pipeline
+We follow the ESPnet [25] LibriSpeech recipe for ASR model-
+ing and keep the architecture fixed across all experiments. We
+use a subword vocabulary of 300 BPEs for LS-100 and 5000
+BPEs for LS-960, following the standard recipes. Our back-
+bone uses a Conformer encoder with 12 layers, attention dimen-
+sion 512 (8 heads), and a feed-forward dimension of 2048. Our
+model has about 110M parameters for LS-100 and about 116M
+parameters for LS-960. We perform a2×time reduction at the
+encoder output before the prediction heads, by average pooling
+over time with both window size and stride size being 2. We
+performS= 2refinement steps over the base CTC module
+during both model training and inference, since our preliminary
+study confirms that 2 steps capture most of the WER gain, as
+also observed by previous work on Align-Refine. Unless oth-
+erwise noted, the base CTC loss weightαin (4) is set to0.3.
+For each training scenario, we average checkpoints of the last 5
+epochs to obtain the final model parameters for inference.
+Table 2:Self-training results (WER↓) on LS-100+LS-960, eval-
+uated on dev sets. We test two pseudo-label (PL) sources: base
+CTC vs. Align-Consistency. We initialize from the best model
+trained on LS-100.
+(λ0,λ 1) # Inf.
+stepss
+CTC PL Align-Cons. PL
+clean other clean other
+Initialization 0 10.3 24.0 10.3 24.0
+(no PL) 2 9.6 22.5 9.6 22.5
+(0.0, 0.0) 0 7.1 15.5 6.8 15.2
+2 6.6 14.4 6.3 14.2
+(0.2, 0.0) 0 6.8 14.9 6.5 14.4
+2 6.2 13.8 6.0 13.5
+(0.0, 0.2) 0 6.7 15.1 6.4 14.4
+2 6.2 13.7 5.8 13.2
+(0.2, 0.2) 0 6.4 14.2 6.1 14.0
+2 5.9 13.35.5 12.6
+4.3. Supervised training on LS-100 and LS-960
+We train both the LS-100 model and the LS-960 model for 30
+epochs. WER results on development sets are given in Table 1.
+We first reproduce the success of CR for the pure CTC
+model, which corresponds to our formulation withα= 1. In
+this case, we tuneλ 0 over{0.1,0.2,0.3}and observe 0.2 to
+work the best, similar to the finding of [10]. We obtain relative
+improvements of4.0%/3.7%on LS-100 and13.3%/11.5%on
+LS-960 over pure CTC.
+We then switch to the Align-Consistency model which uses
+α= 0.3, and tune CR coefficients around 0.2. We provide
+recognition results of Align-Consistency at two inference steps
+s= 0(corresponding to the base CTC module) ands= 2.
+First note that, even without CR (i.e.,λ 0 =λ 1 = 0), base
+CTC (s= 0) outperforms theα= 1configuration: on LS-
+100, dev WER improves from12.5/27.2to11.6/24.9; on LS-
+960, it improves from4.5/10.4to3.8/8.7, indicating that the
+refinement steps help with learning a better encoder than CTC
+alone. Integrating additional refinement steps further enhances
+accuracy by more effectively capturing label dependencies.
+Regarding CR coefficients, enabling CR on either CTC
+alone (e.g.,(λ 0,λ 1) = (0.2,0.0)) or on refinement steps alone
+(e.g.,(λ 0,λ 1) = (0.0,0.2)) already leads to sizable WER
+gains. And using CR to both of them with(λ0,λ 1) = (0.2,0.2)
+achieves the best performance. On LS-100, these optimal CR
+coefficients reduce WERs from 10.4/24.0 to 9.6/22.5 on dev-
+clean/dev-other, corresponding to a relative improvement of
+7.7% and 6.2%, respectively. On LS-960, the optimal CR
+coefficients reduce WERs from 3.2/7.6 to 2.9/6.9, yielding
+9.4%/9.2% relative reductions.
+In summary, our supervised experiments demonstrate that
+Align-Consistency outperforms CTC as a non-AR method. Fur-
+thermore, CR reinforces all internal components of the model,
+yielding significant complementary gains in accuracy.
+4.4. Semi-supervised self-training
+Starting from a supervised checkpoint, we introduce unlabeled
+speech and continue with self-training as described in Sec 3.2.
+We run self-training for 110 epochs with the LS-100 model, and
+80 epochs for the LS-960 model.
+3098
+Table 3:Ablation study on the use of CR loss on unsupervised
+data for self-training on LS-100+LS-960, evaluated on dev sets.
+Pseudo-labels are generated by Align-Consistency.
+Sup CR Unsup CRs= 0s= 2
+(λ0,λ 1) (λ ′
+0,λ′
+1)clean other clean other
+(0.2, 0.2) (0.2, 0.2) 6.1 14.0 5.5 12.6
+(0.0, 0.0) 6.7 14.8 6.2 13.9
+Table 4:Self-training results on LibriSpeech dev sets (WER↓),
+with different amounts of unsupervised data and initializations.
+Data(λ 0,λ 1) s= 0s= 2
+clean other clean other
+LS-100 (0.2, 0.2) 10.3 24.0 9.6 22.5
++LS-960 (0.0, 0.0) 5.6 11.6 5.0 10.9
+(0.2, 0.2) 4.6 10.7 4.1 9.5
++(LS-960
++LL-6000)
+(0.0, 0.0) 4.9 11.2 4.4 10.6
+(0.2, 0.2)4.1 10.3 3.6 8.8
+LS-960 (0.2, 0.2) 3.4 8.1 2.9 6.9
++LL-6000 (0.0, 0.0) 3.0 6.6 2.7 5.7
+(0.2, 0.2)2.6 6.1 2.2 5.2
+4.4.1. Choice of pseudo-label
+We first test the two choices for pseudo-label generation, us-
+ing either the base CTC or the final step of Align-Consistency.
+This ablation study is performed on the setup where LS-100 is
+used as supervised set while LS-960 is used as unsupervised.
+For either choice, we tune the CR coefficients and give WERs
+at decoding stepss= 0ands= 2. The WER results are
+shown in Table 2. As expected, pseudo-labels generated by
+Align-Consistency are more useful than those generated by base
+CTC, across all CR coefficients. Using(λ 0,λ 1) = (0.2,0.2)
+for both supervised and unsupervised loss achieves the best per-
+formance, and we reduce the WERs of Align-Consistency from
+9.6/22.5 to 5.5/12.6, a42.7%/44.0%relative improvement.
+4.4.2. CR on unsupervised data
+One might wonder, since CR was initially proposed for fully-
+supervised training, whether it will be useful on unsupervised
+data. We perform an ablation study where we remove the CR
+on unsupervised data during self-training. This choice leads
+to significant WER degradations, as shown in Table 3. These
+results show that CR is hugely beneficial even when used in
+combination with noisy pseudo-labels.
+4.4.3. More unsupervised data and better initialization
+We then increase the amount of unsupervised data by adding
+LL-6000, and also initialize self-training with the model trained
+on LS-960. The experimental results are given in Table 4.
+As expected, more unsupervised data leads to better accu-
+racy after self-training, with or without CR. In all scenarios,
+CR provides additional WER gains, and(λ 0,λ 1) = (0.2,0.2)
+remains the strongest configuration in each setup. With CR,
+the additional 7000h of unsupervised speech improves the dev
+WERs from 9.6/22.5 to 3.6/8.8 over the LS-100 model; us-
+Table 5:WERs results (%) on LibriSpeech test sets.
+Model Parameters test- test-
+clean other
+LS-100 Sup
+LPM [26] 14.9 40.0
++ LS-860h 8.4 22.9
++ LL-60000h 7.2 20.8
+IPL [27] + LS-860h 6.0 10.3
++ LibriV ox-54Kh 5.1 8.8
+NST [28] 5.5 16.9
++ LS-860h 4.5 9.5
+CTC (α=1,λ 0=0.0) 12.8 27.6
+CR-CTC (α=1,λ 0=0.2) 12.2 26.7
+Align-Consistency (λ 0=0.2,λ 1=0.2) 10.0 22.9
++ LS-960 4.3 9.6
++ (LS-960 + LL-6000) 3.8 9.1
+LS-960 Sup
+IPL [27] + LibriV ox-54Kh 2.2 4.7
+NST [28] 1.9 4.1
++ LL-60Kh 1.7 3.7
+CTC (α=1,λ 0=0.0) 4.7 10.8
+CR-CTC (α=1,λ 0=0.2) 4.3 9.9
+Align-Consistency (λ 0=0.2,λ 1=0.2) 3.3 7.4
++ LL-6000 2.5 5.7
+ing 6000h of unsupervised speech improves dev WERs from
+2.9/6.9 to 2.2/5.2 over the LS-960 model.
+4.5. Final results
+Finally, Table 5 summarizes test WERs of models trained
+with different amounts of data. Across all settings, Align-
+Consistency consistently outperforms CR-CTC, justifying our
+motivation to extend CR to stronger non-AR models. Addition-
+ally, Align-Consistency boosts ASR accuracy by effectively us-
+ing unlabeled speech while maintaining high efficiency in on-
+the-fly pseudo-labeling. We also compare with representative
+semi-supervised ASR baselines from the literature under LM-
+free evaluation. LPM [26] and NST [28] are based on attention-
+based encoder-decoder architecture, while IPL [27] is based on
+a CTC-trained acoustic model with language model fusion for
+pseudo-label generation. Despite using only 6000 hours of un-
+labeled data, we achieve competitive LM-free WERs compared
+to prior systems trained with one magnitude larger unlabeled
+data and a much simpler non-AR model, highlighting strong
+data efficiency.
+5. Conclusion
+We have presented Align-Consistency, which combines non-
+AR decoding with consistency regularization for end-to-end
+ASR. Our method encourages stable predictions with respect
+to input perturbations in every inference step, on both clean
+and noisy labels. Our experiments on both fully supervised
+and semi-supervised settings show that non-AR decoding and
+consistency regularization are complementary. In the future,
+we plan to extend the same principles to broader class of non-
+AR models, including recently developed diffusion LLM-based
+ASR models [29].
+3099
+6. Generative AI Use Disclosure
+Generative AI tools were used to assist with language polish-
+ing and editing. The authors reviewed and are responsible for
+all content, including the research ideas, experimental results,
+analyses, and conclusions.

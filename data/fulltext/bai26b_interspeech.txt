@@ -1,0 +1,512 @@
+Controllable Accent Normalization via Discrete Diffusion
+Qibing Bai ID 1,5, Yuhan Du ID 4, Tom Ko ID 6, Shuai Wang ID 4,6,∗∗,
+Yannan Wang ID 5, Haizhou Li ID 2,3,6,∗∗
+1 SDS, 2 SAI, and 3 SRIBD, The Chinese University of Hong Kong, Shenzhen, China
+4 School of Intelligence Science and Technology, Nanjing University, Suzhou, China
+5 Tencent Ethereal Audio Lab, Tencent, Shenzhen, China
+6 Shenzhen Loop Area Institute, Shenzhen, China
+qibingbai@link.cuhk.edu.cn, shuaiwang@nju.edu.cn, haizhouli@cuhk.edu.cn
+Abstract
+Existing accent normalization methods do not typically offer
+control over accent strength, yet many applications—such as
+language learning and dubbing—require tunable accent reten-
+tion. We propose DLM-AN, a controllable accent normalization
+system built on masked discrete diffusion over self-supervised
+speech tokens. A Common Token Predictor identifies source
+tokens that likely encode native pronunciation; these tokens
+are selectively reused to initialize the reverse diffusion process.
+This provides a simple yet effective mechanism for control-
+ling accent strength: reusing more tokens preserves more of the
+original accent. DLM-AN further incorporates a flow-matching
+Duration Ratio Predictor that automatically adjusts the total
+duration to better match the native rhythm. Experiments on
+multi-accent English data show that DLM-AN achieves the
+lowest word error rate among all compared systems while de-
+livering competitive accent reduction and smooth, interpretable
+accent strength control1.
+Index Terms : accent conversion, diffusion language model,
+speech synthesis, voice conversion, controllability
+1. Introduction
+Accent conversion (AC) seeks to alter speech from one accent
+to another while preserving the speaker’s characteristics. A spe-
+cial case, accent normalization (AN)2, converts non-native (L2)
+accented speech into a native (L1) accented form. AN tech-
+nology enables a wide range of applications, including pronun-
+ciation training for language learners [1], authentic dubbing in
+multimedia [2], and personalized text-to-speech systems [3].
+Early deep learning approaches for AN are reference-
+based [4–7], relying on native accent speech samples to gen-
+erate accent-neutral representations via PPG features [4, 5, 7]
+or native TTS [6]. Reference-free methods [8–10] eliminate
+this requirement by directly mapping between accented and
+native representations, though they still rely on parallel data.
+Subsequent work removes the parallel data constraint through
+ASR–TTS pipelines [11], accent feature disentanglement [12],
+or TTS-guided representations [13,14], further augmented with
+flow matching [15] and normalizing flow [16]. However, these
+approaches depend on TTS-synthesized targets, whose quality
+can be limited by voice cloning and duration modeling errors.
+Recent token-based methods [17–20] offer a promising al-
+ternative. TokAN [19] quantizes speech into self-supervised
+**Corresponding authors.
+1Samples: https://P1ping.github.io/dlman-demo/
+2Also referred to as foreign accent conversion (FAC).
+discrete tokens, performs autoregressive token-to-token con-
+version, and recovers waveforms via a flow-matching synthe-
+sizer. CosyAccent [21] adopts a non-autoregressive direct flow-
+matching approach and introduces a “source-synthesis” data
+strategy. Both systems support total-duration control. How-
+ever, none of the above methods provides control over accent
+strength—a desirable capability for gradual accent reduction or
+accent preservation as part of speaker identity. The only attempt
+at accent strength control [22] manipulates the starting timestep
+of a continuous diffusion process, but it operates under a frame-
+to-frame framework with fixed duration, lacking fine-grained
+rhythm adjustability and duration control.
+In this paper, we propose DLM-AN (Diffusion Language
+Model for Accent Normalization), a controllable accent nor-
+malization system based on masked discrete diffusion over self-
+supervised speech tokens. DLM-AN extends the LLaDA dif-
+fusion language model [23] to speech: a bidirectional Trans-
+former iteratively predicts masked tokens conditioned on con-
+tent representations from a CTC-guided [24] token encoder.
+The key insight enabling controllability is that, under a phonet-
+ically rich tokenizer, native and accented renditions of the same
+utterance share many tokens in similarly pronounced regions
+but differ in accent-affected regions. We introduce a Common
+Token Predictor (CTP) that identifies tokens likely shared with
+the native target. By reusing high-confidence source tokens
+to initialize the masked sequence, users can smoothly control
+accent strength—from full normalization (all tokens generated
+from scratch) to near-resynthesis (all source tokens preserved).
+A flow-matching Duration Ratio Predictor further provides ex-
+plicit control over the total output duration.
+Our contributions are as follows:
+• We propose the first accent normalization system based on
+discrete diffusion, enabling iterative token generation condi-
+tioned on phonemically guided content representations.
+• We introduce a common token predictor that provides
+smooth, interpretable accent strength control through
+threshold-based source token reuse.
+• We demonstrate that DLM-AN achieves the best content
+preservation (lowest WER) among all compared systems,
+while offering competitive naturalness and accent reduction,
+along with robust duration scaling.
+2. Related Work
+2.1. Controllability in Accent Conversion
+Most accent conversion/normalization systems perform a one-
+shot “full” accent shift without a user-controllable knob [5, 20].
+2272
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1056
+Recently, controllability has attracted increasing attention, mo-
+tivated by applications such as gradual accent reduction in lan-
+guage learning and adjustable accent retention in dubbing.
+One line of work studies duration control (speech-rate con-
+trol) during accent normalization. TokAN [19] performs token-
+to-token conversion with self-supervised discrete units and sup-
+ports duration preservation. CosyAccent [21] further enables
+explicit duration scaling via a duration-ratio predictor and pro-
+poses a source-synthesis data strategy to reduce reliance on
+TTS-synthesized supervision artifacts.
+In contrast, controllable accent strength (i.e., smoothly
+trading off normalization vs. retaining the original L2 accent)
+remains less explored. FAC-FACodec [22] introduces an inten-
+sity control mechanism in a diffusion-based, factorized-codec
+framework by using the diffusion starting timestep as a user
+knob. Related directions include fine-grained controllable ac-
+cent transfer models [25], controllable accented TTS that ren-
+ders accent intensity at coarse/fine levels [26], and scalable ac-
+cented TTS with automated accent label discovery [27].
+Our work leverages masked discrete diffusion over speech
+tokens to support both total-duration control and an inter-
+pretable accent-strength knob via source-token reuse; the iter-
+ative masking/unmasking procedure also naturally supports lo-
+calized correction (speech infilling).
+2.2. Self-Supervised Speech Tokens
+Discrete tokens derived from self-supervised learning (SSL)
+representations [28, 29] correlate strongly with phonetic con-
+tent [30], which makes them attractive units for speech genera-
+tion and conversion. Such tokens have been adopted in token-
+based voice conversion [31–33] and high-fidelity speech gener-
+ation/TTS frameworks [34]. More broadly, discreteness allows
+importing “text-like” modeling techniques into speech, includ-
+ing spoken language modeling [35], direct speech-to-speech
+translation [36], and speech-centric LLM systems [37].
+Recent work also explores SSL tokens for ASR, includ-
+ing multilingual ASR [38], contextual ASR [39], and accent-
+robust discrete-token ASR modeling [40]. For accent conver-
+sion/normalization, discrete tokens have been studied under
+different supervision regimes, including zero-shot/minimally-
+supervised conversion [18], pseudo-parallel mapping [17, 19],
+and prompt-based imitation [20]. We leverage WavLM [29] to
+extract discrete tokens for conversion and synthesis, capitaliz-
+ing on its strong phonetic encoding and noise robustness.
+2.3. Discrete Diffusion
+Discrete diffusion adapts diffusion generative modeling to cat-
+egorical data such as tokens, and has recently been investi-
+gated for language modeling. Two commonly used formu-
+lations are: (i) uniform/multinomial diffusion, where tokens
+transition probabilistically across the vocabulary [41, 42], and
+(ii) absorbing/masked diffusion, where tokens are progressively
+mapped to a special absorbing state (e.g., [MASK]) and then
+iteratively recovered by a learned reverse process [23, 42, 43].
+We focus on the absorbing formulation, which underlies
+recent diffusion language models such as LLaDA [23]. Let
+x0∈{ 1,...,V }n be a clean token sequence with vocabulary
+sizeV and lengthn, and letm denote the absorbing mask token.
+We parameterize the diffusion in continuous timet∈ [0, 1] with
+a differentiable non-increasing survival schedule α(t), where
+α(0)≈ 1 andα(1)≈ 0. The forward marginal independently
+corrupts each token as
+q(xt| x0) =
+nY
+i=1
+Cat
+
+xi
+t; α(t)exi
+0
++ (1−α(t))em
+
+, (1)
+i.e., each token is kept clean with probability α(t) or absorbed
+intom with probability 1−α(t). Once masked, a token remains
+masked in the forward process, and x1 is almost fully masked.
+The reverse process is commonly parameterized through
+anx0-prediction network, typically a bidirectional Transformer
+that predicts clean-token distributions in parallel. For 0≤s <
+t ≤ 1, the SUBS parameterization [43] substitutes the pre-
+dicted clean sequence distribution into the analytic absorbing-
+diffusion posterior. Letπi
+θ(xt,t ) =pθ(xi
+0 =·| xt) denote the
+predicted clean-token distribution at position i. Define κs,t =
+(α(s)−α(t))/(1−α(t)) and ¯κs,t = (1−α(s))/(1−α(t)).
+Withµi
+s,t = ¯κs,tem +κs,tπi
+θ(xt,t ), the reverse process is
+pθ(xi
+s| xt) =
+(
+Cat(xi
+s; exi
+t
+), x i
+t̸=m,
+Cat(xi
+s;µi
+s,t), x i
+t =m, (2)
+SUBS enforces two absorbing-process properties: zero prob-
+ability of predicting the mask token, and carry-over unmask-
+ing, where visible tokens are copied unchanged during re-
+verse diffusion. These substitutions simplify the discrete-time
+D3PM [42] negative ELBO; taking the continuous-time limit
+further yields the simplified MDLM objective [43], in which
+only corrupted positions contribute to the effective denoising
+loss. The continuous-time likelihood-bound objective becomes
+a reweighted masked-token cross-entropy:
+L(θ) = Et,x0,xt
+
+−α′(t)
+1−α(t)
+X
+i:xi
+t=m
+− logpθ(xi
+0| xt)
+
+, (3)
+where t∼U (0, 1], xt ∼ q(·|x0), and the expectation is ap-
+proximated by Monte Carlo sampling. Although the MDLM
+objective is often written as an all-token loss, visible tokens do
+not contribute to the loss in the carry-over setting, yielding the
+masked-position form above. The weight −α′(t)/(1−α(t))
+is the instantaneous reverse unmasking rate; for the linear sur-
+vival schedule α(t) = 1 −t, it reduces to 1/t, matching the
+LLaDA-style objective used in our methodology. In practice, t
+is bounded away from 0 for numerical stability.
+Compared with heuristic masked iterative generators [44–
+46], masked diffusion specifies an explicit forward corruption
+process and optimizes a likelihood-bound objective while re-
+taining parallel iterative denoising. Surveys highlight its grow-
+ing role in LLMs [47]. Recent work further explores discrete-
+score formulations [48], corrective/remasking models [49–52]
+and efficient samplers [53].
+3. Methodology
+We propose to use a diffusion language model (DLM) for con-
+trollable accent normalization. The method is shortened “DLM-
+AN”. Figure 1 shows the pipeline of DLM-AN. The SSL tok-
+enizer extracts SSL representations from the L2-accented wave-
+form and quantize the features into discrete tokens. A Trans-
+former token encoder takes further processs these tokens, pro-
+ducing continuous content representations. To make the con-
+tent representations phonemic enough, a CTC-based phonemic
+guidance is imposed upon them, shown as the auxiliary text in
+Figure 1. The content representations are further taken as the
+2273
+Token
+Encoder
+DLM
+Decoder
+SSL
+Tokenizer
+m a ɪ  _ n ˈ e ɪ  m z _ f ˈɜː  ɡ  ə  s ə  n
+Common
+Token
+Predictor
+Duration
+Ratio
+Predictor
+0.0
+0.3
+0.8
+0.1
+0.9
+0.83
+Target
+Init.
+M
+M
+M
+Speech
+Synthesizer
+duration
+scaling
+(optional)
+Source speech
+Target MelL2-accented token
+L1-accented token Content feature Speaker embedding
+Masked tokenM m a ɪ  _ ... auxiliary text 0.83 duration scaling ratio
+0.0
+...
+0.9
+L1 confidence
+Figure 1: Overview of the DLM-AN pipeline. The SSL tokenizer extracts discrete tokens from L2-accented speech. A Transformer token
+encoder with CTC-based phonemic guidance produces content representations, which are fed into the Common Token Predictor (CTP),
+Duration Ratio Predictor (DP), and the DLM decoder. The DLM decoder iteratively generates the target token sequence, optionally
+initialized with high-CTP-confidence source tokens. A flow-matching synthesizer and vocoder produce the final waveform.
+input for three modules: Common Token Predictor (CTP), Du-
+ration Ratio Predictor (DP), and the DLM decoder.
+Note that the content features are concatenated with the
+source tokens (embeddings) when feeding to CTP and DP, in
+order to provide detailed pronunciation patterns (i.e., phonetic
+information). This concatenation is not displayed in Figure 1
+for brevity.
+CTP predicts whether each token is common in both the
+source and target sequences. The higher the score for a token,
+the more probable this token is associated with a native pronun-
+ciation, as will be demonstrated in the subsequent sections. To-
+kens with high CTP scores could be optionally “reused” for the
+decoding/generation process later. DP predicts the ratio of the
+total duration: durtgt/dursrc. This ratio can be optionally used to
+determine the total duration/length of the target sequence.
+Given the target duration ratio, either predicted, arbitrarily
+specified, or kept 1.0 to maintain the source duration, the length
+of the initial target sequence is determined. By default, the ini-
+tial target sequence is purely filled with[MASK] for generation
+from scratch. Optionally, based on the CTP scores and a given
+threshold or proportion, certain soruce tokens can be reused to
+initialize the target sequence. After the initial target sequence
+is determined, the DLM decoder iteratively generates the entire
+target sequence, conditioned on the content features from the
+token encoder.
+The more tokens reused in the target sequence, the more
+source accent is expected to be preserved. The speech syn-
+thesizer further generates the corresponding Mel-spectrogram
+given the target tokens, conditioned on the speaker embedding
+extracted from the input source speech. The Mel-spectrogram
+can be converted to a waveform using the HiFT vocoder [54].
+3.1. Discrete Diffusion for Speech Tokens
+We extend the LLaDA masked diffusion language model [23]
+to discrete speech tokens for controllable accent normalization.
+Our forward corruption process uses pure absorbing masking,
+parameterized by a timestept∼U [0, 1] per sequence.
+Let y0∈{ 1,...,V }L be a clean speech token sequence,
+where V is the speech vocabulary size and L is the sequence
+length. Following the notation in Section 2.3, we deployα(t) =
+1−t and denote the masking probability as λ(t) = 1−α(t).
+We use the numerically stable linear formλ(t) = (1−ϵ)t +ϵ,
+withϵ> 0. Each positioni is masked independently:
+qλ(zi|yi
+0) =λ(t)δzi=[MASK] + (1−λ(t))δzi=yi
+0
+(4)
+which induces a masked index set M and a visible set ¯M =
+[L]\M. The corrupted sequence z has corruption setC =M.
+The model pθ(y0 | z, c) is a bidirectional Transformer that
+predicts the original tokens from z, conditioned on the content
+representations c from the token encoder. The training objective
+follows the LLaDA-style masked-position loss:
+LDLM(θ) =−Et,y0,z
+"
+1
+λ(t)
+X
+i∈M
+logpθ(yi
+0| z, c)
+#
+, (5)
+where z ∼ qλ(t)(· |y0). The expectation is approximated
+by Monte Carlo sampling with global per-token normalization
+for stability. This objective is the masking-rate form of the
+likelihood-bound objective in Eq. (3); the small ϵ only bounds
+the weighting neart = 0.
+The DLM decoder has a decoder-only Transformer struc-
+ture without causal masking, allowing parallel prediction over
+masked positions. The content representations c are inte-
+grated as conditional inputs via self-attention to guide accent-
+normalized generation while preserving content.
+During inference, we employ a greedy sampling algo-
+rithm with optional initialization: start from a fully or par-
+tially masked sequence (reusing high-CTP-confidence tokens),
+and iteratively predict and unmask positions based on confi-
+dence scores, conditioned on c. For enhanced quality, we use
+classifier-free guidance (CFG) [23, 55], combining the condi-
+tional and unconditional predictions at the logit level. Let ℓcond
+and ℓuncond be the logits corresponding to pθ(y0 | z, c) and
+pθ(y0| z, ∅), respectively. The guided distribution is then ob-
+tained aspcfg(·) = softmax ((1 +wDLM)ℓcond−wDLMℓuncond),
+wherewDLM controls the guidance strength.
+The structure of DLM decoder is shown in Figure 2. It
+features a self-attention-only structure (i.e., using self-attention
+to fuse the conditional information). The input is basically
+two sequences: the content features and the noised target to-
+kens. Three special tokens, [START], [TASK], and [END],
+are added to wrap and separate the two sequences, guiding the
+DLM behavior.
+2274
+DLM Decoder
+S T M M E
+Speech tokenContent feature
+ETS Start token Task token End token
+M Masked token
+Condition attention region Token attention region
+S
+T
+E
+Figure 2: Structure of the DLM decoder. The input consists of
+the content features and the noised target tokens, separated by
+special tokens [START], [TASK], and [END]. The content
+features are mutually attentive but do not attend to the token
+sequence (pink region), while the token sequence attends to the
+entire input (green region).
+To make the condition reusable across time steps (i.e., to-
+ken sequences with different numbers of masked tokens), the
+content features are mutually attentive but with no attention to
+the token sequence. In contrast, the token sequence can attend
+to the entire input sequence. The attention regions of the two
+parts are depicted in Figure 2 with the colors pink and green,
+respectively.
+3.2. Common Token Prediction
+With a sufficiently phonetic tokenizer, utterances spoken with
+different accents tend to share many tokens in similarly pro-
+nounced regions, while differing mainly in accent-affected re-
+gions. Motivated by this property, we introduce a Common To-
+ken Predictor (CTP) that assigns each source token a confidence
+score indicating how likely it is to be shared with the (native)
+target. Tokens with high CTP confidence can be reused to ini-
+tialize the target sequence, providing a simple and interpretable
+control of accent strength: reusing more tokens preserves more
+of the source accent. We formulate CTP as a sequence-tagging
+Target tokens
+Source tokens
+Common
+token labels
+503 902 622 955 611 94 94 415 415 1018
+503 902 902 902 577 955 94 456 932 375 1018
+  1     0     1     0     0     1    1    0     0     0      1
+Figure 3: Extraction of common token labels via the longest
+common subsequence (LCS) between source and target token
+sequences. For consecutive identical tokens with differing du-
+rations, center-mode alignment is applied (dashed rectangle).
+problem. Given paired source and target token sequences, we
+derive binary labels by computing the longest common subse-
+quence (LCS) between them. LCS has been used previously to
+evaluate accent conversion models [18]; here we use it to iden-
+tify which source tokens are shared with the target. The label
+extraction procedure is illustrated in Figure 3. We obtain the
+LCS via dynamic programming and backtracking. For consec-
+utive identical tokens that have different durations in the source
+and target, we apply a center alignment: only the centered to-
+kens are marked positive (dashed rectangle in Figure 3).
+The training objective for CTP is binary cross-entropy loss.
+LetS be the source sequence length, and let o∈{ 0, 1}S be the
+binary labels derived from the LCS searching. Given the source
+content features, the CTP module (parameterized byϕ) outputs
+predicted probabilities ˆo∈ [0, 1]S. The loss is:
+LCTP(ϕ) =− 1
+S
+SX
+i=1
+[oi log ˆoi + (1−oi) log(1− ˆoi)]. (6)
+3.3. Duration Ratio Prediction
+Because L2-accented speech often exhibits different rhythm and
+speaking rate, directly inheriting the source total duration can
+lead to sub-optimal naturalness. DLM-AN therefore includes
+a duration ratio predictor (DP) that estimates the global dura-
+tion ratio r = durtgt/dursrc. DP uses a diffusion Transformer
+(DiT) [56] backbone with an attentive pooling layer, and is
+trained with conditional flow matching.
+The training objective for DP is conditional flow matching
+loss [57]. Let r > 0 be the target duration ratio (ground truth
+durtgt/dursrc), and let c be the input content representations from
+the token encoder. The flow matching model vψ(ut,t, c) (pa-
+rameterized byψ) predicts the velocity field:
+ut = (1−t)u0 +tr, (7)
+wheret∼U [0, 1] andu0∼N (0, 1) is a standard normal prior.
+The loss is:
+LDP(ψ) = Et,u 0[∥vψ(ut,t, c)− (r−u0)∥2] (8)
+This objective trains the model to generate duration ratios con-
+ditioned on c, enabling global rhythm adjustment. In practice,
+we also condition DP on the source token embeddings to cap-
+ture fine-grained pronunciation details; we omit this from the
+formulation for brevity.
+3.4. Phoneme Guidance and Joint Training
+The token encoder is a Transformer with relative positional em-
+beddings, producing content representations c. The CTP and
+DP modules also use Transformer backbones with relative po-
+sitional embeddings. The DLM decoder is a self-attention-only
+Transformer with two-block masking, using rotary positional
+encoding (RoPE) [58] for the entire sequence.
+To encourage c to be phonemically informative, we impose
+a CTC-based phonemic guidance on the token encoder outputs.
+Concretely, we attach a linear projection head on top of the to-
+ken encoder to predict phoneme logits, and compute a CTC loss
+against phoneme label sequences derived from the correspond-
+ing transcripts. Given phoneme sequence p, the loss is
+LCTC = CTC(Linear(c), p) (9)
+We train the token-prediction modules jointly, including the
+token encoder, CTP, DP, and DLM decoder, following a two-
+stage schedule of pretraining and fine-tuning as described in
+the experimental setup. Let LDLM denote the masked discrete
+diffusion loss for token generation (Eq. (5)). The overall joint-
+training objective is:
+Ltoken =LDLM +β1LDP +β2LCTP +β3LCTC (10)
+The token-prediction modules are pre-trained on native-
+only data and fine-tuned on semi-synthesized parallel data.
+2275
+a bush chief had died a natural death
+SIL ah SIL b uhuw sh ch iy f hh f hh SIL b ay d ah n ae ch t er d eh s
+Frequency (Mel)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+CTP Probability
+CTP Prob.
+Figure 4: Visualization of common token prediction for a Chinese-accented sample. CTP confidence values are overlaid on the Mel-
+spectrogram. PPG-predicted phonemes are shown below and their boundaries (white dashed lines) are overlaid on the spectrogram.
+Aligned words are shown at the bottom. Regions with prominent L2 accent (e.g., prolonged “a”, unclear “had”, /S/-like ending of
+“death”) receive low CTP confidence.
+3.5. Sampling Algorithm for Token Conversion
+After processing the source L2-accented tokens with the token
+encoder, CTP, and DP, we can then initialize the target token
+sequence and use the DLM decoder to complete it (i.e., “Target
+Init.” and “DLM Decoder” in Figure 1). By default, we use
+the greedy sampler with a threshold-based strategy for re

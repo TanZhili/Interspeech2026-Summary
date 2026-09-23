@@ -1,0 +1,509 @@
+Online Audio-Visual Target Speaker Extraction with Viseme-Guided
+Lightweight Visual Pretraining
+Zixuan Li ID 1, Xueliang Zhang1,∗∗, Lei Miao2, Zhipeng Yan2, Sun Ying2, Zhu Chong2
+1 College of Computer Science, Inner Mongolia University, Hohhot, China
+2 Lenovo, Beijing, China
+cslzx@mail.imu.edu.cn, cszxl@imu.edu.cn
+Abstract
+Audio-visual target speaker extraction (A V-TSE) leverages vi-
+sual information to recover a target speech signal from multi-
+speaker mixtures. However, existing systems are often built
+with non-causal architectures and incur high computational
+cost, which limits real-time deployment. While some stud-
+ies reduce the overall complexity by designing lighter separa-
+tion backbones, comparatively little attention has been paid to
+improving deployability by optimizing the visual branch. In
+this work, we revisit the design of visual cues and employ
+visemes as the visual guidance signal. Compared with conven-
+tional VSR-pretrained visual representations, viseme pretrain-
+ing yields a more lightweight, robust, and interpretable cue. In
+addition, we propose an online viseme-guided TSE system that
+achieves strong performance under the lowest computational
+budget.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+Target speaker extraction (TSE) aims to recover a target speech
+signal from a multi-talker acoustic scene by leveraging an aux-
+iliary cue, offering a practical solution to the classic cocktail
+party problem [1, 2]. Such cues can be categorized by modal-
+ity, including (i)audio cuessuch as a pre-recorded enrollment
+utterance from the target speaker [3, 4, 5], (ii)visual cuessuch
+as a face track synchronized with the target’s lip movements
+[6, 7, 8, 9], and (iii)spatial cuessuch as the direction of ar-
+rival (DoA) or other location-related information about the tar-
+get talker [10, 11, 12].
+Recent studies show that audio-visual TSE can outperform
+audio-only counterparts in separation quality and robustness.
+Specifically, audio-visual systems are more reliable with same-
+gender speakers or strongly overlapping interferers because lip
+movements provide complementary articulatory cues that re-
+duce speaker ambiguity [13]. They are also more robust at low
+SNRs because visual observations (especially mouth dynamics)
+are not corrupted by acoustic noise [14]. Moreover, cameras
+are widely available on smartphones, PCs, and meeting devices,
+making visual cues easy to acquire and potentially obviating the
+need for users to record an enrollment utterance in advance [15].
+However, most existing audio-visual TSE systems adopt
+non-causal architectures and incur high computational cost,
+which limits real-time deployment on edge devices. Recent
+work has explored fully causal designs to support streaming in-
+ference [16, 17]. Nevertheless, the high multiply-accumulate
+(MAC) count can still lead to unacceptable latency and power
+**indicates the corresponding author.
+consumption for on-device processing. Prior studies reduce the
+MACs in the audio branch to lower computational cost and im-
+prove streaming efficiency [18, 19, 20]. In contrast, less atten-
+tion has been paid to optimizing the visual front-end for deploy-
+able audio-visual systems.
+Most audio-visual systems adopt a visual encoder pre-
+trained for lip reading, i.e., visual speech recognition (VSR)
+[21, 22]. Because VSR is challenging, such encoders often have
+many parameters and high computational cost. To reduce visual
+computation, [23] trains the visual encoder jointly with the sep-
+arator and replaces the visual backbone from ResNet-18 [24]
+to BlazeNet [25], reducing visual computation from 12.9 G to
+2.1 G MACs. In what follows, we refer to the task-specific vi-
+sual representation learned via such joint training as amouth
+cue. However, this line of work mainly focuses on network
+architectural choices and does not explicitly re-examine the de-
+sign of visual cues. In addition, [15] retains only visual voice
+activity detection (VV AD) as the visual cue, which greatly sim-
+plifies the visual front-end. This strategy is effective for lightly
+overlapped mixtures, but it may fail under fully overlapped con-
+ditions where fine-grained mouth dynamics are needed to dis-
+ambiguate the target speaker.
+Motivated by these observations, we revisit the design of
+visual cues and employ visemes as the visual guidance signal.
+In this paper, a viseme denotes a set of phonemes with indistin-
+guishable lip shapes [26] (e.g., /p/, /b/, and /m/), which differs
+from [27], where the embedding produced by a visual encoder
+is referred to as a “viseme”.
+We pretrain the visual front-end with a viseme recognition
+objective, which provides explicit and task-aligned supervision
+and yields a more interpretable representation than a jointly
+learnedmouth cue. Compared with VV AD, viseme-level su-
+pervision preserves articulatory dynamics beyond speech activ-
+ity, thereby providing finer-grained guidance in fully overlapped
+mixtures. Compared with VSR, viseme recognition uses a sub-
+stantially smaller label inventory and is generally less demand-
+ing, which facilitates a lightweight visual model and encourages
+embeddings to encode articulatory–phonetic patterns useful for
+conditioning speech separation.
+Building on this viseme-guided visual design, we further
+develop a fully causal online A V-TSE system and evaluate its
+separation quality and MAC count. Our contributions are sum-
+marized as follows:
+• To the best of our knowledge, we are the first to systemat-
+ically investigate viseme-recognition pretraining as a visual
+cue for audio-visual target speaker extraction. Experimen-
+tal results show that viseme-recognition pretraining is effec-
+tive in our online A V-TSE system, achieving comparable or
+slightly better performance than (i) jointly learnedmouth-cue
+representations and (ii) VSR-pretrained visual encoders.
+5655
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-948
+Causal
+Conv3D
+2D
+ShuffleNet
+12
+Emformer
+Transformer
+Decoder
+Linear
+Linear
+CTC Loss
+CE Loss
+Conv3D Resnet18
+Transformer
+Decoder
+Linear
+Linear
+CTC Loss
+CE LossResnet1D
+12
+ComformerCat
+Viseme
+Embedding
+Distillation Loss
+Train
+Infer
+Audio-Visual
+Dataset Label
+I think ... good
+G2P Phoneme2Viseme
+AY TH IH NG K ... G UH D I think ... good
+Text Transcription Phoneme
+AA T IY K K ... K UH T
+Viseme
+Audio-Viusal
+Teacher
+Video-only
+Student
+Figure 1:Training pipeline for online viseme recognition via cross-modal distillation.
+• We propose an online A V-TSE system that achieves a favor-
+able separation-quality/MAC trade-off among the compared
+systems, making it more suitable for streaming-oriented sce-
+narios in terms of causal design and computational cost.
+2. Viseme Recognition Front-End
+2.1. Viseme Label Generation
+Table 1:Phoneme-to-viseme mapping used for generating
+viseme labels, following Lee and Yook [28].
+Viseme Class Phoneme Set
+P B, P, M
+T D, T, S, Z, TH, DH
+K G, K, N, NG, L, Y, HH
+CH JH, CH, SH, ZH
+F F, V
+W R, W
+IY IY, IH
+EY EH, EY, AE
+AA AA, AW, AY
+AH AH
+AO AO, OY, OW
+UH UH, UW
+ER ER
+To build viseme-level supervision, we convert the transcript
+of each video into a viseme sequence. Specifically, we first
+obtain phoneme sequences using the open-source grapheme-
+to-phoneme (G2P) toolkit 1 [29], which consults the Carnegie
+Mellon Pronouncing Dictionary (CMUdict) [30], and then map
+phonemes to visemes following Lee and Yook [28]. Table 1
+summarizes the phoneme-to-viseme mapping used in this work.
+These generated viseme sequences provide the training
+targets for viseme recognition. However, a straightforward
+viseme-recognition pretraining model is typically non-causal
+and may be too heavy for real-time deployment. To obtain
+an online-capable and lightweight visual front-end while pre-
+serving recognition accuracy, we adopt a cross-modal teacher–
+student distillation framework, as described next.
+1https://github.com/Kyubyong/g2p
+2.2. Online Viseme Recognition via Cross-Modal Distilla-
+tion
+We train an online viseme recognition front-end using a
+teacher–student distillation framework. As illustrated in Fig. 1,
+we first train a non-causal audio-visualteachermodel using the
+same overall architecture and joint CTC/attention criterion [31]
+as Auto-A VSR [22]:
+Lsup = (1−λ att)Lctc +λ attLatt.(1)
+The teacher takes synchronized audio and video as input and
+is optimized for viseme recognition, providing strong posterior
+targets for distillation.
+We then freeze the teacher and train a fully causal video-
+onlystudentmodel for real-time inference. To satisfy stream-
+ing constraints while keeping the model lightweight, we make
+the following modifications to the Auto-A VSR-style visual
+pipeline: (i) we apply causal padding in the initial 3D convo-
+lution to prevent future-frame leakage; (ii) we replace ResNet-
+18 with ShuffleNetV2 [32] to reduce computation; and (iii)
+we replace the non-causal Conformer encoder with Emformer
+[33]. Emformer is a streaming Transformer that processes input
+in chunks and summarizes long-range context via an explicit
+memory bank, enabling efficient low-latency inference com-
+pared to full-sequence self-attention.
+In addition to the supervised joint CTC/attention loss, we
+introduce a distillation loss that encourages the student to match
+the teacher’s posterior distributions. Specifically, given teacher
+and student logitsz t andz s, we define
+LKD(zt,z s) =T 2 KL
+ 
+softmax(zt/T)∥softmax(z s/T)
+
+,
+(2)
+whereTis the distillation temperature [34]. We apply this loss
+to both the CTC branch and the attention decoder outputs:
+Ldistill =L KD(zt
+ctc,z s
+ctc) +L KD(zt
+att,z s
+att),(3)
+and train the student with the overall objective
+L= (1−λ KD)Lsup +λ KDLdistill,(4)
+whereλ KD controls the strength of distillation. In practice,
+Ldistill is computed on non-padding positions only.
+At inference time, we keep only the student encoder and use
+the output of the last Emformer layer as theviseme embedding,
+which serves as the visual cue for the downstream separator.
+5656
+Viseme
+Recognition
+5TCN
+Upsampling
+Cat
+Mix
+STFT
+Conv1D
+6  TFSkiM Blocks
+Conv1D
+iSTFT
+Target Speech
+Viseme
+Embedding
+Figure 2:Viseme-guided TSE pipeline with a pretrained, frozen
+viseme recognizer.
+3. Viseme-Guided TSE
+Fig. 2 illustrates the proposed viseme-guided target speaker ex-
+traction (TSE) system. Given a mixture waveform, we com-
+pute its STFT and project the time–frequency representation
+into a latent feature space using a 1-D convolution. In parallel,
+the input video stream is fed into an online viseme recognition
+front-end (frozen during separator training) to produce frame-
+level viseme embeddings. To match the temporal resolution of
+the audio features, the viseme embeddings are processed by a
+stack of temporal convolutional networks (TCNs) followed by
+an upsampling module. The resulting visual features are then
+concatenated with the audio features and passed through a sep-
+arator backbone consisting of6TFSkiM blocks [35]. Finally,
+a 1-D convolution maps the separator output back to the STFT
+domain, and the enhanced waveform is obtained via iSTFT.
+We adopt TF-SkiMNet [35] as the separator backbone.
+However, TF-SkiMNet is originally designed for speech en-
+hancement and relies on a convolution-based Local-T module
+to model local temporal patterns. For TSE, longer-range tempo-
+ral dependencies are often more critical for maintaining target-
+speaker consistency under strong overlap. Therefore, we re-
+place the convolutional Local-T module with a chinnel-wise
+LSTM [36] to better capture long-context dynamics while pre-
+serving streaming compatibility.
+We train the separator with a sum of a magnitude-spectrum
+reconstruction loss and a time-domain SI-SNR loss. Letˆsand
+sdenote the estimated and reference target waveforms, and ˆS
+andSdenote their STFTs. The objective is
+Lsep =
+| ˆS|−|S|
+
+1
+−SI-SNR(ˆs,s).(5)
+4. Experimental Setup
+4.1. Dataset
+We conduct experiments on three widely used audio-visual
+speech datasets: LRS2[37], LRS3[38], and V oxCeleb2[39].
+Audio is sampled at 16 kHz and video is recorded at 25 fps.
+Viseme recognition.We train the viseme recognition
+model using only LRS2. Specifically, we use thepretrain
+andtrainsubsets for training and report results on thetest
+subset.
+Target speaker extraction.For A V-TSE, we adopt the
+mixture datasets constructed in [40], including LRS2-Mix,
+LRS3-Mix, and V ox2-Mix. LRS2-Mix contains an 11-hour
+training set and a 3-hour validation set. LRS3-Mix contains a
+28-hour training set and a 3-hour validation set. V ox2-Mix con-
+tains a 56-hour training set and a 3-hour validation set. Each
+mixture segment is 2 s long, and the signal-to-interference ra-
+tio (SIR) is uniformly sampled from[−5,5]dB. The test sets
+derived from the three datasets follow the same protocol as in
+previous work [41, 42].
+4.2. Hyperparameters and Training Settings
+Viseme recognition front-end.Except for the architectural
+changes required for streaming inference, we follow the Auto-
+A VSR configuration for the hidden dimensions of all compo-
+nents. For Emformer, the left context is set to 40 frames. In the
+teacher–student distillation framework, we setλ att = 0.2for
+the joint CTC/attention criterion, the distillation temperature to
+T= 2, and the distillation weight toλ KD = 0.3.
+For both the non-causal teacher and the causal student in
+viseme recognition, we use Adam with a OneCycle learning-
+rate schedule (cosine annealing) and mixed-precision training.
+The learning rate increases from6×10 −6 to3×10 −4 during
+the first 5 epochs, and then decays to3×10 −7 by the end of
+training. We train for 80 epochs in total with a batch size of 12.
+Viseme-guided TSE.For the separator, we keep the same
+configuration as the original TF-SkiMNet, except that the hid-
+den size of the modified channel-wise LSTM is set to 32. We
+train the TSE model with mixed precision and the Adam opti-
+mizer using an initial learning rate of10 −3. We adopt a Re-
+duceLROnPlateau scheduler that monitors the validation loss,
+with a reduction factor of 0.5, patience of 4 epochs, and a mini-
+mum learning rate of10 −6. The batch size is 32.
+4.3. Baseline systems
+Table 2:Computational cost (MACs) of different components.
+Total equals Visual Frontend + Separator.
+Exp. Visual Cue Network Visual Frontend Separator Total
+Baseline-1 Mouth SkiM 2.1 G 5.8 G 7.9 G
+Baseline-2 Viseme SkiM 3.3 G 5.8 G 9.1 G
+Baseline-3 VSR TF-SkiMNet 7.9 G 3.4 G 11.3 G
+proposed Viseme TF-SkiMNet 3.3 G 3.4 G 7.7 G
+Table 2 reports the computational cost of the visual front-
+end and the separator; the total cost is their sum.
+Baseline-1 (Mouth + SkiM).This baseline follows the
+prior state-of-the-art online A V-TSE system in [23], where the
+visual encoder and the separator are trained jointly and the
+learnedmouth cueis used to condition the SkiM separator.
+Baseline-2 (Viseme + SkiM).To isolate the impact of the
+visual cue, we replace the mouth cue in Baseline-1 with the
+proposed viseme embedding while keeping the same SkiM sep-
+arator and training protocol.
+Baseline-3 (VSR + TF-SkiMNet).To compare viseme
+guidance with a conventional VSR-based visual represen-
+tation, we replace the proposed viseme front-end with a
+VSR-pretrained visual encoder, namely the publicly released
+CTCNet-Lip 2 [40], which achieves 84.1% word-level accuracy
+on LRW [43]. We keep the same TFSkiM separator as in the
+proposed system.
+Proposed (Viseme + TF-SkiMNet).Our system uses the
+proposed online viseme front-end together with the modified
+TFSkiM separator.
+5. Results
+5.1. Viseme recognition front-end
+We evaluate viseme recognition using the viseme prediction er-
+ror rate (VER), which is computed in the same way as word
+error rate (WER) except that the token unit is a viseme instead
+of a word. Given a reference viseme sequencevand a hypothe-
+sized sequence ˆvobtained by greedy decoding, we compute the
+2https://github.com/JusperLee/CTCNet
+5657
+Table 3:In-domain results on LRS2-Mix, LRS3-Mix, and Vox2-Mix. Best results in each dataset/metric are in bold.
+LRS2-Mix LRS3-Mix V ox2-Mix
+Exp. Cue Network SI-SNR PESQ ESTOI SI-SNR PESQ ESTOI SI-SNR PESQ ESTOI
+Mixture - - 0.00 1.18 0.52 0.00 1.21 0.52 0.00 1.25 0.50
+Baseline-1 Mouth SkiM 7.17 1.61 0.71 9.88 1.89 0.785.451.61 0.62
+Baseline-2 Viseme SkiM 7.84 1.67 0.74 9.65 1.86 0.77 5.38 1.62 0.62
+Baseline-3 VSR TF-SkiMNet 8.88 1.91 0.77 10.03 2.08 0.80 5.14 1.70 0.63
+Ablation Viseme TF-SkiMNet ∗ 9.39 1.96 0.79 - - - - - -
+Proposed Viseme TF-SkiMNet10.07 2.07 0.81 10.78 2.18 0.825.321.70 0.64
+Table 4:Viseme recognition error-rate results on the LRS2 test
+set. Lower VER is better.
+Model Input Causal VER (%)↓MACs
+Teacher Audio + Video×9.60 19.82 G
+Student (distilled) Video✓28.90 3.33 G
+Student w/o distillation Video✓33.93 3.33 G
+Table 5:Cross-domain results on LRS2-Mix and LRS3-Mix.
+Best results in each dataset/metric are in bold.
+LRS2-Mix LRS3-Mix
+Exp. SI-SNR PESQ ESTOI SI-SNR PESQ ESTOI
+Mixture 0.00 1.18 0.52 -0.00 1.21 0.52
+Baseline-1 6.44 1.57 0.69 7.90 1.70 0.72
+Baseline-2 7.04 1.61 0.708.061.72 0.73
+Baseline-3 6.35 1.69 0.69 7.08 1.78 0.71
+Proposed7.41 1.76 0.727.881.84 0.74
+Levenshtein edit distance between them in terms of the mini-
+mum number of substitutions (S), deletions (D), and insertions
+(I). VER is defined as
+VER(%) = 100× S+D+I
+N ,(6)
+whereNis the number of viseme tokens in the reference se-
+quence.
+Table 4 compares the non-causal audio-visual teacher, the
+causal video-only student trained with distillation, and the cor-
+responding no-distillation ablation. The teacher achieves a low
+VER of 9.60% but requires 19.82 G MACs due to its non-causal
+audio-visual architecture. In contrast, the causal student reduces
+computation to 3.33 G MACs, at the cost of higher VER. Impor-
+tantly, cross-modal distillation substantially improves the stu-
+dent: distillation reduces VER from 33.93% to 28.90% at the
+same computational cost, indicating that the teacher’s posteri-
+ors provide effective supervision to mitigate the accuracy drop
+introduced by causality and the removal of the audio modality.
+Unless otherwise stated, we use the distilled student and take
+the last-layer Emformer representations as viseme embeddings
+for downstream TSE.
+5.2. Viseme-guided TSE
+To comprehensively evaluate the performance and generaliza-
+tion of the proposed system, Tables 3 and 5 report the in-domain
+and cross-domain results, respectively. Here,in-domainmeans
+that the model is trained and tested on mixtures constructed
+from the same dataset (e.g., trained on LRS2-Mix and evaluated
+on the LRS2-Mix test set). In contrast,cross-domainevaluates
+robustness under domain mismatch, where the model is trained
+on mixtures from one dataset but tested on mixtures from differ-
+ent datasets. In this work, all cross-domain models are trained
+on V ox2-Mix and then evaluated on the LRS2-Mix and LRS3-
+Mix test sets.
+Viseme cue vs. mouth cue.Compared with Baseline-1,
+Baseline-2 replaces the jointly learnedmouth cuewith the pro-
+posed pretrained viseme embedding. As shown in Table 3, this
+replacement yields consistent gains on LRS2-Mix in-domain
+evaluation, while achieving comparable performance on LRS3-
+Mix and V ox2-Mix. We attribute the smaller improvements on
+LRS3/V ox2 to the fact that the viseme front-end is pretrained
+only on LRS2; therefore, applying it to LRS3 and V ox2 intro-
+duces a visual domain shift for the viseme recognizer, which
+makes the extracted embeddings less accurate and the down-
+stream conditioning more challenging.
+Viseme cue vs. VSR cue.Relative to Baseline-3, which
+uses a VSR-pretrained encoder, the proposed system achieves
+higher separation quality and better robustness in most evalu-
+ated metrics (Tables 3 and 5), indicating that viseme pretraining
+can provide an effective and task-aligned visual cue for the pro-
+posed online A V-TSE system.
+Overall in-domain and cross-domain performance.
+Among the compared systems, the proposed online viseme-
+guided TSE system provides a favorable trade-off between
+separation quality and MAC count, with the lowest reported
+computational cost and the best overall in-domain results on
+LRS2-Mix and LRS3-Mix across SI-SNR/PESQ/ESTOI. On
+V ox2-Mix, it remains competitive in SI-SNR (slightly below
+Baseline-1) while achieving higher perceptual quality and in-
+telligibility. In the cross-domain evaluation, the proposed sys-
+tem attains the strongest results on LRS2-Mix across all three
+metrics, and achieves the highest PESQ/ESTOI on LRS3-Mix
+while remaining close to the top SI-SNR, indicating competitive
+performance under the evaluated domain mismatch settings.
+Ablation on separator modification.Finally, we conduct
+an ablation study to validate the effectiveness of our separator
+modifications. In Table 3,TF-SkiMNet ∗ denotes the original
+TF-SkiMNet configuration (without our Local-T replacement).
+Switching fromTF-SkiMNet ∗ to the modifiedTF-SkiMNet
+yields consistent improvements on LRS2-Mix, confirming that
+the proposed long-context modeling enhancement benefits TSE.
+6. Conclusions
+This paper revisited the design of visual cues for online audio-
+visual target speaker extraction and proposed viseme-guided ex-
+traction as a lightweight and interpretable alternative to conven-
+tional mouth-cue/VSR-pretrained representations, enabled by
+an online viseme recognizer trained via cross-modal distilla-
+tion. Building on this front-end, we developed a fully causal
+A V-TSE system. Experimental results show that the proposed
+system achieves competitive or better separation performance
+than the evaluated baselines while using the lowest MAC count
+among them.
+5658
+7. Generative AI Use Disclosure
+No generative AI tools were listed as co-authors of the paper.
+They were only used for editing and polishing the manuscript.
+8. Acknowledgments
+This work was supported by the Inner Mongolia Natural Sci-
+ence Foundation (2025LHMS06005), the Hohhot R&D Invest-
+ment Incentive Program (2025LHMS06005-1), the Inner Mon-
+golia Postgraduate Research Project (KC2025006S), and the
+CCF-Lenovo Research Fund (No. 20240203).
+9. References
+[1] E. C. Cherry, “Some experiments on the recognition of speech,
+with one and with two ears,”Journal of the acoustical society of
+America, vol. 25, pp. 975–979, 1953.
+[2] J. H. McDermott, “The cocktail party problem,”Current Biology,
+vol. 19, no. 22, pp. R1024–R1027, 2009.
+[3] Q. Wang, H. Muckenhirn, K. Wilson, P. Sridhar, Z. Wu, J. Her-
+shey, R. A. Saurous, R. J. Weiss, Y . Jia, and I. L. Moreno, “V oice-
+filter: Targeted voice separation by speaker-conditioned spectro-
+gram masking,”arXiv preprint arXiv:1810.04826, 2018.
+[4] S. He, H. Li, and X. Zhang, “Speakerfilter: Deep learning-based
+target speaker extraction using anchor speech,” inICASSP 2020-
+2020 IEEE International Conference on Acoustics, Speech and
+Signal Processing (ICASSP). IEEE, 2020, pp. 376–380.
+[5] C. Xu, W. Rao, E. S. Chng, and H. Li, “Spex: Multi-scale time
+domain speaker extraction network,”IEEE/ACM transactions on
+audio, speech, and language processing, vol. 28, pp. 1370–1384,
+2020.
+[6] A. Ephrat, I. Mosseri, O. Lang, T. Dekel, K. Wilson, A. Hassidim,
+W. T. Freeman, and M. Rubinstein, “Looking to listen at the cock-
+tail party: A speaker-independent audio-visual model for speech
+separation,”arXiv preprint arXiv:1804.03619, 2018.
+[7] Z. Pan, G. Wichern, Y . Masuyama, F. G. Germain, S. Khurana,
+C. Hori, and J. Le Roux, “Scenario-aware audio-visual tf-gridnet
+for target speech extraction,” in2023 IEEE Automatic Speech
+Recognition and Understanding Workshop (ASRU). IEEE, 2023,
+pp. 1–8.
+[8] Z. Pan, R. Tao, C. Xu, and H. Li, “Selective listening by syn-
+chronizing speech with lips,”IEEE/ACM Transactions on Audio,
+Speech, and Language Processing, vol. 30, pp. 1650–1664, 2022.
+[9] V . A. Kalkhorani, C. Yu, A. Kumar, K. Tan, B. Xu, and D. Wang,
+“Av-crossnet: an audiovisual complex spectral mapping network
+for speech separation by leveraging narrow-and cross-band mod-
+eling,”IEEE Journal of Selected Topics in Signal Processing,
+2025.
+[10] S. He, J.

@@ -1,0 +1,447 @@
+Multi-Talker ASR Unaffected by Speaker Change Count
+Naoki Makishima, Suzuka Yamada, Taiga Yamane, Mana Ihori, Tanaka Tomohiro, Satoshi Suzuki,
+Shota Orihashi, Ryo Masumura
+NTT, Inc., Japan
+naoki.makishima@ntt.com
+Abstract
+We develop an autoregressive model for multi-talker automatic
+speech recognition (ASR) robust to the number of speaker
+changes. Recent studies on multi-talker ASR handle multi-
+ple speakers by recursively estimating a single token sequence
+formed by concatenating their transcripts with speaker change
+tokens. However, as this technique heavily relies on context in-
+cluding speaker change tokens, inference performance degrades
+when the number of speaker changes exceeds those in the train-
+ing data. To address this limitation, we estimate the token se-
+quence, including speaker change tokens, without relying on
+how many speaker changes have occurred. This is achieved by
+introducing a novel speaker change token mask in self-attention,
+which sets the values of speaker change tokens and randomly
+selected tokens referenced by other queries to zero, preventing
+the model from inferring the number of speaker changes from
+context. Experiments demonstrate the efficacy of the proposed
+method.
+Index Terms: multi-talker speech recognition, speaker change
+detection, speaker diarization
+1. Introduction
+Due to advances in deep learning, the performance of automatic
+speech recognition (ASR) has dramatically improved, enabling
+recent ASR systems to handle long-form speech inputs such as
+meeting conversations [1–5]. Such speech typically involves
+multiple speakers taking turns to speak. Thus, speaker change
+detection (SCD) is an important technique for multi-talker ASR.
+Although SCD has been developed independently from
+ASR [6–9], recent studies have increasingly focused on their
+joint modeling [10–18]. The key idea in most of these stud-
+ies is to recursively estimate a single token sequence formed by
+concatenating the transcripts of multiple speakers with speaker
+change tokens. For example, in [12], a speaker change token
+is inserted into the Transformer Transducer [19] output vocab-
+ulary so that the model explicitly emits a token whenever a
+speaker change is detected. In [18], quantized timestamp to-
+kens [20, 21] and speaker tokens representing the vocal charac-
+teristics of the speech are added to the vocabulary, which are
+estimated, along with the transcription, on a per-speaker basis.
+This enables the model to handle speaker change in the same
+way as ASR, utilizing the previously generated tokens.
+However, a limitation of these conventional methods is that
+the number of speaker changes the model can handle during in-
+ference is influenced by the number of speaker changes present
+in the training data; e.g., when the model is trained using audio
+samples with up to 3 speaker changes, the performance of the
+model degrades when the input audio has more than 3 speaker
+changes, which is experimentally shown in Section 4.4. The
+number of speaker changes to include in the training data de-
+pends on the expected length and type of speech for the sys-
+tem, and creating the training data each time can be costly. To
+mitigate this limitation, conventional methods often control the
+speech length and the number of speaker changes by segment-
+ing the input audio [1–5, 20]. However, segmenting audio into
+too short clips causes discontinuities and loss of semantic mean-
+ing, which degrades performance [17]. Furthermore, even short
+audio clips can contain frequent speaker changes, especially
+given the prevalence of brief responses. In [22–24], transcrip-
+tions are generated on a per-speaker basis; i.e., the number of
+speaker change tokens is the same as the number of speakers
+in the audio. Although this enables the model to handle au-
+dio with an arbitrary number of speaker changes, transcriptions
+of each speaker must be concatenated, skipping their chrono-
+logical order, which is unsuitable for analyzing chronological
+conversation structures and interactions.
+To address this limitation, we propose a speaker change
+token-masked autoregressive model for multi-talker ASR that
+is robust to the number of speaker changes. The model esti-
+mates token sequences, including speaker change tokens, with-
+out relying on the number of speaker changes. This is achieved
+by introducing the novel speaker change token mask to re-
+place the conventional look-ahead mask [25] in Transformer
+decoders. This mask is applied to treat the value of speaker
+change tokens referenced by other queries as zero, as shown in
+Fig. 1 (b). This prevents the model from estimating the num-
+ber of speaker changes based on the number of speaker change
+tokens. Moreover, to prevent the model from estimating the
+number of speaker changes based on textual context, the mask
+also treats the value of randomly selected tokens referenced
+by other queries as zero in training, as shown in Fig. 1 (c).
+These masking techniques make the model robust to the num-
+ber of speaker changes, enabling multi-talker ASR of speech
+with more speaker changes than those present in training. We
+apply the proposed method to two types of multi-talker ASR.
+The first one is multi-talker ASR with speaker change tokens;
+transcriptions of multiple speakers are estimated by concate-
+nating them with speaker change tokens [12, 26–28]. Further-
+more, to investigate how speaker change token type and count
+affect the proposed method, we apply the proposed method to
+the joint modeling of multi-talker ASR and the speaker diariza-
+tion in [18]. This method includes quantized timestamp tokens
+and speaker tokens as well as transcriptions to estimate who
+spoke when and what; these tokens also determine the number
+of speaker changes, as well as speaker change tokens. Experi-
+ments demonstrate that, while the conventional method suffers
+a significant performance drop on speech that is composed of
+more speaker changes than those present in training, the pro-
+posed method alleviates this problem and outperforms the con-
+6083
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1582
+Transformer
+Encoder
+[sos] thanks [st] no problem [st] you too
+Masks used for self-attention in decoder during training
+Input single-channel audio Outputs (shifted right)
+Transformer
+Decoder
+Masked Multi-head
+Attention
+Encoder-decoder
+Attention
+N x
+Linear 
+thanks [st] no problem [st] you too [eos]
+Figure 1:Self-attention mask used in decoder. (a) Conventional look-ahead mask. (b) Proposed self-attention mask: speaker change
+tokens are masked. (c) Proposed self-attention mask: speaker change tokens and randomly selected textual tokens are masked. Black
+dots indicate tokens for which self-attention are calculated.
+ventional methods for both types of multi-talker ASR models.
+2. Conventional method
+2.1. Multi-talker ASR with speaker change token
+We denote the acoustic feature of the input speech asX=
+(x1,...,x T ), wherex t ∈R F denotes thetth frame of the
+feature,Fdenotes its dimension, andTdenotes its length.
+We denote utterance-level textual tokens of multiple speak-
+ers asw 1:M = (w 1,...,w M), whereMdenotes the num-
+ber of utterance segments in the overlapped speech,w m =
+(wm
+1 ,...,w m
+N m)denotes themth utterance’s textual tokens,
+N m denotes the token length,w m
+n ∈Vdenotes thenth tex-
+tual token of themth utterance, andVdenotes the vocabulary
+set. In [12,26], speaker change token[st]is used to concatenate
+w1:M . The concatenated labels∈(V∪O)is given as
+s= ([sos],w 1
+1,...,w 1
+N 1,[st],w 2
+1,...,w 2
+N 2,[st],
+...,w M−1
+N M−1,[st],w M
+1 ,...,w M
+N M,[eos]),(1)
+where[sos]and[eos]denote the start and end of a sentence,
+respectively, andO={[sos],[st],[eos]}. Multi-talker ASR
+estimates the generation probability ofsgivenXas follows:
+P(s|X) =
+|s|Y
+i=1
+P(s i|s1:i−1,X),(2)
+wheres i denotes theith token ofs,s 1:i−1 = (s 1,...,s i−1),
+and|s|denotes the length ofs.
+2.2. Joint modeling of multi-talker ASR and speaker di-
+arization
+Recently, several studies have tackled the joint modeling of
+multi-talker ASR and speaker diarization. In [18], SOMSRED-
+SVC was proposed, which jointly estimates multiple transcrip-
+tions, timestamps, and speaker tokens. The speaker tokens are
+denoted asd 1:M = (d1,...,d M), whered m∈Ddenotes the
+mth utterance’s speaker tokens andDdenotes the speaker token
+sets. The concatenated label sequence ¯s∈(V∪O∪T∪D)to
+be estimated is denoted as
+¯s= ([sos],[t 1
+s],[t 1
+e],w 1
+1,...,w 1
+N 1,d 1,
+...,[t M
+s ],[t M
+e ],w M
+1 ,...,w M
+N M,d M,[eos]),(3)
+whereTdenotes the quantized time token label set,[t m
+s ]∈T
+and[t m
+e ]∈Tdenote themth utterance’s start time token and
+end time token, respectively. Note that, compared to labels
+in (1), ¯sincludes more tokens that determine the number of
+speaker changes, namely timestamp and speaker tokens. The
+generation probability of ¯sis recursively estimated in the same
+way as in (2). In SOMSRED-SVC, the intermediate feature
+is utilized as speaker embeddings for speaker diarization. For
+details, please refer to [18].
+3. Proposed method
+3.1. Strategy
+As discussed in Section 1, the conventional method degrades
+ASR performance when speech contains more speaker changes
+than seen during training, as shown in Section 4.4. To address
+this problem, we propose an autoregressive model with a novel
+speaker change token mask.
+Figure 1 compares the decoder self-attention mask of the
+conventional method and the proposed method. In decoder self-
+attention, a mask is used to control which positions a token is
+allowed to attend to. Positions that should not be attended to are
+assigned a very large negative value so that those positions re-
+ceive a weight of zero when applying softmax. In conventional
+Transformer decoders, the look-ahead mask prevents each to-
+ken from attending to future tokens. In the proposed method,
+the self-attention mask not only prevents each token from at-
+tending to future tokens, but also prevents the model from at-
+tending to speaker change tokens, as shown in Fig. 1 (b). Note
+that, for simplicity, Fig. 1 only shows the case when[st]is the
+only token indicating the number of speaker changes. When ¯s
+in (3) is the label, timestamp token setTand speaker token set
+Dare masked. In addition, the proposed self-attention mask
+randomly masks the other textual tokens with the probability of
+r, as shown in Fig. 1 (c). We assume that this prevents the model
+from learning the number of utterances based on the context, as
+is discussed in Section 4.4. During inference, we only mask the
+speaker change token and do not mask the textual tokens even
+when they are masked in training.
+3.2. Formulation
+We denote the target sequence label as ˜s, where ˜s=s
+when the proposed method is applied to the multi-talker ASR
+with speaker change token, and ˜s= ¯swhen it is applied to
+SOMSRED-SVC. The proposed method estimates the genera-
+tion probability of ˜sgivenXas follows:
+P( ˜s|X) =
+|˜s|Y
+i=1
+P(˜si|context,X),(4)
+P(˜si|context,X) =
+(
+P(˜si|˜c1:i−1,˜si−1,X)if˜s i−1∈Q
+P( ˜si|˜c1:i−1,X)otherwise ,
+(5)
+6084
+where˜si denotes theith token of ˜s,Q= ({[st]}∪T ∪D)
+is a set of always-masked tokens, and ˜c1:i−1 denotes the token
+sequence that excludes all the elements inQfrom ˜s1:i−1. Com-
+pared to Eq. (2), the model estimates the same token sequence
+including speaker change tokens without using the context of
+speaker change tokens, except when it is the token one step
+earlier. This modeling is achieved by using the novel speaker
+change token mask, as
+H= TransformerEnc(X),(6)
+gi = DecoderSelfAttentionMask(˜s1:i−1,r),(7)
+ei = TransformerDec(H,g i, ˜s1:i−1),(8)
+P(˜si|context,X) = Softmax(e i),(9)
+where ˜s1:i−1 = (˜s1,...,˜s i−1),ris the masking probability of
+textual tokens,TransformerEnc(·)is a Transformer encoder,
+DecoderSelfAttentionMask(·)is the function that creates the
+proposed self-attention mask,TransformerDec(·)is a Trans-
+former decoder, andSoftmax(·)denotes a linear layer with
+softmax activation. Each element of maskg i is defined as fol-
+lows:
+gij =
+
+
+
+−∞ifj >i
+−∞ifj <i,˜s j∈Q
+−∞ifj <i,˜s j /∈Q, ξj <r,(training only)
+0otherwise
+,
+(10)
+whereg ij denotes thejth entry ofg i, andξ j ∼ U(0,1)are
+uniform random variables of thejth serialized token. Note that
+−∞stands for a large negative value used to assign a weight of
+zero to the specific positions when calculating attention scores,
+while0represents no operation. The first condition stands for
+the standard look-ahead mask, the second condition determin-
+istically masks tokens inQ, and the third condition randomly
+masks the textual tokens with probabilityr.
+We apply the proposed method to the multi-talker ASR with
+speaker change token and SOMSRED-SVC. In the former case,
+sin (1) is the target label, and the model is optimized with the
+cross-entropy function. In the latter case, ¯sin (3) is the target
+label, and we follow the loss function defined in [18].
+4. Experiments
+4.1. Dataset
+We used the Corpus of Spontaneous Japanese (CSJ) [29] for
+our experiments. First, we divided CSJ into training, validation,
+and test data: 1,388 speakers for the training data (522 h), ten
+speakers for the validation data (1.3 h), and ten speakers for the
+test data (1.9 h). Since CSJ is a single-utterance dataset, we
+created pseudo multiple utterance audio by mixing or concate-
+nating these utterances. When mixing the audio signals, each
+speaker was assigned one utterance, and the original volume
+of each utterance was kept unchanged, resulting in an average
+signal-to-interference ratio of about 0 dB. Delay values for each
+utterance were randomly chosen under the constraints provided
+in [22]. The start times of individual utterances differed by 0.5
+s or longer so that every utterance in each mixed audio sample
+had at least one speaker-overlap region. When concatenating
+the audio signals to create non-overlapped speech, the original
+volume of each utterance was also kept unchanged. The pause
+between utterances was randomly chosen between 0.1 s and 0.5
+s. We set the speaker of the consecutive two utterances to be
+different. For model training and inference, we created two- to
+three-utterance-overlapped mixtures and two- to six- utterance-
+non-overlapped speech. The training data of multi-talker ASR
+with speaker change token and SOMSRED-SVC are the same.
+We utilized 80 log mel-scale filterbank coefficients as acoustic
+features, which were extracted using a 20-ms-long Hann win-
+dow with a 10-ms-long shift. We used characters as textual to-
+kens.
+4.2. Implementation
+We used a Transformer-based ASR model [25,30] in the exper-
+iments. For the model of multi-talker ASR with speaker change
+token, we stacked ten-layer Transformer encoder blocks, where
+the number of heads in the multi-head attention was set to 4, the
+dimensions of the output continuous representations were set to
+512, and the dimensions of the inner output in the position-wise
+feed-forward networks were set to 1,024. For the decoder lay-
+ers, we stacked two-layer Transformer decoder blocks, where
+the settings were the same as for the encoder blocks. For the
+SOMSRED-SVC model, we stacked 14-layer Transformer en-
+coder blocks and four-layer Transformer decoder blocks, where
+the other settings were the same as multi-talker ASR with
+speaker change token.
+4.3. Settings
+We compared the proposed method, which uses a novel decoder
+self-attention mask, with the conventional baseline method,
+which uses the conventional look-ahead mask. The comparison
+was conducted in the context of multi-talker ASR with speaker
+change token and SOMSRED-SVC. All models except the ora-
+cle model were trained on data including single-utterance seg-
+ments, two-to-three-utterance non-overlapping segments, and
+two-to-three-utterance overlapping segments; i.e., the training
+data includes up to two speaker changes To evaluate the perfor-
+mance upper bound, we created an oracle model whose training
+data included four-utterance non-overlapping segments that are
+composed of three speaker changes. The model architectures
+for the conventional method, the proposed method, and the ora-
+cle were identical. The timestamp tokens and speaker tokens in
+(3) are obtained following [18]. All models were optimized us-
+ing the RAdam [31] algorithm with a mini-batch size of 32. We
+set the learning rate to10−4. The training steps were stopped if
+the loss on the validation set did not decrease for ten successive
+epochs. We applied label smoothing with the smoothing weight
+of 0.1 [32]. We used character error rate (CER) and speaker
+change count accuracy (SCCA) to evaluate performance. When
+we evaluated SOMSRED-SVC, we also added timestamp error
+rate (TER) and equal error rate (EER) for evaluation follow-
+ing [18]. TER was calculated as the sum of the missed speaker
+time and false alarm time; i.e., it equals diarization error rate ex-
+cluding the speaker error rate. EER was calculated to evaluate
+the discriminability of speaker embeddings. When comparing
+hypothesized boundaries to references, we utilized a tolerance
+of±250ms. SCCA was calculated as the ratio of the number
+of test samples for which each method correctly counted the
+speaker change to the total number of test samples. When cal-
+culating CER, we only evaluated textual tokens excludingO,
+T, andD, while considering the order of utterances.
+4.4. Results
+Table 1 shows the evaluation results on multi-talker ASR with
+speaker change token. We compared the conventional base-
+6085
+Table 1:Evaluation results on multi-talker ASR with speaker change token. SC denotes speaker change, and (Ov.) and (No-ov.) indicate
+overlapped speech and non-overlapped speech, respectively.
+Method
+CER (%) SCCA (%)
+0 SC 1 SC 2 SC 2 SC 3 SC 0 SC 1 SC 2 SC 2 SC 3 SC
+(Ov.) (Ov.) (No-Ov.) (No-Ov.) (Ov.) (Ov.) (No-Ov.) (No-Ov.)
+Baseline 5.8 9.0 14.4 6.1 13.5 99.8 96.4 90.0 99.7 59.5
+Ours (r= 0) 5.7 9.5 14.1 6.4 9.6 99.9 96.0 87.8 99.1 76.4
+Ours (r= 0.4) 5.4 9.1 13.7 5.5 7.2 99.7 95.7 88.9 99.4 86.7
+Ours (r= 0.6) 5.2 8.7 14.8 5.6 5.9 99.6 96.0 86.9 98.4 96.3
+Ours (r= 0.8) 6.2 10.3 14.8 6.9 7.8 99.8 95.5 86.3 97.7 91.7
+Oracle 5.9 9.3 14.6 6.1 6.1 99.9 96.9 88.6 99.6 99.2
+Table 2:CER and proportion of predicted number of speaker changes when input audio contains four speaker changes and five speaker
+changes. Bold text shows SCCA (%) of each method.
+# SC Method CER (%) proportion of predicted number of speaker changes (%)
+0 1 2 3 4 5≥6
+4 Baseline 22.1 0.0 0.2 18.5 56.522.52.0 0.3
+Ours (r= 0.6) 6.9 0.0 0.2 0.6 10.388.10.8 0.0
+5 Baseline 28.4 0.0 0.2 12.9 46.5 30.48.41.6
+Ours (r= 0.6) 7.5 0.0 0.0 0.3 2.0 17.578.41.8
+Table 3:Evaluation results on SOMSRED-SVC.
+Method CER (%) TER (%) EER (%) SCCA (%)
+2 SC 2 SC 3 SC 2 SC 2 SC 3 SC 2 SC 2 SC 3 SC 2 SC 2 SC 3 SC
+(Ov.) (No-Ov.) (No-Ov.) (Ov.) (No-Ov.) (No-Ov.) (Ov.) (No-Ov.) (No-Ov.) (Ov.) (No-Ov.) (No-Ov.)
+Baseline 14.1 5.9 12.2 3.2 3.8 14.8 13.8 10.6 12.6 92.4 99.6 60.1
+Ours (r= 0.2) 13.1 5.6 8.2 4.1 4.2 13.3 14.5 9.6 12.2 92.1 99.8 78.4
+Ours (r= 0.4) 13.8 5.7 6.9 4.1 4.9 11.6 14.4 10.3 12.7 91.4 99.7 88.0
+Ours (r= 0.6) 12.8 5.8 8.5 3.2 4.1 13.0 15.1 11.5 17.2 91.9 99.8 79.2
+Oracle 14.6 6.0 6.1 4.0 5.0 7.6 13.6 8.3 8.0 88.8 99.1 99.6
+line to the proposed method with variousrvalues. Note that
+utterances up to two speaker changes were used to train the
+baseline and the proposed method, while utterances including
+three speaker changes were used to train the oracle. We can see
+that the CER and SCCA of the baseline rapidly degrade when
+the input audio contains three speaker changes, which demon-
+strates that the baseline cannot handle speech with more speaker
+changes than those present in training. On the other hand, our
+proposed method improves CER and SCCA on speech includ-
+ing three speaker changes to a level comparable to the oracle
+while achieving almost the same performance on speech in-
+cluding up to two speaker changes as the baseline. Although
+the proposed method improves performance compared to the
+baseline whenr= 0, the best CER and SCCA are achieved
+whenr= 0.6. We assume this is because the model learns
+to estimate the number of speaker changes from context when
+r= 0while the random mask prevents it whenr̸= 0. More-
+over, while larger values ofryield greater effects, excessively
+largervalue complicates model training and degrades CER and
+SCCA. Table 2 shows CER and distribution of the predicted
+number of speaker changes when the input audio includes four
+and five speaker changes. We can see that the baseline tends
+to skip one to two utterances, leading to higher CER. On the
+other hand, the proposed method estimates the correct number
+of speaker changes in most cases, with most errors being one-
+utterance skips.
+Table 3 shows the evaluation results on SOMSRED-SVC.
+The proposed method improves CER and SCCA when the in-
+put includes three speaker changes not covered by the train-
+ing data. Although the proposed method masks timestamp and
+speaker tokens, this causes almost no degradation in TER and
+EER, which evaluate the accuracy of predicted timestamps and
+speaker embeddings, respectively. Compared to the result in
+Table 1, the proposed method achieves the best performance
+whenr= 0.4, and the difference between oracle and others
+when the input includes three speaker changes become larger.
+We assume that this arises from differences in the number of
+masked tokens; developing a method to get closer to the oracle
+as the number of masked tokens increases is future work.
+5. Conclusions
+In this paper, we proposed an autoregressive modeling method
+for multi-talker ASR that can handle more speaker changes than
+present in training data. The conventional multi-talker ASR es-
+timates the transcriptions of multiple speakers by using speaker
+change tokens and concatenating their transcriptions. How-
+ever, as demonstrated in Section 4.4, the conventional method
+tends to skip speakers when the number of speaker changes ex-
+ceeds that present in training, which results in degraded CER
+and SCCA scores. To address this limitation, we introduce
+a novel speaker change token mask. This mask enables the
+model to treat the value of speaker change tokens and the value
+of randomly selected tokens referenced by other queries as
+zero, which prevents the model from estimating the number of
+speaker changes based on speaker change tokens and context.
+Experiments on the CSJ dataset demonstrate that while the per-
+formance of the conventional method degrades when the input
+speech contains more speaker changes than present in training,
+the proposed method alleviates this problem and outperforms
+the conventional method.
+6086
+6. Generative AI Use Disclosure
+No generative AI was used in this paper.

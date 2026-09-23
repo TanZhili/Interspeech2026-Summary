@@ -1,0 +1,487 @@
+From Awareness to Adherence: Bridging the Context Gap in Spoken Dialogue
+Systems via Context-Aware Decoding
+Che Hyun Lee ID 1, Heeseung Kim ID 3,†, Sungroh Yoon ID 1,2,†
+1 ECE and 2 IPAI, Seoul National University, Seoul 08826, Korea
+3 Department of AI, University of Seoul, Seoul 02504, Korea
+saga1214@snu.ac.kr, gmltmd789@uos.ac.kr, sryoon@snu.ac.kr
+Abstract
+Despite the success of end-to-end (E2E) spoken dialogue sys-
+tems, maintaining strict context adherence in multi-round con-
+versations remains a challenge. While prior works attribute
+these failures to models forgetting dialogue history, we high-
+light an equally critical but overlooked bottleneck: a gap be-
+tween latent context awareness and active adherence. Although
+models internally recognize relevant past utterances, strong
+parametric priors often overshadow these signals during decod-
+ing. To bridge this gap, we propose an audio-adapted Context-
+Aware Decoding (CAD) approach. By leveraging internal atten-
+tion mechanisms to isolate key historical rounds, our approach
+contrasts output distributions with and without this key con-
+text during inference, directly amplifying multimodal contex-
+tual signals. Evaluations on the Audio MultiChallenge bench-
+mark demonstrate significant improvements in Semantic Mem-
+ory and Self Coherence subtasks, successfully enforcing strict,
+context-faithful adherence. 1
+Index Terms: Spoken Dialogue Systems, Speech Large Lan-
+guage Models, Multi-Turn Conversation, Context Adherence
+1. Introduction
+End-to-end (E2E) spoken dialogue systems have demonstrated
+remarkable proficiency in human-computer interaction, specif-
+ically in discerning user intent directly from speech and gen-
+erating contextually appropriate responses [1, 2, 3]. Recently,
+the scope of these systems has expanded from processing sin-
+gle user queries [4, 5, 6, 1] to handling complex multi-round
+communications [7, 8, 9, 10, 11]. Unlike processing a single
+interaction, multi-round communication requires the model to
+extend beyond immediate utterance processing; it must main-
+tain a coherent dialogue state, allowing the assistant to engage
+in sustained conversations that feel natural and responsive to the
+user’s evolving needs [12, 13, 14, 15, 16].
+However, achieving robust multi-round communication re-
+mains a formidable challenge [17, 18, 19]. In extended dia-
+logues, a system must not only retain the memory of previous
+user utterances but also ensure consistency with its own prior re-
+sponse [20, 21, 9, 22, 23]. Recent benchmarks designed to eval-
+uate these capabilities reveal that current state-of-the-art E2E
+models often fall short, exhibiting a tendency toforgetthe di-
+alogue history [24, 25, 26]. Consequently, these models often
+generate responses that are incoherent with the established con-
+text or fail to address the user’s specific constraints, leading to a
+degraded user experience where the assistant appears oblivious
+to the ongoing conversation flow.
+†indicates corresponding authors.
+1Our code is available at:https://github.com/saga1214/
+AudioCAD
+Prior studies often address this context modeling failure
+by assuming that models entirely forget the context, frequently
+proposing external retrieval-based solutions to supply missing
+information [27, 28, 29, 30, 31, 32]. However, context model-
+ing failures arise not only from severe forgetting but also from
+an inability to utilize properly retained context. In this work,
+we focus on the latter case, highlighting a more nuanced bottle-
+neck: a critical gap betweenlatent awarenessandactive adher-
+ence. We define latent awareness as the model’s internal ability
+to recognize relevant past information, while active adherence
+refers to the successful manifestation of that context in the fi-
+nal generated output. Although internal representations suggest
+that models maintain a degree of latent awareness regarding key
+historical utterances [33, 34, 35, 36], these contextual signals
+are frequently overshadowed by the model’s strong parametric
+priors during the decoding stage. This proves that a significant
+portion of context failures is not merely a memory deficit, but a
+generation flaw, necessitating a decoding-centric intervention.
+To bridge this gap between latent awareness and active ad-
+herence, we propose an audio-adapted Context-Aware Decod-
+ing (CAD) approach [37], which amplifies contextual influence
+by contrasting output distributions generated with and without
+specific context. While CAD has been utilized in the text do-
+main to mitigate hallucinations [37, 38, 39, 40, 41] or reduce
+recency bias [42], and recently extended to omni-modal sys-
+tems to support weak modalities [26], existing adaptations of-
+ten rely on coarse heuristics, such as dropping entire histories
+or using fixed context windows. In contrast, we leverage the
+model’s internal attention mechanisms as a proxy for its la-
+tent awareness to dynamically identify and isolate key histor-
+ical rounds. By specifically penalizing the generic parametric
+priors associated with these identified rounds during decoding,
+our precision-targeted approach compels the system to transi-
+tion from mere internal recognition to strict, context-faithful ad-
+herence. Furthermore, we systematically optimize this process
+through extensive ablation studies on attention layer selection,
+cross-modal aggregation, and context scoping to precisely cali-
+brate the extraction of latent awareness.
+In summary, our main contributions are threefold: (1) To the
+best of our knowledge, this is the first work to explicitly formal-
+ize and address the generation failures in multi-round spoken
+dialogue not merely as a result of forgetting, but as a critical
+gap between the model’s latent awareness and its active adher-
+ence to the dialogue context. (2) We propose an audio-adapted
+Context-Aware Decoding method that amplifies contextual sig-
+nals directly during inference, effectively mitigating generation
+flaws without requiring additional training or external retrieval
+modules. (3) Through extensive evaluations on the Audio Multi-
+Challenge benchmark, we demonstrate that our approach signif-
+icantly improves strict context adherence, yielding gains in both
+3421
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1589
+Spoken 
+Dialogue 
+System
+𝑈1
+(User Turn, 
+Speech)
+𝐴1
+(Assistant 
+Turn, Text)
+𝑈𝑛
+(Current 
+Query)
+Conversation History (𝐻𝑛−1)
+Spoken Dialogue System
+Spoken 
+Dialogue 
+System
+(a) Multi-Round Spoken Dialogue (c) Latent Context Awareness for Key Context Extraction
+(b) Context-Aware Decoding for Active Adherence
+Attention Maps
+Turn Scores 
+(𝑆 𝑈 , 𝑆(𝐴))
+Turn-to-Round 
+Aggregation
+(𝑆 𝐴 + 𝛽 ⋅ 𝑆 𝑈 )
+Layer Selection
+Token-to-Turn 
+Aggregation Round ScoresToken Scores
+𝐶key
+(Key 
+Context)
+𝑈1 𝐴1 𝑈𝑛
+ConditionalUnconditional
+𝑈1 𝐴1 𝑈𝑛𝐶key
+Masking Key Context 
+with Context Scope
+Input Context (𝐶𝑛)
+× 𝛼
+log 𝑃(𝐴|𝐶𝑛)
+log 𝑃(𝐴|𝐶unc)
+Amplified, 
+context-faithful 
+final logit ሚ𝑙
+Generated 
+Response 
+(𝐴𝑛)
+Unconditional Context (𝐶unc)
+Figure 1:Overall framework of our audio-adapted Context-Aware Decoding (CAD) for spoken dialogue systems. (a) Formalization of
+multi-round spoken dialogue (Sec. 2.1). (b) CAD mechanism amplifying contextual adherence by penalizing parametric priors during
+inference (Sec. 2.2). (c) Latent awareness pipeline identifying the key contextC key via attention analysis (Sec. 2.3).
+Semantic Memory and Self Coherence subtasks and thereby ef-
+fectively reducing hallucinations in extended spoken dialogues.
+2. Methods
+2.1. Problem Statement: Multi-Round Spoken Dialogue
+End-to-end spoken dialogue systems are fundamentally de-
+signed to generate appropriate responses conditioned on user ut-
+terances. Recently, the capability of these models has expanded
+beyond single-round interactions to support sustained, multi-
+round dialogues. To formally define this process, we first dis-
+tinguish between aturn, which refers to a single utterance from
+either the user or the assistant, and around, which consists of a
+paired sequence of a user turn followed by an assistant turn.
+Consider a single-round interaction where a user turn is
+composed ofitokens, denoted asU= [u 1,u 2,...,u i], and
+the corresponding assistant response consists ofktokens,A=
+[a1,a 2,...,a k]. An autoregressive spoken dialogue systemϕ
+generates the response by modeling the probability distribution,
+predicting one token at a time:
+Pϕ(A|U) =
+kY
+j=1
+Pϕ(aj|U,a<j).(1)
+We can extend this formulation to a multi-round scenario,
+depicted in Fig. 1(a). Let the model maintain a conversation his-
+tory consisting of the previousn−1completed rounds, denoted
+asHn−1 = [U 1,A 1,...,U n−1,An−1]. For then-th round, the
+user provides a new utteranceU n. The established input con-
+textC n provided to the model includes the entire past history
+appended with the current query:C n = [Hn−1,U n]. The as-
+sistant must generate the subsequent responseA n conditioned
+on this extended history:
+Pϕ(An|Cn) =
+|An|Y
+j=1
+Pϕ(an
+j|Cn,an
+<j).(2)
+In general, the tokens ofUandAmay be either text sub-
+words or speech codecs [13]. We focus on a Speech-to-Text
+(S2T) setting: the user utteranceUconsists of speech tokens,
+and the responseAis generated as text. Our decoding strategy is
+nonetheless modality-agnostic and extends directly to Speech-
+to-Speech (S2S) generation in voice assistants.
+The core objective in this setting is to ensure that the gen-
+erated responseA n is not only contextually appropriate for the
+immediate queryU n but also strictly faithful and coherent with
+the past conversation historyH n−1. Addressing the model’s
+failure to actively adhere toH n−1 during the generation ofA n
+is the main focus of our proposed methodology detailed below.
+2.2. Context-Aware Decoding for Active Adherence
+Pre-trained language models frequently suffer from hallucina-
+tions in multi-round conversations when explicit dialogue his-
+tory conflicts with their pre-existing parametric priors. To miti-
+gate this in the text domain, Context-Aware Decoding (CAD)
+[37] was proposed to amplify contextual influence. Standard
+CAD contrasts the output logits of a model conditioned on the
+full context against an unconditional setup, which is typically
+computed by naively dropping the entire historyHn−1.
+We adapt and advance this methodology for the multi-
+modal architecture of spoken dialogue systems, as illustrated
+in Fig. 1(b). Instead of treating the entire history as uniformly
+relevant, we define a specific key contextCkey⊂H n−1 captur-
+ing the most informative cross-modal signals from speech and
+text. The detailed pipeline for quantifying latent awareness and
+extractingC key is introduced in Sec. 2.3.
+Rather than discarding the full history, we construct our
+unconditional formulation by masking out only this isolated
+key context. We define the unconditional context asC unc =
+Cn\C key, i.e., the full input with the key context removed.
+The prediction underC unc thus reflects the model’s parametric
+prior when it cannot see the key context. Building upon the for-
+malization in Sec. 2.1, we obtain the modified logit ˜lj for the
+j-th tokenan
+j by applying a penalty weightαto this prior. Intu-
+itively, Eq. 3 amplifies how much the key context shifts the pre-
+diction, pushing the output toward context-favored tokens and
+away from the prior. We systematically exploreα∈[1.0,3.0]
+with an increment of0.5:
+3422
+˜lj = logP ϕ(an
+j|Cunc,an
+<j)
++α
+h
+logPϕ(an
+j|Cn,an
+<j)−logP ϕ(an
+j|Cunc,an
+<j)
+i
+(3)
+2.3. Latent Context Awareness for Key Context Extraction
+To construct the key contextC key used in our Context-Aware
+Decoding formulation, we leverage thelatent context awareness
+inherently present within spoken dialogue systems. Although
+models may fail to manifest historical context in their final out-
+put, their internal attention mechanisms often accurately recog-
+nize relevant past utterances. We therefore analyze the atten-
+tion that the current queryU n assigns to each history token:
+this attention weight serves as thetoken score, indicating how
+strongly the model attends to that token when forming its re-
+sponse. As illustrated in Fig. 1(c), our pipeline then proceeds
+in stages: we aggregate token scores into turn scores, combine
+turns into round scores, and finally select the top-scoring rounds
+asC key. We define this pipeline across four axes:
+1) Layer Selection:To determine which layers best capture
+contextual relevance, we compute token scores from different
+sets of layers: only the final layer (last 1), the average of the
+last four (last 4), or all layers. This evaluates whether high-
+level semantics in deeper layers or broader signals across the
+model better reflect latent awareness.
+2) Token-to-Turn Aggregation:To score an entire turn
+T∈{U m,Am}rather than a few high-attention tokens, we ag-
+gregate the token scores within the turn into a turn-level score
+Sturn(T), comparing themean,max, andsum, which respec-
+tively capture average, peak, and total attention within the turn.
+3) Turn-to-Round Aggregation:A conversation round
+Rm consists of a user turn (audio codecs) and an assistant turn
+(text tokens). Because speech is tokenized into far more codecs
+than the corresponding text, we down-weight the user turn by
+a turn-to-round ratioβ∈{0.25,0.5,1.0}so that a long audio
+turn does not dominate the round score:
+Sround(Rm) =S turn(Am) +β·S turn(Um).(4)
+4) Context Scope (Top-KSelection):Finally, we sort all
+historical roundsR m∈H n−1 by theirS round scores and take
+the topKas the key contextC key. We investigateK∈{1,2}
+to analyze the impact of expanding the scope. While a largerK
+raises the chance of capturing the truly relevant round, it may
+also introduce spurious signals from irrelevant rounds that de-
+grade our CAD mechanism.
+3. Experiments
+3.1. Experimental Setup
+3.1.1. Benchmark and Evaluation
+To evaluate the effectiveness of our CAD approach in multi-
+round spoken dialogues, we utilize the recently introduced Au-
+dio MultiChallenge benchmark [24]. This open-source dataset
+is specifically designed to assess end-to-end models under natu-
+ral human interaction patterns, featuring unscripted speech with
+realistic disfluencies and ambient noise. The conversations span
+between 3 to 8 continuous rounds, providing a robust testbed
+for long-horizon state tracking.
+Among the evaluation axes, we primarily focus on tasks that
+require the model to actively adhere to the established context.
+We select two challenging subsets:
+•Semantic Memory (90 samples):A subset of the Inference
+Memory task requiring the assistant to generate responses
+grounded in the user’s past constraints (e.g., explicitly ex-
+cluding allergens mentioned in earlier rounds).
+•Self Coherence (83 samples):Evaluates the assistant’s abil-
+ity to maintain consistency with its own prior generations
+(e.g., consistently recalling and referencing specific items
+recommended in previous rounds).
+For evaluation, the benchmark employs a strict, rubric-
+based methodology. Although we utilizegpt-5-nano[46] as the
+LLM-as-a-Judge rather than the official benchmark’s default
+evaluatoro4-mini, we strictly adhere to the rest of the official
+evaluation pipeline. For each conversation, the judge evaluates
+the assistant’s final utterance against a set of instance-specific
+rubrics on a binary scale (pass/fail). We report theA verage Pass
+Ratio (APR), where a generation is considered entirely suc-
+cessful (pass) only if it fully satisfiesallassociated rubrics for
+given conversation. To ensure statistical reliability, all reported
+APR metrics are averaged over 5 independent generation runs.
+3.1.2. Baselines
+We evaluate our approach on three state-of-the-art spoken
+dialogue systems:MiMo-Audio-7B-Instruct[43] (with its
+“Thinking” option enabled, MiMo-Audio),Qwen3-Omni-
+30B-A3B-Instruct[44] (Qwen3-Omni), andKimi-Audio-7B-
+Instruct[45] (Kimi-Audio). To isolate the impact of our CAD
+method, all models utilize their default generation configura-
+tions (e.g.,top p, temperature) as specified in their official
+implementations. We compare standard decoding against our
+proposed audio-adapted CAD by evaluating the assistant’s re-
+sponse to the final user query in the multi-round dialogue.
+3.2. Results
+Table 1 presents the main evaluation results on the Audio Multi-
+Challenge benchmark. For our proposed Context-Aware Decod-
+ing, we apply the empirically optimal configuration (last 4,
+mean,0.5) derived from Sec. 3.3 across all baseline models.
+As shown in the table, integrating our audio-adapted
+CAD consistently yields substantial performance improvements
+across all three state-of-the-art spoken dialogue systems. Rather
+than merely relying on parametric priors, the models equipped
+with CAD are successfully forced to actively adhere to the es-
+tablished multi-round conversation history.
+Notably, Qwen3-Omni exhibits the most dramatic enhance-
+ment, achieving an absolute increase of13.30%in the APR,
+with Semantic Memory alone surging from 22.67% to 39.33%.
+Similarly, MiMo-Audio and Kimi-Audio demonstrate signifi-
+cant absolute average gains of8.10%and6.70%, respectively.
+This consistent and robust gain across entirely different mod-
+els validates that addressing the generation flaw via decoding-
+centric intervention effectively mitigates hallucination and re-
+solves context failures in multi-turn spoken dialogues.
+3.3. Ablation Studies
+To validate our design choices and understand the internal dy-
+namics of our method, we conduct comprehensive ablation
+studies on the CAD hyperparameters. All experiments in this
+section are performed using MiMo-Audio as a base model, fo-
+cusing on the key dimensions defined in Sec. 2.3.
+Necessity of Latent Awareness:As shown in Fig. 2, apply-
+ing CAD using the whole historyHn−1 asC key (Whole History
+CAD) results in a significant performance drop (21.04%) com-
+3423
+Table 1:Performance comparison on the Audio MultiChallenge benchmark. We report the Average Pass Ratio (%) for Semantic Memory,
+Self Coherence, and their Average. Applying our proposed Context-Aware Decoding (CAD) consistently improves adherence across all
+evaluated E2E spoken dialogue systems. (∗Note: All scores are uniformly evaluated using gpt-5-nano instead of the official o4-mini
+judge, so absolute metrics may differ from the public leaderboard.)
+Model A verage Pass Ratio (%)∗
+Semantic Memory Self Coherence A verage
+MiMo-Audio-7B-Instruct [43] 26.00 26.02 26.01
++ Ours (CAD) 32.00 36.39 34.11
+Qwen3-Omni-30B-A3B-Instruct [44] 22.67 29.16 25.78
++ Ours (CAD) 39.33 38.80 39.08
+Kimi-Audio-7B-Instruct [45] 13.56 19.04 16.19
++ Ours (CAD) 23.11 22.65 22.89
+Layer Selection Token-to-Turn Turn-to-Round ( )
+20.0
+22.5
+25.0
+27.5
+30.0
+32.5
+35.0Average APR (%)
+ No CAD (26.01%) 
+ Whole History CAD (21.04%) 
+last_1
+(29.76%)
+max
+(30.41%)
+0.25
+(28.83%)
+all
+(30.85%)
+sum
+(32.84%) 1.0
+(31.52%)
+last_4
+(33.1%)
+mean
+(33.1%)
+0.5
+(33.1%)
+Figure 2:Ablation of CAD hyperparameters: layer selection,
+token-to-turn aggregation, and turn-to-round aggregation (β)
+under a penalty weight ofα= 3.0and Top-1 context scope.
+The purple dashed line denotes APR without CAD, and the red
+dotted line represents Whole History CAD, where the whole his-
+tory is considered asC key.
+pared to theNo CADbaseline (26.01%). This degradation re-
+veals that naive context selection introduces substantial noise in
+multi-round spoken dialogues. Our method effectively reverses
+this trend, achieving 33.10% by precisely isolating key context.
+Impact of Layer Selection and Aggregation:Fig. 2 high-
+lights the performance variations caused by different attention
+layer selection and aggregation strategies. To clearly isolate
+these effects, these ablations are evaluated under a fixed penalty
+weight ofα= 3.0and a context scope of Top-1 round (K= 1).
+Regarding layer selection, relying solely on the final layer
+(last 1) fails to sufficiently capture broader contextual nu-
+ances, whereas averaging across all layers introduces excessive
+noise from low-level features present in the shallow layers. Ex-
+tracting from the last four layers strikes the optimal balance.
+For token-to-turn aggregation, themaxoveremphasizes iso-
+lated outlier keywords within each turn, andsumis biased to-
+wards longer turns due to its dependence on the total token
+count. Consequently, themeanaggregation provides the most
+stable and representative turn-level score.
+Finally, for the turn-to-round ratio (β), moderately compen-
+sating for the inherently longer sequence length of audio tokens
+(β= 0.5) yields superior results compared to uncompensated
+(β= 1.0) or overcompensated (β= 0.25) settings. These re-
+sults confirm that our calibrated setup optimally captures the
+1.0 1.5 2.0 2.5 3.0
+Penalty Weight ( )
+26.0
+28.0
+30.0
+32.0
+34.0
+36.0
+Average APR (%)
+Context Scope: Top-1 Round
+Context Scope: Top-2 Rounds
+Figure 3:Ablation of CAD hyperparameters: penalty weight (α)
+and context scope (K) under the empirically optimal configu-
+rationlast 4,mean, andβ= 0.5.
+latent awareness and successfully isolates the key context.
+Impact of Penalty Weight and Context Scope:We
+further investigate the effect of the penalty weight (α∈
+{1.0,1.5,2.0,2.5,3.0}) across different context scopes (K∈
+{1,2}), as illustrated in Fig. 3. For a context scope of 1 round
+(K= 1), increasing the penalty weight steadily improves
+the Average APR until the performance eventually saturates at
+higher values, leading us to selectα= 2.5as the optimum.
+Conversely, expanding the context scope to 2 rounds (K=
+2) generally degrades the overall performance. Notably, perfor-
+mance drops sharply asαincreases. This indicates that a larger
+scope likely incorporates irrelevant turns. Aggressively ampli-
+fying such irrelevant context via high penalty weights is detri-
+mental, underscoring the need for precise context selection.
+4. Conclusion
+In this work, we introduced an audio-adapted Context-Aware
+Decoding (CAD) framework to bridge the inherent context gap
+between latent context awareness and active adherence in multi-
+round spoken dialogues. Our comprehensive evaluation on the
+Audio MultiChallenge benchmark demonstrates that our pro-
+posed approach consistently yields substantial performance im-
+provements across diverse state-of-the-art spoken dialogue sys-
+tems. These results validate that decoding-centric interventions
+serve as a robust, model-agnostic strategy for enhancing the
+faithfulness of spoken dialogue systems.
+3424
+5. Generative AI Use Disclosure
+Generative AI tools were utilized only for language editing and
+polishing. The final content was produced and reviewed entirely
+by the authors.
+6. Acknowledgments
+This work was supported by Institute of Information &
+Communications Technology Planning & Evaluation (IITP)
+grants funded by the Korea government (MSIT) [NO.RS-
+2021-II211343, Artificial Intelligence Graduate School Pro-
+gram (Seoul National University); No.2022-0-00959, RS-2022-
+II220959], by National Research Foundation of Korea (NRF)
+grant [No.2022R1A3B1077720, 2022R1A5A7083908], BK21
+FOUR Program of the Education and Research Program for
+Future ICT Pioneers, Seoul National University in 2026. This
+was supported by Mobile eXperience(MX) Business, Samsung
+Electronics Co., Ltd.

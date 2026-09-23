@@ -1,0 +1,444 @@
+W AND: Windowed Attention and Knowledge Distillation
+for Efficient Autoregressive Text-to-Speech Models
+Hanna Lee ID 1, Tan Dat Nguyen ID 1, Jaehoon Kang ID 2, Kyuhong Shim ID 2
+1 Korea Advanced Institute of Science and Technology, Republic of Korea
+2 Sungkyunkwan University, Republic of Korea
+hanna.lee@kaist.ac.kr, tandat.kaist@kaist.ac.kr, morateng@skku.edu, khshim@skku.edu
+Abstract
+Recent decoder-only autoregressive text-to-speech (AR-TTS)
+models produce high-fidelity speech, but their memory and
+compute costs scale quadratically with sequence length due to
+full self-attention. In this paper, we propose W AND, Windowed
+Attention and Knowledge Distillation, a framework that adapts
+pretrained AR-TTS models to operate with constant compu-
+tational and memory complexity. W AND separates the atten-
+tion mechanism into two: persistent global attention over con-
+ditioning tokens and local sliding-window attention over gen-
+erated tokens. To stabilize fine-tuning, we employ a curricu-
+lum learning strategy that progressively tightens the attention
+window. We further utilize knowledge distillation from a full-
+attention teacher to recover high-fidelity synthesis quality with
+high data efficiency. Evaluated on three modern AR-TTS mod-
+els, W AND preserves the original quality while achieving up to
+66.2% KV cache memory reduction and length-invariant, near-
+constant per-step latency.
+Index Terms: text-to-speech, speech synthesis, efficient TTS,
+global-local attention, W AND
+1. Introduction
+Text-to-Speech (TTS) models leveraging Transformer-based
+large language model (LLM) backbones have demonstrated
+the capability to generate near-human-quality speech from
+short reference audio [1, 2, 3, 4]. By utilizing neural audio
+codecs [5, 6], these models treat speech as discrete token se-
+quences, enabling the direct adaptation of text-based LLMs for
+speech synthesis. Compared to conventional seq2seq TTS mod-
+els such as Tacotron [7] and VITS [8], LLM-based TTS systems
+exhibit superior zero-shot speaker generalization, greater ro-
+bustness to diverse linguistic inputs, and enhanced naturalness.
+However, the computational complexity of Transformer
+architectures scales quadratically with sequence length [9],
+leading to substantial memory overhead and high inference
+latency. This challenge hinders the deployment of LLM-based
+TTS models in stringent real-time applications [10].
+To circumvent the scaling limitations of the Transformer,
+recent research has explored several avenues for reducing the
+computational intensity and memory requirements of LLM
+architectures. One prominent direction focuses on reducing the
+model depth through layer-wise pruning [11, 12], an approach
+recently applied to speech synthesis to minimize parameter
+counts [13]. However, depth reduction fails to address the fun-
+damental nature of the self-attention mechanism, as the remain-
+ing layers still incur quadratic computational costs and identical
+per-layer memory overhead. On the other hand, architectural
+shifts toward linear-time mechanisms, such as Gated Linear
+Attention [14, 15] and Mamba-based architectures [16, 17, 18],
+offer significantly higher throughput. However, these
+paradigms necessitate training from scratch and often exhibit
+a performance gap, where the resulting speech quality and
+prosodic naturalness remain inferior to those achieved by
+established AR-TTS models. Other approaches accelerate
+inference by optimizing the decoding process, such as through
+speculative decoding [19, 20, 21] or parallel decoding [22, 23].
+While this improves speed by generating multiple tokens per
+step, it still relies on self-attention and leaves the underlying
+memory scaling issues unresolved. A more common and sim-
+pler alternative is the use of Key-Value (KV) caching [24, 25],
+which is widely adopted in state-of-the-art models [3, 2].
+While KV caching achieves a near-linear inference cost
+similar to linear attention while preserving the original model’s
+performance, it introduces a critical bottleneck: the cumulative
+memory footprint continues to expand with every generated
+token [26, 27]. This restricts the synthesis of long-form utter-
+ances and imposes severe hardware constraints, a challenge that
+current LLM-based TTS systems have yet to resolve effectively.
+In this work, we hypothesize thatAR-TTS models may
+not require full-sequence attention to maintain high-fidelity
+synthesis. Specifically, we posit that the conditioning prompt
+tokens, comprising target text, reference audio, and auxiliary
+task or emotion tags, provide sufficient semantic and acoustic
+context for the generation. In contrast, generated speech tokens
+primarily serve to maintain local temporal consistency; thus,
+the model only requires alocalized viewof these tokens to
+track the decoding position relative to the monotonic speech
+trajectory. This is consistent with the “attention sink” phe-
+nomenon in text LLMs [28], where most of the attention mass
+is concentrated on several prefix tokens and a local window.
+Despite this, current AR-TTS architectures attend to all tokens
+indiscriminately, resulting in a linearly expanding KV cache
+that inherently limits long-sequence scalability.
+Motivated by this view, we propose W AND,Windowed
+Attention and KnowledgeDistillation, to transform the scaling
+of computational and memory costs from linear to constant.
+Our framework bifurcates the attention mechanism into two dis-
+tinct components:Global Attention, which maintains persistent
+access to the conditioning tokens (capturing 48–65% of atten-
+tion mass), andLocal Sliding-Window Attention, which restricts
+the receptive field for generated speech tokens to a fixed-size
+window. Unlike paradigms that necessitate training from
+scratch, W AND leverages pretrained weights, substantially
+reducing training cost and enabling seamless integration into
+existing AR-TTS pipelines. By employing knowledge distilla-
+tion from a full-attention teacher, W AND recovers high-fidelity
+synthesis quality using only 53.8 hours of speech data [29].
+We evaluate W AND across three different models:
+CosyV oice 2 [3], IndexTTS 1.5 [4], and SparkTTS [2]. For
+272
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-943
+Autoregressive Speech Token Generator
+Window (size=32)
+KV-cache
+System Prompt + Text + Ref Audio
+Cosine SchedulerWarmup (3%)
+Iteration
+Masked region
+visible
+visible Key position
+Query position
+visible
+visible Key position
+Query position
+visible
+visible Key position
+Query position
+Attention Mask for Early Training Stage Attention Mask for Late Training Stage
+Learning rate
+Figure 1:Overview of the WAND framework. Conditioning tokens (system prompt, text, reference audio) retain global attention access,
+while generated acoustic tokens are restricted to a fixed-size sliding window of sizeW.
+10-second generation, W AND achieves up to a 66.2% reduc-
+tion in KV cache size and significantly decreases cumulative
+computational costs, reducing total GFLOPs by as much
+as 46.9%. Notably, W AND achieves effective adaptation
+using only 53.8 hours of English data in a single epoch and
+generalizes to Mandarin without training data with a Character
+Error Rate (CER) degradation within 0.1% absolute. Our
+contributions are threefold: (1) an attention restriction method
+for LLM-based TTS ensuring constant memory and compu-
+tational overhead without architectural modifications; (2) a
+data-efficient adaptation strategy via knowledge distillation
+that generalizes across languages; and (3) a cross-architecture
+validation achieving a bounded KV cache and constant per-step
+latency with negligible quality loss. We make our source code
+and demo publicly available. 1
+2. Method
+2.1. Attention Restriction with Sliding Window Decoding
+We posit that AR-TTS relies on two distinct types of informa-
+tion:global context, which determines the invariant character-
+istics of the generation, andlocal context, which governs fine-
+grained acoustic transitions [30, 13, 31]. By decoupling these,
+we can restrict the model’s temporal attention to a local window
+without losing global consistency or speaker identity. Without
+loss of generality, we consider TTS conditioned on four fun-
+damental inputs: a system promptsthat encodes global con-
+straints, target textx, a reference audio prompta pr specifying
+speaker style, and the generated acoustic tokensy 1:T . These
+inputs are concatenated into a conditioning prompt:
+pθ(y1:T|s,x,a pr) =
+TY
+t=1
+pθ (yt|y <t,s,x,a pr).(1)
+As shown in Figure 1, we divide the attention mechanism into
+two distinct components.Global Attention(red blocks in Fig-
+ure 1) provides fixed conditioning ons,x, anda pr. Conversely,
+Local Sliding-Window Attention(green blocks in Figure 1) pro-
+vides dynamic conditioning on the recent acoustic historyy <t.
+Because acoustic signals are locally coherent and monotonic,
+the influence of distant past tokensy 1:t−W−1 diminishes once
+global conditions are fixed. By restricting local attention to a
+1https://onemeee.github.io/wand-tts/
+windowW, we not only maintain efficiency but also mitigate
+the propagation of sampling artifacts from the distant past:
+pθ(yt|y <t,s,x,a pr)≈p θ (yt|y t−W:t−1,s,x,a pr).(2)
+By partitioning the KV cache into a fixed global component
+and a rolling window of sizeWfor acoustic tokens, we achieve
+a constantO(1)inference memory footprint relative to the total
+sequence lengthT. At the inference stage, this constant-length
+windowed attention enables arbitrarily long audio generation
+with bounded memory usage.
+2.2. Knowledge Distillation for Attention Adaptation
+While our hypothesis suggests that global context maintains
+core identity, some performance degradation is inevitable when
+a model trained on full attention is suddenly restricted to a lo-
+cal window. Our initial experiments show that it results in a
+slight decrease in content consistency. To mitigate this ob-
+served performance gap, we employ a knowledge distillation
+framework that supervises the restricted student model using
+two complementary objectives [29, 32, 33]. First, a cross-
+entropy loss (L CE) anchors the student to the ground-truth
+acoustic tokens, ensuring fundamental alignment with the tar-
+get speech. Second, a Skew Kullback–Leibler divergence [34]
+loss (L KL) encourages the token probability distribution of
+the student to mimic the probability of a full-attention teacher
+model, both conditioned on the same historical context. This
+loss helps the student remain consistent when the long-range
+context is removed after attention adaptation. The final train-
+ing objective is a weighted combination of both components:
+L=L CE +λL KL.
+2.3. Curriculum Scheduling for Window Reduction
+To stabilize fine-tuning, we introduce a curriculum that progres-
+sively reduces the window size fromW start to the target sizeW.
+Following a cosine scheduleα(t)overT c steps:
+α(t) = 1
+2
+
+1−cos
+
+πmin
+ t
+Tc
+,1
+
+,(3)
+the effective window size at steptis defined asW(t) =
+Wstart−α(t) (W start−W). To further ease adaptation, we ap-
+ply a temperature-controlled soft mask to the attention logits
+A. Rather than immediate hard truncation, we defineA ′ =
+273
+Table 1:Comparison of baselines and WAND models ontest-en. Inference efficiency metrics (KV cache and GFLOPs) correspond
+to the accumulation required to generate 10 seconds of audio, with the KV cache reported in fp32 mode. All WAND models are fine-
+tuned solely on 53.8 hours of English data. NMOS is reported with a confidence interval of95%.
+Model Attn. Mechanism Cache Compute KV Cache↓Reduction↑ GFLOPs↓Speedup↑ UTMOS↑NMOS↑SSIM↑WER↓
+Groundtruth− − − − − − − 3.53 3.79±0.18 100 1.44
+CosyV oice2-0.5B GQA (W=∞) O(L)O(L) 10.48MB− 11.55− 4.18 4.01±0.1794.61.94
+W AND (W= 32) O(1)O(1) 5.25MB49.9% 7.44 1.55× 4.21+0.03 4.02±0.16 94.5 −0.1 1.72−0.22
+IndexTTS 1.5 MHA (W=∞) O(L)O(L) 38.44MB− 6.18− 3.97 4.13±0.1494.40.98
+W AND (W= 32) O(1)O(1) 13.01MB66.2% 3.28 1.89× 3.98+0.01 4.13±0.1394.4 +0.0 0.91−0.07
+SparkTTS-0.5B GQA (W=∞) O(L)O(L) 18.09MB− 48.12− 3.933.94±0.16 92.6 3.27
+W AND (W= 64) O(1)O(1) 7.15MB60.5% 31.74 1.51× 3.93+0.00 3.97±0.1692.8 +0.2 3.11−0.16
+Table 2:Attention distribution of vanilla (full-attention) AR-
+TTS models during decoding, averaged over 5 long utterances.
+Model Attention (%) Local-W Cov.Prompt Generated /Gen. (%)
+CosyV oice2 (W= 32) 58.5 41.5 70.2 87.6
+IndexTTS 1.5 (W= 32) 64.6 35.4 57.1 84.8
+SparkTTS (W= 64) 47.9 52.1 82.8 91.0
+A−τ(t)M, whereMis the binary mask for positions outside
+the current window. The masking strengthτ(t)follows a log-
+scale interpolation:
+τ(t) = exp
+
+logτ start +α(t) (logτ end−logτ start)
+
+.(4)
+As depicted in Figure 1, an initially smallτ(t)permits par-
+tial attention to masked positions, preserving gradient flow dur-
+ing early optimization. Asτ(t)increases, the model gradually
+adapts to strict inference-time constraints.
+3. Experiments
+Datasets & Fine-Tuning Configurations.We conduct fine-
+tuning experiments on thetrain-clean-100subset of Lib-
+riTTS [35], which contains approximately 53.8 hours of tran-
+scribed speech. Notably, we intentionally use only this modest
+subset rather than the full 585.80-hour corpus, demonstrating
+that W AND requires minimal data for effective adaptation. All
+models are fine-tuned using the AdamW optimizer with a co-
+sine learning rate schedule and a peak learning rate of1×10−5.
+We fine-tune each baseline with W AND for 1 epoch on a single
+NVIDIA A100 MIG partition with 20 GB of memory.
+Baselines.We evaluate W AND on three pretrained AR-TTS
+models spanning different architectures and codec configura-
+tions:CosyVoice 2-0.5B[3]: A 0.5B-parameter model built
+on the Qwen2.5-0.5B backbone, using an FSQ-based single-
+codebook codec with a token rate of 25 Hz;IndexTTS 1.5[4]:
+A GPT-style AR-TTS model employing a single-codebook VQ
+codec with a token rate of 25 Hz; andSparkTTS-0.5B[2]: A
+0.5B-parameter model built on the Qwen2.5-0.5B [36] back-
+bone, utilizing BiCodec with a semantic token rate of 50 Hz.
+This diversity in backbone architectures, codec designs (FSQ,
+VQ, BiCodec), and token rates (25 Hz vs. 50 Hz) provides a
+rigorous testbed for evaluating the generality of W AND.
+Evaluations.We evaluate W AND using the Seed-TTS-
+eval [37] benchmark, performing tests on bothtest-enand
+test-zhto assess generation quality on both English and
+Mandarin.2 For objective metrics, we calculate Word Error
+Rate (WER) using Whisper-large-v3 [38] and Character Error
+Rate (CER) using Paraformer-zh [39] as ASR systems to eval-
+uate content accuracy for English and Mandarin, respectively.
+We also measure the speaker similarity (SSIM) as the cosine
+similarity between speaker embeddings extracted from the
+reference prompt and the synthesized speech using WavLM-
+based [40] x-vectors, while overall speech quality is assessed
+via the UTMOS metric [41]. Subjectively, we conduct Natu-
+ralness Mean Opinion Score (NMOS) tests on a 5-point scale
+involving 10 raters, with 50 randomly generated audio samples
+from each model to provide a measure of perceived naturalness.
+4. Analysis
+4.1. Target-Language Speech Quality
+As demonstrated in Table 1, W AND maintains high-fidelity
+synthesis across all evaluated architectures on the Seed-TTS
+test-enbenchmark. Notably, the absolute word error rate
+(WER) either remains within 0.2% of the baseline or exhibits
+slight improvement, as observed in CosyV oice 2, where the
+WER decreased from 1.94% to 1.72%. We attribute this perfor-
+mance stability—and occasional improvement— to the inherent
+regularization effect of the sliding window. By isolating the de-
+coding context, W AND effectively mitigates the propagation of
+distant sampling artifacts and hallucinations. Consequently, this
+limits the model’s dependency on its own prior outputs, miti-
+gating the compounding errors typical of autoregressive gener-
+ation, and forces the student model to rely more robustly on the
+invariant global conditioning.
+4.2. Inference Efficiency
+Beyond accuracy, W AND delivers substantial efficiency gains.
+For 10-second generation, memory usage is reduced by up to
+66.2%, with IndexTTS 1.5 KV cache (fp32) decreasing from
+38.44MB to13.01MB. Computational cost is similarly re-
+duced: CosyV oice 2 GFLOPs drop from11.55to7.44, and In-
+dexTTS from6.18to3.28, yielding speedups of1.51×–1.89×.
+CosyV oice 2 and SparkTTS employ Grouped Query Atten-
+tion [42]. FLOPs are computed using the full number of query
+heads, as KV heads are broadcast during attention. SparkTTS
+exhibits higher absolute FLOPs due to its higher token rate,
+resulting in double decoding steps compared to other baselines.
+The theoretical memory reduction translates directly to infer-
+ence efficiency (Fig. 2). While full attention latency increases
+from7.8ms to over9.0ms with sequence length, W AND main-
+2https://github.com/BytedanceSpeech/
+seed-tts-eval
+274
+Table 3:Comparison of baselines and their fine-tuned version
+with WAND ontest-zh. All WAND models are fine-tuned
+exclusively on English data.
+Model Attn. Mechanism UTMOS↑SSIM↑CER↓
+CosyV oice 2-0.5B Baseline (W=∞) 3.49 95.3 1.59
+W AND (W= 32) 3.50 95.3 1.53
+IndexTTS 1.5 Baseline (W=∞) 3.23 95.6 0.82
+W AND (W= 32) 3.25 95.6 0.91
+SparkTTS-0.5B Baseline (W=∞) 3.28 94.2 2.14
+W AND (W= 64) 3.26 94.4 2.35
+0 100 200 300 400 500 600
+T oken Index (decode step)
+7.0
+7.5
+8.0
+8.5
+9.0
+9.5Per-token Latency (ms)
+O(n) per step
+O(1) per step
+CosyVoice2
+Full Attention
+Sliding Window (W=32)
+Figure 2:Per-step decoding latency regarding the number of
+generated tokens. Full attention latency grows linearly with se-
+quence length, while sliding-window attention maintains con-
+stant latency regardless of output length.
+tains near-constant latency due to bounded attention. Combined
+with bounded KV cache growth, this enables long-form synthe-
+sis with constant memory and constant per-step computation.
+4.3. Data Efficiency and Cross-Lingual Preservation
+Our framework achieves effective adaptation with only 53.8
+hours of data and a single epoch of fine-tuning. Crucially, de-
+spite this English-only fine-tuning stage, W AND preserves the
+ability to generate high-quality Mandarin. As shown in Table 3,
+the performance on Chinese speech remains robust, with char-
+acter error rate (CER) degradation limited to within 0.1% abso-
+lute for primary systems like CosyV oice 2 and IndexTTS 1.5.
+This cross-lingual resilience confirms that the learned attention
+restriction captures a universal structural property of speech
+(i.e., temporal locality) rather than language-specific patterns.
+Furthermore, W AND generalizes across three architecturally
+diverse systems—differing in backbone (Qwen2.5-based vs.
+GPT-style), codec design (FSQ, VQ, BiCodec), and token
+rate (25 Hz, 50 Hz)—without any architecture-specific modifi-
+cations. This broad applicability confirms that the attention re-
+striction is a universal optimization applicable to the AR-TTS
+paradigm, enabling consistent efficiency gains regardless of the
+underlying codec or model configuration.
+4.4. Attention Pattern Analysis
+To validate the design of our attention restriction, we analyze
+the attention patterns of vanilla full-attention models (Table 2).
+Across all three architectures, 48–65% of attention targets the
+conditioning prefix, confirming that these tokens serve as per-
+sistent anchors throughout generation and must retain global
+access. Within the decode region, 57–83% of attention con-
+centrates on the most recentWtokens. Combining these com-
+Table 4:Ablation on distillation loss components. WER (%) on
+Seed-TTS-evaltest-en.
+Loss CosyVoice 2 IndexTTS 1.5 SparkTTS
+W=32 W=32 W=64
+No distillation (SW only) 3.40 1.11 3.81
+LCE only 2.02 1.16 4.92
+LKL only 2.37 1.05 3.83
+LCE +L KL 1.72 0.91 3.11
+Table 5:Ablation on curriculum learning strategy. WER (%) on
+Seed-TTS-evaltest-en. Curriculum progressively reduces
+window size from 128 toWwith temperature-scaled masking.
+Training Strategy CosyVoice 2 IndexTTS 1.5
+W=32 W=32
+Direct (W= 32from start) 1.86 1.03
+Curriculum (W= 128→32) 1.72 0.91
+ponents, the prefix and a local window jointly account for 85–
+91% of total attention, validating that restricting decode-region
+attention to a fixed window discards only a small fraction of the
+model’s attention mass. Notably, SparkTTS allocates a larger
+share to the decode region (52%) and requires a proportionally
+wider window (W=64) to achieve comparable coverage, con-
+sistent with its higher codec token rate (50 Hz).
+4.5. Ablation Studies
+Distillation Loss Components.Table 4 isolates the contri-
+bution of each loss component. Applying the sliding window
+without distillation achieves a reasonable WER of 1.11% for
+IndexTTS 1.5, but substantially degrades performance for
+CosyV oice 2 (3.40%) and SparkTTS (3.81%). While adding
+eitherL CE orL KL alone recovers a portion of the performance
+gap for some models, only their combination consistently
+yields the best results across all three models. The result
+confirms that cross-entropy and KL divergence losses provide
+complementary supervision during attention adaptation.
+Curriculum Learning.Table 5 compares direct training with
+the target window size against our curriculum strategy. The
+curriculum strategy begins with a window size of 128 and
+progressively narrows to the targetWusing temperature-scaled
+masking to gradually restrict attention over distant tokens. This
+approach consistently outperforms direct training, reducing
+WER from 1.86% to 1.72% for CosyV oice 2 and from 1.03%
+to 0.91% for IndexTTS 1.5.
+5. Conclusion
+In conclusion,W ANDsuccessfully transforms the computa-
+tional and memory scaling of AR-TTS from linear to constant
+by bifurcating the attention mechanism into persistentGlobal
+AttentionandLocal Sliding-Window Attention. Our evaluations
+across CosyV oice 2, IndexTTS 1.5, and SparkTTS demonstrate
+that bounded KV caching enables constant per-step latency with
+negligible quality loss. Specifically, the framework achieved up
+to a 66.2% reduction in KV cache size and a significant decrease
+in GFLOPs, while maintaining robust cross-lingual generaliza-
+tion even with limited data. By overcoming the memory scal-
+ing limits inherent in Transformers, W AND enables long-form
+TTS with constant memory and per-step computation, paving
+the way for continuous, infinitely long audio generation with-
+out hardware constraints or performance degradation.
+275
+6. Acknowledgments
+This work was supported by Institute of Information &
+communications Technology Planning & Evaluation (IITP)
+grant funded by the Korea government (MSIT) (RS-2019-
+II190421, Artificial Intelligence Graduate School Program
+(Sungkyunkwan University)).
+7. Generative AI Use Disclosure
+Generative AI tools (Claude, Anthropic) were used to assist
+with grammar correction and polishing of the manuscript. All
+scientific content, experimental design, and analysis were con-
+ducted solely by the authors. All authors take full responsibility
+for the content of this paper.

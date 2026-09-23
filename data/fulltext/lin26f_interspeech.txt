@@ -1,0 +1,385 @@
+Improving Streaming Speaker Diarization for LLM Based Multi-talker Speech
+Understanding
+Ju Lin, Ruizhi Li, Ruizhe Huang, Jing Pan, Xuan Zhang, Zili Huang,
+Jing Zheng, Ming Sun, Florian Metze
+Meta, USA
+julincs@meta.com
+Abstract
+Previous work has shown that source separation with post-
+processing can help large language models (LLMs) handle
+multi-talker speech by serving as an external speaker diariza-
+tion module. However, simple threshold-based approaches lack
+robustness under diverse acoustic conditions. We propose a
+two-stage framework comprising a source separation model fol-
+lowed by a statistical classifier (e.g., Gradient Boosting Deci-
+sion Trees) for speaker tagging. To improve efficiency, we ex-
+plore a Conformer-based architecture that significantly reduces
+parameter count. Additionally, to accommodate varying mi-
+crophone geometries across smart glasses devices, we develop
+a multi-geometry model enabling a single source separation
+model to generalize across devices. Experiments on real-world
+multi-talker recordings demonstrate improvements in both ac-
+curacy and efficiency for speech recognition and translation
+tasks.
+Index Terms: speech recognition, speech translation, speaker
+diarization, smart glasses
+1. Introduction
+Modern wearable devices, such as smart glasses, are commonly
+equipped with microphone arrays capable of capturing spa-
+tial audio signals. Recent research has leveraged these multi-
+channel audio inputs to enable real-time captioning and speech
+translation, thereby enriching human communication experi-
+ences through robust and efficient speech-understanding sys-
+tems [1, 2, 3, 4, 5]. Prior work [1] has demonstrated that multi-
+microphone arrays can effectively distinguish among the de-
+vice wearer, direct conversational partners, and ambient speak-
+ers, achieving superior noise robustness over traditional single-
+channel beamforming methods.
+Multimodal large language models (LLMs) have recently
+demonstrated strong speech-understanding capabilities, yet
+their audio input is predominantly monaural. To address this
+limitation, recent work has explored integrating spatial audio
+understanding into LLMs, typically by fine-tuning pretrained
+models on spatial audio representations with textual supervi-
+sion. For instance, Tang et al. [6] adapted LLMs to multi-
+channel spatial audio, achieving state-of-the-art performance on
+sound source localization, far-field speech recognition, and text-
+prompted speech extraction in overlapping speech scenarios.
+Similarly, BAT [7] introduced a binaural audio encoder cou-
+pled with an LLM to address spatial audio question answering,
+enabling localization, distance estimation, and speaker identifi-
+cation.
+To further address multi-talker scenarios, several works
+have incorporated Serialized Output Training (SOT) [8] into the
+LLM fine-tuning paradigm. Xie et al. [9] proposed Directional-
+SpeechLlama, which employs serialized directional output
+training for joint speech recognition and source localization.
+Shi et al. [10] introduced Serialized Output Prompting (SOP),
+an adaptive prompting method that guides the model to separate
+overlapping speakers based on textual cues describing the mix-
+ing conditions. Meng et al. [11] presented an LLM-based SOT
+framework that leverages pretrained speech encoders fine-tuned
+on single-channel multi-talker data.
+However, spatial audio LLMs fine-tuned on multichannel
+inputs can be sensitive to microphone array geometry, as a ded-
+icated encoder must be trained for each device configuration,
+effectively locking the model to that specific setup. To address
+this limitation, Dementyev et al. [12] proposed PhaseCoder, a
+geometry-agnostic spatial audio encoder that produces Spatial
+Audio Tokens for LLM integration, enabling complex spatial
+reasoning and targeted transcription from arbitrary microphone
+arrays. An alternative approach [13] decouples spatial process-
+ing from language modeling by employing an external front-
+end module (e.g., speaker diarization) to handle multi-talker
+understanding; in this framework, the LLM remains device-
+agnostic, and only the front-end component requires device-
+specific adaptation.
+In this work, we propose a two-stage streaming speaker di-
+arization framework tailored for smart glasses, where a wearer
+(near-field source) engages in conversation with a distant part-
+ner (far-field source). The distinct spatial and acoustic charac-
+teristics between these sources—arising from differences in dis-
+tance, direction, and signal-to-noise ratio—can be effectively
+exploited through multichannel processing. Prior work [13]
+employed a simple chunk-wise Root Mean Square (RMS)-ratio
+comparison for speaker tagging; however, this approach can be
+sensitive to varying noise levels and acoustic conditions. To im-
+prove robustness, we propose a two-stage pipeline. The first
+stage employs a source separation model to disentangle wearer
+and partner speech from the multichannel input. The second
+stage utilizes a lightweight classifier—such as Support Vec-
+tor Machines (SVM) [14] or Gradient Boosting Decision Trees
+(GBDT) [15]—operating on acoustic features including funda-
+mental frequency (F0) and RMS to predict speaker tags: self,
+other, or non-speech. These tags subsequently inform down-
+stream LLM-based tasks. We further explore several extensions
+to enhance system quality and efficiency. First, we investi-
+gate multi-task learning, enabling the source separation model
+to jointly perform separation and speaker classification. Sec-
+ond, we evaluate a lightweight Conformer-based architecture as
+an alternative to prior LSTM-based approaches. Finally, since
+beamforming transforms geometry-dependent array signals into
+direction-indexed representations (e.g., 13 fixed directions), we
+explore training a unified multi-geometry model capable of gen-
+eralizing across diverse microphone array configurations.
+6245
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1403
+Figure 1:Architecture of the proposed two-stage system comprising a source separation module and a speaker tagging classifier,
+enabling LLM-based multi-talker speech understanding on smart glasses.
+2. Proposed Approach
+As shown in Figure 1, a 5-channel microphone array embed-
+ded in smart glasses feeds N spatially-steered beamformers with
+geometry-agnostic encoding. A source separation module de-
+composes the beamformed signals into three streams: a refer-
+ence channel, self (wearer), and other (conversation partner).
+From the separated streams, F0 and RMS energy features are
+extracted and classified by a GBDT into three categories: Self,
+Other, and Non-speech. The reference channel audio, together
+with the predicted speaker tags, is forwarded to a frozen LLM
+for speaker-attributed ASR and translation. Specifically, the
+predicted tag is used to select a task-specific prompt—such
+as transcribe in [target language] or translate to [target lan-
+guage]—enabling the model to generate speaker-aware outputs
+for the designated task. Accurate speaker tagging is critical for
+this application: if the wearer’s speech is mis-attributed to the
+partner (or vice versa), the system will transcribe or translate
+into the wrong language, producing erroneous outputs. The fol-
+lowing subsections describe each component in detail.
+2.1. Improved Source Separation Model
+Following [13], our source separation (SS) model adopts an
+encoder-decoder architecture with several key improvements.
+The model is trained to isolate wearer speech (originating from
+the mouth direction) and partner speech (within ±60° frontal
+arc) while suppressing background noise and bystander audio
+(rear hemisphere). This directional partitioning enables the
+model to output two distinct audio streams corresponding to the
+wearer and partner, respectively. To further improve speaker
+discrimination, we incorporate a multi-task learning objective
+by adding a classification head as an auxiliary task. The total
+loss combines a reconstruction term and a classification term.
+The reconstruction loss comprises an L1 loss in the time do-
+main, a weighted Short-Time Fourier Transform (STFT) loss
+(WSTFT) [16], and a Log SI-SDR loss, ensuring both spectral
+fidelity and signal quality. Regarding architectural efficiency,
+we observe that the recurrent layers in prior designs [13] dom-
+inate parameter count, while the convolutional encoder and de-
+coder remain lightweight. To reduce model size while main-
+taining performance, we replace Gated Recurrent Unit (GRU)
+layers with Conformer blocks [17]. The Conformer architec-
+ture combines the strengths of convolutional neural networks
+and Transformers: convolution modules capture local acoustic
+patterns, while self-attention modules model long-range tempo-
+ral dependencies. This hybrid design yields a more parameter-
+efficient model while preserving separation quality compared to
+recurrent baselines.
+2.2. Second-stage Classifier
+Real-world speech understanding tasks operate across diverse
+acoustic environments—restaurants, streets, and other noisy
+settings—where background noise can render simple threshold-
+based approaches ineffective. To address this challenge, we
+employ a two-stage post-processing pipeline, as illustrated in
+Figure 1. Once the source separation model produces self and
+other audio streams, a second-stage classifier processes acoustic
+features (F0 and RMS) extracted from both separated channels
+and the reference channel. We evaluate two classifiers—SVM
+and GBDT—each predicting three speaker tags: self, other, and
+non-speech, which subsequently inform the LLM’s downstream
+transcription and translation tasks. The rationale for this decou-
+pled design stems from data availability: while insufficient la-
+beled multichannel data exists to train a fully integrated end-to-
+end model, we have adequate annotations to train a lightweight
+post-processing classifier.
+6246
+Table 1:Multi-talker ASR evaluation results.Boldindicates the best (lowest) value for each language pair and metric.STandMT
+refer to single-task learning and multi-task learning, respectively.
+1-Stage ST [13] 1-Stage MT 2-Stage MT 2-Stage Conf.
+Lang WER SAER WER SAER WER SAER WER SAER
+Self / Other Self / Other Self / Other Self / Other Self / Other Self / Other Self / Other Self / Other
+IT-EN 7.80 / 23.01 0.60 / 9.57 7.76 / 12.99 1.24 / 1.856.09/ 10.750.36/ 0.576.09/10.710.37 /0.48
+FR-EN 10.79 / 14.78 2.23 / 3.09 10.98 / 12.93 2.49 / 1.98 8.69 /12.501.02 /1.64 8.63/ 13.660.98/ 2.71
+ES-EN 9.06 / 10.73 0.74 / 1.87 10.78 / 9.89 1.96 / 0.947.77/9.05 0.21/0.457.90 / 9.88 0.29 / 0.94
+2.3. Multi-device model
+We employ Non-Linearly Constrained Minimum Variance (NL-
+CMV) beamforming [5] to process raw multichannel audio
+through a set ofNfixed beamformers:N−1horizontally-
+steered directions around the smart glasses, plus one directed to-
+ward the wearer’s mouth. Each beamformer uses predetermined
+coefficients tailored to the specific microphone array geometry.
+This beamforming stage transforms device-specific multichan-
+nel signals into a geometry-agnostic directional representation,
+enabling joint training across devices with heterogeneous array
+configurations. Following [5], we design device-specific beam-
+former coefficients for each hardware platform while sharing all
+downstream model parameters.
+3. Experimental Results
+3.1. Data
+Due to the scarcity of real-world multichannel recordings, all
+source separation training data is simulated based on a 5-
+microphone array geometry similar to Project Aria glasses [18].
+Room impulse responses (RIRs) from real environments are
+used to simulate 12 azimuthal directions at 30° intervals, with
+five frontal directions (−60 ◦,−30 ◦,0 ◦,30 ◦,60 ◦) designated
+for the conversation partner to reflect typical conversational sce-
+narios. Training samples are constructed by spatially position-
+ing single-channel audio from LibriSpeech [19] to represent the
+wearer and partner, with non-overlapping partner and bystander
+speech and noise from arbitrary directions; further simulation
+details are provided in [1]. For the second-stage classifier, we
+use 1,000 in-house multichannel conversational recordings with
+human-annotated speaker timestamps. Evaluation is conducted
+on three language pairs: Spanish–English, French–English, and
+Italian–English, each comprising 200–350 real multichannel
+conversational recordings captured under diverse noise condi-
+tions. There is no overlap between the training and evaluation
+sets.
+3.2. Setup
+The source separation model architecture is adapted from [3,
+13]. We extract 257-dimensional complex STFT features for
+each beamformer direction or raw microphone channel, and
+concatenate features across all directions/channels as input. The
+model is trained for 60 epochs using the Adam optimizer with
+a tri-stage learning rate scheduler: a peak learning rate of
+4×10 −4, 10k warmup iterations, and forced annealing after
+10 epochs.
+The baseline GRU-based model contains approximately
+20M parameters. For multi-task learning, we add a classi-
+fication head comprising two linear layers (1280→256→3)
+with ReLU activation [20] and dropout (p= 0.3), predict-
+ing three speaker classes: self, other, and non-speech. For the
+Conformer-based variant, we replace the two GRU layers with
+Conformer encoder layers, each configured with an input di-
+mension of 128, 4 attention heads, a feed-forward dimension of
+256, and a convolution kernel size of 15. We employ rotary po-
+sitional embeddings, macaron-style half-step residual connec-
+tions, pre-layer normalization, and a dropout rate of 0.1 across
+all sub-modules. This substitution reduces the total parameter
+count to 5.5M. During inference, the model operates in chunk-
+wise streaming mode with a chunk size of 600ms. We adopt
+Gemma-3n 4B1 as our base LLM—an open-source, instruction-
+tuned multimodal model that natively accepts audio and text
+inputs while generating text outputs, making it well-suited for
+speech understanding tasks.
+The GBDT classifier is trained using scikit-learn’s Gradient
+Boosting Classifier with 100 boosting iterations, a learning rate
+of 0.1, and a maximum tree depth of 3. The model is trained
+on an 80/20 train-test split with stratified sampling to preserve
+class distribution. The SVM classifier uses an RBF kernel with
+regularizationC= 1.0,γ=scale, balanced class weights, and
+z-score normalized features.
+The multi-device configuration extends the single-device
+architecture to support two different smart glass devices
+(Device-A and Device-B) by incorporating device-specific
+beamformer weights for their respective microphone array ge-
+ometries. During training, we apply layer normalization across
+frequency and channel dimensions to standardize spectral fea-
+tures, along with audio volume perturbation for data augmen-
+tation. We employ a multi-domain training strategy that com-
+bines data from both device types with a 0.25 mixing ratio for
+the secondary device. Additionally, in the downstream GBDT-
+based post-processing stage, we incorporate the array ID as an
+additional feature to enable device-aware decision making.
+3.3. Results
+Table 1 presents the multi-talker ASR evaluation results across
+three language pairs (IT-EN, FR-EN, ES-EN), comparing
+single-task (ST) and multi-task (MT) training strategies, as
+well as one-stage and two-stage pipeline designs in terms of
+Word Error Rate (WER) and Speaker Attribution Error Rate
+(SAER). We observed that Multi-task learning improves over
+single-task training. Comparing 1-Stage ST and 1-Stage MT,
+the multi-task approach—which jointly optimizes source sepa-
+ration and speaker classification—yields notable improvements
+in the Other speaker metrics. For IT-EN, Other WER de-
+creases from 23.01% (1-Stage ST) to 12.99% (1-Stage MT),
+and Other SAER drops from 9.57% to 1.85%. In addition,
+two-stage pipelines further amplify multi-task gains. The 2-
+1https://huggingface.co/google/
+gemma-3n-E4B-it
+6247
+Stage MT configuration consistently achieves the best or near-
+best results across all metrics. On ES-EN, 2-Stage MT attains
+a Self WER of 7.77% and Other WER of 9.05%, alongside
+SAER values of 0.21% and 0.45%, respectively, outperform-
+ing both one-stage variants substantially. This confirms that
+second stage processing (GBDT-based classification) after neu-
+ral separation improves robustness. The 2-Stage Conf. model,
+which replaces GRU layers with Conformer blocks, achieves
+competitive performance compared to 2-Stage MT while only
+using around 28% parameters. On IT-EN, it matches the best
+Self WER (6.09%) and attains the lowest Other SAER (0.48%).
+This demonstrates that the parameter-efficient Conformer de-
+sign preserves separation quality. Next, we also compared dif-
+Figure 2:Performance comparison of SVM and GBDT for
+speaker classification. Precision, recall, and F1-score are
+shown per class (Self, Other, Non-speech); the bottom-right
+panel reports overall accuracy. All values are percentages
+(higher is better).
+ferent classifier used in second stage. We first compared the
+SS+V AD and our proposed two-stage system. The voice ac-
+tivity detection (V AD) used here is an in-house neural network
+based model. As shown in Figure 2, the results demonstrate
+that two-stage systems substantially outperform the V AD-based
+baseline across all speaker classification categories. SS + SVM
+achieves the best Self (wearer) detection with an F1-score of
+91.9% (89.9% precision, 94.1% recall), while SS + GBDT pro-
+vides the most balanced overall performance with F1-scores of
+91.4% for Self, 85.9% for Other, and 79.6% for Non-speech de-
+tection. The V AD baseline performs poorly, particularly strug-
+gling with Non-speech detection (F1: 48.5%, recall: 34.5%),
+missing the majority of non-speech segments, and exhibiting
+low precision for Self detection (60.5%), resulting in many
+false positives. This is likely due to the acoustic mismatch
+between our far-field conversation partner and the pretrained
+V AD, which is optimized for near-field speech only. Overall,
+GBDT performs balanced performance across all categories.
+As shown in Table 2, the proposed 2-Stage MT approach
+consistently achieves the highest BLEU scores, particularly for
+the conversation partner (Other). On IT-EN, 2-Stage MT attains
+57.04 BLEU for Other—an improvement of +11.06 over JS-
+TAR and +3.48 over 1-Stage MT. JSTAR [21] is an end-to-end
+multi-talker speech translation baseline. For the wearer (Self),
+2-Stage MT achieves competitive or best performance across all
+language pairs. These results demonstrate that accurate speaker
+Table 2:BLEU scores for multi-talker evaluation across differ-
+ent language pairs and model configurations. Self and Other
+refer to the wearer and conversation partner, respectively.Bold
+indicates the best (highest) value per language pair.
+IT–EN FR–EN ES–EN
+ModelSelf Other Self Other Self Other
+JSTAR [21] 33.30 45.98 44.65 49.58 50.85 55.70
+1-Stage ST 40.48 45.3450.0355.8057.6363.62
+1-Stage MT 43.03 53.56 49.85 56.89 56.52 64.27
+2-Stage MT43.36 57.0449.8959.8657.2866.50
+attribution from the two-stage pipeline directly benefits down-
+stream translation quality, with the most pronounced improve-
+ments on far-field (Other) speech where speaker confusion is
+more prevalent.
+In Table 3, the multi-device model achieves consistent im-
+provements on Device-A, reducing WER by 0.2–2.5 points
+across all language pairs and speaker roles, with the most
+notable gain on French-English for the conversation partner
+(11.6%→9.1%). On Device-B, the multi-device model main-
+tains comparable performance to the device-specific model,
+with only marginal degradation within 0.2% absolute WER on
+average. These results demonstrate that a single unified model
+can effectively generalize across both smart glass devices with-
+out sacrificing per-device accuracy, while eliminating the need
+to maintain separate device-specific models.
+Table 3:WER scores for multi-talker multi-device scenarios
+across different language pairs and source separation models.
+IT–EN FR–EN ES–EN
+ModelSelf Other Self Other Self Other
+Device-A 9.5 20.0 11.6 22.1 11.6 19.8
+Multi-Device 9.0 19.0 9.1 20.7 10.9 19.6
+Device-B 8.1 12.7 11.2 11.7 10.1 8.8
+Multi-Device 8.6 12.9 11.9 11.7 9.6 9.3
+4. Conclusions
+In this work, we presented a two-stage streaming speaker di-
+arization framework for LLM-based multi-talker speech under-
+standing on smart glasses. The first stage employs a source
+separation model to isolate wearer and partner speech, while
+the second stage leverages a lightweight classifier (SVM or
+GBDT) operating on acoustic features to predict speaker tags.
+We demonstrated the effectiveness of this approach on both
+speech recognition and translation tasks across three language
+pairs, achieving substantial reductions in both Word Error Rate
+and Speaker Attribution Error Rate compared to single-stage
+baselines. Furthermore, we explored multi-task learning to
+jointly optimize separation and classification, and introduced a
+parameter-efficient Conformer-based architecture that reduces
+model size from 20M to 5.5M parameters while maintaining
+performance. Finally, by leveraging geometry-agnostic beam-
+forming, we developed a unified multi-device source separation
+model capable of generalizing across diverse microphone array
+configurations—an important step toward device-agnostic de-
+ployment in real-world wearable applications.
+6248
+5. Generative AI Use Disclosure
+Generative AI tools were used during the preparation of this pa-
+per to improve the clarity and grammar of the writing, and to
+assist with refining the figures. These tools were used only to
+refine the manuscript; the scientific contributions, experimental
+design, and authorship are entirely the human authors. The au-
+thors have reviewed and verified the manuscript, and take full
+responsibility for its content.

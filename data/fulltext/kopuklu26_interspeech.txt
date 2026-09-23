@@ -1,0 +1,436 @@
+RT-ASDNet: Unified, Real-Time Active Speaker Detection
+Okan K¨op¨ukl¨u
+Microsoft, Germany, Munich
+okankopuklu@microsoft.com
+Abstract
+Existing audio-visual active speaker detection methods often
+rely on multi-stage pipelines or computationally expensive tem-
+poral modeling, limiting their applicability in real-time scenar-
+ios. In this paper, we propose RT-ASDNet, a unified, end-to-end
+audio-visual architecture for real-time active speaker detection.
+Our approach jointly processes raw audio waveform and video
+frames through two specialized streams that are fused into an
+anchor-free detection head, simultaneously localizing faces and
+predicting speaking activity in a single forward pass. Unlike
+multi-stage approaches that require separate face detection, fea-
+ture extraction, and classification steps, RT-ASDNet performs
+joint localization and classification within a unified framework,
+significantly reducing inference latency and pipeline complex-
+ity. Moreover, since inference is performed only once per
+frame, the computational cost remains constant regardless of the
+number of people in the scene. We evaluate our method on the
+A V A-ActiveSpeaker benchmark and set the baseline for joint
+detection and classification on active speaker detection task.
+Index Terms: active speaker detection, unified architecture,
+real-time processing
+1. Introduction
+Determining “who is speaking” in a video is a fundamental
+perceptual task that humans perform effortlessly by integrating
+auditory and visual cues. This task, known as active speaker
+detection (ASD), involves identifying which visible person is
+producing the speech at a given moment by analyzing the syn-
+chrony between facial movements and the audio signal. ASD
+has become increasingly important in numerous applications,
+including video conferencing, human–robot interaction, auto-
+matic video editing, and speaker diarization. As multimedia
+content continues to grow exponentially, the demand for auto-
+mated systems that can reliably identify active speakers in un-
+constrained environments has grown substantially.
+Recent deep learning methods have achieved impressive ac-
+curacy on standard benchmarks. However, the majority of state-
+of-the-art approaches follow a multi-stage paradigm: first de-
+tecting faces using an off-the-shelf detector, then extracting fea-
+tures from cropped face regions and corresponding audio seg-
+ments, and finally classifying each candidate as speaking or not
+using either graph neural networks (GNNs) [1], recurrent neu-
+ral networks (RNNs) [2,3], or attention mechanisms [4]. While
+effective, this pipeline introduces several limitations. The com-
+putational cost scales linearly with the number of faces, making
+these methods impractical for crowded scenes. Error propaga-
+tion across stages can degrade overall performance, and reliance
+on pretrained face detectors limits end-to-end optimization.
+In this paper, we propose RT-ASDNet, a unified and real-
+time deep neural network (DNN) architecture that addresses
+these limitations through a fundamentally different design phi-
+losophy. Rather than treating face detection and speaker classi-
+fication as separate tasks, we formulate active speaker detection
+as a single-stage detection problem. Inspired by anchor-free ob-
+ject detectors, our approach directly predicts speaker locations
+and their speaking status in a single forward pass, without re-
+quiring explicit face proposals or region cropping. In general,
+RT-ASDNet provides the following advantages:
+• It is an end-to-end trained architecture whose performance
+does not rely on external components such as face detectors.
+• The inference time is fixed and does not depend on the num-
+ber of speakers present in the video stream.
+• RT-ASDNet is modular, and depending on complexity re-
+quirements, its components can be replaced with more
+resource-efficient variants.
+2. Related Work
+Available ASD architectures in the literature exhibit several
+drawbacks that limit their suitability for real-time deployment,
+which are listed as follows:
+• Most existing ASD architectures are non-causal.
+• Their performance depends on an external face detector, and
+many require an additional tracking or linking module to con-
+struct face tubes before visual feature extraction.
+• Visual features must be computed for every individual person
+in the frame, leading to inference times that scale with scene
+complexity.
+• Although a few lightweight variants have been proposed,
+many approaches remain computationally heavy and are
+therefore practical only for offline settings.
+• Several systems optimize their components separately, pre-
+venting full end-to-end learning and limiting their ability to
+reach a globally optimal solution.
+In practice, existing ASD architectures suffer from sev-
+eral of the limitations outlined above, often combining multiple
+drawbacks within a single system. Broadly, these approaches
+can be categorized into two classes based on their temporal as-
+sumptions and deployment goals:offlineandcausalmethods.
+Offline methods.A large portion of ASD research fo-
+cuses on offline architectures designed primarily to maximize
+benchmark performance rather than real-time efficiency [5–18].
+These approaches commonly adopt multi-stage pipelines in
+which face detection, feature extraction, audio-visual fusion,
+and long-term temporal modeling are handled as separate mod-
+ules. Recent state-of-the-art ASD methods typically employ
+GNNs [1] or attention mechanisms [4]. GNN-based approaches
+4223
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-448
+[5, 8, 12] model audio–visual cues as graph nodes to capture
+spatiotemporal relationships but incur significant computational
+overhead, while attention-based models [6, 7, 10, 11] achieve
+fine-grained cross-modal alignment at the cost of large param-
+eter sizes. There are also lightweight RNN-based methods
+[9, 15, 16, 18] that are computationally efficient but struggle to
+discriminate speakers in complex multi-speaker environments.
+Therefore, they require additional mechanisms for inter-speaker
+relation modeling, as in [16, 18].
+Causal methods.Architectures that claim real-time ca-
+pability are often merely causal, meaning they avoid future
+frames [19,20]. In some cases, causality is achieved by convert-
+ing offline architectures with necessary modifications [15, 16],
+which typically leads to performance degradation due to the ab-
+sence of future context for current-frame predictions. However,
+causality alone does not guarantee real-time feasibility. For ex-
+ample, methods such as [19, 20] still rely on external face de-
+tection and perform visual feature extraction for every detected
+individual. As a result, their computational cost scales linearly
+with the number of faces, easily violating real-time latency con-
+straints in crowded scenes. Moreover, these approaches largely
+preserve the multi-stage design of offline pipelines, inheriting
+limitations such as error propagation and the lack of end-to-end
+optimization. Although some recent works reduce complexity
+through lighter backbones or simplified temporal modules, they
+continue to operate under a face-proposal–based paradigm, pre-
+venting constant-time inference per frame.
+In light of these drawbacks, we have designed RT-ASDNet
+to overcome the fundamental limitations of existing ASD
+pipelines. Our architecture(1)eliminates the dependence on ex-
+ternal detectors,(2)avoids per-face processing, and(3)enables
+unified audio-visual learning in a single-stage, anchor-free de-
+tection framework. This design ensures constant inference cost
+per frame, full end-to-end trainability, and practical real-time
+performance. To our knowledge, RT-ASDNet is the first archi-
+tecture that performs single-stage joint detection and classifica-
+tion on active speaker detection task.
+3. RT-ASDNet Architecture
+RT-ASDNet consists of three main components: (1) an audio
+stream that processes raw waveforms, (2) a visual stream that
+extracts spatiotemporal features from video frames, and (3) a
+detection head that fuses audio-visual features and predicts ac-
+tive speakers. RT-ASDNet architecture operates in a sliding-
+window fashion and makes detections on the key frame, defined
+as the last frame in the input video clip. The overall architecture
+is illustrated in Figure 1.
+3.1. Audio Stream
+As the audio backbone, we employ SincDSNet [16], motivated
+by its strong performance in extracting representative audio
+features directly from raw waveforms using sinc-based con-
+volutions [21]. This design eliminates the need for an ex-
+plicit filterbank and enables direct utilization of the full au-
+dio signal. Specifically, we use 80 sinc filters with a kernel
+size of 251, operating at a sampling rate of 16 kHz. Follow-
+ing the sinc convolution stage, log-compression is applied as
+y= log(|x|+ 1). This non-linear transformation has proven
+effective in prior raw-audio modeling tasks [22–24]. The result-
+ing features are then passed to six Depthwise Separable Convo-
+lutional (DSConv) blocks followed by Leaky-ReLU activation
+functions [25]. All DSConv blocks contain 160 channels, ex-
+cept for the final block, which usesC a channels. Finally, adap-
+tive average pooling aggregates the temporal dimension, yield-
+ing a compact audio embeddingf a∈R Ca.
+3.2. Visual Stream
+The visual stream employs a 3D-CNN as the video backbone,
+together with a Feature Pyramid Network (FPN) [26], to extract
+multi-scale spatiotemporal features. Given a video clipV∈
+R3×T×H×W withTframes, the backbone produces a hierar-
+chy of four feature maps at different scales, where the temporal
+dimensionTis downsampled by factors of [ 1
+2, 1
+4, 1
+8, 1
+16 ], while
+the spatial resolutionH×Wis downsampled by [ 1
+4, 1
+8, 1
+16, 1
+32 ].
+To aggregate multi-scale features, we construct a top-down
+pathway composed of multi-stage fusion (MSF) blocks. Be-
+fore applying MSF blocks, the temporal dimension is collapsed
+using 3D pointwise convolutions with temporal kernel sizes
+matching the time dimension of the feature maps. The top-down
+pathway starts from the coarsest feature map and progressively
+upsamples and merges it with the next finer-scale feature map
+using an MSF block. Deformable convolutions (DCN) [27] are
+employed in the MSF block to handle spatial misalignment be-
+tween faces with varying poses and scales. The MSF block
+first applies bilinear upsampling to the coarser feature map to
+match the spatial resolution of the finer one. Both feature maps
+then pass through deformable convolutions and are concate-
+nated along the channel dimension. Finally, another deformable
+convolution is applied to produce the fused output with the same
+channel dimensionality as the finer-scale feature map.
+The final visual feature mapf v∈R Cb×H′×W ′
+is obtained
+at one-quarter of the input resolution, whereH ′ =H/4and
+W′ =W/4.
+3.3. Audio-Visual Fusion and Detection Head
+The audio embeddingf a∈R Ca is spatially broadcast to match
+the resolution of the visual feature map:
+˜fa =f a⊗1 H′×W ′∈R Ca×H′×W ′
+,(1)
+where⊗denotes the outer product with an all-ones spatial ten-
+sor. The fused representation is obtained through channel-wise
+concatenation:
+fav = [˜fa;f v]∈R (Ca+Cb)×H′×W ′
+.(2)
+Following the anchor-free detection paradigm of Center-
+Net [28], we employ three prediction heads: a heatmap head
+for classification and localization, a size head for bounding box
+dimensions, and an offset head for sub-pixel refinement.
+Heatmap Head.The heatmap head predicts class-specific
+confidence maps ˆH∈[0,1] C×H ′×W ′
+, whereC= 2corre-
+sponds to speaking and non-speaking classes. This head oper-
+ates on the fused audio-visual features:
+ˆH=σ(Conv 1×1 (ReLU (DCN(fav)))),(3)
+whereσdenotes the sigmoid function.
+Size Head.The size head regresses bounding box width
+and height, producing ˆS∈R 2×H′×W ′
+and operating only on
+visual features:
+ˆS=Conv 1×1 (ReLU (Conv3×3(fv))).(4)
+4224
+Figure 1:RT-ASDNet architecture. For illustration, feature maps from the 3D-ResNet-18 backbone are shown for an input clip of 8
+frames at a spatial resolution of288×288. RT-ASDNet jointly processes audio and video streams and, in a single forward pass,
+outputs face detections along with their corresponding speaking activity labels on the key-frame.
+Offset Head.The offset head predicts local offsets ˆO∈
+R2×H′×W ′
+to correct discretization errors arising from down-
+sampling:
+ˆO=Conv 1×1 (ReLU (Conv3×3(fv))).(5)
+At inference, local peaks in the heatmap correspond to
+speaker candidates. For each peak at location(x,y)with class
+cand confidence ˆHc,x,y, the final bounding box is computed as:
+box =
+
+x+ ˆOx−
+ˆSw
+2 ,y+ ˆOy−
+ˆSh
+2 ,x+ ˆOx +
+ˆSw
+2 ,y+ ˆOy +
+ˆSh
+2
+
+,
+(6)
+where( ˆOx, ˆOy) = ˆOx,y and( ˆSw, ˆSh) = ˆSx,y.
+4. Training
+Dataset.We use the A V A-ActiveSpeaker dataset [29], the first
+large-scale audio-visual dataset for active speaker detection col-
+lected in the wild. The dataset contains 262 movie clips, each
+approximately 15 minutes long and captured at 25–30 fps, split
+into 120 training, 33 validation, and 109 test videos. Across
+these videos, 3.65 million frames are manually annotated with
+a binaryspeakingornot-speakinglabel, yielding 38.5 hours of
+labeled face tracks paired with their corresponding audio.
+Metrics.We use mean average precision (mAP) at a given
+intersection-over-union (IoU) threshold of 0.5 as the primary
+evaluation metric. The A V A-ActiveSpeaker validation set is
+used for evaluation, as test set labels are not available.
+Learning.RT-ASDNet is trained end-to-end using the
+ADAM optimizer [30] with an initial learning rate of1×10−4,
+which is reduced by a factor of 10 after 40k iterations. The
+audio backbone (SincDSNet) is trained from scratch with
+Ca = 32. For the video backbone, we experiment with 3D-
+ResNet-18 [31], pretrained on the Kinetics [32] and Moments-
+in-Time [33] datasets, as well as the resource-efficient 3D-
+MobileNetV2-1.0x and 3D-ShuffleNetV1-1.0x models [34],
+both pretrained on Kinetics only. The value ofC b is chosen
+according to the number of channels in the finest pyramid level
+of the respective video backbone.
+For the loss function, we use a multi-task objective that
+jointly optimizes the three prediction heads. The heatmap head
+is supervised using pixel-wise logistic regression with focal
+loss [35], as in [28]. The size and offset heads are supervised
+withL 1 regression losses computed only at ground-truth center
+locations. The total loss is a weighted sum:
+L=λ hmLhm +λ whLwh +λ offLoff,(7)
+whereλ hm = 1,λ wh = 0.1, andλ off = 1. For detection, we ap-
+ply non-maximum suppression (NMS) on the heatmap outputs
+using a simple3×3max-pooling operation, following [28].
+5. Results
+Impact of Video Backbone Architecture.Table 1 com-
+pares different video backbones under identical audio and in-
+put settings. Among them, 3D-ResNet-18 achieves the highest
+mAP, whereas the more resource-efficient 3D-MobileNetV2-
+1.0x and 3D-ShuffleNetV1-1.0x significantly reduce computa-
+tional complexity. Despite being the most complex model, 3D-
+ResNet-18 also attains the lowest RTF and therefore runs the
+fastest. This is because runtime is influenced not only by FLOPs
+but also by factors such as memory access cost or the degree of
+parallelism. Considering the trade-off between efficiency and
+accuracy, the choice of video backbone should be guided by
+system requirements. For all subsequent evaluations, we use
+3D-ResNet-18 as the video backbone.
+Influence of Temporal Context (Clip Length).As shown
+in Table 2, increasing the temporal context from 8 to 32 frames
+consistently improves mAP and classification accuracy, with
+performance saturating at 32–64 frames. We further examine
+localization and classification performance across different clip
+lengths. For localization, we compute recall as the ratio of cor-
+rectly detected faces to the total number of ground-truth faces.
+For classification, we calculate the speaking activity prediction
+accuracy of the correctly detected faces. In general, clip length
+does not improve localization, since detections are performed
+only on the final key frame. However, longer temporal context
+4225
+Video Backbone Params GFLOP mAP RTF
+3D-ResNet-18 33.2M 54.475.8 0.009
+3D-MobileNetV2-1.0x 1.5M 3.5 75.3 0.011
+3D-ShuffleNetV1-1.0x 0.9M 1.8 70.9 0.013
+Table 1:mAP @ IoU≥0.5, number of parameters, number of
+floating point operations (FLOPs) and real-time factor (RTF)
+comparison of RT-ASDNet architecture for different video back-
+bones. SincDSNet is used as audio backbone and video input is
+16 frames clip with resolution of288×288. RTF is measured
+on Nvidia RTX 6000 GPU.
+Clip length
+(frames) mAP Localization
+(recall)
+Classification
+(accuracy)
+6477.395.689.8
+3277.3 95.789.6
+16 75.8 95.4 89.2
+8 73.3 95.6 87.7
+Table 2:mAP , Localization @ IoU≥0.5 (recall) and classi-
+fication results for different clip lengths. 3D-ResNet-18 and
+SincDSNet are used as video and audio backbones, respectively,
+with video input resolution of288×288.
+Video resolution mAP Localization
+(recall)
+Classification
+(accuracy)
+352×35277.5 95.9 89.9
+288×28877.3 95.7 89.6
+224×22475.5 94.3 89.3
+Table 3:mAP , Localization @ IoU≥0.5 (recall) and classifi-
+cation results for different video input resolutions.
+yields higher classification accuracy. It must be noted that com-
+putational complexity grows linearly with clip length. For the
+rest of the evaluations, we use a 32-frame clip length.
+Effect of Video Input Resolution.Table 3 shows that
+higher spatial resolution leads to improved detection perfor-
+mance. These results indicate that fine-grained facial details
+are beneficial for accurate active speaker detection. However,
+it must be noted again that computational complexity grows
+rapidly with video input resolution.
+Comparison with State-of-the-Art Methods.Table 4
+compares RT-ASDNet with existing offline, causal, and real-
+time ASD methods on the A V A-ActiveSpeaker benchmark.
+RT-ASDNet reports mAP scores at an IoU threshold of 0.5,
+while other approaches compute classification accuracy using
+ground-truth face detections, making the task considerably eas-
+ier. Although offline and causal models achieve substantially
+higher mAP scores, they rely on multi-stage pipelines, per-face
+processing, and often focus solely on classification. In contrast,
+RT-ASDNet establishes a baseline for unified face detection
+and speaking classification under real-time constraints, offering
+constant inference cost per frame.
+Performance Across Face Sizes and Number of Visible
+Faces.Table 5 summarizes the effect of face size and the num-
+ber of visible faces on performance. RT-ASDNet follows a sim-
+ilar trend to state-of-the-art methods: performance improves
+for larger faces and decreases as the number of faces in the
+frame increases. Although a noticeable performance gap re-
+mains between RT-ASDNet and offline approaches, particularly
+Method mAP
+offline
+MSSG [14]95.6
+MuSED [13]95.6
+D2Stream [11]95.6
+Talk-NCE [6] 95.5
+AFs-Net [5] 95.4
+LoCoNet [7] 94.9
+SPELL+ [8] 94.5
+LR-ASD [15] 94.5
+Light-ASD [9] 94.1
+EASEE-50 [12] 94.1
+ASDNet [16] 93.5
+TalkNet [10] 92.3
+causal
+LR-ASDcausal [15]93.4
+StreamingASD [20] 93.0
+ASDNetcausal [16] 90.6
+real-time
+RT-ASDNetr352 (ours)77.5
+RT-ASDNetr288 (ours) 77.3
+RT-ASDNetr224 (ours) 75.5
+Table 4:Comparison with state-of-the-art methods. mAP @
+IoU≥0.5 is reported for RT-ASDNet, while other methods use
+directly ground truth face detections for mAP calculation.
+Method Number of Faces Face Size
+1 2 3 S M L
+MSSG [14] 96.8 95.0 88.5 83.0 93.7 97.2
+MuSED [13] 96.7 93.4 87.8 74.3 90.6 96.8
+LoCoNet [7] 97.0 94.6 87.4 77.8 93.0 97.3
+RT-ASDNet 81.2 75.8 66.4 42.1 66.8 84.1
+Table 5:Performance comparison by number of visible faces on
+each frame and face size.
+for small faces, it is important to note that offline methods op-
+erate on ground-truth face crops rescaled to a fixed size. By
+contrast, RT-ASDNet processes full frames at a fixed resolu-
+tion, which can lead to very small effective face sizes relative to
+the ground-truth annotations.
+6. Conclusion
+In this paper, we introduced RT-ASDNet, a unified and anchor-
+free architecture that reformulates active speaker detection as
+a single-stage audio-visual detection problem, enabling fixed
+latency, real-time inference without reliance on external face
+detectors or per-face processing. While recent offline ASD ap-
+proaches have achieved near-saturated performance through in-
+creasingly complex multi-stage pipelines and heavy temporal
+modeling, these gains come at the cost of high latency and lim-
+ited deployability. In contrast, RT-ASDNet establishes a strong
+and practical baseline for the real-time ASD task by explic-
+itly prioritizing end-to-end optimization, fixed computational
+cost per frame, and deployment feasibility. Despite these ad-
+vantages, a substantial performance gap remains between real-
+time and offline methods, highlighting the intrinsic difficulty
+of active speaker detection under strict latency constraints and
+motivating further research into more effective audio-visual fu-
+sion strategies, lightweight temporal reasoning, and improved
+robustness in crowded or low-resolution scenarios.
+4226
+7. Generative AI Use Disclosure
+Generative AI tools are used only for editing and polishing pur-
+poses. The authors take full responsibility for the scientific
+claims and content presented in this work.

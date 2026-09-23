@@ -1,0 +1,459 @@
+DiffVQE: Hybrid Diffusion V oice Quality Enhancement
+Under Acoustic Echo and Noise
+Haljan Lugo ID ∗, Ernst Seidel ID ∗, Pejman Mowlaee ID ◦, Ziyue Zhao ID ◦, Tim Fingscheidt ID ∗
+∗ Institute for Communications Technology, Technische Universit¨at Braunschweig,
+Schleinitzstraße 22, 38106 Braunschweig, Germany
+◦ GN Advanced Science, Lautrupbjerg 7, 2750 Ballerup, Denmark
+{haljan.lugo-girao, e.seidel, t.fingscheidt}@tu-bs.de,{pmowlaee, zzhao}@gn.com
+Abstract
+Acoustic echo and background noise pose challenges on speech
+enhancement in hands-free systems and speakerphones. Dis-
+criminatively trained end-to-end methods represent a power-
+ful solution for joint acoustic echo control (AEC) and denois-
+ing. However, with the advent of generative methods, diffusion-
+based approaches have seen remarkable performance in speech
+enhancement tasks. In this work, to the best of our knowl-
+edge, we provide the first (still non-causal) diffusion-based
+AEC model (DiffVQE) that is reproducible in terms of topol-
+ogy, training data, and training framework. So far, without em-
+ploying diffusion, Microsoft’s discriminativeDeepVQEmodel
+has been shown to excel any of the ICASSP 2023 AEC Chal-
+lenge entries achieving remarkable performance. Using data
+from the Interspeech 2025 URGENT Challenge for a diverse,
+high-quality training dataset, ourDiffVQEexcelsDeepVQE
+both in echo and noise control performance, as well as in com-
+putational complexity and model size.
+Index Terms: acoustic echo control, noise reduction
+1. Introduction
+Speech enhancement has undergone a significant paradigm shift
+in recent years. Predominantly in noise reduction tasks, gen-
+erative approaches have gained significant traction. Previ-
+ously, many approaches utilized some form of mean squared
+error (MSE) loss either in time domain or in frequency do-
+main to train discriminative masked-based deep neural net-
+works (DNNs). However, in highly non-stationary environ-
+ments, these approaches introduce significant artifacts. To ad-
+dress these limitations, generative models as in [1, 2, 3, 4, 5]
+train a probabilistic model which learns the underlying clean
+speech data distribution, allowing to reconstruct fine-grained
+spectral details that discriminative models typically fail to re-
+cover.
+Acoustic echo control (AEC) presents a unique challenge
+within the speech enhancement (SE) framework, as it requires
+the suppression of a far-end reference signal which is nonlin-
+early distorted by the loudspeaker and further distorted by room
+acoustics. While discriminative DNNs have shown remark-
+able success in AEC [6], they can struggle to balance aggres-
+sive echo suppression with the preservation of near-end speech
+quality, particularly during double-talk (DT) scenarios. A sec-
+ond widespread approach, especially with edge devices in mind,
+mainly leverages classical digital signal processing based meth-
+ods like the normalized least mean square (NLMS) algorithm [7]
+or the frequency-domain Kalman filter (FDKF) [8] for echo can-
+cellation. These methods are augmented with a small learned
+model for faster convergence of the AEC stage [9, 10, 11] or
+residual echo and noise suppression [12, 13, 14, 15]. Seidel et
+al. provide an in-depth overview of strengths and weaknesses of
+these different approaches in varying acoustic conditions [16].
+Several score-based generative models have recently
+pushed the state-of-the-art in speech enhancement tasks.
+Notably,SGMSE[1] introduced the score-matching frame-
+work to speech enhancement, whileUniverse++[4] and
+EffDiffSE[5] addressed the computational overhead of
+these models, targeting more efficient sampling. However, ap-
+plying these paradigms to the AEC task has been rarely investi-
+gated. In [17] an attempt was made to transfer the hybrid frame-
+work ofStoRM[2] to the AEC task. However, they do not
+explicitly state how the reference signal is fused and make an
+adaptation towards a single-step version ofStoRMwhich is not
+reproducible based on their mathematical formulation. More-
+over, they do not provide the network architecture and train on
+private data, thereby limiting reproducibility.
+In this work,we propose a hybrid score-based diffusion
+approach specifically optimized as a hands-free communica-
+tion system. In doing so, we tackle acoustic echo and back-
+ground noise, while still allowing non-causality as often done
+in speech enhancement (diffusion) research [1, 4, 5, 18, 19].
+To foster reproducibility, we base our data preprocessing and
+synthetic data generation pipeline on the established and code-
+published framework of Seidel et al. [16], by introducing diffu-
+sion and further key modifications, and incorporating more di-
+verse speech data of high quality by utilizing speech and noise
+corpora from the Interspeech 2025 URGENT Challenge [19].
+Our main novelty is twofold: First, we provide the first fully re-
+producible hybrid diffusion-based AEC systemDiffVQE, us-
+ing a topology adapted from [5], build upon publicly accessi-
+ble training data. Second, withDiffVQEbeing a single-step
+method and with our adaptions to the topology, we outperform
+the widely accepted state-of-the-artDeepVQEin echo control
+performance as well as in model complexity and model size.
+Audio samples can be found in the supplement [20].
+2. Methods
+2.1. Data Representation and Framework Overview
+An overview of our hands-free system is given in Fig. 1. The
+far-end signalx(n)with sample indexnis transmitted to the
+near-end and played back by a loudspeaker. Loudspeaker non-
+linearities are modeled byx ′(n) =f NL(x(n)). The micro-
+phone receivesx′(n)as an echod(n) =h 1(n)∗x ′(n), with
+h1(n)being the room impulse response (RIR) and∗denoting
+convolution. Furthermore, a near-end speaker, whose speech
+signals(n)also is convolved with an RIR leading to a rever-
+berated signals ′(n) =h 2(n)∗s(n), and background noise
+4971
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2337
+target speaker
+near-end s(n)
+s′(n)
+x(n) x′(n)
+y(n)
+d(n)
+n(n)
+noise
+from/to
+far-end near-endSTFT
+STFT
+Cond
+DNN
+Score
+DNN
+iSTFTˆs(n)
+ˆScond
+σtZ
+speech
+conditions
+C
+Figure 1:Overview of our end-to-end hands-free system using
+a hybrid diffusion approach.CondandScorenetworks are
+the discriminative and generative networks as utilized in [5].
+n(n)are also picked up by the microphone. Thus, the mi-
+crophone signal is given asy(n) =s ′(n) +d(n) +n(n).
+As both microphone and far-end speech are used as inputs
+for the hybrid diffusion model, both are transformed using a
+K-point short-time Fourier transform (STFT). Thus, we get
+X=X L
+1 = (Xℓ)∈C K×L andY=Y L
+1 = (Yℓ)with
+Xℓ = (Xℓ(k))andY ℓ = (Yℓ(k)), whereℓis the frame index
+andk∈K={0,...,K−1}denotes the frequency bin index.
+Both of these signals are used in theCondDNN to discrimina-
+tively estimate the near-end clean speech signal ˆScond, as well
+as to provide speech conditionsCfor theScoreDNN. Us-
+ing theScoreDNN, a final frequency domain near-end clean
+speech estimate ˆSand after an inverse STFT the time-domain
+enhanced near-end speechˆs(n)are generated.
+2.2. Score-Based Diffusion for V oice Quality Enhancement
+Following [4, 5], we model a forward process of a score-based
+diffusion with a stochastic differential equation (SDE) as orig-
+inally proposed in [21]. The SDE is defined for a continuous
+diffusion time ˜t∈[0,T], withS ˜t being the diffused near-end
+speech at process time ˜t, andS 0 =Sbeing the initial state
+which represents the clean near-end target speech. The diffu-
+sion process is formulated as a solution to an Itˆo SDE:
+dS˜t =f(S ˜t,Y) d˜t+g( ˜t)dW,(1)
+using a vectorial drift coefficientf(S ˜t,Y), a scalar diffusion
+coefficientg( ˜t), and a standard Wiener processW. Following
+[22], one can formulate the reverse time SDE using a standard
+Wiener process Wwhere time flows fromTto0:
+dS˜t =
+
+−f(S ˜t,Y) +g( ˜t)2∇S˜t log p˜t (S˜t|Y)
+
+d˜t+g(˜t)dW,
+(2)
+with∇ S˜t log p˜t (S˜t|Y)being the score of the marginal distri-
+bution at diffusion time˜t. When the value of the score is known
+at all times˜t∈[0,T], one can solve this reverse process in order
+to generate a sample fromp 0, which models the near-end clean
+speech target distribution. Thus, we train a DNN-based model
+for this time dependent scoreSθ(·). For the variance exploding
+(VE) SDE formulation we defineσ 2
+˜t =σ 2
+min(σmax/σmin)2˜t,
+withσ max andσ min being hyperparameters, and the drift term
+as0. The resulting continuous perturbation of the near-end
+speech can then be formulated as
+S˜t =S+σ ˜tZ,(3)
+with Gaussian noiseZbeing computed via an STFT of a time-
+domain Gaussian noisez∼N(0,I). Using this formulation
+and the fact that the score is∇ S˜t log p˜t (S˜t|Y) =−Z/σ ˜t
+under the given conditions, the denoising score matching [23]
+objective can be formulated:
+JSM(S,σ ˜t) =E S,Z,˜t
+"Sθ(S+σ ˜tZ|σ˜t,C) + Z
+σ˜t
+
+2#
+,(4)
+withCdenoting a conditioning variable provided by a jointly
+trained conditional DNN.
+Similar to [5], we follow the noise-consistent Langevin dy-
+namics [24] to iteratively solve the SDE usingNequidistant
+discrete time stepst∈{T,..., T
+N}:
+St−∆t =S t +ησ 2
+t Sθ(St|σt,C) +βσ t−∆tZ,(5)
+with∆t=T/N,η= 1−γ ϵ,γ= (σ max/σmin)−∆t,
+β=
+p
+1−γ 2(ϵ−1), with hyperparameterϵandS T =σ T Z.
+The final enhanced near-end speech ˆSis then estimated as:
+ˆS=S 0 +σ 2
+0Sθ(S0|σ0,C).(6)
+2.3. Single-Step Training and Inference
+We adopt the single-step diffusion formulation from [5], as it
+drastically reduces computational load during inference com-
+pared to multi-step diffusion. Thus, in training, we incorpo-
+rate the matched condition training using ˜t=Tinstead of us-
+ing a continuous time step. The reverse process using noise-
+consistent Langevin dynamics can be reformulated as:
+ˆS=S T +σ 2
+T Sθ(ST|σT,C),(7)
+withST = ˆScond+σT Z. Using the compressed complex mean
+squared error lossJ CC (·,·)by Braun et al. [25], we get the
+total loss for both theCondDNN as well as theScoreDNN:
+J=J CC (ˆScond,S) +J CC (ˆS,S) +αJ SM(S,σ ˜t),(8)
+with hyperparameterα. We also include the preconditioning for
+theScoreDNN as introduced by Karras et al. [26] similar to
+[4]. This ensures that network inputs as well as training targets
+are modulated to have unit variance and that a skip connection
+is introduced while amplifying possible errors from theScore
+DNN as little as possible, all in all ensuring training stability.
+2.4. Network Architecture
+CondDNN andScoreDNN share a similar U-Net backbone
+with differing input and output configurations. The base net-
+work architecture is shown in Figs. 2 and 3, with red indicat-
+ingCondDNN-specific, and blueScoreDNN-specific build-
+ing blocks and signal arrows. The encoder part of the U-Net
+mainly builds on theDSBlock(k T×k F,C out)/sT×sF, where
+the strided convolution at the end of the block deliversC out
+output channels,k T andk F are the kernel size in time and fre-
+quency dimension, ands T ands F the stride in the respective di-
+mension. Mirroring this, the decoder part of the U-Net builds on
+theUSBlock(k T×k F,C out)/sT×sF, where the same param-
+eters define the convolution for the upsampling of the signal.
+We adopt the general structure as introduced in [5] while intro-
+ducing some key changes. Differing from [5], we do not use a
+strided (transposed) convolution in the first and last layer of the
+U-Net. To match the number of down- and upsampling oper-
+ations, we introduce anotherDSBlockandUSBlock, respec-
+tively. Furthermore, we replace the transposed convolutions
+4972
+DSBlock(kT×kF,C) /ST×SF USBlock(kT×kF,C –1)/ST×SF
+Conv(5×3, 2)
+Concat
+Conv(5×3,C 0)
+X Y / Ŝt Ŝcond / Ŝ
+ConvBlock(C5) ConvBlock(C5)
+BGRU(9C5) ReshapeReshape
+2×
+5× 5×
+Figure 2:CondandScoreDNN topology, details see Fig. 3.
+with subpixel convolutions [27] to alleviate aliasing phenom-
+ena. To utilize the far-end referenceX, we concatenate it with
+the microphone signalYbefore processing of theCondDNN.
+Using such early fusion provides theCondDNN with the task
+of a robust echo suppression, as the outputˆScond will be further
+enhanced using the generative approach from theScoreDNN.
+3. Experimental Setup
+3.1. Datasets and Framework
+To generate a diverse set of samples, our proposedDiffVQEis
+trainedon a dataset comprising speech and noise sources from
+the Interspeech 2025 URGENT Challenge [19]. As generative
+methods benefit highly from high quality ground truth targets
+in training, we exclude the CommonV oice 19.0 [28] dataset.
+We further adopt the curation strategy introduced in [29] us-
+ing a threshold-based filtering utilizing DNSMOS [30], Sig-
+MOS [31], UTMOS [32], NISQA [33], and SQUIM SDR [34].
+Thus, only speech samples which are of high quality are used.
+We only use the provided official training split for speech and
+noise files. Then, the main part of the training setD train for the
+AEC task is generated as described in [16], including signal-
+to-echo ratio (SER), signal-to-noise ratio (SNR) configurations
+and loudspeaker nonlinearitiesf NL(·), but employing the im-
+age source method for room impulse response (RIR) generation
+withpyroomacoustics[35]. Differing from [16], we con-
+volve the far-endas well asthe near-end signal with two differ-
+ent RIRs which are generated using matching room configura-
+tions. In total, we generate 71777 samples with30s amounting
+to roughly600h of training data. We further incorporate the
+synthetic training set of the ICASSP 2023 Acoustic Echo Can-
+cellation Challenge [36] using 8500 samples with roughly23h
+of additional training data.
+ThevalidationsetD val is created similarly to the synthetic
+testset in [16], using the TIMIT speech corpus [37] and the
+ETSI noise database [38] as well as the Aachen impulse re-
+sponse [39], but again convolving both far-end and near-end
+signals with an RIR from the same room. Moreover, we utilize
+the publicly available reverberant blind test setD test from the
+ICASSP 2023 AEC Challenge. As there are causal and non-
+causal delays between far-end reference and microphone sig-
+nal inD test, we utilize non-causal delay compensation, using
+GCC-PHAT [40] before applying our models.
+USBlock
+(Cout=C –1)
+DSBlock
+(Cout=C)
+ConvBlock(Cin)
+Conv(kT×kF,Cout)/ST×SF
+ConvBlock(Cout)
+ConvBlock(C)
+Conv(3×3,C) FiLM Conv(3×3,C)
+2×
+SPConv(kT×kF,Cout)/ST×SF
+noise
+condition
+speech
+condition
+Figure 3:Building blocks of our approach in Fig. 2.
+3.2. Metrics
+We employ a comprehensive suite of metrics to evaluate AEC
+performance. We rely on AECMOS [41] to estimate echo re-
+duction (DT/ST Echo) and near-end speech quality (DT/ST
+Other) across single- and double-talk scenarios. We further as-
+sess signal quality non-intrusively via DNSMOS [30] (OVRL,
+SIG, BAK). Finally, we report intrusive metrics onD val, utiliz-
+ing PESQ [42] for speech quality and LPS [43] alongside ES-
+TOI [44] for intelligibility. The Levenshtein phone similarity
+LPS= 1−LPD allows to identify hallucinations in (generative)
+speech enhancement [19, 45], with LPD taken from [43].
+3.3. Training Details
+We train onD train resampled to16kHz. The STFT uses a
+frame length of512, hop size of128, and a square-root Hann
+window, with frequency bins padded fromK=257to260.
+The diffusion specific hyperparameters are set to, ˜t=T=0.3,
+σmin=0.01, andσ max=5. We setα=0.005to balance loss
+magnitudes. During training, we remove either near-end or far-
+end speech component inD train for6.25% of the samples, re-
+spectively, to ensure that both single-talk far-end (STFE) and
+single-talk near-end (STNE) are explicitly learned as in-domain
+training targets. Additionally, we substitute the reverberated
+near-end speech for the respective dry signal in10% of the
+samples to ease the learning target and to ensure the network
+generalizes to unseen RIR characteristics. Network parameters
+are(k T×kF)=(3×5),(s T,s F)=(1,2), with channels{C ℓ}set
+to{11,16,23,33,50}(base) and{11,15,21,29,40}(small).
+Using anNVIDIA RTX PRO 6000, we train for500k steps
+with a batch size of16and8s random crops. The learning rate
+warms up to8×10 −4 over7.5k steps, remains constant until
+250k steps, then decays via cosine annealing to1.6×10−6. We
+retrain theDeepVQEbaseline onD train following the original
+batch size and learning rate specifications as described in [6],
+however, for fairness of comparison, for the same number of
+epochs. The final model checkpoints are selected based on the
+lowest average rank computed for all metrics onD val.
+4. Experimental Evaluation and Discussion
+In Table 1, we show results of our proposedDiffVQEvari-
+ants as well as from the retrainedDeepVQEbaseline onD val
+for all conditions. Besides the AECMOS metrics, we include
+4973
+Table 1:Model performance onD val in all three conditions. Best performance is indicated in bold, second best is underlined.
+DT STFE STNE Avg.
+Method # Param. # FLOPS RTF DT Echo DT Other PESQ LPS ESTOI ST Echo ST Other PESQ LPS ESTOI Rank↓
+Unprocessed — — — 1.70 4.01 1.62 0.28 0.41 1.59 3.06 2.17 0.82 0.64 —
+Clean — — — 4.58 4.21 4.64 1.00 1.00 4.68 3.98 4.64 1.00 1.00 —
+DeepVQE[6]5.29M42.24G 0.3174.663.83 2.30 0.69 0.604.723.70 2.58 0.83 0.70 2.5
+DiffVQE-S3.43M4.32G 0.1724.63 4.05 2.50 0.73 0.65 4.62 3.95 3.11 0.880.78 2.0
+DiffVQE5.13M 5.37G 0.185 4.65 4.10 2.63 0.75 0.684.603.97 3.14 0.88 0.79 1.3
+1.5
+2.0
+2.5
+3.0
+PESQ
+2
+3
+4
+5DT Echo
+0.00
+0.25
+0.50
+0.75
+1.00
+LPS
+3.5
+4.0
+4.5
+DT Other
+-9 -6 -3 0 3 6 9
+SER (dB)
+0.2
+0.4
+0.6
+0.8
+ESTOI
+-9 -6 -3 0 3 6 9
+SER (dB)
+1.5
+2.0
+2.5
+3.0
+OVRL
+DiffVQE DiffVQE-S
+DeepVQE Unprocessed
+Figure 4:D val performance dependency on SER in DT.
+expressive intrusive metrics for both quality (PESQ) as well as
+intelligibility (LPS, ESTOI) to assess near-end speech degrada-
+tion in a controlled manner. Moreover, we report the number of
+parameters, FLOPS, and RTF (measured on a single thread of
+anAMD EPYC 9575FCPU @3.3GHz). We also report the
+average rank among the three compared methods over all DT,
+STFE, and STNE condition metrics, see also [19].
+First of all, we observe thatDeepVQE[6] is ahead
+of our methods both in DT Echo and ST Echo, however,
+on a very high-performance level close by or even better
+than clean ground truth.OurDiffVQE(-S) approaches ex-
+celDeepVQEin all other metrics.This is remarkable, as
+DiffVQE-Sis smaller, requires only about 10.3% of com-
+putational complexity, and is faster (RTF) to compute than
+Table 2:Model performance on AEC ChallengeD test.
+Method DT DT STFE STNE STNE STNE Avg.
+Echo Other Echo Other SIG BAK Rank↓
+DeepVQE[6] 4.643.84 4.37 3.93 3.31 4.03 2.67
+DiffVQE-S 4.61 4.07 4.41 4.25 3.42 4.05 2.17
+DiffVQE 4.62 4.10 4.43 4.26 3.43 4.07 1.17
+DeepVQE.DiffVQE-Sreaches an average rank of 2.0 vs. 2.5
+ofDeepVQE. The overall best method (avg. rank of 1.3) is our
+DiffVQE, securing 8 out of 10 best metrics results, while still
+being slightly smaller and slightly faster thanDeepVQE.
+In Figure 4, we presentD val performance dependency on
+SER. Unprocessed speech performs worst in all cases, except at
+low SER levels. This is expected, as the target speaker signal is
+widely untouched in case of no processing. For DT Echo, we
+observe that all methods perform very similar—and very strong.
+Apart from DT Echo,in the other five metrics plots, we see
+ourDiffVQE(-S) methods (blue-colored) ahead ofDeepVQE
+(red-colored) over the entire range of the SER.Our strongest
+proposed methodDiffVQEturns out to have consistent slight
+advantages vs. its smaller variantDiffVQE-Sparticularly in
+PESQ, but also in ESTOI and OVRL.
+Table 2 shows test results onD test, which allows only to
+utilize the non-intrusive AECMOS metrics in STFE and DT
+and DNSMOS metrics in STNE. With this table, we want to
+investigate generalization and performance of our methods vs.
+the so-far state of the artDeepVQE. In fact, we observe the
+very same effects as onD val in Table 1, thereby confirming
+good generalizability of all three investigated models. We see
+this confirmed by the best DT Echo performance ofDeepVQE
+(although all results are close on this metric), and by the fact
+that ourDiffVQEapproach again secures top ranks in all other
+metrics; here even including ST(FE) Echo. Results of SIG and
+BAK on STNE jointly reflect the strength of ourDiffVQEap-
+proaches as reported by STNE PESQ in Table 1.Here, on the
+blind AEC Challenge 2023 test set, our strongest (non-causal)
+methodDiffVQEachieves an excellent avg. rank of 1.17 vs.
+2.17 (DiffVQE-S) and 2.67 (DeepVQE), promising hybrid
+diffusion AEC to be competitive with the discriminative state
+of the art in the field under a fair and equal training regime.
+5. Conclusions
+In this work, we proposed a novel hybrid score-based diffusion
+approach to voice quality enhancement under acoustic echo and
+noise. It is one of the first diffusion-based acoustic echo con-
+trol (AEC) methods (still non-causal), being smaller, less com-
+plex and faster than the so-far SOTADeepVQE. Our proposed
+DiffVQEapproaches excelDeepVQEin most of the metrics.
+4974
+6. Use of Generative AI Disclosure
+In this work, the authors have used generative AI tools only for
+text polishing and editing in some paragraphs to improve clarity
+to the reader.

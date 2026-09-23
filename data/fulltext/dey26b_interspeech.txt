@@ -1,0 +1,448 @@
+Rethinking Organization Entity Modeling in End-to-End Acoustic Named
+Entity Recognition
+Spandan Dey, Nidhi Mantri, Sambit Behera, Hirak Mondal, Sanjay Kumar Kurmi, Sreyasree
+Mandal, Atharv Joshi, Premjeet Singh, Gopal Kumar Agrawal
+Samsung R&D Institute India-Bangalore
+Bengaluru, Karnataka, India
+{spandan.dey, nidhi.mantri, sambit.r, hirak.mondal, sanjay.krm, mandal.s5, athrav.j,
+premjeet.sn, gopal.kumar}@samsung.com
+Abstract
+End-to-end acoustic named entity recognition (NER) in-
+tegrates speech transcription and entity detection within a
+unified model, avoiding error propagation in cascaded ASR-
+NER systems. However, organization entities remain signif-
+icantly harder to detect due to multi-word spans, acronyms,
+and lexical variability. We present a systematic analysis of
+organization recognition failures in acoustic NER, revealing
+that conventional cross-entropy training inadequately models
+entity span dependencies. To address this limitation, we
+propose an organization-aware Whisper-based acoustic NER
+framework combining LLM-based targeted semantic augmen-
+tation, category-specific boundary supervision, and a structure-
+constrained entity learning (SCEL) objective that enforces en-
+tity span consistency during decoding. Experiments demon-
+strate substantial improvements in organization recognition
+while maintaining strong ASR performance, outperforming in
+entity-recognition for several other existing approaches.
+Index Terms: Named-entity recognition, Automatic speech
+recognition, Organization entity modeling, Whisper, LLM.
+1. Introduction
+In natural language understanding (NLU), extracting the seman-
+tic information from the input enhances human-to-computer
+interactions. Named-entities (NEs), describing persons, loca-
+tions, organizations, or some non-constituting rare words con-
+tain one of the major semantic contexts along with other lex-
+ical components, such as parts-of-speech, intent, and action
+words [1, 2, 3, 4]. Traditionally,named-entity recognition
+(NER) has been formulated as a sequence labeling task in the
+text domain [5, 6, 7]. However, with the increasing adoption
+of voice-driven interfaces in smart devices and conversational
+applications, extracting named entities directly from speech, re-
+ferred to asacoustic NER, has become an important and emerg-
+ing research direction [8, 9, 10, 11, 12].
+Extracting entities directly from speech introduces unique,
+non-trivial challenges compared to text, primarily due to the
+absence of explicit punctuation, acoustic-domain ambiguity
+among homophones, and the presence of environmental noise
+and channel-related distortions in speech signals. Primarily,
+acoustic NER systems are developed in a pipeline approach.
+The speech signal is first transcribed into text using an au-
+tomatic speech recognition (ASR) system [13, 14], and the
+resulting transcript is then processed by a text-domain NER
+model [9]. Although widely adopted but this two-stage ap-
+proach has several limitations. First, being multi-stage, the effi-
+ciency of the first-stage ASR systems becomes too critical con-
+cerning error propagation to the subsequent NER model. Since
+most NER models are trained on clean, human-generated text,
+they are often not robust to the recognition errors present in
+ASR transcripts [15, 16, 17]. Second, the pipeline requires
+training and maintaining two independent systems operating
+across different modalities, preventing joint optimization to-
+ward a unified objective [18, 19].
+Regarding these, limited yet notable research has been con-
+ducted in recent years to develop an end-to-end acoustic model
+for detecting NEs directly from speech. One of the early at-
+tempts was proposed by Ghannay et al. [9], who developed
+an entity-aware ASR framework for French. In their approach,
+named entities were embedded into the transcription sequence
+by surrounding entity spans with special tokens, enabling the
+ASR model to jointly perform transcription and entity detection.
+They collected open-source French ASR datasets and manually
+annotated the NE words in groundtruth references by surround-
+ing them with special⟨NE⟩tokens. In a similar approach,
+Yadav et al. [10] proposed an acoustic NER model based on
+Deep Speech 2 [20] for English. In [21], acoustic NER is ex-
+plored in Mandarin by proposing the AISHEL-NER database.
+In recent years, Yu et al. [12], have developed LLM and TTS
+based benchmark for semi-supervised annotation of English and
+Mandarin acoustic NER. In [11], Whisper [22] was extended to
+recognize open-type NEs via prompt-driven fine-tuning across
+multiple English datasets.
+Upon analyzing these limited but emerging acoustic NER
+literature, we observe one common pitfall: Organization entities
+are consistently more challenging to detect than person or loca-
+tion entities. To our knowledge, no prior work in the acoustic
+domain has explicitly attempted to investigate and address this
+issue. Towards this, we first develop a Whisper-based entity-
+aware joint ASR and NER framework covering three common
+named entities, person, location, and organization. Thereafter,
+we systematically study all organization-class failure cases in
+the validation set and identify several key aspects that lead to
+consistent poor performance, including multi-word spans, fre-
+quent use of acronyms, and high lexical variability with many
+out-of-vocabulary terms. Moreover, organization entities often
+contain non-entity words within their spans, making boundary
+detection more ambiguous in speech than in text.
+To address these challenges, we propose a structured
+Whisper-based acoustic NER framework incorporating both
+data-centric and optimization-centric improvements. Specif-
+ically, we introduce targeted semantic augmentation and
+organization-aware training strategies, together with a struc-
+tural loss formulation, to improve entity boundary prediction
+and reduce tag confusion. Experimental results show that the
+6358
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3115
+Figure 1:Illustration of LLM-based targeted semantic augmen-
+tation to effectively diversify the organization NE data using
+abbreviation expansions and lexical variations.
+proposed framework significantly improves recognition perfor-
+mance for the organization entity class, while also achieving
+overall gains in NE F1-score and ASR word error rate. The
+main contributions of this work are summarized as follows:
+• We systematically analyze the difficulty of organization entity
+recognition in acoustic NER and introduce a category-aware
+novel Whisper-NER framework to improve entity boundary
+modeling and semantic tagging directly from speech.
+• We introducetargeted semantic augmentation for organization
+entitiesusing LLM-driven acronym expansion and lexical sub-
+stitution followed by XTTS-2 multi-speaker speech synthesis,
+improving robustness to acronym usage, lexical variability, and
+out-of-vocabulary organization names.
+• We proposeorganization-specific boundary supervisionusing
+a dedicated<org end>token for improving span boundary
+marking in multi-word organization names.
+• We develop a novel sequence-level structural loss for acoustic
+NER that explicitly models entity span structure and bound-
+ary constraints within the ASR decoding sequence, enabling the
+better capture of the structural dependencies of named entities.
+2. Organization-aware structured acoustic
+NER framework
+2.1. Diagnosing organization entity weaknesses
+To investigate the root causes of the organization entity’s in-
+ferior recognition, using our Whisper-based entity-aware ASR
+baseline (cf. 3), we perform inference using our validation set
+utterances. Analyzing these results leads us to several key find-
+ings that are particularly predominant for the organization NEs.
+• Organization names often consist of multi-word spans, which
+may even include non-entity tokens within them (e.g., World
+Health Organization, Bavarian Motor Works).
+• Organizations frequently appear in abbreviated forms (e.g.,
+WHO, BMW), while the full-form expansion may appear in
+other contexts, introducing lexical ambiguity during training.
+• Organization entities are prone to appear as out-of-vocabulary
+(OOV) terms during evaluation, since new institution names are
+often underrepresented in training corpora.
+Finally, acoustic NER models must infer entity boundaries
+directly from speech without access to punctuation or capital-
+ization cues, leading to boundary instability in which entity
+spans are either truncated or extended beyond their correct lim-
+its. Motivated by these observations, we design a category-
+aware training framework that introduces organization-specific
+supervision and structured optimization objectives to improve
+entity span modeling.
+2.2. Targeted semantic augmentation
+LLM-based organization entity restructuring (abbreviation
+expansion, lexical variation):The acoustic NER dataset we
+use [10], although rich in<loc>and<per>entities, contains
+comparatively limited coverage of<org>entities in both fre-
+quency and structural diversity. This imbalance leads to reduced
+exposure of organization patterns during training. Moreover,
+organization entities frequently appear as multi-word spans and
+often contain abbreviations, which increases the likelihood of
+incorrect boundary predictions or missing<end>tokens in
+acoustic NER outputs.
+To mitigate these issues, we propose an LLM-assisted
+semantic augmentation pipeline to expand the diversity of
+organization entity expressions. We employ the 14B pa-
+rameter instruction-tuned language modelPhi-3-medium-128k-
+instruct 1 as a controlled sentence rewriter to generate semanti-
+cally equivalent variants of organization-tagged transcripts. As
+illustrated in Figure 1, the augmentation process follows a two-
+stage prompting strategy.
+In the first stage, the model generates paraphrased variants
+of<org>tagged sentences while preserving entity spans. The
+prompts encourage lexical variation and abbreviation expan-
+sion (e.g.,ICC→International Cricket Council). However,
+direct LLM generation occasionally introduces tag inconsisten-
+cies. Therefore, in the second stage, the same model is used as
+a grammar and tag-correction module. By providing both the
+original and generated sentences, the model refines the entity
+annotations and restores correct tagging boundaries. The en-
+tire output then goes through a rule-based cleanup to remove
+malformed annotations, such as incorrect tags (missing<end>
+token, incorrect tokens such as<organ>).
+TTS-based acoustic synthesis for LLM-augmented
+texts:The semantically augmented and validated sentences are
+subsequently converted back to speech using the XTTS-2 text-
+to-speech (TTS) model [23]. During synthesis, the entity to-
+kens are removed from the TTS inputs. To maintain acoustic
+diversity, synthesis is conditioned on multiple speaker profiles
+sampled from the original datasets. The synthesized utterances
+are then incorporated into the acoustic NER training data.
+2.3. Category-aware training strategy
+Conventional acoustic NER frameworks use a category-
+agnostic<end>token for all entity types, which can lead to
+ambiguous boundary predictions, particularly for multi-word
+organization entities. The proposed<org end>token allows
+the model to explicitly learn category-specific boundary pat-
+terns for organization spans. During inference, this token is
+collapsed back to the standard<end>token to maintain com-
+patibility with existing evaluation protocols.
+2.4. Structure-constrained entity learning (SCEL)
+Motivation:Letxbe the input speech andy= (y 1,...,y T )
+be the target token sequence (indexed witht) containing both
+lexical tokens and entity tags. The Whisper decoder predicts
+the token distributionp(y t|y<t,x)autoregressively. The con-
+ventional training objective is the cross-entropy loss:
+LCE =−
+TX
+t=1
+logp(y t|y <t,x).(1)
+1https://huggingface.co/microsoft/
+Phi-3-medium-128k-instruct
+6359
+This conventional token-level cross-entropy objective opti-
+mizes transcription accuracy but does not explicitly model the
+structural dependencies between entity start and end tokens. To
+address this, we propose astructure-constrained entity learning
+(SCEL) framework that augments the standard ASR objective
+with additional losses designed to improve entity detection and
+boundary consistency. Based on our baseline acoustic NER er-
+ror analysis, we formulate these additional optimizations into
+two categories: (i) Entity-modeling losses, which directly im-
+prove NE tag prediction during decoding, and (ii) additional
+regularizer losses that calibrate the NE token prediction con-
+fidences. The overall SCEL training objective is:
+L=L CE +λ neLne +λ supLsup +λ covLcov +λ bndLbnd
+| {z }
+Entity-modeling losses
++λ entLent +λ confLconf| {z }
+Structural-regularizer losses
+(2)
+The first group explicitly models entity span structure dur-
+ing decoding, while the second group regularizes prediction
+confidence under acoustic uncertainty. Each loss targets a spe-
+cific structural property of entity prediction.
+2.4.1. Entity-modeling losses
+Entity-aware differential loss:Entity tokens occur less fre-
+quently than lexical tokens, creating class imbalance during
+training.L ne thus specifically emphasizes entity prediction:
+Lne =−
+X
+t∈E
+logp(y t|y<t,x)(3)
+Here,Edenotes the set of entity tokens.
+Tag suppression loss:L sup penalizes entity tag probabilities
+when the ground-truth token is not an entity tag, reducing spu-
+rious entity activations and improving tag precision:
+Lsup =
+X
+t /∈E
+X
+k∈E
+p(k|y<t,x)(4)
+Span coverage constraint:To enforce coherent entity spans,
+Lcov penalizes inconsistent start-end pairings (cf. Figure 2):
+Lcov =
+X
+t∈S
+(1−p(<end>|y <t,x))(5)
+whereSdenotes predicted entity start tokens.
+Boundary consistency loss:It (L bnd) penalizes misplaced
+start-end pairings, which is particularly important for multi-
+word NEs (cf. Figure 2).
+2.4.2. Structural-regularization based losses
+Entropy regularization:L ent discourages uncertain entity
+predictions under weak acoustic cues:
+Lent =−
+X
+t∈E
+p(yt) logp(y t)(6)
+Confidence calibration loss:Finally, we include a direct regu-
+larization that aligns predicted entity probabilities of each token
+(p(yt)) with their empirical correctness˜p(yt).
+Lconf =
+X
+t
+(p(yt)−˜p(yt))2 (7)
+These constraints are particularly beneficial for organiza-
+tion entities, which often contain multi-word spans and am-
+biguous boundaries. Figure 2 illustrates typical failure cases
+and how the proposed SCEL components address them. Collec-
+tively, SCEL guides the decoder toward consistent entity span
+prediction while preserving ASR transcription accuracy.
+3. Experimental setup
+Database details:We use the English acoustic NER database
+presented in [10], containing 150 hours of manually anno-
+tated NE spans covering person (<per>), location (<loc>),
+and organization (<org>) categories. For the majority of
+experiments, we use a common entity end boundary token
+(<end>). For category-aware supervision, we use an addi-
+tional (<org end>) token during training. This database is
+constructed from LibriSpeech [24] and Common V oice [25] and
+provides 38,891 unique named entities. We follow a random
+90 : 5 : 5split for training, validation, and evaluation while
+ensuring balanced coverage of each NE category.
+Framework consideration:Following the ASR literature, we
+choose Whisper-small [22] as the backbone architecture. Due to
+computational constraints, we perform the experiments on the
+Whisper-small. The main purpose of this study is to improve
+entity consistency regularization, without confounding our con-
+tributions with exploring architectural variations. To preserve
+the pre-trained ASR representations, the encoder is kept frozen
+during training. For the decoder, we empirically freeze the first
+nine layers during fine-tuning. Training is performed using the
+Adam optimizer for up to 50k steps with a learning rate5e −4
+and 2k warm-up steps. The weights of the SCEL losses are
+tuned using the validation set.
+Performance metrics:Performance is evaluated using ASR
+(excluding tags) word error rate (WER) and named entity recog-
+nition precision, recall, and F1-score. We also report category-
+wise NE performance. Since the main objective of this work is
+to improve organization entity recognition, the organization F1-
+score is treated as the primary metric, while ensuring no degra-
+dation in overall ASR performance or in other NE categories.
+4. Results and analysis
+4.1. Analyzing the structure-constrained entity learning
+Table 1 presents the baseline acoustic NER performance us-
+ing the conventional cross-entropy lossL CE together with the
+results obtained using individual components of the proposed
+Structure-Constrained Entity Learning (SCEL) optimization.
+For these experiments, the relative weight of the cross-entropy
+loss is fixed at0.8, while each auxiliary loss is assigned a weight
+of0.2, enabling fair comparison of the contributions of individ-
+ual components. The results show that most auxiliary losses
+individually improve both ASR and entity recognition perfor-
+mance. Based on the validation-set<org>F1-score, we fur-
+ther optimize the relative weights of these components to con-
+struct the final SCEL objective. Owing to our entity-specific
+modifications, SCEL achieves the highest organization F1-score
+and the highest entity recall, while keeping the majority of the
+other metric values consistently within the top 3. It proves that
+the proposed structured, entity-focusing developments achieve
+a delicate balance between ASR and entity recognition perfor-
+mance across all NE categories.
+4.2. NER Performance with organization-aware training
+While SCEL improves overall entity recognition performance,
+our goal is to enhance organization entity detection. We there-
+fore introduce organization-aware training strategies, including
+LLM-based targeted semantic augmentation (TSA) and the ded-
+icated boundary token<org end>. The corresponding re-
+sults are reported in Table 2. Compared to SCEL, incorpo-
+rating these organization-focused strategies yields a substantial
+6360
+Figure 2:Illustration of common organization recognition failure cases and how individual SCEL components address error patterns.
+Table 1:Performance of the proposed structure-constrained en-
+tity learning (SCEL) and its loss components. P , R, and F1 de-
+note entity precision, recall, and F1-score (%). Org-F1 is the
+primary metric. SCEL applies all loss components with opti-
+mized weights. Bold denotes best performance, while under-
+lined indicates in top-3 results.
+Framework WER P R F1 Per-F1 Loc-F1 Org-F1
+LCE 13.15 70.35 72.18 71.25 71.22 79.20 30.35
+LCE +L ne 12.15 75.84 75.84 75.84 79.03 80.25 23.81
+LCE +L sup 9.23 72.69 79.13 75.77 79.74 73.74 38.29
+LCE +L cov 8.23 78.72 78.71 78.57 78.97 82.79 38.09
+LCE +L bnd 8.01 80.04 74.32 77.07 77.91 79.63 38.88
+LCE +L ent 9.63 72.69 79.13 75.77 79.74 73.74 38.29
+LCE +L conf 40.61 77.52 56.00 65.02 68.46 63.78 29.41
+SCEL 8.27 74.67 81.89 78.11 79.33 79.65 40.00
+Table 2:Performances of the LLM-based targeted semantic
+augmentation (TSA) and<org end>modeling (denoted as
+org end) with the SCEL optimization framework.
+Framework WER P R F1 Per-F1 Loc-F1 Org-F1
+SCEL 8.27 74.67 81.89 78.11 79.33 79.65 40.00
+SCEL+org end 9.81 78.89 69.55 73.92 73.00 78.29 46.73
+SCEL + TSA 8.55 77.71 76.15 76.92 77.12 79.63 51.28
+SCEL+TSA+org end 9.53 78.45 75.39 76.88 76.74 79.70 51.40
+improvement in organization F1-score. In particular, combin-
+ing TSA with the<org end>modeling increases Org-F1 by
+11.40% over SCEL. As expected, these category-specific opti-
+mizations slightly reduce the category-agnostic recall and ASR
+performance, but they facilitate the main objective of signifi-
+cantly improving recognition accuracy for organization entities.
+4.3. Comparison with existing literature
+Finally, we compare the proposed framework with comparative
+approaches from the literature. First, we implement a two-stage
+ASR-NER pipeline by finetuning a Whisper-small ASR model
+(without entity tags) and applying the Flair NER model [26]
+on the predicted transcripts. The cross-entropy based entity-
+aware ASR baseline corresponds to the method by Yadav et
+al. [10]. We also evaluate the recently proposed WhisperNER
+framework [11] using their best-performing bias values of 0 and
+0.05 from [11] and report the results.
+The results in Table 3 demonstrate that SCEL achieves
+the most consistent entity recognition performance while ob-
+taining the best WER. Extending SCEL with the proposed
+organization-aware training strategies further improves organi-
+zation recognition, achieving the highest Org-F1 score. Com-
+Table 3:Performance comparison of our proposed acoustic
+NER framework with related literature.
+Framework WER P R F1 Per-F1 Loc-F1 Org-F1
+ASR+NER 13.07 75.13 67.40 71.05 76.66 76.04 19.04
+Baseline [10] 13.15 70.35 72.18 71.25 71.22 79.20 30.35
+Whisperner, bias 0 [11] 20.38 48.11 74.84 58.87 61.37 61.13 30.16
+Whisperner, bias 0.05 [11] 12.20 50.70 78.46 61.60 64.36 64.72 31.29
+SCEL 8.27 74.67 81.89 78.11 79.33 79.65 40.00
+SCEL+TSA+org end 9.53 78.45 75.39 76.88 76.74 79.70 51.40
+50.0 52.5 55.0 57.5 60.0 62.5 65.0 67.5 70.0
+Organization F1-score
+CE
+NER
+P r oposed
+NER
+57.92
+66.90
+53.58
+68.13
+Single-span
+Multi-span
+Figure 3:Span-wise organization NE detection performance.
+pared with the conventional two-stage baseline and the basic
+acoustic NER baseline, our final framework improves Org-F1
+by 32.36% and 21.05%, respectively.
+4.4. Span-wise organization entity recognition
+Using the same organization entities from our test set, we syn-
+thesize 500 test samples using the LLM-TTS pipeline, including
+60% single-span and the rest multi-span NEs. The Org-F1 for
+the CE-based acoustic NER and the final acoustic NER (includ-
+ing SCEL and org-aware modifications) are presented in Fig-
+ure 3. It demonstrates the efficiency of our proposed framework
+in modeling multi-span entities.
+5. Conclusion
+We focus on improving end-to-end acoustic NER performance
+for the organization entity category. Organization recognition
+is more challenging than other NE categories, primarily due to
+its multi-span structure with intervening non-entity words. To
+address this, we propose a structure-constrained entity learning
+framework with entity modeling and structural regularization
+losses. In addition, we introduce LLM-based targeted semantic
+augmentation and explicit end-boundary modeling for organi-
+zation entities. The proposed methods significantly improve or-
+ganization recognition compared to existing approaches, while
+also achieving the lowest WER and consistent performance
+across other NE categories. Future work will explore fur-
+ther improvements for organization recognition and extend the
+framework to multilingual acoustic NER.
+6361
+6. Generative AI use disclosure
+Generative AI tools were used for limited language editing and
+manuscript polishing. Generative AI models were also em-
+ployed as research tools for data augmentation and annotation-
+related processing, as described in the Methodology section.
+All technical contributions, experimental designs, analyses, and
+conclusions were developed, verified, and approved by the au-
+thors. The authors retain full responsibility for the content of
+this manuscript in accordance with ISCA policy.

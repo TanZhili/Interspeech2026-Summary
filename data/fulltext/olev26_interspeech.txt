@@ -1,0 +1,466 @@
+Multi-Source Evidence Fusion for Audio Question Answering
+Aivo Olev, Tanel Alum¨ae
+Tallinn University of Technology, Estonia
+{aivo.olev,tanel.alumae}@taltech.ee
+Abstract
+Large audio language models (LALMs) can answer questions
+about speech, music, and environmental sounds, yet their inter-
+nal reasoning is largely opaque and difficult to validate. We de-
+scribe TalTech’s solution to the Agent Track of the Interspeech
+2026 Audio Reasoning Challenge, in which systems are eval-
+uated on reasoning process quality, specifically the factual ac-
+curacy, logical soundness, and completeness of their reasoning
+chains. Our multi-source ensemble pipeline uses two LALMs
+that generate independent observations, while a separate text-
+only reasoning model cross-checks these against outputs from
+25 acoustic tools organized into reliability tiers. By grounding
+every inference step in explicit, reliability-tagged evidence, the
+system produces dense, verifiable reasoning chains. Our sys-
+tem ranked first in the challenge, outperforming all competing
+systems by a wide margin in the challenge’s reasoning quality
+metric.
+Index Terms: audio reasoning, reasoning quality, large audio
+language models, evidence combination, tool reliability
+1. Introduction
+Audio understanding has advanced rapidly with the emergence
+of large audio language models (LALMs) [1, 2, 3, 4]. Yet
+these models often produce opaque reasoning that resists ver-
+ification. This limitation is masked by benchmarks that evalu-
+ate only final-answer accuracy [5]. The Interspeech 2026 Au-
+dio Reasoning Challenge [6, 5, 7] addresses this gap: its tasks
+require combining perception with multi-step reasoning across
+music theory, speaker analysis, scene understanding, and tem-
+poral reasoning, and systems are ranked primarily on reasoning
+process quality (factuality, logic, and completeness of reason-
+ing chains), not accuracy alone. No single model excels at all
+of these capabilities, motivating agent-based systems that or-
+chestrate multiple specialized tools. This paper describes our
+entry to the Agent Track, focusing on how we combine hetero-
+geneous audio tools and speech LLMs to produce both accurate
+and transparently reasoned answers.
+A central challenge for such systems is that their informa-
+tion sources have fundamentally different reliability character-
+istics. LALMs provide rich, high-level observations but are
+prone to hallucination: they may fabricate timestamps, report
+visual information from audio-only input, or overcount events.
+Traditional acoustic tools (e.g., beat detection, spectral analysis)
+produce reproducible measurements but can only answer nar-
+row questions and often struggle with real-world data that might
+contain noise, different types of sounds and out-of-domain au-
+dio events. Automatic speech recognition occupies a middle
+ground: it is generally reliable but subject to errors. Therefore,
+it is difficult to build an agent that reasons correctly when com-
+bining evidence from sources that span this reliability spectrum.
+Ensemble methods assume roughly equal participant reliabil-
+ity [8, 9], and agentic frameworks treat tools as equally reliable
+oracles [10, 11].
+Our system incorporates three design decisions that proved
+effective in the challenge setting:
+1. Dual-source evidence fusion in which two speech LLMs in-
+dependently report observations and a downstream reasoning
+model cross-validates them.
+2. A four-tier tool reliability framework with confidence
+caps, relevance scoring, corroboration bonuses, and domain
+appropriateness adjustments for 25 tools.
+3. A three-stage contradiction detection mechanism with
+hypothesis-driven targeted verification.
+The system ranked first in the Agent Track according to
+the challenge’s primary metric, reasoning quality (MMAR-
+Rubrics: 69.8), and achieved the second-highest accuracy
+(76.9%). Our evidence-based architecture encourages dense
+and verifiable reasoning. Each claim is supported by reliability-
+tagged observations, tool measurements, or corroboration
+across sources, producing reasoning chains with many check-
+able factual statements (Section 5.3). Ablation experiments
+show that dual-source evidence fusion yields a statistically sig-
+nificant improvement in accuracy.
+While the reliability weights and confidence caps were
+tuned for this specific challenge, the underlying architectural
+principles of evidence separation, tiered reliability, and con-
+tradiction driven verification may generalize to other reasoning
+tasks that involve heterogeneous sources.
+2. Related work
+LALMs have advanced rapidly [1, 12, 13, 14], yet persistent
+hallucination across 14 distinct failure modes [15] and strong
+affirmation bias [16] limit single-model reliability. Reinforce-
+ment learning improves reasoning but not audio perception it-
+self [17], motivating multi-source approaches.
+Agentic frameworks such as ReAct [10] and Tool-
+former [11] treat tools as equally reliable oracles. Audio-
+specific agents, such as AudioGPT [18], AudioToolAgent [19],
+and AudioGenie-Reasoner [20], coordinate multiple models but
+lack explicit reliability hierarchies or confidence caps. Sun et
+al. [21] showed that tools can produce plausible but incorrect re-
+sults without error signals, motivating reliability-weighted com-
+bination.
+Multi-model ensemble methods, such as Mixture-of-
+Agents [8] and multi-agent debate [9], assume roughly homo-
+geneous participant reliability. Hwang et al. [22] demonstrated
+that explicit reliability modeling improves robustness under het-
+228
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3297
+Table 1: Tool reliability tiers with representative tools, default
+confidence caps, and evidence weights.
+Tier Representative tools Cap Weight
+Analytic Beat detection, energy dynam-
+ics, spectral features
+0.90 1.0
+Probabilistic Whisper ASR, diarization,
+source separation, instruments
+0.75 0.75
+Heuristic Chord analysis, environment
+detection, scene context
+0.60 0.50
+LALMs StepAudioR1, Qwen3-Omni 0.70 0.40
+erogeneous source quality.
+Sycophancy and anchoring bias cause LLMs to produce un-
+faithful reasoning when exposed to suggested answers [23, 24].
+Our evidence-only design hides LALM final answer predictions
+from the reasoning agent to prevent anchoring on potentially in-
+correct predictions.
+3. System architecture
+The system takes an audio file, a question, and multiple choice
+options as input and produces a selected answer with accompa-
+nying reasoning. Figure 1 illustrates the pipeline. Two LALMs
+independently report observations about the audio. The reason-
+ing agent receives these observations together with tool outputs
+tagged with confidence and relevance scores, but does not see
+the source models’ answer predictions.
+Two open-weights LALMs — StepAudioR1 [14] and
+Qwen3-Omni [13] — independently analyze the audio. Each
+model receives four queries: one for the full audio and one for
+each of three equal-duration segments, enabling focused tem-
+poral analysis. Models are prompted to report observations, not
+to select an answer. The synthesis step merges observations
+across segments, applies corroboration bonuses when segment
+and full-audio analyses agree, and classifies the audio content
+type.
+A reasoning LLM call performs semantic corroboration of
+both speech LLM outputs, classifying each observation as cor-
+roborated (both sources agree; confidence 0.80–0.95), source-
+specific (one source only; 0.50–0.70), ordisagreement (conflict-
+ing claims with credibility assessment).
+We classify each tool into four reliability tiers based on out-
+put determinism and reproducibility (Table 1).
+Each evidence item receives a confidence score combining
+the tier’s base confidence, a 1.5× corroboration multiplier, and
+a 1.3× direct-answer bonus. LALM evidence is capped at 0.70
+regardless of bonuses. All caps, weights, and multipliers were
+hand-set during challenge development to enforce the intended
+reliability ordering (e.g., preventing unverified LALM claims
+from overruling reproducible tools), not learned from MMAR
+labels or tuned on a separate calibration set, which the chal-
+lenge did not provide. Confidence and relevance are tracked in-
+dependently; the argumentation stage weights evidence by their
+product. Tools applied outside their primary domain (e.g., beat
+detection on speech) receive a reduced confidence via a domain
+appropriateness factor.
+When the unified analysis reveals disagreements or in-
+sufficient confidence, the system enters a two-step verifica-
+tion loop. In Step 1, the reasoning agent iteratively selects
+from 12 whole-audio tools (23 for music content). Contra-
+diction handling combines deterministic bookkeeping with one
+prompted analysis step. Rule-based stages assign reliability la-
+bels, apply confidence caps and domain appropriateness fac-
+tors, adjust LALM confidence from keyword/negation over-
+lap with tool outputs ( ±0.15 for reproducible tools), and as-
+sign hallucination-risk levels from reliability tier, corroboration
+status, and guards such as marking cosine-clustering speaker
+counts≥ 3× the diarization estimate as segmentation arti-
+facts. A verification LLM prompt then assesses evidence rel-
+evance, classifies inter-tool conflicts, intra-tool inconsistencies,
+and reliability-hierarchy violations, and checks logical pitfalls
+such as treating absence of detection as proof of absence, dis-
+missing single-source claims rather than marking them specula-
+tive, diarization over-segmentation, and transcription disagree-
+ments whose segment timings do not overlap. A deterministic
+executor turns unresolved contradictions into Step 2 tool calls
+over specified time ranges, after which the resulting evidence
+updates the same reliability graph.
+The final stage uses two sequential LLM calls. An an-
+swer selection prompt presents the question, formatted audio
+observations (with source labels but without the source models’
+answer predictions), reliability evaluations with numeric confi-
+dence scores, and tool verification results with confidence and
+relevance scores; the model selects the best-supported answer.
+A subsequent reasoning generation call receives the same evi-
+dence plus the pre-selected answer and produces prose justifica-
+tion following a seven-section template (what is heard, evidence
+synthesis, conflict resolution, reliability assessment, tool cross-
+references, per-choice evaluation, conclusion); a completeness
+check ensures all observations, tool results, and conflicts are
+addressed. Separating selection from elaboration prevents the
+model from committing to a narrative before weighing all ev-
+idence and lets the reasoning model focus separately on only
+decision making and then on explanation.
+4. Experimental setup
+4.1. Dataset and metrics
+The Interspeech 2026 Audio Reasoning Challenge uses the
+1,000-sample MMAR benchmark [7], spanning speech, mu-
+sic, and mixed-modality scenarios across signal, perception,
+semantic, and cultural reasoning layers. The challenge evalu-
+ates two metrics: answer accuracy and reasoning quality via the
+MMAR-Rubrics protocol [5]. For each sample, k=5 check-
+able criteria are generated from the human-annotated reason-
+ing; an LLM judge assesses each criterion as satisfied or not
+and the rubrics score is the fraction of satisfied criteria. Only
+correct answers receive a reasoning score, while incorrect an-
+swers score zero regardless of reasoning quality. This two-gate
+design rewards systems that both answer correctly and produce
+verifiable, evidence-grounded reasoning chains. The criteria as-
+sess factuality, logic, and completeness of the reasoning chain,
+directly rewarding systems whose output traces each step from
+evidence to conclusion.
+4.2. Implementation details
+The reasoning agent uses moonshotai/Kimi-K2-Thinking [25]
+(temperature 0.6). LALM evidence comes from stepfun-
+ai/Step-Audio-R1 [14] and Qwen/Qwen3-Omni-30B-A3B-
+Thinking [13]. ASR uses Whisper large-v3 [26] and Ca-
+nary [27]; source separation uses Demucs [28]; speaker di-
+arization uses pyannote.audio [29]; speaker embeddings use
+ECAPA-TDNN [30] via SpeechBrain [31]; pitch estimation
+uses CREPE [32]; audio event detection uses PANNs [33];
+acoustic features use librosa [34].
+229
+Audio +
+Question
++ Choices
+StepAudioR1
+(full + 3 seg.)
+Qwen3-Omni
+(full + 3 seg.)
+Unified
+Evidence
+Analysis
+Step 1: Ev-
+idence
+(12 [23] tools)
+Contradiction
+Detection
+Step 2: Validate
+(5 [8] tools)
+Answer
+Selection
+Answer +
+Reasoning
+≤3× ≤2×
+Figure 1: Multi-source ensemble pipeline. Two speech LLMs analyze audio across four segments each; unified analysis identifies
+corroborations and disagreements. Step 1 gathers evidence from reliability-tiered tools (up to 3 rounds), three-stage contradiction
+detection generates verification hypotheses, and Step 2 performs targeted segment-level validation. Bracket counts indicate additional
+music-specific tools.
+Table 2: Agent Track leaderboard (top 10) and single-model
+baselines from the MMAR benchmark [7]. Rubrics = MMAR-
+Rubrics composite score (ranking criterion); Acc. = raw accu-
+racy. Single-model baselines do not have Rubrics scores.
+Rank Team / Model Rubrics Acc.
+Agent Track
+1 TalTech (ours) 69.83 76.9%
+2 Team B 66.23 77.4%
+3 Team C 66.09 75.1%
+4 Team D 64.61 72.2%
+5 Team E 63.00 71.0%
+Commercial and open-weight models (single)
+Gemini 2.5 Pro — 74.7%
+GPT-4o Audio — 63.5%
+Qwen3-Omni-Thinking — 66.4%
+Table 3: Accuracy by LALM agreement level.
+Agreement N Correct Accuracy
+Unanimous 128 121 94.5%
+Majority 565 470 83.2%
+Conflicting 307 178 58.0%
+Overall 1000 769 76.9%
+The end-to-end latency of our system averages 8–10 min-
+utes per sample, limiting real-time applicability. Outside a com-
+petition setting, much of this cost is avoidable: a non-reasoning
+LLM could likely handle most pipeline stages with minor ac-
+curacy loss, and many questions can be answered from speech
+LLM observations without invoking multiple tool verification
+loops.
+5. Results
+Our system obtained a reasoning score of 69.8 and 76.9% accu-
+racy, placing it first on the Agent Track leaderboard (Table 2).
+Descriptive analysis of the submission debug logs revealed
+the following observations:
+• Agreement predicts accuracy. Table 3 shows a 36.5 pp gap
+between unanimous (94.5%) and conflicting (58.0%) cases,
+confirming that inter-model agreement is a strong difficulty
+proxy.
+• Confidence is well-calibrated. Accuracy increases mono-
+tonically with confidence: 91.1% at ≥0.80 (n=237), 74.4%
+at 0.60–0.79 (n=722), and 39.4% at 0.40–0.59 (n=33).
+• Corroboration improves accuracy. Samples with≥6 cor-
+roborated items reach 86.2% ( n=282) vs. 53.8% with zero
+(n=13).
+• Tool evidence changes 8.5% of answers , overriding both
+Table 4: Performance by MMAR reasoning layer and sub-
+category. %Max = reasoning quality given correct answers.
+Layer Sub-category N Acc. Reas. %Max
+Signal
+Acoustic Quality 18 88.9 84.1 94.6
+Anomaly Detection 17 70.6 65.5 92.8
+Audio Difference 8 37.5 25.8 68.9
+Perception
+Correlation 50 84.0 75.2 89.5
+Counting & Stats 99 62.6 54.0 86.2
+Environ. Perc. 149 82.6 75.5 91.4
+Music Theory 63 61.9 49.6 80.2
+Spatial 15 73.3 62.2 84.9
+Temporal 28 57.1 50.5 88.3
+Semant.
+Content 304 83.9 76.5 91.2
+Emotion & Intent. 60 83.3 77.0 92.4
+Speaker 48 85.4 77.6 90.9
+Cultural
+Aesthetic Eval. 8 62.5 60.0 96.0
+Culture of Speaker 52 76.9 63.0 81.8
+Imagination 10 70.0 56.0 80.0
+Professional Knowl. 71 66.2 57.8 87.2
+Overall 1000 76.9 68.7 1 89.3
+LALM predictions in 85/1,000 cases. Speech-only questions
+reach 85.7% while music drops to 58.7%.
+• Performance varies across reasoning layers.Table 4 breaks
+down performance by MMAR question subcategories [7].
+Semantic tasks are easiest (84.0%), while cultural reason-
+ing (70.2%) and signal-level tasks (72.1%) are hardest. Mu-
+sic theory (61.9%), temporal analysis (57.1%), and audio
+difference analysis (37.5%) are the most challenging sub-
+categories, aligning with the low usefulness of temporal and
+rhythm tools (Section 5.1).
+5.1. Tool usage and usefulness
+To assess per-tool usefulness, an LLM judge (Claude Opus
+4 [36]) independently evaluated each of the 1,000 pipeline de-
+bug logs, which contained the full pipeline state (source pre-
+dictions, tool invocations, reliability evaluations, contradiction
+traces, and argumentation). For every tool invocation the judge
+assigned a usefulness score (1–5) and classified its contribution
+type (direct answer, confirm/deny hypothesis, resolve conflict,
+or irrelevant). Scores should be interpreted as exploratory, as
+judge ratings were not validated against human annotations.
+Table 5 reports the resulting per-tool statistics across 1,000
+samples. Of 25 registered tools, 21 were invoked at least once.
+The four non-observed tools were present in the broader toolkit
+1The reasoning score (68.7) differs from our leaderboard score
+(69.8) due to running a single evaluation with an LLM judge, whose
+inherent variability produces minor score fluctuations across runs.
+230
+Table 5: Per-tool statistics across 1,000 evaluation samples (25 enabled tools, 21 observed), scored by an LLM judge. Sorted by
+average usefulness score (1–5). Contribution roles: Direct = direct answer, Confirm = confirm hypothesis, Deny = deny hypothesis,
+Resolve = resolve conflict, Irrel. = not useful. Mus. = music-specific tool; Int. = LLM-interpreted output.
+Tool Model / Toolkit Mus. Int. Samples Avg Direct Confirm Deny Resolve Irrel. % Irrel.
+Speech LLM query (Qwen3) Qwen3-Omni 926 3.51 303 342 78 81 121 13.1%
+Transcription Canary [27] / Whisper lg-v3 602 3.46 233 181 61 4 122 20.3%
+Diarization + transcription Whisper lg-v3 + ECAPA-TDNN [30] 572 3.33 177 225 20 15 134 23.5%
+Speech LLM query (StepAudio) StepAudioR1 132 2.87 15 67 11 13 27 20.3%
+Melody transcription CREPE [32] + librosa Y Y 74 2.74 9 30 7 2 26 35.1%
+Instrument detection PANNs [33] (CNN14) Y Y 213 2.35 8 92 24 4 85 39.9%
+Harmonic analysis librosa (H/P sep., chroma) Y 199 2.25 7 83 9 4 96 48.2%
+Beat & onset detection librosa (beat track, onset) Y Y 104 2.23 3 41 6 6 48 46.2%
+Environment detection librosa (RT60) + heuristics 46 2.04 0 17 3 4 22 47.8%
+Synthetic speech detection AASIST [35] + prosody Y 5 2.00 0 0 1 2 2 40.0%
+Energy dynamics librosa (RMS, dynamic range) 784 1.99 6 235 58 20 465 59.3%
+Spectral features librosa (centroid, MFCC) 736 1.88 4 205 20 8 500 67.8%
+Audio quality librosa + pyloudnorm (LUFS) Y 17 1.77 2 3 1 0 11 64.7%
+Scene context librosa + PANNs [33] + speech 63 1.44 0 17 1 0 45 71.4%
+Chord progression librosa (chroma cqt) + templates Y Y 6 1.33 0 0 1 0 5 83.3%
+Speaker count SpeechBrain [31] ECAPA-TDNN 394 1.26 1 23 12 2 355 90.3%
+Event sequence librosa + PANNs AudioSet Y 264 1.26 2 22 3 2 235 89.0%
+Temporal segments librosa (segment comparison) Y 166 1.22 1 11 3 1 150 90.4%
+Audio effects librosa (reverb, delay, EQ) Y 4 1.25 0 1 0 0 3 75.0%
+Tempo tracking librosa (windowed beat track) Y Y 22 1.09 0 0 1 0 21 95.5%
+Rhythm analysis librosa (tempogram) + rules Y Y 8 1.00 0 0 0 0 8 100.0%
+Registered but not observed in executed tool logs:
+Source separation Demucs htdemucs Y 0 – – – – – – –
+V ocal technique librosa (vibrato, registers) Y Y 0 – – – – – – –
+Instrument sequence PANNs AudioSet (windowed) Y 0 – – – – – – –
+Rhythm patterns librosa (tempogram matching) Y Y 0 – – – – – – –
+Table 6: Ablation results (argumentation-level replay). ∆ =
+accuracy change vs. baseline in pp; Nd = discordant pairs; p
+= p-value of McNemar’s test.
+Configuration Acc. ∆ Nd p
+Baseline replay 76.6% — — —
+Step-Audio-R1 only 72.3% −4.3 109 <.001
+Qwen3-Omni only 73.4% −3.2 110 .003
+but did not appear in executed tool-call records: post-hoc log
+inspection showed that contradiction analysis sometimes pro-
+posed them as follow-up checks, but the deterministic Step 2
+executor only ran calls present in its validation-tool allow-list.
+Their zero counts therefore reflect pipeline selection and allow-
+listing, not evidence that the tools are intrinsically useless.
+LALM queries and ASR tools rank highest in usefulness (avg.
+3.3–3.5), while temporal and rhythm analysis tools show high
+irrelevance rates (>89%), suggesting limited utility for the cur-
+rent question distribution.
+5.2. Ablation: Multi-source evidence fusion
+We run argumentation-level replay ablations using debug logs
+from the final submission: all upstream artifacts (LALM obser-
+vations, tool outputs, contradiction traces) are fixed; only the
+evidence presented to the argumentation model changes. We
+use McNemar’s test with Holm–Bonferroni correction (α/2 =
+0.025) to assess statistical significance between the results.
+Table 6 presents replay ablations testing dual- vs. single-
+source evidence. Both single-source conditions significantly
+degrade accuracy.
+5.3. Discussion
+The ablation results suggest that multi-source fusion gains come
+not from averaging equally capable models, but from supple-
+menting a strong general-purpose model (Qwen3-Omni) with
+a specialist that captures complementary observations. The
+85 cases where tool evidence overrides both speech LLMs fur-
+ther demonstrate that acoustic tools provide an independent ver-
+ification channel.
+The evidence-based architecture is particularly well-suited
+to the challenge’s MMAR-Rubrics evaluation, which scores
+reasoning chains against instance-specific factuality criteria
+only when the answer is correct. Table 2 illustrates this align-
+ment: our system places first on Rubrics (69.83) despite slightly
+lower raw accuracy than Team B (76.9% vs. 77.4%). Three
+architectural features likely contribute to the reasoning quality
+advantage noted in Section 1. First, multi-source evidence gath-
+ering produces reasoning dense in citable claims: each observa-
+tion, tool measurement, and corroboration can satisfy a rubric
+criterion. Second, the seven-section reasoning template (Sec-
+tion 3) enforces completeness by requiring that every piece of
+evidence is referenced, conflicts are resolved, and each choice
+is evaluated. Third, using a strong reasoning model probably
+yielded good reasoning scores. The MMAR-Rubrics evaluation
+criteria were revealed only after the end of the challenge [5];
+these architectural choices were not optimized for the rubrics
+but happen to align with them.
+6. Conclusion
+We described our Interspeech 2026 Audio Reasoning Chal-
+lenge solution: an ensemble pipeline that manages unreliable
+audio observations through reliability-tiered evidence combina-
+tion, dual-source speech LLM fusion, and contradiction-driven
+verification, placing first on reasoning quality at competitive
+accuracy on the MMAR benchmark. Ablations confirm that
+dual-source fusion provides a statistically significant gain of
+3.2–4.3 pp. Example reasoning outputs, prompts, and output
+schemas are available at https://github.com/aivo0/
+audio-reasoning-solution. Future work will investi-
+gate scaling beyond multiple-choice settings.
+231
+7. Acknowledgments
+This work was supported by the Estonian Centre of Excellence
+in Artificial Intelligence (EXAI), funded by the Estonian Min-
+istry of Education and Research grant TK213, by the National
+Program for Estonian Language Technology Program (project
+EKTB104) and by the Estonian Language Data Research In-
+frastructure (KeTA). Some of the experiments were carried out
+in the TalTech HPC [37].
+8. Generative AI Use Disclosure
+Generative AI tools were used for editing and polishing the
+manuscript and for the post-hoc LLM-as-judge tool evaluation
+reported in Table 5. All authors take full responsibility for the
+content of the paper.
+9. References
+[1] Y . Chu, J. Xu, X. Zhou, Q. Yang, S. Zhang, Z. Yan, C. Zhou, and
+J. Zhou, “Qwen-audio: Advancing universal audio understand-
+ing via unified large-scale audio-language models,”arXiv preprint
+arXiv:2311.07919, 2023.
+[2] C. Tang, W. Yu, G. Sun, X. Chen, T. Tan, W. Li, L. Lu, Z. Ma,
+and C. Zhang, “SALMONN: Towards generic hearing abilities for
+large language models,” in International Conference on Learning
+Representations (ICLR), 2024.
+[3] Z. Kong, A. Goel, R. Badlani, W. Ping, R. Valle

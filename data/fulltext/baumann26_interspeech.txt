@@ -1,0 +1,488 @@
+PhonLLM: Joint Phone Recognition and Phonological Process Inference for
+Child Speech
+Ilja Baumann ID , Korbinian Riedhammer ID , Tobias Bocklet ID
+Technische Hochschule N¨urnberg
+{ilja.baumann, korbinian.riedhammer, tobias.bocklet}@th-nuernberg.de
+Abstract
+We introduce phonological process inference, a structured
+prediction task that explains deviations in child speech by
+jointly recovering canonical phone sequences and phonological
+process tags. The initial stage pretrains on phone recognition
+without text conditioning. In the second stage, we fuse embed-
+dings of an expected phone sequence with downsampled audio
+tokens and train a single decoder to output canonical phones
+with explicit process tags. A rule-based augmentation pipeline
+injects process supervision at scale without manual labeling and
+supports multilingual training by swapping language-specific
+grapheme-to-phone (G2P) mappings. Experiments across mul-
+tilingual child and clinical corpora show that joint modeling
+improves tagging accuracy and reduces phone error rates com-
+pared to ASR-based baselines, while producing interpretable
+phone-level diagnostics suitable for screening and Computer-
+Assisted Pronunciation Training (CAPT).
+Index Terms: phone recognition, pronunciation assessment
+1. Introduction
+Language development is fundamental to social and academic
+success, yet clinical assessment of children’s speech remains
+time-intensive and difficult to scale. Screening typically re-
+quires clinicians to listen, transcribe, and label phonological
+patterns manually. Automatic speech recognition can produce
+transcripts, but transcription alone does not provide phone-level
+diagnostic feedback. We therefore represent both canonical pro-
+nunciation and acoustic evidence as token sequences and train
+a compact LLM to perform structured prediction over these to-
+kens. The model consumes a fused stream of audio and ex-
+pected pronunciation and predicts canonical phones augmented
+with explicit process tags (e.g., fronting, backing, deletion).
+Our work builds on several strands of prior research. First,
+pronunciation assessment and CAPT have been widely stud-
+ied, with surveys emphasizing phone-level feedback, robust-
+ness, and interpretability as key challenges [1, 2, 3, 4]. Re-
+lated work has explored articulatory one-class SVMs for low-
+resource phoneme-level verification in disordered child speech
+[5] and case-based reasoning for phonological-process predic-
+tion in speech-therapy support [6]. Second, mispronuncia-
+tion detection and diagnosis (MDD) systems have shifted from
+Goodness of Pronunciation (GoP)-style pipelines toward end-
+to-end sequence models that jointly localize and classify pro-
+nunciation errors [7, 8, 9, 10]. Prompt-aware architectures
+further improve non-autoregressive MDD by conditioning pre-
+dictions on target pronunciation context [11]. Third, multi-
+lingual and cross-lingual modeling emerged for low-resource
+pronunciation assessment, where self-supervised and language-
+adaptive encoders improve transfer across accents and lan-
+guages [12]. Fourth, speech-LLM approaches show that large
+language models can fuse acoustic evidence with linguistic pri-
+ors for MDD [13], but most systems focus on L2 learner speech
+and sentence-level scoring rather than explicit phonological-
+process tagging. In parallel, multilingual G2P remains impor-
+tant for scalable phone supervision across languages [14, 15].
+This work makes three contributions: (i) We introduce
+the task of phonological process inference, where a model
+jointly predicts canonical phone sequences and phonologi-
+cal process tags from speech. (ii) We propose PhonLLM, a
+speech–language architecture that fuses acoustic evidence with
+expected pronunciations to perform this structured prediction
+task. (iii) We introduce a scalable rule-based augmentation
+pipeline that injects phonological process supervision without
+manual annotation. Unlike conventional MDD systems that
+classify errors independently, our formulation models phono-
+logical processes as transformations between expected and re-
+alized pronunciations. PhonLLM jointly infers the target repre-
+sentation and underlying processes.
+Realized speech
+Orthography
+Expected
+"zipping"
+Phone / Process Token
+Audio Token
+Train Labels
+[z ɪ p <|fronting|> ɪ ŋ <|backing|> ]
+PhonLLM Decoder
+     Audio Encoder3
+[ z ɪ k ɪ n ]
+1
+4
+     Tokenizer2
+[ z ɪ p ɪ ŋ ]
+... ...
+Output: Canonical phone + process explanation
+[z ɪ p <|fronting|> ɪ ŋ <|backing|> ]
+Figure 1:Overview of PhonLLM. The model fuses an expected
+phone sequence from orthography with acoustic evidence and
+predicts canonical phones augmented with phonological pro-
+cess tags explaining deviations in pronunciation.
+2. Data
+Datasets are grouped by training stage: adult speech for ini-
+tial phone-recognition pretraining, child speech for supervised
+training, and clinical child speech reserved for evaluation. Child
+corpora are listed in Table 1.
+Adult Speech DatasetsWe use adult speech corpora
+for initial pretraining to learn robust phone-level alignments.
+Mozilla CommonV oice [16] provides multilingual read speech
+2066
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3378
+with broad phonetic coverage. The Multilingual LibriSpeech
+(MLS) [17] corpus supplies large-scale read speech with consis-
+tent orthography, which we map to phone sequences for cross-
+lingual phone modeling. We use transcripts, convert these to
+phonetic sequences using eSpeak and use these as supervision
+for phone recognition. The total amount of speech for the initial
+stage is≈9.8k hours.
+Child Speech DatasetsChild speech corpora are used in
+the second stage to introduce phonological process supervision.
+We use Phattsessionz [18] consisting of German speech from
+adolescent speakers. CSLU Kids [19] contributes child speech
+in English. Only scripted speech is used due to frequent hesita-
+tions and restarts in the spontaneous data. Samr ´omur Children
+[20, 21] supplies Icelandic child speech. Speechocean762 [22]
+provides child speech with pronunciation ratings; we use only
+correctly pronounced utterances.
+Clinical DatasetsClinical child speech from Phon-
+Bank [23] is usedonlyfor evaluation. Each corpus is phoneti-
+cally annotated by speech therapists. Neumann/Fox-Boyer [24]
+is a German corpus, collected with PLAKSS picture-naming
+(PLAKSS-I [25] or PLAKSS-II [26], 99 words covering Ger-
+man phonemes across word positions). Fox-Boyer is a separate
+German corpus, recorded with the PLAKSS-II picture-naming
+task. BESS dataset [27] provides German screening data from
+the Bavarian Language Screening Test. We use only the non-
+word recitation (NNW) task data in this work, since this is the
+only phonetically annotated subtest. Torrington-Eaton [28] is
+an English corpus comparing clinical vs. typically developing
+phonological abilities across a picture-naming task, non-word
+repetition, and a short play session. Cummings [29] is an En-
+glish corpus of children with speech sound disorders, recorded
+in a clinical setting with at least pre- and post-treatment ses-
+sions. The probe is the Assessment of English Phonology [30]
+with single-word utterances. M´asd´ottir [31] is an Icelandic cor-
+pus of children recorded across three elicitation tasks [32].
+Table 1:Overview of child datasets after filtering. CSLU Kids is divided
+into groups from kindergarten (K) to grade 10 (G).
+Dataset Lang. # Children Age
+Phattsessionz de 1,019 12–20
+CSLU Kids en 118 K-G10
+Samr´omur Children is 3,175 4–17
+Speechocean762 en 190 6–43
+Neumann/Fox-Boyer de 29 3;0–9;7
+Fox-Boyer de 32 2;3–9;2
+BESS de 177 4;10–5;11
+Torrington-Eaton en 51 4;0–5;11
+Cummings en 30 3;0–7;3
+M´asd´ottir is 288 2;6–7;11
+3. Methodology
+3.1. Phonological Process Inference
+We define phonological process inference as follows: Given an
+acoustic signala 1:T and an expected phone sequencex 1:N de-
+rived from orthography, the goal is to predict a canonical phone
+sequence augmented with phonological process tags that ex-
+plain deviations between expected and realized speech. The
+goal is to model the conditional distribution
+p(y|a 1:T,x 1:N ),(1)
+wherea 1:T denotes the acoustic signal,x 1:N the expected
+phone sequence derived from orthography, andythe output se-
+quence containing canonical phones and optional phonological
+process tags such as fronting, backing, or deletion.
+3.2. Architecture
+Figure 1 illustrates the proposed setup. Orthography is con-
+verted to phone sequences and fused with downsampled au-
+dio embeddings. A compact LLM decoder predicts canonical
+phones augmented with phonological process tags. We use a
+two-stage training pipeline combining an audio encoder with
+the LLM. Latent audio representations from wav2vec 2.0 [33]
+(OmniASR [34], 300M) are projected to the LLM input space
+and concatenated with phone embeddings before decoding with
+LLaMA [35] (1B). The first stage pretrains cross-lingual phone
+recognition to learn robust phone-level alignments. The sec-
+ond stage trains on child speech with phonological process su-
+pervision, jointly predicting canonical phones and process tags
+(fronting, backing, deletion). The expected phone sequence is
+used only in this stage. Phonological processes are modeled as
+deviations between expected pronunciations derived from or-
+thography and realized acoustic speech.
+Formally, in the second stage, we condition on audio frames
+a1:T and an expected phone sequencex 1:N . Conditioning on
+the expected phone sequence provides linguistic context anal-
+ogous to target prompts used in pronunciation assessment sys-
+tems, enabling the model to detect deviations relative to the in-
+tended pronunciation. The text pathway maps phone tokens to
+embeddings asg 1:N =f text(x1:N ) 2 . In parallel, the audio
+pathway concatenates everyrconsecutive frame embeddings
+(withr= 5in our experiments) and projects them to the LLM
+embedding space, i.e.,e 1:L =f audio(a1:T ) 3 . We concate-
+nate the text and audio token streams and project them to a
+shared space,h 1:L =W[g 1:L;e 1:L]. An autoregressive de-
+coderf LLM 4 then predicts a target sequencey 1:L of canon-
+ical phones with process tags. Training minimizes next-token
+cross-entropy,L=− PL
+l=1 logpθ(yl |y <l,h 1:L), with the
+first stage usingy=phones and the second stage usingy=
+phone+process tags. The model therefore performs structured
+phonological inference, jointly recovering the canonical phone
+sequence and the phonological process that explains deviations
+in the observed speech signal.
+3.3. Data Augmentation for Phonological Process Detection
+Data augmentation 1 visualized in Figure 1 is a central
+contribution that injects explicit phonological process super-
+vision without requiring manual tagging. Canonical targets
+are represented as simplified IPA phone sequences obtained
+from grapheme-to-phoneme conversion from the orthographic
+transcription using eSpeak 1, with suprasegmental diacritics re-
+moved and phones collapsed to a reduced inventory for cross-
+lingual consistency.
+After the conversion, we apply process-specific rewrite
+rules to create a pairedexpectedsequence that reflects a realis-
+tic child-speech deviation while preserving the canonical target.
+During training, we simulate child-speech deviations by mod-
+ifying the expected sequence. At inference time, the expected
+sequence corresponds to the canonical pronunciation the child
+is asked to produce. The model is trained to output the canon-
+ical phone stream augmented with a process tag at the affected
+location, enabling it to learn alignment between expected and
+realized speech, correction, and localization.
+We define IPA-level mapping tables for velar fronting, coro-
+nal backing, and deletion. For each word, we sample a pro-
+cess type (orrecognition onlywithout the expected sequence)
+according to the probabilities in Section 4.2, identify eligible
+1https://github.com/espeak-ng/espeak-ng
+2067
+Table 2:Baseline results averaged over all datasets and processes.
+Chance-level F1 equals class prevalence and is 19.2±3.7. The PER
+and AW-PER of XLSR-53 are 58.0±7.5and 26.2±5.7.
+Exp. Baselines Prec.↑Rec.↑F1↑
+B1 LLMin-context43.8±20.465.1±13.350.2±17.8
+B2 LLMfine-tuned94.3±6.685.1±8.889.0±6.2
+B3 + XLSR-53 73.0±17.342.8±19.548.5±10.2
+phones, and apply a single rewrite per example to avoid com-
+pounding errors. For velar fronting, a target, e.g.,[k]is rewritten
+to[p]; for coronal backing,[d]may be rewritten to[g]; for dele-
+tion, the expected sequence contains a phone that is absent in the
+realized pronunciation. Given orthography “zip” with phones[z
+I p], a fronting rewrite yields an expected sequence[z I k]; the
+supervision target is the canonical sequence with a tag, e.g., [z
+I p<|v fronting|>]. This encourages alignment between
+acoustic evidence and the canonical output while predicting the
+appropriate process label. The augmentation yields balanced la-
+bels under linguistically constrained rewrite rules. These rules
+are used only for training; evaluation uses independent clini-
+cally annotated datasets with naturally occurring processes.
+3.4. Metrics
+We report metrics for both, process tagging and phone recogni-
+tion. For tagging, we compute precision, recall, and F1 at the
+process-label level, emphasizing recall since missed processes
+provide no corrective feedback. We also report chance-level F1
+based on class prevalence.
+For phone recognition, we report Phone Error Rate (PER)
+and Articulatory Weighted PER (AW-PER) which was ex-
+plored in similar ways in various studies [36, 37, 38]. PER
+counts substitutions, deletions, and insertions with unit cost,
+while AW-PER weights substitutions by articulatory distance
+norm(reference,hypothesis)∈[0,1]using PanPhon [39].
+This reflects the clinical severity of near-neighbor confusions.
+4. Experiments
+4.1. Baselines
+We use three baseline settings for process tagging, all trained
+with next-token cross-entropy,L=− P
+i logpθ(yi |x i),
+and evaluated withmaximum a posteriori(MAP) decoding,
+ˆy= arg maxypθ(y|x). (B1)Frozen LLM (in-context): a
+frozen LLaMA model with 50 in-context examples. The num-
+ber of examples is chosen as a proper prompt size that fits within
+the model context window while still allowing the full phone
+sequence and tags to be included. Empirically, this provides
+a stable trade-off between demonstration diversity and prompt
+length. (B2)Fine-tuned LLM (oracle text): the same text-only
+setup as (B1), but fine-tuned and assuming perfect transcripts.
+(B3)XLSR-53 + fine-tuned LLM: XLSR-53 [40] first gener-
+ates transcripts˜x, which are then fed to the fine-tuned model
+from (B2), i.e.,pθ(y|˜x).
+4.2. Proposed PhonLLM
+To enable efficient adaptation, we keep the audio encoder and
+LLM weights frozen and train only low-rank adaptation (LoRA)
+[41] layers (r=16,α=32) together with the audio projection
+module. This significantly reduces the number of trainable
+parameters while preserving the linguistic knowledge encoded
+in the pretrained LLM. The model is trained in two stages.
+First, we train for 10 epochs on cross-lingual phone recogni-
+tion using next-token cross-entropy over canonical phone tar-
+gets to learn robust acoustic–phonetic mappings. Second, we
+fine-tune for 10 epochs on child speech with phonological pro-
+cess supervision, where the target sequence interleaves canoni-
+cal phones with process tags. The number of epochs was se-
+lected based on validation convergence. To balance process
+frequencies, augmentation rules are applied with probabilities
+p(fronting) = 0.30,p(backing) = 0.60,p(deletion) = 0.12,
+andp(recognition only) = 0.30. These values were set empir-
+ically to compensate for differences in the number of eligible
+phones per process: backing applies to a smaller set of targets
+than fronting, deletion is applicable to any phone, requiring a
+lower sampling rate. Together they yield approximately bal-
+anced augmented example counts per class.
+5. Results
+5.1. Baselines
+Table 2 compares three baselines averaged over all datasets and
+processes. The in-context LLM baseline (B1) shows moderate
+precision (43.8) with higher recall (65.1), yielding F1 50.2 and
+indicating a bias toward over-predicting tags. Fine-tuning the
+LLM (B2) substantially improves both precision and recall (to
+94.3/85.1), producing the best overall F1 (89.0). This represents
+an oracle upper bound, as B2 operates on perfect reference tran-
+scripts rather than raw speech – a condition unavailable at infer-
+ence time. PhonLLM closes most of this gap while operating
+directly on acoustics, without access to ground-truth transcrip-
+tions. The audio+text pipeline (B3) degrades tagging perfor-
+mance (F1 48.5) relative to B2, consistent with error propaga-
+tion from the XLSR-53 transcription stage. The XLSR-53 tran-
+scription performance is listed in Table 3. The PER/AW-PER
+(58.0/26.2) provides the phone-recognition baseline for down-
+stream comparisons. Chance F1 is low (19.2), confirming that
+improvements reflect learned tagging rather than class imbal-
+ance. This highlights the advantage of direct speech-to-process
+modeling compared to cascaded ASR pipelines.
+5.2. Joint Phone Recognition and Process Tagging
+Table 3 reports phonological process tagging and phone recog-
+nition across datasets and languages. Overall, our setup
+achieves strong tagging performance with an average F1 75.9,
+well above the average chance F1 of 19.2. The corresponding
+phone recognition errors remain substantially lower than the
+XLSR-53 baseline (PhonLLM PER/AW-PER 23.5/12.6 com-
+pared to XLSR-53 58.0/26.2). This suggests that joint process
+tagging improves acoustic–phonetic alignment.
+Process-Level TrendsFronting shows the highest and
+most consistent performance, with F1 values in the 80s range
+and the best scores on M ´asd´ottir (F1 90.1) and Cummings (F1
+88.5). Backing is more challenging: German datasets show
+moderate F1 (around 60), while English Cummings reaches
+86.2, suggesting dataset-specific distributional effects and label
+frequency differences. Deletion is consistently harder, with F1
+between 66.6 and 74.9, reflecting the difficulty of distinguishing
+deletions from alignment and coarticulation effects.
+Dataset and Language EffectsAll German datasets tend
+to yield slightly lower recall than English or Icelandic in sev-
+eral processes, which reflects smaller per-process sample sizes.
+English datasets show strong fronting and backing performance
+but remain less robust on deletion. Icelandic M ´asd´ottir consis-
+tently achieves high precision and recall for fronting and com-
+petitive results for backing and deletion.
+Implications for Clinical UseThe large gap between
+2068
+Table 3:PhonLLM phonological processes classification results by dataset and language, including chance F1 and PER variants. XLSR-53 is the
+baseline phone recognizer; AW-PER is articulatorily weighted PER. Chance-level F1 equals class prevalence.
+Exp. Process Dataset Lang. Tagging metrics (%) PhonLLM XLSR-53
+Prec.↑Rec.↑F1↑Chance↑PER↓A W-PER↓PER↓A W-PER↓
+1 fronting Neumann/Fox-Boyer de 92.0 85.2 88.4 22.8 18.4 11.3 48.7 20.0
+2 fronting Fox-Boyer de 94.7 72.0 81.8 17.5 15.0 7.1 48.8 25.5
+3 fronting BESS de 87.2 78.9 82.8 12.7 16.8 8.0 49.4 16.1
+4 fronting Torrington-Eaton en 85.9 86.2 86.1 16.2 20.9 11.6 63.4 33.4
+5 fronting Cummings en 88.7 88.3 88.5 20.0 18.1 12.0 61.1 28.1
+6 fronting M ´asd´ottir is 89.0 91.2 90.1 17.0 20.6 12.1 62.8 30.3
+7 backing Neumann/Fox-Boyer de 92.9 47.3 62.7 18.9 24.0 11.3 48.0 17.0
+8 backing Fox-Boyer de 83.3 51.0 63.3 18.2 21.8 10.4 51.5 22.7
+9 backing BESS de 84.2 54.2 66.0 14.2 22.5 10.8 52.7 18.7
+10 backing Torrington-Eaton en 80.7 51.0 62.5 16.7 28.4 16.6 69.9 35.3
+11 backing Cummings en 93.6 80.0 86.2 22.9 28.5 14.4 68.4 24.3
+12 backing M ´asd´ottir is 78.7 87.2 82.8 15.8 22.0 13.7 55.2 28.7
+13 deletion Neumann/Fox-Boyer de 79.9 64.7 71.5 25.2 26.5 13.2 52.2 22.8
+14 deletion Fox-Boyer de 82.0 63.9 71.8 22.7 27.1 13.9 52.7 24.5
+15 deletion BESS de 71.4 75.2 73.3 17.1 27.0 12.9 66.3 32.2
+16 deletion Torrington-Eaton en 72.9 61.4 66.7 20.4 26.7 15.7 66.4 33.1
+17 deletion Cummings en 67.4 65.9 66.6 26.9 36.2 17.1 61.8 29.3
+18 deletion M ´asd´ottir is 80.3 70.1 74.9 20.7 22.7 14.5 65.5 29.0
+Avg
+±Std
+83.6
+±7.6
+70.8
+±13.8
+75.9
+±9.7
+19.2
+±3.7
+23.5
+±5.0
+12.6
+±2.6
+58.0
+±7.5
+26.2
+±5.7
+PhonLLM and XLSR-53 in PER/AW-PER, together with high
+tagging F1, supports the claim that joint phone recognition and
+process tagging provide more reliable diagnostic feedback than
+a pure transcription-based pipeline. Compared to the XLSR-53
+baseline, PhonLLM reduces PER by 59.5% and AW-PER by
+51.9%, while achieving an average tagging F1 of 75.9 across
+datasets. Remaining weaknesses on backing and deletion mo-
+tivate targeted data augmentation or cost-sensitive training to
+better capture low-frequency processes.
+Ablation: Expected Sequence ConditioningWhen the
+expected phone sequencex 1:N is omitted, the model predicts
+no process tags at all while still performing phone recognition.
+This indicates that phonological process tagging is not learned
+as an unconditional behavior from acoustics alone, but is trig-
+gered by target-context conditioning, supporting the view that
+expected pronunciations provide essential linguistic context for
+structured phonological inference.
+6. Analysis
+6.1. Beyond Phone Error Rate
+We analyze phone substitutions using an AW-PER confusion
+map that aggregates articulatory distances across aligned sub-
+stitutions. Figure 2 shows that most errors cluster among ar-
+ticulatorily similar phones (e.g., place or voicing shifts), while
+distant confusions are rare. The most frequent substitutions are
+[i]↔[n]and[N]↔[D], highlighting systematic child-speech
+error patterns beyond aggregate PER.
+6.2. Age-Conditioned Performance
+We stratify the M ´asd´ottir dataset into age cohorts (2–7 years)
+to analyze developmental effects. Figure 3 shows a mono-
+tonic decline in AW-PER from 18.83 (2y) to 9.54 (7y), indi-
+cating improved phone recognition with age. Tagging preci-
+sion remains high (78.25–85.19) while recall increases slightly
+(68.22–72.16), yielding stable F1 around 74 with a peak of
+78.13 (7y). Variance across cohorts likely reflects imbalanced
+sample sizes (e.g.,≈12.1k reference phones at 3y vs.≈1.4k at
+7y). Overall, phone recognition improves with age more than
+process tagging, suggesting the need for age-balanced training
+or targeted augmentation.
+n s i d t
+Hypothesis phone
+n
+s
+i
+d
+t Reference phone
+135 253 5212 79 191 12 836
+313 12 44 3 17 70 1640
+199 886 79 51 37 64 298
+3477 131 28 87 143 44
+57 4 55 16 1228 203
+35 149 496 490 14 1464
+86 277 120 37 16 90 599
+144 19 579 44 55
+594 104 977 56
+117 3290 83 67 74 24
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+Figure 2:Top ten confused phones map across all datasets.
+Color intensity encodes articulatory substitution cost used in
+AW-PER, annotation is the total number of substitutions.
+2 3 4 5 6 7
+Age cohort (years)
+70
+80
+90Score (%)
+10.0
+12.5
+15.0
+17.5
+20.0
+AW-PER
+Precision Recall F1 AW-PER
+Figure 3:M ´asd´ottir age-cohort analysis including AW-PER,
+tagging precision, recall, and F1 by age cohort.
+7. Conclusion
+We introduced phonological process inference and demon-
+strated that a lightweight speech–LLM architecture can jointly
+recover canonical pronunciations and phonological process tags
+from child speech. By fusing expected phone embeddings with
+downsampled audio tokens and supervising with rule-based
+process tags, the model produces interpretable phone-level di-
+agnostics while maintaining strong recognition accuracy across
+multilingual child and clinical corpora. The results indicate that
+joint modeling improves both tagging performance and phone
+error rates relative to ASR-based baselines, supporting its use
+in screening and CAPT settings. Future work will extend the
+process inventory to include common developmental processes
+such as deaffrication, cluster reduction and stopping.
+2069
+8. Acknowledgment
+This work is supported by the Bavarian Ministry of Health, Care
+and Prevention, with funding derived entirely from the Eu

@@ -1,0 +1,451 @@
+DiffAnon: Diffusion-based Prosody Control for V oice Anonymization
+Ismail Rasim Ulgen ID 1, Zexin Cai ID 1, Nicholas Andrews ID 2, Philipp Koehn ID 1, Berrak Sisman ID 1
+1 Center for Language and Speech Processing, Johns Hopkins University, USA
+2 Human Language Technology Center of Excellence (COE), Johns Hopkins University, USA
+iulgen1@jhu.edu, noa@jhu.edu, phi@jhu.edu, sisman@jhu.edu
+Abstract
+To preserve or not to preserve prosody is a central question in
+voice anonymization. Prosody conveys meaning and affect, yet
+is tightly coupled with speaker identity. Existing methods either
+discard prosody for privacy or lack a principled mechanism to
+control the utility–privacy trade-off, operating at fixed design
+points. We propose DiffAnon, a diffusion-based anonymization
+method with classifier-free guidance (CFG) that provides ex-
+plicit, continuous inference-time control over prosody preser-
+vation. DiffAnon refines acoustic detail over semantic em-
+beddings of an RVQ codec, enabling smooth interpolation be-
+tween anonymization strength and prosodic fidelity within a
+single model. To the best of our knowledge, it is the first
+voice anonymization framework to provide structured, interpo-
+latable inference-time prosody control. Experiments demon-
+strate structured trade-off behavior, achieving strong utility
+while maintaining competitive privacy across controllable op-
+erating points.
+Index Terms: voice anonymization, prosody, diffusion
+1. Introduction
+V oice anonymization aims to protect speaker privacy by con-
+cealing speaker identity in a speech signal, while still conveying
+the intended linguistic content for effective communication [1].
+Speech jointly encodes linguistic content, para-linguistic infor-
+mation, and speaker identity, all of which are inherently en-
+tangled. As a result, voice anonymization faces a fundamen-
+tal challenge: enhancing privacy often degrades utility, whereas
+preserving utility may reveal speaker identity, leading to an in-
+herent trade-off between utility and privacy [2, 3].
+A key factor shaping the utility–privacy trade-off in voice
+anonymization is prosody, which conveys emphasis, emotion,
+and speaker intent [4]. For example, the utterance“You did
+that“can express a neutral statement, an accusation, disap-
+pointment, or a question depending on its prosodic realization.
+Preserving prosody is therefore essential for maintaining mean-
+ing and expressiveness [5, 6]. At the same time, prosody is
+closely linked to speaker identity, as speakers exhibit character-
+istic prosodic patterns [7–9]. Modern speaker recognition sys-
+tems can exploit such prosodic cues, making prosody a potential
+source of identity leakage [10, 11]. As a result, prosody lies at
+the center of the utility–privacy trade-off in voice anonymiza-
+tion: preserving it improves utility but can compromise privacy,
+while modifying or suppressing it strengthens anonymization at
+the cost of degraded expressiveness and meaning [3, 12, 13].
+Existing voice anonymization approaches adopt different
+strategies to navigate the utility–privacy trade-off. Cascaded
+ASR–TTS systems [14, 15] prioritize privacy by transcrib-
+ing speech into text and resynthesizing it, effectively remov-
+ing speaker-specific acoustic characteristics while discarding
+the source prosody, which reduces expressiveness and para-
+linguistic fidelity. In contrast, voice conversion (VC)–based
+anonymization methods [16–19] aim to preserve linguistic con-
+tent and aspects of source prosody while modifying speaker
+identity, but imperfect disentanglement can lead to residual
+identity leakage. Some approaches additionally apply random
+perturbations to prosodic features [20–22], obscuring identity
+at the cost of unpredictable utility degradation. Across these
+methods, prosody handling is largely fixed by design, with sys-
+tems suppressing, implicitly preserving, or heuristically per-
+turbing it. While recent work has explored combining multiple
+anonymization systems for flexibility [23], they do not enable
+continuous, inference-time control within a single model. Con-
+sequently, most existing systems operate at largely fixed points
+on the utility–privacy trade-off without explicit prosody control.
+To address these limitations, we proposeDiffAnon, a
+diffusion-based voice anonymization framework with classifier-
+free guidance (CFG) [24] that is specifically designed to enable
+controllable anonymization. CFG brings adjustable guidance
+during anonymization of speech without the need of external
+classifiers which are lacking for prosody. DiffAnon introduces
+a systematic mechanism for modifying source prosody by ad-
+justing the strength of prosodic conditioning during inference,
+thereby controlling how much source prosody is preserved in
+anonymized speech. It formulates anonymization as an iter-
+ative refinement of acoustic details over semantic representa-
+tions obtained from a residual vector quantization (RVQ)–based
+speech codec [25]. By refining acoustic information on top
+of speaker-agnostic semantic embeddings, the diffusion process
+aligns naturally with the iterative refinement structure of RVQ,
+making it well suited for controlled anonymization. This for-
+mulation allows CFG to directly regulate the contribution of
+source prosody during generation, enabling continuous and in-
+terpretable adjustment of the utility–privacy trade-off within a
+single trained model. The structured generation formulation of
+diffusion allows DiffAnon to retain meaningful speech utility
+while flexibly adjusting anonymization strength.
+Our contributions can be summarized as: (i) we intro-
+duce DiffAnon, the first voice anonymization framework that
+provides explicit control over source prosody preservation via
+classifier-free guidance; (ii) we propose a novel diffusion-based
+formulation that refines acoustic information over speaker-
+agnostic semantic embeddings in an RVQ-based codec space;
+and (iii) we show on V oicePrivacy Challenge 2024 that Dif-
+fAnon achieves strong utility and competitive privacy with sys-
+tematic utility–privacy trade-off navigation. We publicly release
+the codes and pretrained models to enable reproducibility.
+DiffAnon is available at:https://github.com/rsmlgen/
+diffanon
+6766
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1331
+DiffAnon
+Diffusion
+Steps
+First-level 
+RVQ embeddings
+Prosody Features
+Speaker
+Embedding
+Full-level 
+RVQ embeddings
+Pool
+Prosody CFG
+DiffAnon
+Random
+Pseudo
+Speaker
+Source
+Speech
+Full-level RVQ
+embeddings
+(Anonymized)
+First-level 
+RVQ embeddings
+Prosody Features
+Codec
+Decoder
+ Anonymized
+Speech
+a)
+b)
+Source
+Speech
+Source
+Speech
+Figure 1:a) Conditional diffusion training to construct codec embeddings b) Anonymization inference via adjusted prosody with CFG
+and pseudo-speaker condition (randomly sampled from a pseudo-speaker pool)
+2. The Utility–Privacy Trade-off
+V oice anonymization is inherently a multi-objective problem,
+as speech simultaneously encodes linguistic content, speaker
+identity, prosody, and emotion. As a result, anonymization
+must be evaluated along competing dimensions rather than a
+single metric. The V oicePrivacy initiative [1, 12, 13] formal-
+izes this utility–privacy trade-off through standardized evalu-
+ation protocols. Privacy is measured as resistance to speaker
+verification attacks under different attacker knowledge assump-
+tions, typically quantified by equal error rate (EER) [26]. Util-
+ity is assessed through linguistic preservation using word er-
+ror rate (WER), and para-linguistic preservation using task-
+specific metrics such as emotion recognition recall (UAR) in
+V oicePrivacy 2024 [12] and F0 correlation in V oicePrivacy
+2022 [13]. Across challenge editions, results consistently show
+that stronger anonymization often degrades prosodic and emo-
+tional fidelity, while better preservation of para-linguistic in-
+formation increases the risk of speaker re-identification [2, 3,
+12, 13]. Consequently, most existing approaches operate at
+mostly fixed design points on this trade-off, lacking mecha-
+nisms for continuous, inference-time adjustment. In contrast,
+our approach enables explicit and controllable navigation of the
+utility–privacy trade-off through prosody control within a single
+model.
+3. DiffAnon
+We introduce DiffAnon, a diffusion-based framework for con-
+trollable voice anonymization (Fig. 1). The model is trained
+to reconstruct SpeechTokenizer codec embeddings [25] condi-
+tioned on separately extracted representations of linguistic con-
+tent, prosody, and speaker identity, which are then decoded
+into waveform via the codec decoder. At inference, DiffAnon
+anonymizes speech by preserving source content and prosody
+while replacing the original speaker identity with a pseudo-
+speaker embedding. The degree of prosody preservation is reg-
+ulated through classifier-free guidance (CFG), enabling explicit
+and continuous control of anonymization strength.
+Content Condition. As the content condition, DiffAnon
+utilizes the first-level quantization embeddings of SpeechTok-
+enizer [25], an RVQ-based neural speech codec. SpeechTok-
+enizer encodes speech into multi-level tokensQ 1:8 using resid-
+ual vector quantization and applies semantic distillation to the
+first-level tokensQ 1. Prior work shows thatQ 1 primarily cap-
+tures linguistic content while containing minimal speaker in-
+formation. In SpeechTokenizer, higher-level tokensQ 2:8 refine
+acoustic details on top of the semantic tokensQ 1 within an in-
+terpolatable embedding space. DiffAnon is inspired by this for-
+mulation and proposes a new diffusion paradigm tailored for
+voice anonymization. It treatsQ 1 as a semantic prior and pre-
+dicts the full codec embeddings ˆQ1:8 by refining the remaining
+acoustic components corresponding to subsequent RVQ stages.
+Prosody Condition.We model prosody using frame-level
+latent featureszmpm extracted from the masked prosody model
+(MPM) [27]. MPM is trained via masked prediction of speaker-
+normalized pitch, energy, and voiced/unvoiced indicators, en-
+abling it to capture contextual prosodic structure while mini-
+mizing linguistic and speaker identity information. This makes
+zmpm a suitable representation for controllable prosody preser-
+vation.
+Speaker Condition.Speaker identity is represented using
+the pre-trained FreeVC speaker encoder [28], which produces
+an utterance-level embeddingz spk. Using a single utterance-
+level vector limits leakage of frame-level prosodic cues into the
+speaker representation and simplifies pseudo-speaker sampling
+for anonymization. This representation provides stable and ex-
+plicit speaker conditioning during generation.
+3.1. Conditional Diffusion Formulation
+We adopt a denoising diffusion probabilistic model (DDPM)
+[29] formulation. Noise is gradually added to target embed-
+dingsx 0 overTtimesteps:
+xt =√¯αt x0 +
+√
+1−¯αt ϵ,ϵ∼N(0,I).(1)
+whereβt defines the variance schedule of the forward diffusion
+process,αt and¯αt are derived fromβt as
+αt = 1−β t,¯α t =
+tY
+s=1
+αs (2)
+DiffAnon usesx-prediction, directly predicting the clean em-
+beddingsˆ x0 at timesteptgiven noisy inputx t and conditions
+csem,cpro,cspk which are semantic, prosody and speaker con-
+ditions and trained with the following loss:
+Lx0 =E
+
+||x0− ˆx0,θ(xt,t,c sem,cpro,cspk)||2
+.(3)
+In this formulation, the targetx 0 corresponds to the
+full SpeechTokenizer embeddings after all quantization stages,
+Q1:8 ∈R 1024×T , where1024denotes the embedding di-
+mension andTthe number of frames. The content condition
+6767
+csem is given by the first-level SpeechTokenizer embeddings
+Q1∈R 1024×T . The prosody conditionc pro consists of frame-
+level MPM featuresz ′
+mpm ∈R 256×T , which are linearly in-
+terpolated to match the frame rate ofQ 1:8. The speaker con-
+ditionc spk is the utterance-level embedding from the FreeVC
+speaker encoder,z ′
+spk ∈R 256×T , obtained by repeating the
+256-dimensional vector acrossTframes to align with the other
+features. We utilize conditioning by addition, more specifically,
+adding the projected conditions to the noisy inputx t. Specifi-
+cally,cpro andc spk are passed through separate convolutional
+projection modules,projpro andprojspk, projected to the same
+dimension before being added to the latent representation.
+The key distinctive aspect of our proposed formulation for
+anonymization lies in content conditioning. We directly add
+the content conditioncsem at each timestep without any projec-
+tion. SinceQ 1 is already provided to the model, this encour-
+ages the model to focus on predicting the remaining acoustic
+componentsQ 2:8 when reconstructingQ 1:8. This simplifies the
+task and enables more effective control in conditional genera-
+tion with respect to prosody and speaker, as the model does not
+need to predict the full semantic–acoustic representation from
+scratch. Moreover, conditioning onQ 1 at every timestep en-
+sures a base level of content preservation.
+3.2. CFG for V oice Anonymization
+We employ classifier-free guidance (CFG) [24] during infer-
+ence to control the strength of source prosody conditioning. Our
+goal in anonymization is to replace the source speaker identity
+with a pseudo-speakerψthat is not identifiable with the origi-
+nal speaker. CFG enables adjustable conditioning by combin-
+ing conditional and unconditional predictions. In our setting,
+“unconditional” refers to dropping a specific condition by us-
+ing null as the conditioning input. We consider two guidance
+modes: (i) prosody-adjusted guidance and (ii) pseudo-speaker
+guidance.
+Prosody-adjusted guidance.In this setting, we aim to
+keep different degrees of source prosody for utility. For prosody
+adjustment we have the following CFG formulation
+ˆxCFG
+0,θ = ˆx0,θ(xt,t,c sem,∅,ψ)(4)
++w pro
+h
+ˆx0,θ(xt,t,c sem,c pro,ψ)− ˆx0,θ(xt,t,c sem,∅,ψ)
+i
+.
+Here,∅denotes a null condition, which means adding0
+in conditioning. The base prediction uses only content and
+pseudo-speaker conditions. The guidance weightw pro interpo-
+lates between prosody-unconditional and prosody-conditional
+generations, providing explicit and continuous control over the
+utility–privacy trade-off through prosody preservation. We al-
+ways use content conditionc sem to ensure content preserva-
+tion and pseudo-speaker conditionψto ensure guiding away
+from the source speaker. We experimented with multiple condi-
+tional–unconditional combinations, and this formulation proved
+most effective for isolating and controlling source prosody.
+Pseudo-speaker guidance.In addition to prosody-adjusted
+generation, we explore pseudo-speaker guidance. In this mode,
+the prosody condition is always set to∅, and privacy is enhanced
+by strengthening the pseudo-speaker conditioning. This formu-
+lation is given as:
+ˆxCFG
+0,θ = (wspk + 1)ˆx0,θ(xt,t,c sem,∅,ψ)
+−wspkˆx0,θ(xt,t,c sem,∅,∅). (5)
+Here,wspk controls the strength of the speaker-conditioned
+generation. As in standard CFG, subtracting the unconditional
+prediction sharpens the conditional signal, directing the output
+more strongly toward the pseudo-speaker.
+To enable CFG at inference, the model is trained with ran-
+domly dropped conditions. Specifically, 50% of the time it
+is trained with all conditions ˆx0,θ(xt,t,c sem,cpro,cspk), 30%
+with prosody dropped ˆx0,θ(xt,t,c sem,∅,c spk), and 20% with
+both prosody and speaker dropped ˆx0,θ(xt,t,c sem,∅,∅). Most
+importantly, we avoid speaker-only dropping, as preliminary
+experiments showed that it encourages the model to exploit
+speaker information leaking through prosodic features, which
+is detrimental to anonymization.
+3.3. Model Architecture Details
+DiffAnon adopts a diffusion backbone inspired by Natural-
+Speech2 [32]. The model comprises 40 WaveNet-style residual
+blocks [33], each using a 1D non-dilated convolution with ker-
+nel size 5, 1024 channels. Timestep embeddings are projected
+via an MLP and added to the latent representations. Prosody
+and speaker conditions (cpro,c spk) are injected through sepa-
+rate non-dilated 1D convolutional projection layers before being
+added to the latent features, while the semantic condition (csem)
+is directly incorporated into each residual block.
+4. Experimental Setup
+Training & Inference Details.DiffAnon is trained on the train-
+ing subsets of LibriTTS [34] for approximately 400k steps with
+a learning rate of1×10 −4 and a batch size of 8 on a single
+NVIDIA H100 GPU. During inference, we use DDIM sam-
+pling [35] with 100 denoising steps. Pseudo-speakers are sam-
+pled from a pool constructed from LibriTTS training speakers,
+where each pseudo-speaker embedding is obtained by averag-
+ing the speaker embeddings across that speaker’s utterances.
+Evaluation.We follow the official V oicePrivacy Challenge
+2024 protocol [12]. Privacy is measured using equal error rate
+(EER) [26] under lazy-informed and semi-informed attacker
+scenarios. Utility is evaluated in terms of content preserva-
+tion using word and character error rates (WER/CER) com-
+puted with an ASR system [36], and emotion preservation us-
+ing speech emotion recognition (SER) accuracy (UAR) [37]. To
+further assess prosody preservation, we additionally report the
+official V oicePrivacy 2022 evaluation [13] on thelibri-devand
+libri-testsubsets, including rank-based F0 correlation between
+source and anonymized speech. For comparison, we include the
+official baselines (B1–B6) and top-performing systems T8 [23],
+T9 [30], and T10 [31].
+5. Results
+We evaluate DiffAnon with prosody guidance weightsw pro∈
+{1,0.8,0.5,0.2,0}to control source prosody preservation at
+inference. We also report pseudo-speaker guidance (w spk =
+3.0), an inference setting without CFG where both prosody and
+speaker conditions are set to null, and mean pitch-shifting ap-
+plied before extracting prosody features. All results come from
+a single trained model, varying only inference-time settings.
+Controllable Prosody Preservation.Table 1 shows that
+DiffAnon enables continuous modulation of source prosody.
+With full prosody preservation (wpro = 1), DiffAnon achieves
+the highest F0 correlation among its settings (76.67 onlibri-dev)
+and relatively strong emotion UAR (52.32), indicating effec-
+tive retention of source prosodic structure. Asw pro decreases,
+both F0 correlation and UAR drop consistently. For exam-
+ple, F0 correlation decreases from 75.58 (w pro = 1) to 69.56
+(wpro = 0.5) and further to 64.09 under null prosody, while
+6768
+Table 1:Anonymization results (utility vs privacy) under the V oicePrivacy Challenge 2024 protocol. Higher EER indicates stronger
+privacy. Lower WER and higher UAR/F0 indicate better utility. “Prosody” denotes the prosody guidance weightw pro. Shaded cells
+highlight DiffAnon trends across prosody control settings (darker indicates better according to arrows column-wise).
+Method Prosody Speaker Privacy (EER, %)↑ Utility (WER, %)↓ Utility (UAR, %)↑ Utility (f0-corr, %)↑
+dev test dev test dev test dev test
+lazy semi lazy semi - - - - - -
+Ground Truth – – - - - - 1.80 1.84 69.07 71.06 – –
+B1* – pseudo – 9.20 – 6.07 3.07 2.91 42.71 42.78 – –
+B2 – pseudo 31.52 8.45 29.99 4.48 10.48 9.99 55.64 53.49 58.70 56.82
+B3 – pseudo 44.08 25.74 44.73 27.38 4.16 4.29 37.86 36.27 37.49 36.58
+B4 – pseudo50.1432.89 48.84 30.59 6.12 5.90 42.19 42.00 70.93 69.39
+B5 – pseudo 48.68 34.3749.5534.34 4.81 4.31 38.95 37.45 66.64 65.67
+B6* – pseudo – 23.05 – 21.14 9.69 9.09 36.09 36.13 – –
+T8* [23] – – – 40.93 – 40.70 3.45 3.19 47.07 47.10 49.22 –
+T9* [30] – – – 33.43 – 35.10 2.33 2.37 60.0960.95 – –
+T10* [31] – – –42.45–42.46 3.51 3.19 62.9360.87 – –
+DiffAnon 1.0ψ 35.23 14.97 33.09 14.53 4.91 4.62 52.32 50.80 76.67 75.58
+DiffAnon 0.8ψ 37.74 15.73 34.40 15.28 5.11 4.75 51.58 50.38 74.70 73.82
+DiffAnon 0.5ψ 41.74 19.57 36.41 17.15 5.44 5.02 50.60 48.93 69.56 68.23
+DiffAnon 0.2ψ 43.91 22.40 41.82 18.87 5.73 5.38 48.56 46.46 65.58 63.76
+DiffAnonnullψ 45.03 23.82 42.43 20.66 5.79 5.61 47.38 45.23 64.32 62.45
+DiffAnonnullψ, spk CFG (w spk = 3) 48.44 27.37 48.16 22.78 6.63 6.22 42.74 43.39 57.05 56.06
+DiffAnonnull null 44.86 22.49 41.52 20.46 5.92 5.61 47.03 46.08 64.09 62.56
+DiffAnon+ pitch-shift1.0ψ 39.02 16.47 36.43 14.72 5.21 4.88 52.57 49.36 74.36 73.17
+* denotes reported results. Utility (UAR) evaluation is performed on IEMOCAP; other evaluations use Librispeech.
+emotion UAR decreases from 52.32 to 50.60 and 47.38, respec-
+tively. This trend coincides with improved privacy (e.g.,libri-
+testlazy EER increases from 33.09 to 42.43), confirming that
+CFG provides controlled prosody adjustment at inference and
+supports smooth interpolation between stronger anonymization
+and higher prosodic fidelity.
+Privacy.Privacy results under lazy-informed and semi-
+informed attacker scenarios are reported in Table 1. Baselines
+span a wide range of privacy levels depending on architectural
+design, and DiffAnon similarly covers multiple privacy regimes
+via inference-time settings. The strongest privacy within Dif-
+fAnon is achieved under pseudo-speaker guidance with null
+prosody, reaching 48.16 EER onlibri-test(lazy), which is com-
+petitive with the strongest baseline systems. In semi-informed
+setting, the privacy decreases but remains competitive. As
+wpro decreases, privacy improves consistently (e.g., from 33.09
+to 42.43 EER (lazy) onlibri-test, and from 14.53 to 22.78
+(semi)) demonstrating controllable adjustment of anonymiza-
+tion strength.
+Utility.DiffAnon maintains stable and decent WER across
+inference settings, indicating effective content preservation
+through persistent semantic conditioning. Onlibri-test, WER
+increases moderately from 4.62 (w pro = 1) to 5.02 (w pro =
+0.5) and 5.61 under null prosody, remaining substantially lower
+than several privacy-focused baselines. Even under stronger
+pseudo-speaker guidance (wspk = 3), WER remains reasonable
+at 6.22, showing robustness across operating points. For emo-
+tion preservation, DiffAnon achieves 52.32 UAR at full prosody
+preservation; although it is not explicitly designed for emotion,
+it outperforms most challenge baselines except systems opti-
+mized for emotion (e.g., T9 and T10). Asw pro decreases, UAR
+declines in a controlled manner (50.80→48.93→45.23), con-
+sistent with reduced prosodic fidelity, while privacy improves.
+Overall, DiffAnon preserves strong utility while enabling con-
+trollable anonymization. As CFG is a principled generation
+paradigm, the model can synthesize speech even under partially
+or fully dropped conditions, maintaining reasonable speech util-
+ity across all inference settings.
+Privacy-Utility Tradeoff.The privacy–utility trade-off is
+clearly observable within DiffAnon across inference settings
+(Table 1, Fig. 2). Asw pro decreases, privacy improves while
+Figure 2:DiffAnon’s navigation in utility vs privacy trade-off
+curve (top axis represents differentw pro settings)
+prosodic fidelity declines in a structured manner. For example,
+increasing privacy from 33.09 to 42.43 (libri-testlazy EER) cor-
+responds to a decrease in F0 correlation from 75.58 to 62.45 and
+a reduction in emotion UAR from 50.80 to 45.23, in a mono-
+tonic way. In contrast to baselines that operate at fixed design
+points, DiffAnon provides explicit and continuous adjustment
+of the privacy–utility trade-off within a single trained model.
+6. Conclusion
+Prosody lies at the center of the utility–privacy trade-off in voice
+anonymization: preserving it crucial for expressiveness, but in-
+creases the risk of identity leakage. In this work, we introduced
+DiffAnon, a diffusion-based anonymization framework that en-
+ables explicit and continuous control over prosody preservation
+via classifier-free guidance. A central contribution of this work
+is the empirical demonstration within a unified framework that
+prosody is a principal driver of the utility–privacy trade-off.
+By systematically modulating prosodic preservation, we show
+that changes in prosody directly and predictably alter both pri-
+vacy and utility, establishing prosody as an important attribute
+in privacy-preserving speech systems. Future work will extend
+controllable anony

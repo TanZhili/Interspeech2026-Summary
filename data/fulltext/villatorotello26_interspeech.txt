@@ -1,0 +1,358 @@
+Context Projector: Complementary Keyword and Dialogue Context
+Embeddings for LLM-based ASR
+Esaú Villatoro-Tello ID 1,∗∗, Sergio Burdisso ID 1,∗∗, Shashi Kumar ID 1,2, Hasindri Watawana ID 1,2,
+Srikanth Madikeri3, Manjunath K E4, Jeena Prakash4, Thibault Bañeras-Roux ID 1, Kadri Hacioglu4,
+Petr Motlicek ID 1,5, Andreas Stolcke4
+1Idiap Research Institute, Switzerland
+2EPFL, Switzerland
+3University of Zurich, Switzerland
+4Uniphore, USA & India
+5Brno University of Technology, Czech Republic
+{esau.villatoro, sergio.burdisso}@idiap.ch
+Abstract
+Contact-center dialogue systems require both accurate tran-
+scripts and reliable recognition of business-critical entities. We
+introduce a hybrid keyword andcontext projector(CP) ap-
+proach for LLM-based ASR. Rather than appending raw di-
+alogue history, CP encodes previous turns into compact con-
+textual tokens, complemented by automatically extracted key-
+words. The module is trained while keeping the backbone
+frozen, enabling parameter-efficient adaptation. Experiments
+on realistic, multi-domain contact-center data show that naive
+raw-context prompting can degrade performance, whereas the
+proposed approach improves the tradeoff between overall and
+bias-word error, achieving average relative reductions of up
+to 2.5% overall and 7.2% on bias words. These results show
+our approach to be an effective and practical enhancement of
+context-aware LLM-based ASR.
+Index Terms: LLM-based ASR, spoken dialogue systems,
+contact-center speech, contextual ASR, entity-aware evaluation,
+bias word error rate
+1. Introduction
+Spoken dialogue systems for contact centers require reliable
+transcription not only at the word level but also for business-
+critical entities. Although word error rate (WER) is the stan-
+dard ASR metric, it does not fully reflect performance in
+task-oriented applications where downstream components such
+as dialogue state tracking, routing, retrieval, compliance, and
+agent assist depend on accurate entity recognition [1, 2, 3].
+This makes entity-sensitive metrics such as bias-word error rate
+(BWER) particularly important. Recent LLM-based ASR ar-
+chitectures offer a promising alternative to conventional end-to-
+end ASR systems by connecting a pretrained speech encoder to
+an instruction-tuned LLM through a lightweight speech projec-
+tor [4, 5, 6]. However, most approaches rely on fixed prompts
+without contextual information [6, 7, 8, 9, 10, 11, 12, 13, 14,
+15, 16, 17], limiting their effectiveness in multi-turn dialogue
+where recognition often depends on conversational history.
+A natural solution is to include dialogue history directly in
+the prompt, leveraging the long-context capabilities of modern
+LLMs. However, this becomes computationally expensive and
+increasingly unreliable as context lengths increase [18]. Prior
+**indicates the corresponding author.
+work has therefore explored using only the previous turn [11] or
+compressed and structured contextual representations [19, 20].
+While these methods demonstrate the value of contextual infor-
+mation, a key challenge remains: how to exploit long-range dia-
+logue context without the degradation observed in long-context
+LLMs [18]. To address this issue, we propose a drop-in context
+projector that converts previous dialogue utterances into com-
+pact contextual tokens, complemented by keyword cues auto-
+matically extracted from dialogue history. Figure 1 illustrates
+the proposed architecture. Although keywords and bias lists are
+well-established in traditional ASR systems [21, 22, 23], to the
+best of our knowledge this is the first work to integrate them
+into an LLM-based ASR framework together with an efficient
+context projection module.
+Our contributions are:(i)a parameter-efficient context pro-
+jection module that combines with a frozen LLM-based ASR
+backbone,1 (ii)a systematic study of context-injection strate-
+gies, showing that raw context can degrade WER, whereas com-
+bining keywords with projected context improves the WER–
+BWER tradeoff, and(iii)extensive evaluation on a multi-
+domain contact-center dataset, demonstrating consistent BWER
+improvements while maintaining competitive WER.
+2. Method
+2.1. Base SpeechLLM Model
+We use SLAM-ASR as our base LLM-based ASR model [6],
+whose simple yet effective speech projection module provides a
+strong foundation for our experiments. Specifically, the speech
+projector,sp(·), is defined as:
+ei =sp(z i) = ReLU(z iW1 +b 1)W2 +b 2,(1)
+wherez i denotes thei-th downsampled audio feature, obtained
+by concatenatingkconsecutive encoded frames along the tem-
+poral dimension. The resulting projectione i matches the di-
+mensionality of the LLM input embeddings.
+Thus, input audio consisting ofndownsampled features,
+z1, . . . ,zn, is fed to the LLM using the following prompt:
+<s>USER: Transcribe speech to text.
+Context:{keywords},{context}. Speech:{speech}
+ASSISTANT: {transcript}</s>
+1https://github.com/idiap/llm-asr-context-projector
+3410
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3326
+Figure 1:Proposed dialogue-aware SpeechLLM architecture. A frozen ASR pipeline maps speech to LLM embeddings viasp(·),
+augmented with a context projectorcp(·)encoding dialogue-history embeddings into contextual tokens. Optional keyword cues from
+previous turns are included in the prompt, and the LLM jointly conditions on speech, context, and keywords to generate the transcript.
+Here,{speech}is replaced by the sequence ofnprojected
+speech embeddings,sp(z 1), . . . , sp(zn)before being fed to
+the LLM. The{keywords}field is a comma-separated list of
+salient keywords automatically extracted from the dialogue his-
+tory. The{context}field is replaced by the sequence ofm
+projected contextual tokens (Section 2.2). 2 During training,
+{transcript}denotes the ground-truth transcription; at infer-
+ence time, it is generated autoregressively.
+All experiments use WavLM-Large [24] as the speech en-
+coder and Llama 3.2 3B Instruct [25] as the decoder LLM. We
+refer to this configuration as thebasemodel. Following the
+original SLAM-ASR setup, only the speech projector parame-
+ters (Eq. 1) are updated during training, while both the speech
+encoder and the LLM remain frozen.3
+2.2. The Context Projector:cp(·)
+To mitigate the degradation caused by directly injecting long-
+range raw contextual information into LLM-based ASR, we in-
+troducecp(·), acontext projectorthat maps dialogue history
+into a compact set of contextual tokens (see Figure 1).
+The context projector is a simple drop-in extension to an
+existing LLM-based ASR system. After training (or adopting)
+a base model, we freeze all its components and train only the
+new projector module. This ensures that optimization focuses
+solely on learning an effective contextual representation, while
+avoiding the instability that arises when jointly fine-tuning all
+the LLM-based ASR components.4
+Formally, letx 1, . . . ,xm denote the sequence of turn-level
+contextual embeddings extracted from the dialogue history.
+These are projected viacp(·)into a compact sequence ofmcon-
+textual tokens. The resulting projected tokens are replaced by
+the{context}field before being feed to the LLM. The context
+projector shares the same architecture as the speech projector
+sp(·)(Equation 1), differing only in input dimensionality, as it
+operates on sentence-level embedding space.
+2Depending on the experimental setting,{context}may alterna-
+tively be replaced bymraw contextual utterances (Section 3.1)..
+3Abasemodel is trained with empty{keywords},{context}fields.
+4In complementary experiments, unfreezing the backbone models
+consistently led to unstable training and degraded performance.
+2.3. Dialog2Flow Sentence Embeddings
+A key component of the context projector is a sentence-level
+embedding step that transforms raw dialogue utterances into
+structured contextual representations. In all experiments, we
+employ Dialog2Flow (D2F) embeddings [26].
+D2F provides sentence representations optimized for task-
+oriented dialogue modeling. Unlike conventional sentence em-
+beddings that primarily capture semantic similarity, D2F maps
+utterances into a latent space organized according to their com-
+municative function or underlying dialogue action. This struc-
+ture is learned using a soft contrastive objective during pre-
+training on 3.4 million utterances spanning 52 domains. As a
+result, conversational turns that serve similar functional roles
+are mapped to nearby regions of the embedding space.
+This action-aware organization makes D2F particularly
+suitable for contextual projection in dialogue ASR, as it pro-
+vides compact representations that preserve workflow-relevant
+information while reducing raw textual variability. In our exper-
+iments, we use thedialog2flow-joint-bert-basemodel. 5
+2.4. The Keywords Extractor
+For keyword extraction, we employ Gemma3 (27B) [27]. Given
+each utterance in the dialogue history, we prompt the model
+to extract salient single- and multi-word keywords intended to
+populate a lightweight memory mechanism.
+We select Gemma based on a zero-shot comparison of en-
+tity recall. Across all evaluated domains, Gemma achieves the
+highest recall (90.6%), outperforming Phi 4-14B (86.3%) [28],
+Llama 3.2-8B (80.7%) [25], DeepSeek-R1-32B (78.7%) [29],
+and Qwen3-30B (75%) [30]. Because our hybrid context
+pipeline relies on preserving domain entities within the keyword
+memory, we prioritize recall and therefore adopt Gemma as the
+keyword extractor.
+2.5. Training and Inference Implementation Details
+All experimental settings follow the original SLAM-ASR
+work [6]. The speech encoder produces representations at
+5https://huggingface.co/sergioburdisso/
+dialog2flow-joint-bert-base
+3411
+Table 1:DefinedAI dataset statistics (per-split view).
+Split Domain #Utts #Entities Total (h)
+Train
+Banking 26,496 9,852 54.5
+Healthcare 4,708 1,480 11.5
+Insurance 30,758 12,253 65.2
+Retail 10,981 2,938 27.8
+Teleco 18,889 6,392 50.9
+Dev
+Banking 1,447 527 2.9
+Healthcare 236 62 0.5
+Insurance 1,794 681 3.9
+Retail 623 111 1.5
+Teleco 1,130 382 3.1
+Test
+Banking 3,166 1,215 6.5
+Healthcare 488 154 1.1
+Insurance 3,670 1,432 7.7
+Retail 1,312 324 3.3
+Teleco 2,243 711 6.0
+T otal:107,941 38,514 246.4
+50 Hz. With a downsampling factor ofk= 5, this yields down-
+sampled featuresz i at 100 ms resolution, resulting in 10 pro-
+jected speech embeddingssp(z i)per second of audio.
+Both the speech and context projectors use a single hidden
+layer of dimension 2048. Decoding is performed using beam
+search with beam size 4. Models are trained with AdamW [31],
+using a learning rate of10 −4, batch size 10, and early stopping
+based on development-set cross-entropy loss.
+All computations are performed inbfloat16precision.
+Training is conducted on a single NVIDIA H100 GPU (80 GB
+VRAM), while inference is run on an NVIDIA RTX 3090 GPU.
+Each model is trained for 7 epochs: 5 for the speech projector,
+followed by 2 additional epochs for the context projector.
+2.6. Datasets
+Our experiments use scripted call-center conversations between
+agents and customers from Defined.ai.6 We adopt the data split
+shown in Table 1, comprising 107,941 utterances, 38,514 entity
+mentions, and 246.4 total hours across train, development, and
+test sets. The corpus spans five domains—Banking, Healthcare,
+Insurance, Retail, and Telecommunications—enabling evalua-
+tion on heterogeneous vocabulary and entity distributions.
+The data distribution reflects realistic production settings.
+Insurance and Banking are the largest domains (30,758 and
+26,496 training utterances, respectively), whereas Healthcare
+is comparatively low-resource (4,708 training utterances). We
+preserve the original split to assess the robustness of both WER
+and BWER under domain and entity-frequency shifts, partic-
+ularly in scenarios where contextual modeling is expected to
+benefit rare or sparsely observed entities.
+2.7. Evaluation Metrics
+We evaluate system performance using three complementary
+metrics: WER, BWER, and entity-level F1 (harmonic mean
+of precision and recall) [32]. StandardWERmeasures overall
+transcription quality, computed as the normalized edit distance
+between the hypothesis (hyp) and reference (ref), including sub-
+stitutions, insertions, and deletions.BWERassesses robustness
+on domain-specific terminology. Entity spans are identified in
+the reference, and substitutions or deletions within these spans
+are counted. BWER is the ratio of entity-specific errors to the
+total number of entity tokens.Entity-level F1evaluates recov-
+6https://www.defined.ai
+Figure 2:ASR performance (% WER) across domains when dif-
+ferent types of contextual information (keywords and previous
+turns) are appended directly to the prompt. CTX_00 denotes
+thebaseLLM-based ASR model without any context.
+ery of complete entity mentions. True positives (TPs) occur
+when a reference entity is exactly matched in the hypothesis,
+false negatives (FNs) when it is omitted or misrecognized. False
+positives (FPs) are spurious entities appearing in the hypothesis.
+Precision, recall, and F1 are computed from these counts.
+3. Experimentation
+3.1. Assessing the Impact of Adding Raw Context
+Figure 2 shows that injecting contextual information in raw tex-
+tual form is generally detrimental to recognition quality. Across
+domains, most prompt variants that append either keywords or
+previous dialogue turns (1 or 10) yield higher WER than the
+no-context model (CTX_00, i.e., thebasemodel), indicating
+that naive context addition does not consistently improve tran-
+scription accuracy.
+As discussed in Section 1, this degradation likely arises
+from prompt clutter and the increased difficulty for the LLM
+to disentangle acoustically grounded evidence from auxiliary
+textual input, particularly when the contextual content grows.7
+3.2. Impact of Keywords + Context Projection
+The results in Figure 3 support our complementary design, com-
+bining two context signals: (i) raw keywords tracked by the
+LLM-based keyword extractor, and (ii) projected representa-
+tions of previous utterances viacp(·). We evaluate history win-
+dows ranging from a single previous turn up to the full avail-
+able dialogue history (CTX=[1,5,10,ALL]), observing that con-
+text size is a key control variable. Increasing context generally
+improves performance until a domain-specific saturation point,
+beyond which additional turns yield limited gains or introduce
+variability. This suggests that useful dialogue context is often
+7We do not report results for appending the entire dialogue history
+as raw context, as this often caused out-of-memory (OOM) errors due
+to batch size in our experiments.
+3412
+Figure 3:ASR results across domains as a function of context size. WER and BWER are shown for context projection (+cp, blue
+solid) and hybrid keyword+context projection (+kw+cp, green dashed). The base model (red solid) and raw-keyword condition (+kw,
+purple dashed) are shown for reference. Results show that the complementary setting generally achieves a better WER–BWER tradeoff,
+especially at moderate context sizes.
+concentrated in a relatively short, recent window, typically the
+10 previous turns.
+A consistent pattern is that using only raw key-
+words (base+kw) tends to improve entity-focused recognition
+(BWER), but can degrade overall transcription quality (WER).
+This trend is evident in Table 2, where thebase+kwsetup
+achieves better BWER thanbase, but at the expense of higher
+WER. Intuitively, raw keywords bias decoding toward entity
+mentions, but without structured contextual grounding they may
+distract the model from acoustically supported tokens.
+When keyword cues are combined with projected dia-
+logue history (base+kw+cp), the WER–BWER tradeoff im-
+proves substantially. Across all domains, our proposed ap-
+proach decreases BWER overbasewhile keeping WER below
+base model performance in all cases. Compared withbase+kw
+alone, the addition ofcp(·)stabilizes decoding and restores
+general ASR quality, indicating that the context projector pro-
+vides the structure necessary to make raw keyword informa-
+tion reliably useful. Overall, our complementary approach of-
+fers the most practical operating point for dialogue-aware ASR:
+stronger entity accuracy without incurring the WER penalty as-
+sociated with raw-context prompting (Figure 2).
+4. Conclusions
+We introduced a hybrid keyword and context projector approach
+for LLM-based ASR that enhances contextual grounding with-
+out modifying the frozen backbone model. Experiments show
+that naively appending raw dialogue history degrades transcrip-
+tions, whereas projecting past turns into compact contextual
+tokens complemented with automatically extracted keywords
+provides a more robust WER–BWER tradeoff—achieving up
+to 2.5% relative improvement in WER, up to 7.2% in BWER,
+and up to 3.7% in F1-score on average. Future work will ex-
+plore compressing past spoken utterances to further reduce the
+BWER gap between the+kwand+kw+cp(·)approaches.
+Table 2:WER, BWER, and NE-F1 results across five domains.
+Relative improvements (%) over the base model are shown in
+parentheses, with green for gains and red for degradations.
+CTX denotes the number of dialogue turns used as context.Bold
+and underlined mark the best and second-best results among
+context-augmented systems.
+Domain Method CTX WER(∆%) BWER(∆%) F1
+Banking
+base - 10.2 20.5 0.83
++kw - 10.3 (-0.9%) 19.6 (4.4%) 0.84
++cp(·) 10 9.9 (2.9%) 20.0 (2.4%) 0.83
++kw+cp(·) 10 9.9(2.9%)18.8(8.3%)0.84
+Healthcare
+base - 14.7 39.1 0.67
++kw - 16.0 (-8.8%) 31.7 (18.9%) 0.75
++cp(·) 10 14.0(4.7%) 40.0 (-2.3%) 0.65
++kw+cp(·) 10 14.5 (1.4%)37.4(4.4%)0.71
+Insurance
+base - 8.6 21.19 0.82
++kw - 9.0 (-4.7%) 19.7 (7.1%) 0.84
++cp(·) 10 8.5(1.2%) 21.1 (0.4%) 0.82
++kw+cp(·) 5 8.5(1.2%)20.3(4.2%)0.83
+Retail
+base - 14.8 44.6 0.68
++kw - 15.8 (-6.8%) 33.4 (25.1%) 0.77
++cp(·) 10 13.7(7.4%) 44.1 (1.1%) 0.70
++kw+cp(·) 10 13.9 (6.1%)40.0(10.3%)0.73
+Teleco
+base - 11.8 41.5 0.69
++kw - 12.1 (-2.5%) 34.9 (15.9%) 0.74
++cp(·) 1 11.3(4.2%) 38.9 (6.3%) 0.70
++kw+cp(·) 1 11.7 (0.9%)37.9(8.7%)0.71
+Average∆%
++kw - -4.7%14.3% 7.2%
++cp(·) ≈10 4.1%1.6% 0.3%
++kw+cp(·) ≈10 2.5% 7.2% 3.7%
+3413
+5. Acknowledgments
+This work was supported by an Idiap Research Institute and
+Uniphore collaboration project. Part of this work was also sup-
+ported by EU Horizon 2020 project ELOQUENCE.
+6. Generative AI Use Disclosure
+Generative AI was used to proofread the paper, fix orthographic
+and grammatical errors, and make long sections more concise.
+Additionally, AI tools were used to improve the look and feel
+of the main plots of the paper.

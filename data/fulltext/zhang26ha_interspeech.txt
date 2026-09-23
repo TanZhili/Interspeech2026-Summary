@@ -1,0 +1,444 @@
+Margin-Aware Contrastive Regularization for Robust Streaming Keyword
+Spotting under Strict False-Alarm Constraints
+Hanwen Zhang ID 1,2, Guosong Zhu ID 1,2,∗∗, Zhen Qin ID 1,2
+1 Network and Data Security Key Laboratory of Sichuan Province, Chengdu, China
+2 School of Information and Software Engineering, University of Electronic Science and Technology
+of China, Chengdu, China
+202211090823@std.uestc.edu.cn, zhugs@uestc.edu.cn, qinzhen@uestc.edu.cn
+Abstract
+Edge keyword spotting (KWS) in continuous streaming must
+satisfy strict false-alarm (FA) budgets while maintaining high
+detection sensitivity. At stringent points (≤0.5FA/h), CE-
+trained lightweight causal models suffer severe false rejec-
+tion rate (FRR) degradation against phonetically similar im-
+posters. We proposeMargin-Aware Contrastive Regularization
+(MACR), an offline auxiliary objective that applies intra-class
+attraction only to target keywords to avoid globally cluster-
+ing the heterogeneousUnknowncategory, and enforces margin-
+based repulsion emphasizing offline-mined hard negatives. On
+Google Speech Commands V2 under an event-level streaming
+protocol, MACR achieves>40%relative FRR reduction over
+CE at strict points (0.5–0.2 FA/h) with minor changes in closed-
+set accuracy. As a training-only regularizer, MACR introduces
+zero additional parameters, MACs, or algorithmic latency to the
+deployed causal inference graph.
+Index Terms: Keyword Spotting (KWS), Streaming Inference,
+False Alarm / False Rejection Trade-off, Supervised Contrastive
+Learning, Hard Negative Mining
+1. Introduction
+Keyword spotting (KWS) serves as the primary acoustic entry
+point for always-on voice interfaces on edge devices. Con-
+strained by strict battery and memory budgets, these systems
+typically rely on lightweight, strictly causal acoustic models to
+ensure zero-lookahead streaming inference [1, 2, 3, 4]. While
+contemporary architectures optimized via the standard Cross-
+Entropy (CE) objective often achieve strong performance on
+isolated-utterance closed-set benchmarks, real-world deploy-
+ment presents a fundamentally different challenge. In practical
+environments, maintaining high detection sensitivity in contin-
+uous, unsegmented audio streams while adhering to stringent
+false alarm (FA) constraints (e.g.,<0.5FA per hour) remains
+a critical bottleneck [5].
+Empirical observations indicate that the standard CE ob-
+jective primarily establishes functional decision boundaries for
+classification but does not explicitly enforce a geometric safety
+margin in the latent representation space. Under continuous-
+stream conditions, this structural limitation leaves the model
+vulnerable to phonetically similar non-target speech (imposters)
+and complex environmental noises. To maintain strict false
+alarm rates against these confusing samples, deployment typ-
+ically requires conservative threshold calibration [6]. Conse-
+quently, this threshold tightening often leads to severe degra-
+dation in the False Rejection Rate (FRR), rendering the system
+overly conservative in practice.
+**indicates the corresponding author.
+Recent literature has explored various strategies to suppress
+false alarms, including hard-example probability weighting [7],
+cross-layer discriminative consistency [8], and synthetic im-
+poster augmentations [9]. Alternatively, supervised contrastive
+learning offers a mechanism to explicitly shape the latent geo-
+metric space [10]. However, a direct application of global con-
+trastive clustering to KWS introduces a specific representational
+risk. The Unknown category in standard KWS protocols is not
+a compact acoustic class; rather, it aggregates diverse non-target
+speech patterns that, during real-world deployment, inherently
+interleave with nuisance conditions such as environmental noise
+and silence [11]. Forcibly clustering such disparate acoustic
+patterns into a single latent centroid induces representational
+distortion, which we empirically observe to degrade, rather than
+improve, baseline discriminative capacity.
+To address these continuous-stream vulnerabilities with-
+out inflating deployment overhead, we propose Margin-Aware
+Contrastive Regularization (MACR). Functioning exclusively
+as an offline auxiliary training objective, MACR is designed
+to reshape the latent acoustic geometry for streaming robust-
+ness. It restricts its intra-class pull optimization strictly to
+structurally consistent target keywords. Simultaneously, it em-
+ploys a margin-aware repulsion penalty heavily weighted to-
+ward offline-mined hard negatives, explicitly separating them
+from target embeddings without over-penalizing already well-
+separated non-confusing non-target/background samples. Un-
+like standard supervised contrastive formulations, MACR does
+not impose global class-wise clustering over the heterogeneous
+Unknowncategory, and instead explicitly decouples target com-
+pactness from imposter-margin enforcement. Importantly, the
+gains come from the training objective rather than inference-
+time heuristics: decoding, smoothing, and thresholding remain
+identical across methods.
+Unlike generic supervised contrastive objectives that treat
+the non-target pool as a homogeneous class, we explicitly model
+the heterogeneity of Unknown audio and optimize the embed-
+ding geometry for ultra-low false-alarm operating points, which
+is where standard objectives often degrade.
+Evaluated on the Google Speech Commands V2 (12-class)
+benchmark under a rigorous continuous-stream event-level pro-
+tocol, the primary contributions of this work are:
+• We empirically show that standard CE training can exhibit
+a representation-margin limitation, explicitly demonstrating
+its FRR vulnerability under strict continuous-stream FA con-
+straints.
+• We introduce MACR, an offline regularization strategy that
+selectively pulls target classes while maintaining a geometric
+margin against hard imposters, avoiding distortion of the het-
+erogeneous Unknown manifold and substantially mitigating
+6589
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3545
+FRR degradation at strict FA operating points.
+• We further show that these robustness gains transfer across
+multiple lightweight causal backbones while introducing
+strictly zero additional parameters, multiply-accumulates
+(MACs), or algorithmic latency to the deployed inference
+graph.
+2. Methodology
+Standard lightweight keyword spotting models are typically op-
+timized using the Cross-Entropy (CE) objective. While CE ef-
+fectively establishes functional decision boundaries for isolated
+utterance classification, it does not explicitly enforce a geomet-
+ric margin between classes in the latent representation space.
+Under continuous-stream detection, insufficient representation
+margin can make the model more vulnerable to phonetically
+similar non-target speech (imposters), especially when thresh-
+olds are calibrated for strict false alarm (FA) operating points.
+To mitigate this vulnerability, we introduce Margin-Aware Con-
+trastive Regularization (MACR), an offline auxiliary objective
+designed to reshape the latent acoustic geometry. The overall
+framework is illustrated in Fig. 1.
+Figure 1:Method overview of Margin-Aware Contrastive Reg-
+ularization (MACR) for streaming KWS. MACR is applied only
+during offline training: it pulls target keywords together (with-
+out globally clustering non-target categories) and enforces a
+margin against offline-mined hard imposters. At deployment,
+the MACR branch is removed, leaving an identical causal 1D-
+CNN inference graph with zero extra parameters, MACs, looka-
+head, or latency.
+2.1. Feature Formulation and Offline Mining
+Given an input acoustic sequence, the causal 1D-CNN back-
+bone produces a penultimate-layer embeddinge∈R d for the
+current analysis window. For contrastive regularization, we ap-
+plyℓ 2 normalization to project the embedding onto the unit hy-
+persphere, yieldingz=e/∥e∥ 2.
+LetBdenote a training mini-batch. For each samplei∈B,
+yi represents its class label. We define the label space asY=
+T ∪{yunk,y sil}, whereTrepresents the set of structurally
+consistent target keywords, whiley unk andy sil denote the het-
+erogeneousUnknownandSilencecategories, respectively. To
+provide targeted gradient signals during representation shaping,
+hard negative samples (e.g., confusing non-target speech im-
+posters) are mined asynchronously from non-target audio avail-
+able in the training split [12]. Specifically, hard negatives are
+defined by the top-Khighest target posteriors among non-target
+windows, dynamically tracked via the exponential moving aver-
+age (EMA) of the training network to reflect evolving decision
+boundaries. We use a sample-level binary indicatorhi∈{0,1}
+for these mined hard negatives; in the repulsion term, the pair
+weight depends on whether the negative samplenis marked as
+hard (i.e.,h n = 1).
+2.2. The MACR Objective
+The MACR objective comprises two constrained compo-
+nents: target-restricted intra-class pull and margin-aware hard-
+negative repulsion. This design intentionally prioritizes ro-
+bust target-vs-imposter separation under strict FA constraints,
+while preserving compatibility with CE supervision to maintain
+closed-set discrimination.
+Target-Restricted Intra-Class Pull.To reduce the intra-
+class variance of the target commands, representations of the
+same keyword are encouraged to cluster [12]. However, glob-
+ally clustering non-target categories (e.g.,UnknownandSi-
+lence)—which encompass heterogeneous non-target content—
+induces severe representational distortion. Therefore, the pull
+optimization is restricted strictly to target keywords. LetP i =
+{p∈ B\{i} |y p =y i}be the set of positive matches
+for anchori. We define the set of valid target anchors as
+Ipull ={i∈B |y i ∈T,|P i|>0}. The supervised pull
+objective is formulated as:
+Lpull =−
+X
+i∈Ipull
+1
+|Pi|
+X
+p∈Pi
+log exp(zi·z p/τ)P
+a∈Ai
+exp(zi·z a/τ),
+(1)
+whereτis a temperature scalar. Crucially, to explicitly prevent
+unbounded global repulsion against the diverse background
+manifold (a known structural flaw of standard InfoNCE), we
+strictly limit the contrastive denominatorA i ={a∈ B\
+{i}|y a∈T}to contain only othertarget-keywordsamples.
+This mathematically decouples the optimization:L pull exclu-
+sively resolves inter-keyword separation and intra-class com-
+pactness, delegating the imposter-vs-target boundary enforce-
+ment entirely to the localized margin-aware repulsion (Lpush).
+Margin-Aware Hard-Negative Repulsion.Mitigating
+false alarms requires explicitly separating target embeddings
+from non-matching classes, especially acoustically similar im-
+poster speech [13]. Instead of unbounded repulsion, which may
+over-penalize already well-separated non-confusing negatives,
+we introduce a geometric safety marginm. A penalty is in-
+curred only if the cosine similarity between negative pairs ex-
+ceeds this margin. LetN i ={n∈B|y n̸=y i}be the set
+of negative samples for anchori. We define the set of valid an-
+chors for repulsion asI push ={i∈B|y i∈T,|N i|>0}.
+The repulsion loss is defined as:
+Lpush =
+X
+i∈Ipush
+1
+|Ni|
+X
+n∈Ni
+wi,n max(0,z i·z n−m)(2)
+where repulsion is applied against all non-matching classes,
+while the weighting factor explicitly concentrates optimization
+on mined imposters:w i,n =α(α >1) if the negative sam-
+plenis marked as a hard imposter (h n = 1), andw i,n = 1
+otherwise. The complete MACR objective for the mini-batch is
+LM ACR =L pull +L push.
+2.3. Joint Optimization and Zero-Overhead Inference
+During offline training, the network is optimized via the joint
+objectiveL total =L CE +λL M ACR. Empirically, directly
+combining unnormalized CE logits with theℓ 2-normalized
+MACR branch can lead to optimization instability. We use a
+6590
+weight decay of10 −4, which stabilizes joint optimization and
+prevents the CE loss from overshadowing the contrastive gradi-
+ents during early training. At deployment, the MACR branch
+is entirely discarded. The classifier forward path remains unal-
+tered, retaining an identical causal inference graph, parameter
+count, algorithmic lookahead (0 ms), and computational foot-
+print (MACs) as the standard CE baseline.
+3. Experiments
+To objectively assess the deployment viability of the pro-
+posed offline training regularization, we prioritize a continuous-
+stream evaluation protocol over isolated closed-set classifica-
+tion. The objective is to evaluate false alarm (FA) suppres-
+sion under realistic constraints without introducing architectural
+confounders.
+3.1. Experimental Setup and Evaluation Protocol
+Dataset and Architecture Constraints.Empirical evaluations
+are conducted on the Google Speech Commands V2 (GSC v2)
+dataset using the standard 12-class keyword spotting proto-
+col [15]. Closed-set accuracy is reported strictly on the stan-
+dard isolated-utterance test split. To isolate the specific impact
+of the optimization objectives from model capacity, all evalu-
+ated configurations utilize an identical causal 1D-CNN back-
+bone (approximately 150K parameters). The temporal convo-
+lution layers employ causal padding to ensure zero-lookahead
+streaming inference. Acoustic features are 64-dimensional log-
+Mel spectrograms. We employ a stratified mini-batch sampler
+to ensure multiple distinct target keywords are present in ev-
+ery batch, strictly preventing empty denominators in Eq. 1. To
+ensure strict baseline fairness, Std. SupCon is trained with its
+canonical 2-layer MLP projection head (which is discarded at
+inference to maintain zero deployment overhead), treating Un-
+known as a standard labeled class. We also benchmark Arc-
+Face [14] to evaluate a widely adopted zero-overhead angular
+margin alternative. All methods use AdamW for 120 epochs (5
+warm-up; batch size 128; learning rate10−3 cosine-decayed to
+10−5; weight decay10 −4) with identical augmentation:±0.1
+s time shifting, noise mixing atSNR∼U[−5,10]dB, and
+frequency masking. Checkpoints are selected by validation-
+stream FRR at 0.5 FA/h after threshold calibration. MACR uses
+m= 0.4,α= 2.0,τ= 0.1, andλ= 0.5.
+Continuous-Stream Protocol.For stable evaluation at 0.2
+FA/h, the test set comprises 50 independently synthesized 2-
+hour streams (100 hours total), with 2,000 class-balanced target
+events per stream. Validation and test streams use split-specific
+GSC v2 target, Unknown, and Silence samples with disjoint
+background-noise segments mixed atSNR∼U[−5,10]dB.
+Hard negatives are the top-5000 training non-target windows
+ranked by target posterior from an EMA model (decay 0.999)
+and refreshed every 5 epochs. Operating thresholds (θ) are inde-
+pendently calibrated on a validation stream and strictly locked
+for event-level test evaluation using a 1.0 s causal sliding win-
+dow.
+Strict Threshold Calibration and Metrics.Event-level
+detection relies on a causal sliding window. We use a 1.0 s
+causal analysis window with a 10 ms hop size for all methods.
+System target posteriors undergo identical post-processing: a
+50 ms moving-average smoothing and a 500 ms refractory win-
+dow. Keyword hits are registered within a±200ms tolerance
+window, and metrics (FRR/FA) are evaluated at the event level
+over the 10 target keywords (withSilenceandUnknowntreated
+as non-target/background classes in detection). To ensure un-
+biased comparisons, the operating detection threshold (θ) for
+each model is independently calibrated using an isolatedvali-
+dation streamto meet predefined False Alarm per hour (FA/h)
+constraints. Once calibrated, thresholds are strictly locked and
+applied to the unseentest streamto measure the False Rejection
+Rate (FRR).
+While the continuous stream is constructed by embed-
+ding events into background mixtures for controlled false-alarm
+statistics, we follow established always-on KWS evaluation
+practice and report results over long-duration streams to obtain
+stable FRR@FA/h estimates. We view this protocol as comple-
+mentary to fully naturalistic recordings.
+3.2. Main Results: Stream Robustness vs. Classification
+Trade-offs
+Table 1 presents closed-set accuracy and continuous-stream
+FRR under stringent FA/h constraints.
+Baseline Vulnerabilities & Manifold Distortion.While
+the CE baseline achieves 95.82% closed-set accuracy, its FRR
+degrades severely to 29.85% at 0.2 FA/h, indicating limited
+geometric margin against continuous-stream imposters. Alter-
+native mitigations (Focal Loss, CLDC [8], GraphemeAug [9])
+also retain high FRR at extreme thresholds. Crucially, apply-
+ing global geometric constraints fails: Std. SupCon degrades
+closed-set accuracy (95.50%), and ArcFace—despite achieving
+peak accuracy (96.10%) via uniform angular margins—suffers
+severe streaming degradation (23.50% FRR at 0.2 FA/h). This
+confirms our core hypothesis: forcing the highly heterogeneous
+Unknownclass into a compact centroid or uniform angular sec-
+tor topologically distorts the natural acoustic manifold. Fur-
+thermore, even if one heuristically masks the Unknown class
+in standard SupCon to create a ”Target-Only” variant, its un-
+bounded global repulsion lacks the explicit geometric safety
+margin required to precisely separate boundary-confusing im-
+posters without over-penalizing diverse background noises.
+The MACR Advantage.MACR’s asymmetric, target-only
+pull strictly avoids this global distortion. As FA constraints
+tighten to 0.2 FA/h, MACR yields a 15.05-percentage-point
+FRR reduction (29.85%→14.80%), corresponding to a 50.4%
+relative reduction over CE, while keeping closed-set accuracy
+highly competitive (95.68% vs. 95.82%). By explicitly priori-
+tizing localized margin separation from hard imposters rather
+than solely optimizing isolated boundaries, MACR provides
+a highly robust, zero-overhead operating point for always-on
+streaming.
+3.3. Ablation Analysis of Regularization Components
+To isolate the empirical contributions of the proposed objective
+components, we conduct an ablation study on the primary 150K
+causal 1D-CNN backbone. Continuous-stream robustness is
+evaluated by FRR at the 0.5 FA/h operating point. Results are
+summarized in Table 2.
+Margin and Hard-Negative Weighting.Removing the
+explicit safety margin (m= 0) increases the continuous-
+stream FRR from 7.64% to 9.80%. This result suggests that
+a marginless repulsion term is less effective at concentrat-
+ing optimization on boundary-confusing negatives under strict
+FA constraints. Similarly, removing hard-negative weighting
+(i.e., treating all negative pairs uniformly) degrades the FRR
+to 10.15%, indicating that uniform optimization over generic
+background negatives weakens the learning signal from acous-
+tically confusing imposters, which are an important source of
+6591
+Table 1:Empirical evaluation of continuous-stream event-level robustness (FRR) under varying False Alarm (FA/h) constraints on
+Google Speech Commands V2. The causal 1D-CNN backbone (150K parameters) is kept strictly identical. FRR is reported as mean±
+standard deviation over 50 independently synthesized 2-hour streams (100 hours total); stream-generation seeds are fixed.
+Method Optimization Focus Closed-Set Continuous Stream FRR (%)↓@ Target FA/h
+Acc (%)↑2.0 FA/h 1.0 FA/h 0.5 FA/h 0.2 FA/h (Strict)
+Scratch (Baseline) Standard CE95.82±0.145.65±0.38.52±0.516.32±0.829.85±1.2
++ Focal Loss [7] Prob. Weighting95.91±0.125.25±0.37.95±0.414.85±0.726.10±1.1
++ ArcFace [14] Additive Angular Margin96.10±0.104.90±0.27.30±0.413.50±0.623.50±1.0
++ Std. SupCon [10] Contrastive (w/ Proj. Head)95.50±0.185.90±0.48.20±0.512.50±0.721.40±1.1
++ CLDC [8] Cross-layer Consistency95.95±0.165.45±0.38.10±0.415.20±0.828.45±1.4
++ GraphemeAug [9] Synthetic Negatives95.85±0.154.85±0.27.55±0.414.60±0.727.40±1.3
++ MACR (Ours) Margin + Repulsion95.68±0.124.12±0.24.85±0.27.64±0.414.80±0.7
+false alarms under strict operating thresholds.
+Table 2:Ablation of MACR components. FRR is evaluated at
+0.5 FA/h.
+Configuration Acc (%)↑FRR (%)↓
+Full MACR (Proposed)95.687.64
+w/o Hard-Negative Weighting 95.71 10.15
+w/o Safety Margin (m= 0) 95.65 9.80
+w/ GlobalUnknownClustering 94.15 13.60
+Excluding Global Unknown Clustering.A key design
+choice in MACR is excluding theUnknowncategory from the
+intra-class pull objective. When standard supervised contrastive
+clustering is globally applied to all classes (includingUn-
+known), closed-set accuracy drops to 94.15%, and continuous-
+stream FRR deteriorates to 13.60%. We attribute this degra-
+dation to the heterogeneity of non-target acoustic content, es-
+pecially theUnknowncategory, which contains diverse out-of-
+vocabulary speech and acoustically variable nuisance patterns.
+This ablation provides empirical support for restricting the pull
+term to structurally consistent target keywords while preserving
+the natural variability of non-target/background audio.
+3.4. Deployment Overhead and Cross-Backbone Consis-
+tency
+Zero Inference Overhead.A core constraint for edge-
+deployed KWS is strictly bounded inference cost. As shown in
+Table 3, MACR is applied only during offline training. There-
+fore, the deployed 1D-CNN student retains an identical param-
+eter count (150K), computational cost (5.2M MACs), and algo-
+rithmic lookahead (0 ms) compared to the CE baseline. On a
+Raspberry Pi 4B (ARM Cortex-A72, single-thread), the mea-
+sured inference latency is statistically indistinguishable from
+the CE baseline (both2.15±0.05ms), confirming that the
+gains in continuous-stream robustness are achieved without ad-
+ditional deployment overhead.
+Cross-Backbone Consistency.To examine whether the
+observed streaming gains depend on a specific backbone instan-
+tiation, we apply MACR to additional lightweight KWS topolo-
+gies (Table 4). For both DS-CNN (Tiny) [1] and BC-ResNet-
+1 [2], replacing CE with MACR consistently reduces FRR at
+0.5 FA/h while causing only minor changes in closed-set accu-
+racy (≤0.15percentage points). This consistency suggests that
+MACR is not tied to a single 1D-CNN design and can serve
+as a practical regularization across the tested lightweight causal
+Table 3:Deployment cost on a Raspberry Pi 4B (single-thread).
+Latency is measured per 1.0 s analysis-window forward pass
+(batch=1); streaming utilizes repeated window inference at a
+10 ms hop. Throughput remains real-time under the 10 ms hop
+schedule on this platform.
+Model Params MACs Lat. (ms) Alg. Lookahead
+CE Baseline 150K 5.2M2.15±0.050 ms
++ MACR (Ours) 150K 5.2M2.15±0.050 ms
+Table 4:Observations on cross-architecture applicability.
+MACR demonstrates consistent FRR mitigation.
+Backbone Topology Objective Acc (%)↑FRR (%)↓@ 0.5 FA/h FRR (%)↓@ 0.2 FA/h
+DS-CNN (Tiny) Standard CE 94.45 18.50 36.20
++ MACR (Ours) 94.38 11.20 28.50
+BC-ResNet-1 Standard CE 96.20 9.85 22.40
++ MACR (Ours) 96.05 5.90 14.10
+KWS backbones.
+4. Conclusion
+We addressed a practical failure mode of lightweight causal
+KWS under continuous-stream deployment: when thresholds
+are calibrated to meet strict false-alarm budgets, CE-trained
+models can incur large FRR increases against phonetically sim-
+ilar imposters. We proposed Margin-Aware Contrastive Regu-
+larization (MACR), an offline objective that enforces an explicit
+margin between target embeddings and hard negatives while
+avoiding undesirable global clustering of the heterogeneous Un-
+known category. On Google Speech Commands V2 with an
+event-level streaming protocol, MACR improves robustness at
+stringent operating points—reducing FRR from 16.32 to 7.64 at
+0.5 FA/h and from 29.85 to 14.80 at 0.2 FA/h—with only minor
+changes in closed-set accuracy. Because MACR affects training
+only, it adds no parameters, MACs, or algorithmic latency to
+the deployed causal inference graph, making it a practical drop-
+in regularizer across the tested lightweight causal KWS back-
+bones. The current evidence is limited to the evaluated English
+multi-keyword strict-FA streaming setting; broader languages,
+custom wake words, and far-field conditions remain for future
+work.
+6592
+5. Acknowledgments
+This work was supported in part by the National Natural Sci-
+ence Foundation of China (No.62372083), the Sichuan Sci-
+ence 

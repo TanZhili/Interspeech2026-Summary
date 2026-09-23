@@ -1,0 +1,442 @@
+Mitigating Causality Mismatch with Causal Temporal Relation Distillation for
+Streaming Keyword Spotting
+Hanwen Zhang ID 1,2, Guosong Zhu ID 1,2,∗∗, Zhen Qin ID 1,2
+1 Network and Data Security Key Laboratory of Sichuan Province, Chengdu, China
+2 School of Information and Software Engineering, University of Electronic Science and Technology
+of China, Chengdu, China
+17313062366@163.com, zhugs@uestc.edu.cn, qinzhen@uestc.edu.cn
+Abstract
+On-device keyword spotting (KWS) requires strictly causal
+models for zero-lookahead streaming. Distilling from non-
+causal teachers introduces causality mismatch: teacher features
+encode future context. Point-wise regression to these absolute
+features creates capacity conflicts that severely hinder continu-
+ous inference. To mitigate this, we propose Causal Temporal
+Relation Distillation, transferring intra-sample temporal topol-
+ogy instead of point-wise features. Applying a lower-triangular
+mask to relation matrices establishes a strictly realizable histor-
+ical anchor. Our offline bidirectional variant (Ours-Bi) utilizes
+the teacher’s full topology as an auxiliary prior without altering
+the zero-lookahead inference graph. On Google Speech Com-
+mands V2, Ours-Bi improves causal 1D-CNN accuracy from
+95.12% to 96.91%. Under a continuous-stream protocol, it
+halves the False Rejection Rate (8.52% to 4.15% at 1.0 FA/h),
+demonstrating vastly superior long-context robustness.
+Index Terms: keyword spotting, knowledge distillation,
+streaming inference, causality mismatch, temporal relation
+1. Introduction
+Keyword spotting (KWS) serves as the primary entry point for
+on-device spoken interaction. Constrained by battery and com-
+pute resources, edge-deployed KWS models must maintain low
+parameter counts and multiply-accumulate operations (MACs).
+To ensure real-time responses without introducing algorithmic
+lookahead latency, these lightweight networks are typically de-
+signed as strictly causal streaming architectures, where predic-
+tions depend only on current and past acoustic inputs [1, 2, 3].
+Transformer-based sequence models (e.g., AST [4]) pro-
+vide global temporal modeling capabilities and are often used as
+high-capacity teachers in cross-architecture knowledge distilla-
+tion (KD) [5, 6, 7, 8]. In this paradigm, a non-causal sequence
+model provides offline supervision, while a lightweight causal
+model is retained for student-only streaming inference.
+Although practically meaningful for deployment,
+intermediate-level knowledge transfer faces two challenges.
+The first is the mismatch in temporal resolution and hidden
+dimensionality, commonly addressed via feature projection
+or temporal pooling. The second is a deployment-relevant
+physical constraint:causality mismatch[9, 10]. A non-causal
+teacher’s per-step features implicitly encode future context.
+Forcing a causal student to point-wise regress these absolute
+features under a limited historical receptive field creates an
+inconsistency between the supervision signal and the student’s
+realizable capacity. In practice, this mismatch can reduce
+transfer effectiveness [11, 12].
+**indicates the corresponding author.
+To address this issue, we propose a Causal Temporal Re-
+lation Distillation framework. Unlike conventional mini-batch
+relational KD, our method aligns the relative evolution topol-
+ogy along the temporal dimension within each sample [13]. We
+first map heterogeneous features to a unified temporal abstrac-
+tion granularity via parameter-free pooling to construct com-
+parable relation structures. Crucially, we introduce alower-
+triangular causal maskto remove future-dependent entries
+from the teacher’s relation matrix. This aligns the relation distil-
+lation objective with streaming causality constraints, mitigating
+supervision conflicts.
+Furthermore, motivated by the concept of training-time
+privileged information [14], we investigate an offline bidirec-
+tional variant (Ours-Bi). Rather than discarding the lower-
+triangular mask, this variant builds upon the strictly realiz-
+able historical anchor and additionally utilizes the teacher’s full
+topology matrix as an anticipatory regularization signal during
+offline training. By encouraging the student to implicitly align
+its internal manifold with a global topology under a limited
+historical receptive field, Ours-Bi safely transforms the once-
+harmful causality mismatch into beneficial guidance. As this
+full-matrix supervision participates only in backpropagation, it
+introduces no additional inference cost and perfectly preserves
+the zero-lookahead on-device forward graph. Evaluated on the
+Google Speech Commands V2 (12-class) benchmark [15], our
+main contributions are:
+• We identify the capacity conflicts caused by causality mis-
+match in cross-architecture streaming distillation, particu-
+larly how point-wise regression to non-causal absolute fea-
+tures severely hinders continuous long-horizon inference.
+• We propose Causal Temporal Relation Distillation, utiliz-
+ing a lower-triangular mask to transfer intra-sample historical
+topology under strict zero-lookahead constraints.
+• We introduce an offline bidirectional variant (Ours-Bi) that
+securely grounds full-matrix topology as an anticipatory priv-
+ileged prior, incorporating global context awareness without
+compromising causality or deployment cost.
+• Beyond closed-set accuracy and per-step latency, we estab-
+lish a rigorous continuous-stream event-level evaluation pro-
+tocol (FRR @ FA/h), demonstrating vastly improved long-
+context noise robustness.
+2. Method
+2.1. Problem Setup and Causality Mismatch in Cross-
+Architecture Distillation
+We study cross-architecture knowledge distillation for edge-
+deployed keyword spotting (KWS). Given an input acoustic fea-
+6594
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3546
+ture sequenceX∈R Tx×F , whereT x denotes the number of
+input frames, the model outputs a class prediction ˆy. During
+training, a sequence model (e.g., an AST with self-attention) is
+used as the teacher modelf T to provide supervision; during in-
+ference, only a lightweight 1D-CNN is retained as the student
+modelf S for causal inference.
+Let the intermediate temporal representations extracted
+from the teacher and student be
+HT∈R TT×dT,H S∈R TS×dS.(1)
+Cross-architecture distillation typically suffers from mis-
+matches in temporal resolution (T T ̸=T S) and hidden di-
+mensionality (d T ̸=d S). In addition, under the streaming
+KWS setting, there is a further causality mismatch between
+the teacher and the student: to satisfy zero-lookahead infer-
+ence, the lightweight student usually adopts a causal architec-
+ture, whereas the teacher often contains non-causal operations
+(e.g., global self-attention), such that each teacher timestep fea-
+ture already encodes future context.
+Under this setting, forcing a causal student to perform
+point-wise regression to the absolute features of a non-causal
+teacher without access to future input may lead to a mismatch
+between the distillation supervision and the realizable recep-
+tive field of the student, thereby reducing distillation stability.
+Therefore, instead of focusing on point-wise feature regression,
+we align temporal relational topology. The overall framework
+is illustrated in Fig. 1.
+Figure 1:Overview of the proposed unidirectional causal tem-
+poral relation distillation (Ours) and the offline bidirectional
+auxiliary supervision variant (Ours-Bi). Relation matrix con-
+struction and full-size constraints are decoupled from edge-time
+inference.
+2.2. Unidirectional Temporal Relation Distillation (Ours)
+2.2.1. Unified Temporal Representation
+To construct relation matrices with matched size, we first map
+HT andH S to a unified temporal lengthLalong the time di-
+mension via parameter-free 1D Adaptive Average Pooling:
+˜HT∈R L×dT, ˜HS∈R L×dS.(2)
+In our setting, a 1.0s input is mapped toL= 24(ap-
+proximately 41 ms per step). While calibrated on 1.0s offline
+windows, this parameter-free sub-phonetic abstraction encour-
+ages the student, which utilizes translation-equivariant convo-
+lutions, to learn localized relative transition trends rather than
+absolute global timestamps. This allows the learned topology
+to naturally generalize to boundary-less sliding windows during
+streaming inference without introducing additional alignment
+parameters. Its effect is further examined through an ablation
+study onLin Sec. 3.3. Compared with dynamic alignment
+methods that require explicit temporal matching, this operation
+introduces no learnable alignment parameters and avoids ad-
+ditional dynamic-programming-style alignment computation in
+the distillation branch. For fair comparison, distillation base-
+lines that require temporal length unification use the same target
+lengthLand the same temporal aggregation strategy in our ex-
+periments (unless the original method explicitly requires a dif-
+ferent alignment mechanism).
+To reduce absolute scale differences between heteroge-
+neous architectures, we apply per-timestep (row-wise)L 2 nor-
+malization to the pooled features:
+¯H(i)
+∗ =
+˜H(i)
+∗ ˜H(i)
+∗
+
+2
++ϵ
+,∗∈{T,S},i= 1,...,L.(3)
+2.2.2. Relation Matrix and Causal Mask Constraint
+Based on the normalized features, we construct temporal rela-
+tion matrices as
+GT = ¯HT ¯H⊤
+T∈R L×L,G S = ¯HS ¯H⊤
+S∈R L×L.(4)
+Each matrix element characterizes the relative similarity be-
+tween two timesteps. Since the teacher features are non-causal,
+the fullG T contains dependencies on future timesteps. To
+make the objective compatible with a streaming causal student,
+we introduce a lower-triangular causal maskM∈{0,1} L×L:
+Mi,j =
+(
+1,ifi≥j,
+0,ifi<j. (5)
+By masking out future-related entries, the unidirectional
+temporal relation distillation loss is defined as
+Lrel = 1PL
+i=1
+PL
+j=1Mi,j
+∥M⊙(G S−G T )∥2
+F (6)
+where⊙denotes element-wise multiplication. This loss con-
+strains the causal student to match only the relation structure
+among the current and past timesteps at each time indexi.
+SinceG T is symmetric, the lower-triangular mask covers the
+non-redundant relation entries consistent with the causality con-
+straint (including diagonal terms), yielding a compact definition
+of unidirectional relation distillation.
+2.3. Offline Bidirectional Relation Distillation Variant
+(Ours-Bi)
+While forcing a strictly causal student to regress point-wise ab-
+solute future features introduces severe capacity conflicts (as
+discussed in Sec. 2.1), the relative temporal topology of the fu-
+ture encapsulates valuable macroscopic evolution rather than
+exact acoustic values. Building upon the strictly realizable
+causal foundation established in Sec. 2.2, we further introduce
+an offline bidirectional variant (Ours-Bi) to safely harness this
+future context.
+Since training is performed offline, the full input sequence
+and the non-causal teacher features are globally accessible.
+Ours-Bi introduces an additional supervision term that utilizes
+the teacher’s full temporal relation matrix (including future-
+context associations):
+Lbi = 1
+L2∥GS−G T∥2
+F (7)
+6595
+Crucially, in our implementation, Ours-Bi is optimized by
+addingL bi on top ofL rel. The causal mask (M) is not
+discarded; rather, it serves as a stable, conflict-free historical
+anchor. Grounded firmly on this realizable anchor, the full-
+matrix topology (L bi) functions as a soft privileged prior [14].
+It encourages the student, under a limited historical receptive
+field, to implicitly align its internal manifold with a global full-
+context topology. This gracefully transforms the once-harmful
+causality mismatch into beneficial anticipatory regularization.
+Ours-Bi only modifies the offline training loss terms; it strictly
+preserves the student’s causal forward architecture, input cache
+length, and zero-lookahead temporal access pattern during in-
+ference.
+2.4. Training Objective and Deployment Properties
+The unified joint training objective is defined as
+L=L ce +λ kdLkd +λ relLrel +λ biLbi,(8)
+whereL ce denotes the classification cross-entropy loss andL kd
+denotes the output-level logits distillation loss.
+For the compared settings,λ rel >0andλ bi = 0corre-
+spond to the unidirectional temporal relation distillation (Ours),
+whileλ bi >0corresponds to the offline variant with additional
+bidirectional supervision (Ours-Bi).
+Mathematically, optimizing the joint objective (λ relLrel +
+λbiLbi) is elegantly equivalent to applying anasymmetric tem-
+poral relation constraint. The strictly realizable causal histor-
+ical dependencies (the lower triangle of the relation matrix) are
+heavily weighted by (λ rel +λ bi) to ensure absolute fidelity to
+the streaming receptive field. Conversely, the non-causal future
+dependencies (the upper triangle) are decayed into a softer aux-
+iliary regularization penalized only byλ bi. This mathematical
+asymmetry perfectly mirrors the physical causality constraints
+of zero-lookahead on-device inference.
+Because the computation of relation matrices and the full-
+size relation matching operations are entirely decoupled from
+edge-side inference, the actual deployment cost is determined
+solely by the selected 1D-CNN backbone, preserving strict
+causality and ultra-low per-step latency without any algorithmic
+overhead.
+3. Experiments
+3.1. Experimental Setup and Evaluation Protocol
+Datasets and Input Features.We evaluate on Google
+Speech Commands V2 (GSC v2) following the standard 12-
+class protocol (10 commands +Silence/Unknown) and the of-
+ficial train/val/test split. Audio is resampled to 16 kHz and
+padded/cropped to 1.0 s. Inputs are 64-d log-Mel spectro-
+grams (25 ms window, 10 ms hop;98×64). A unified aug-
+mentation pipeline (time shift±0.1 s, noise mixing with SNR∼
+U[−5,10]dB, and frequency masking) is applied to all meth-
+ods. Closed-set accuracy is reported as mean±standard devia-
+tion over three training seeds.
+Network Architectures and Training Details.The
+teacher is AST [4] (AudioSet-pretrained, fine-tuned on GSC
+v2;∼85M params; frozen for distillation). To strictly isolate
+the effectiveness of distillation mechanisms from architectural
+engineering tricks, we intentionally adopt an extremely mini-
+malist, pure causal 1D-CNN baseline (only 5.2M MACs) with-
+out advanced gating or complex self-attention. This highly con-
+strained capacity provides an unsaturated testbed to clearly ob-
+serve the relative gains of mitigating causality mismatch. All
+student-based methods share this identical backbone and causal
+forward graph (0 ms lookahead). Training uses AdamW for
+120 epochs (5 warm-up), batch size 128, LR10 −3 with cosine
+annealing; Vanilla KD uses a temperature ofτ KD = 4. For
+feature-level distillation, we use a single distilled layer: the last
+temporal encoding layer. For AST, we remove the classifica-
+tion ([CLS]) token and average the time-frequency (TF) patches
+along the frequency dimension to obtain a temporal represen-
+tationH T . Feature KD uses a training-only linear projection
+to match the teacher and student hidden dimensions. We set
+L= 24,λ kd = 0.5,λ rel = 1.0, andλ bi = 0.3; the latter two
+values were selected on the validation set and were not tuned on
+the test stream.
+Edge-Deployment Evaluation Metrics.Deployment cost
+is reported by Params and MACs. Streaming latency is mea-
+suredper inference stepon Raspberry Pi 4B (ARM Cortex-
+A72) with ONNX Runtime (CPU): we update the causal cache
+using 20 ms chunks and time only the single-step forward pass
+(500 steps after warm-up; variance<0.1ms 2). Except for loss
+definitions, all methods use identical student backbones, data,
+optimizer, and post-processing.
+3.2. Main Results: Closed-Set Accuracy and Edge Effi-
+ciency
+Table 1 compares distillation strategies under identical causal
+deployment constraints. At test time, all methods deploy the
+same causal student backbone (distillation branches removed),
+so Params/MACs/per-step latency are identical across student
+variants.
+Scratch achieves 95.12% accuracy, and Vanilla KD im-
+proves to 95.74%. Point-wise Feature KD underperforms
+(95.45% with higher variance), consistent with the causality
+mismatch in Sec. 2.1: a strictly causal student is asked to regress
+non-causal teacher features that encode future context. A con-
+ventional inter-sample relational KD reaches 96.08%. Our
+intra-sample causal temporal relation distillation (Ours) aligns
+historical relations via a lower-triangular mask, improving to
+96.53%. Adding the offline full-topology auxiliary term (Ours-
+Bi) yields the best result (96.91±0.09%) with zero added
+deployment overhead.
+3.3. Ablation Studies and Analysis
+3.3.1. Incremental Contribution of the Unified Training Objec-
+tive
+Table 2 ablates the joint objective. AddingL rel provides the
+main gain (+0.79 pp over Vanilla KD). Using only the un-
+masked full-matrix loss (OnlyL bi) is sub-optimal (96.18±
+0.17%), indicating that full-topology supervision without a
+causal anchor is less effective for a strictly causal student. Com-
+biningL bi withL rel (Ours-Bi) achieves the best performance
+(96.91%), suggesting that future-context topology is beneficial
+when grounded by the causal constraint.
+3.3.2. Effect of the Temporal Mapping LengthL
+Table 3 studies the target lengthLof the temporal pooling oper-
+ation under the Ours-Bi setting. When the original frame reso-
+lution is retained (no pooling,L= 98), the accuracy is 96.02%.
+While dynamic alignment algorithms (e.g., DTW) offer precise
+micro-level matching, they introduce excessive computational
+overhead during offline training.
+Instead, mapping a 1.0 s audio toL= 24(approx.
+41 ms/step) naturally corresponds to the macro-duration of pho-
+6596
+Table 1:Comparison of distillation strategies on GSC v2 (12-class) under identical deployment constraints. The teacher serves only
+as an offline upper bound. To strictly reflect zero-lookahead streaming, edge latency is evaluatedper streaming step(updating the
+internal cache for a new acoustic chunk) on a Raspberry Pi 4B.
+Method Setting Params (K) MACs (M) Lat./Step (ms) Acc. (%)
+Teacher (AST) [4] Non-causal global sequence model 85,000 1250.0 –98.24±0.05
+Scratch No KD (causal baseline) 150 5.2 0.1595.12±0.16
+Vanilla KD [5, 16] Logits KD 150 5.2 0.1595.74±0.14
+Feature KD [17, 18] Frame-wise absolute feature MSE 150 5.2 0.1595.45±0.20
+Relational KD [13, 19] Mini-batch inter-sample KD 150 5.2 0.1596.08±0.15
+Ours Causal temporal relation KD 150 5.2 0.1596.53±0.11
+Ours-Bi + Offline bidirectional prior 150 5.2 0.1596.91±0.09
+Table 2:Incremental ablation of joint loss terms on GSC v2.
+The sub-optimal performance of the unmasked variant (Only
+Lbi) supports the importance of the causal anchorL rel.
+StageL ce Lkd Lrel Lbi Acc. (%) Method
+Supervised baseline✓95.12±0.16Scratch
++ Output distribution✓ ✓95.74±0.14Vanilla KD
+Unmasked full topology✓ ✓ ✓96.18±0.17OnlyL bi
++ Historical relation constraint✓ ✓ ✓96.53±0.11Ours
++ Future auxiliary supervision✓ ✓ ✓ ✓96.91±0.09Ours-Bi
+Table 3:Effect of the unified temporal mapping lengthLon
+Ours-Bi.
+Mapping stepsLGranularity Acc. (%)
+98 (no pooling)∼10 ms (original)96.02±0.15
+48∼20 ms96.38±0.14
+24 (default)∼41 ms (sub-phonetic)96.91±0.09
+12∼83 ms (over-smoothed)96.15±0.12
+netic transitions. This parameter-free blurring effect acts as a ro-
+bust feature regularizer, providing crucialtemporal translation
+invarianceagainst variable speaking rates. However, when the
+pooling window becomes overly large (L= 12,∼83 ms/step),
+excessive smoothing obscures important phonetic boundaries,
+and the accuracy drops to 96.15%. The results confirm that
+L= 24provides an optimal temporal abstraction scale for re-
+lational distillation.
+Table 4:Streaming robustness test (FRR @ FA/h, lower is
+better). All models are evaluated using purely causal sliding-
+window inference, updating internal caches step-by-step.
+Model FRR @ 2.0 FA/h (%)↓FRR @ 1.0 FA/h (%)↓
+Scratch 6.15 8.52
+Vanilla KD 5.20 7.15
+Feature KD 5.58 7.60
+Ours 3.85 4.86
+Ours-Bi3.05 4.15
+3.4. Continuous Streaming Noise Robustness
+We evaluate always-on robustness using continuous streams
+dynamically constructed by embedding more than 4K
+class-balanced GSC v2 test keywords and inserting im-
+poster/Unknown events at∼2×the target count (minimum
+onset spacing 1.5s). Background audio mixes non-stationary
+environmental noises (e.g., MUSAN) with test-setUnknown
+words. Following the event-level streaming metric FRR @
+FA/h [20, 6, 21, 22], all strictly causal models share identical de-
+tection post-processing: 50 ms moving-average smoothing and
+a 500 ms refractory window. Thresholds are calibrated on a val-
+idation stream to meet a target FA/h (1.0 or 2.0) and then locked
+for evaluation on an unseen test stream; hits are matched within
+±200ms and FA/FRR are computed at the event level. The
+non-causal AST teacher is excluded.
+As shown in Table 4, Feature KD underperforms Vanilla
+KD at 1.0 FA/h (7.60% vs. 7.15%), while Ours-Bi achieves
+the best robustness, reducing FRR from 8.52% to 4.15% under
+the same constraint. Because all student variants use the same
+causal forward graph and identical post-processing, Ours-Bi in-
+troduces no additional algorithmic lookahead or per-step infer-
+ence cost. This supports that relation-based distillation trans-
+fers a more stable long-horizon structure than point-wise fea-
+ture regression, and that streaming robustness is not necessarily
+reflected by closed-set accuracy alone.
+4. Conclusion
+In this paper, we investigated causality mismatch in cross-
+architecture distillation for streaming KWS. We identified that
+forcing causal students to point-wise regress non-causal abso-
+lute features introduces capacity conflicts that severely degrade
+continuous robustness. To mitigate this, we proposed Causal
+Temporal Relation Distillation. By replacing point-wise re-
+gression with intra-sample temporal topology alignment via a
+lower-triangular mask, our method establishes a strictly real-
+izable historical anchor. Furthermore, our offline bidirectional
+variant (Ours-Bi) integrates the teacher’s full-context topology
+as an auxiliary prior safely grounded on this causal founda-
+tion. Evaluations on Google Speech Commands V2 demon-
+strate that our approach achieves the best closed-set accuracy
+among the compared methods and nearly halves the false re-
+jection rate in rigorous continuous-stream detection. Crucially,
+these substantial robustness gains introduce zero additional pa-
+rameters, MACs, or algorithmic latency to the edge-deployed
+causal student. These conclusions are limited to the evalu-
+ated GSC v2, AST-to-1D-CNN, strict zero-lookahead setting;
+broader datasets, teacher-student pairs, and causal architectures
+remain for future work.
+6597
+5. Acknowledgments
+This work was supported in part by the National Natural Sci-
+ence Foundation of China (No.62372083), the Sichuan Sci-
+ence and Technology Support Plan (No. 2024NSFTD0005,
+No.2023YFS0020, No.2023YFS0197, No.2023YFG0148).
+6. Use of Generative AI Disclosure
+Generative AI tools were used solely for language polishing and
+proofreading (grammar, spelling, and clarity) of the authors’
+original text; all research ideas, methods, experiments, analy-
+ses, and conclusions were produced by the authors, who take
+full responsibility for the content.

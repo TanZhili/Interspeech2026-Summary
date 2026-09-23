@@ -1,0 +1,519 @@
+YingMusic-Singer: Controllable Singing V oice Synthesis with Flexible Lyric
+Manipulation and Annotation-free Melody Guidance
+Chunbo Hao ID 1,2, Junjie Zheng ID 2, Guobin Ma ID 1, Yuepeng Jiang1, Huakang Chen1, Wenjie Tian1,
+Gongyu Chen ID 2, Zihao Chen ID 2, Lei Xie1,∗∗
+1 Audio, Speech and Language Processing Group (ASLP@NPU)
+School of Computer Science, Northwestern Polytechnical University, China
+2 AI Lab, Giant Network, China
+cbhao@mail.nwpu.edu.cn, zhengjunjie@ztgame.com, lxie@nwpu.edu.cn
+Abstract
+Regenerating singing voices with altered lyrics while preserv-
+ing melody consistency remains challenging, as existing meth-
+ods either offer limited controllability or require laborious
+manual alignment. We propose YingMusic-Singer, a fully
+diffusion-based model enabling melody-controllable singing
+voice synthesis with flexible lyric manipulation. The model
+takes three inputs: an optional timbre reference, a melody-
+providing singing clip, and modified lyrics, without manual
+alignment. Trained with curriculum learning and Group Rela-
+tive Policy Optimization, YingMusic-Singer achieves stronger
+melody preservation and lyric adherence than Vevo2, the
+most comparable baseline supporting melody control with-
+out manual alignment. We also introduce LyricEditBench,
+the first benchmark for melody-preserving lyric modification
+evaluation. The code, weights, benchmark, and demos are
+publicly available athttps://github.com/ASLP-lab/
+YingMusic-Singer-Plus.
+Index Terms: singing voice synthesis, lyric editing, reinforce-
+ment learning, diffusion model
+1. Introduction
+Singing V oice Synthesis (SVS) aims to generate human-like
+singing voices from musical scores, lyrics, and timbre refer-
+ences. Modern systems [1, 2, 3, 4, 5, 6] achieve high-fidelity
+synthesis, yet most rely on precisely annotated paired data as-
+sociating each phoneme with an exact pitch contour and du-
+ration. While such fine-grained control is indispensable for
+professional music production, preparing these annotations cre-
+ates a prohibitive barrier for an increasingly important use case,
+singing voice editing, which regenerates an existing singing
+voice with modified lyrics while preserving the original melodic
+and rhythmic structure. This capability is highly desirable for
+song adaptation, personalized cover generation, rapid prototyp-
+ing of vocal arrangements, and multilingual song localization.
+Existing editing paradigms fall into two categories. The
+first adopts an in-context learning strategy that masks the region
+to be edited and regenerates it conditioned on the surround-
+ing context and target lyrics [7, 8]. Although convenient, this
+approach is restricted to local segments and provides limited
+melody control. The second category, widely adopted in prac-
+tice, relies on commercial SVS models such as Synthesizer V 1
+and ACE Studio2, where users first need to transcribe the origi-
+**indicates the corresponding author.
+1https://dreamtonics.com/synthesizerv
+2https://acestudio.ai
+nal vocal into MIDI, then assign the modified lyrics to the notes
+and durations, and re-synthesize the audio. This pipeline offers
+strong controllability but demands manual effort, and the com-
+plexity increases for tasks such as cross-lingual translation. In
+summary, existing approaches either depend on the surround-
+ing context to recover melody or require manual alignment of
+word-level timestamps with melody information, limiting their
+flexibility and scalability. Several recent efforts address these
+challenges. Vevo2 [9] achieves melody-controllable generation,
+yet suffers from reduced intelligibility and poor melody adher-
+ence. SoulX-Singer [10] supports existing singing as melody
+input but still requires manual alignment of word-level times-
+tamps, leaving the core burden unresolved. While these recent
+efforts narrow the gap, they either achieve suboptimal perfor-
+mance or still need manual alignment.
+To address these challenges, we proposeYingMusic-Singer,
+a fully diffusion-based model for melody-preserving lyric edit-
+ing. First, YingMusic-Singer introduces a streamlined editing
+paradigm that synthesizes singing voices from only three in-
+puts, namely an optional timbre reference clip, a singing clip
+providing the target melody, and the corresponding modified
+lyrics, without the need for manual alignment or precise an-
+notation. Second, to mitigate limited phoneme generalization
+caused by the small scale and challenging vocal techniques in
+singing data, and to address the inherent trade-off between faith-
+ful lyric reproduction and melody adherence, we employ a cur-
+riculum training strategy combined with Group Relative Policy
+Optimization (GRPO) [11, 12], enabling strong performance on
+both dimensions simultaneously. Third, we constructLyricEd-
+itBenchbased on GTSinger [13], the first benchmark for lyric
+modification evaluation under matched melody conditions, cov-
+ering six common editing scenarios with balanced sampling for
+fair and comprehensive comparison. Experiments show that
+YingMusic-Singer outperforms Vevo2 [9], currently a compara-
+ble alignment-free alternative, in both melody preservation and
+lyric adherence. We publicly release the model weights, infer-
+ence code, and LyricEditBench to facilitate further research and
+advance the practical adoption of singing voice editing.
+2. Methodology
+2.1. Architecture Overview
+As shown in Figure 1, YingMusic-Singer generates singing
+voices at 44.1 kHz from three inputs: an optional timbre ref-
+erence, a melody-providing singing clip, and corresponding
+modified lyrics. It comprises: (1) a Variational Autoencoder
+(V AE) following Stable Audio 2 [14], whose encoderEdown-
+1576
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1547
+DiT 
+Blocks
+Sing
+Waveform
+Lyric
+VAE
+Encoder
+ CKA Loss 
+× N
+Generated
+Sing
+MSE Loss
+VAE Latent
+Melody Latent
+Lyric IPA
+Random Noise
+PAD
+Training
+Frozen
+VAE
+Decoder
+Concat
+Target Latent
+Predicted Flow
+ODE
+Solver
+Sentence
+Alignment
+IPA
+Tokenizer
+Melody
+Extractor
+Interpolation
+&
+Perturbation
+Group 1
+Group G
+Reward
+Model 1
+Reward
+Model 2
+ Clipped Loss 
+Sing Edit
+Ref Model
+R1
+1
+R1
+G
+Rewards
+RM
+1
+RM
+G
+A1
+1
+A1
+G
+AM
+1
+AM
+G
+Advantages
+Group
+Compute
+Weighted
+Average
+Generated Sing
+Pad
+Prompt Sing
+Sing
+Waveform
+Target Lyric
+Sing Edit
+Sample
+ KL Loss
+Random
+Mask
+Figure 1:Overall architecture of YingMusic-Singer. Left: the training pipeline consisting of a Variational Autoencoder, a Melody
+Extractor, an IPA Tokenizer, and DiT-based conditional flow matching. Right: the GRPO training pipeline.
+samples a stereo 44.1 kHz singing waveformx∈R T×2 by
+a factor of 2048 intoz=E(x)∈R T ′×D, and whose de-
+coderDreconstructs high-fidelity audio ˆx=D(z)at infer-
+ence; (2) a Melody Extractor built upon the encoder of a pre-
+trained MIDI extraction model, whose intermediate represen-
+tations naturally capture disentangled melody information. It
+producesh=M(M)∈R L×Dm, which is then temporally in-
+terpolated to ˜h∈R T ′×Dm to match the V AE latent frame rate;
+(3) an IPA Tokenizer that converts both Chinese and English
+lyrics into a unified discrete phoneme sequence. To ensure the
+model correctly distinguishes between prompt and generation
+regions, avoiding phoneme omission or repetition at boundaries,
+we adopt sentence-level alignment following DiffRhythm [15].
+Each lyric sentence is converted into an IPA subsequence and
+placed at its corresponding onset frame within a padded frame-
+level sequence of lengthT ′. The aligned sequence is passed
+through a learnable embedding layer to yielde∈R T ′×De.
+During inference, prompt lyrics are placed at the beginning of
+the sequence and target lyrics at the start of the masked region,
+requiring no timestamp annotation from the user; and (4) aDiT-
+based CFM backbonefollowing F5-TTS [16].
+During training, a proportionγof V AE latent frames is
+randomly masked as the synthesis target, with the unmasked
+portion serving as timbre context. Letz ctx denote the un-
+masked V AE latent (zero-filled in masked regions). The con-
+ditionc= [ ˜h;e;z ctx]is concatenated with the noisy latent
+zt = (1−t)z 0 +tz 1 along the channel dimension and fed into
+the CFM, which learns a velocity field via:
+LMSE =E t,z0,z1,c∥vθ(zt,t,c)−(z 1−z 0)∥2.(1)
+2.2. Curriculum Training
+To mitigate limited phoneme generalization caused by the
+small scale and challenging vocal techniques in singing data,
+YingMusic-Singer first undergoesTTS Pretrainingwithout
+melody conditioning. The subsequentSinging Voice Super-
+vised Fine-Tuning (SFT)stage has two phases. Phase 1 enables
+sentence-level alignment on singing data, allowing the model
+to adapt to the singing domain. Phase 2 activates melody con-
+ditioning and introduces a Centered Kernel Alignment (CKA)
+loss to enforce melody adherence. Given the predictedv θ and
+melody ˜h, CKA measures their alignment via Gram matrices
+K=v θv⊤
+θ andL= ˜h˜h⊤:
+LCKA = 1− ∥K⊤L∥2
+F
+∥K⊤K∥F∥L⊤L∥F
+,(2)
+and the total phase 2 loss isL SFT =L MSE +λL CKA.
+2.3. Group Relative Policy Optimization
+While curriculum training achieves high performance, SFT
+Phase 2 simultaneously degrades PER, exposing a persistent
+trade-off.L MSE targets holistic latent reconstruction and can-
+not isolate specific deficiencies for targeted optimization, while
+adjustingλinL CKA only shifts the balance without resolv-
+ing the trade-off itself. Moreover, inevitable noise in large-
+scale singing data, such as backing vocals and quality artifacts,
+caps model performance at the dataset ceiling. To overcome
+these limitations, reinforcement learning (RL) becomes essen-
+tial. PPO requires a value network that is expensive to train.
+Offline methods such as DPO suffer from distribution shift, as
+pre-collected preference data becomes stale when the policy im-
+proves. GRPO [11, 12] operates online and estimates baselines
+from within-group reward statistics, eliminating the value net-
+work while remaining efficient and stable.
+Following recent efforts [17, 18, 19], we convert the deter-
+ministic ODE trajectory into an SDE but restrict stochastic steps
+to a bounded window, ensuring precise advantage attribution to
+exploratory steps. To prevent collapse toward a single reward
+dimension, we employMreward models jointly and compute
+the advantage for each sample as
+Ai =
+MX
+k=1
+wk
+Ri
+k−mean({Rj
+k})
+std({Rj
+k})
+,(3)
+and the final GRPO loss is
+LGRPO(θ) = 1
+G
+GX
+i=1
+1
+|S|
+X
+t∈S
+(−Lclip +βD KL),(4)
+whereL clip is the clipped surrogate objective over the current-
+to-old policy likelihood ratio,D KL regularizes the current pol-
+icy toward the reference,Gis the group size,Sthe set of SDE
+sampling steps, andβthe KL regularization strength.
+2.4. LyricEditBench
+We build LyricEditBench from GTSinger [13] by removing all
+Paired Speech Group content, deduplicating audio via MD5
+hashing, and excluding clips exceeding 15 seconds. DeepSeek
+V3.2 [20] then generates modified lyrics for each of the six
+modification types in Table 1. Given original lyrics and modifi-
+cation instructions, the LLM produces revised versions, with
+1577
+Table 1:Task types for lyric modification in LyricEditBench.
+Abbr . Task Type Description
+PSub Partial Substitution Substitute part of the words
+FSub Full Substitution Completely rewrite the song
+Del Deletion Delete some words
+Ins Insertion Insert some words
+Trans Translation CN↔EN translation
+Mix Code-Mixing Mixed-language lyrics
+non-compliant outputs discarded, yielding 11,535 valid sam-
+ples. Samples are classified by singer gender (male/female)
+and language (Chinese/English) into four categories, then orga-
+nized by modification type. For each combination, we select 30
+samples per singing technique (covering the six techniques in
+GTSinger) and 120 for the technique-free category, resulting in
+300 per modification type per category and 7,200 test instances
+in total. For each instance, a timbre prompt of no more than
+15 seconds is randomly drawn from the remaining audio pool,
+so each LyricEditBench instance comprises a melody reference
+clip, a timbre prompt, and the corresponding modified lyrics.
+3. Experimental Setup
+Dataset.The Chinese and English subsets of Emilia [21] are
+used for TTS pretraining. For Singing V oice SFT, internally
+licensed music tracks are processed by SongFormer [22] to seg-
+ment structural boundaries and label function categories, dis-
+carding non-vocal segments. V ocal stems are then isolated us-
+ing Mel-band RoFormer [23]. We retain clips between 2 and
+30 seconds, splitting longer ones at sentence boundaries, ulti-
+mately obtaining 33,562.6 hours of singing data. The GRPO
+dataset is constructed by filtering SFT data with three criteria:
+ASR transcript verification, retaining only clips with a word er-
+ror rate below 5%, speaker diarization via pyannote [24, 25],
+keeping only single-speaker clips, and a DNSMOS P.808 qual-
+ity score [26, 27] threshold of 3.5. This yields approximately
+20,240 curated clips with balanced Chinese and English con-
+tent. The test set in the proposed LyricEditBench is strictly ex-
+cluded from training.
+Evaluation Metrics.We evaluate models with four ob-
+jective and two subjective metrics. For objective evaluation,
+Phoneme Error Rate (PER)measures phoneme-level intelligi-
+bility, as singing exhibits lower semantic density, fewer contex-
+tual cues, and greater pronunciation variation than speech. Both
+Chinese and English clips are transcribed by singing-trained
+Qwen3-ASR-1.7B [28] and converted to phoneme sequences
+with tone markers removed.Speaker Similarity (SIM)follows
+F5-TTS [16], extracting speaker embeddings with a WavLM-
+large-based verification model and computing cosine similarity.
+F0 Pearson Correlation (F0-CORR)measures melody adher-
+ence via frame-wise Pearson correlation between F0 contours
+of generated and reference clips using RMVPE [29].Vocal
+Score (VS)adopts V ocalVerse2 [30] as a learned metric aligned
+with human perceptual preferences. For subjective evaluation,
+120 samples uniformly sampled across task types and languages
+are rated by 30 listeners on two dimensions:Naturalness Mean
+Opinion Score (N-MOS)for overall perceptual quality and nat-
+uralness, andMelody Mean Opinion Score (M-MOS)for faith-
+fulness to the reference melody, both on a 5-point scale.
+Implementation Details.We adopt the V AE from Stable
+Audio 2 [14] (D= 64), the encoder of SOME 3 as Melody
+Extractor (Dm = 128, temporal dropout 0.1), and a DiT back-
+3https://github.com/openvpi/SOME
+bone following F5-TTS [16] (22 layers, 16 heads, hidden dim
+1024,D e = 512). The full system has∼727.3M parame-
+ters (453.6M CFM, 156.1M V AE, 117.6M Melody Extractor),
+trained on 8×A800 80GB GPUs with DDP and bf16. Across
+all stages, 70%–100% of latent frames are randomly masked.
+TTS pretraining runs for 1M steps (batch duration 1.268h, lr
+1e-4). Singing V oice SFT Phase 1 disables melody condition-
+ing for 240K steps; Phase 2 enables it for 170K steps (λdecayed
+from 0.3 to 0.01 over the first 2K steps; batch duration 1.69h,
+lr 2.5e-5). For GRPO,G=8candidates are scored byM=4
+equally weighted reward models (SDE noisea=0.8, window
+Wwithw min=1,ws=8,ϵu=0.01,ϵl=0.002,β=1), optimized
+for 1.2K steps (batch size 6, lr 7e-6) without CFG. Inference
+uses 32 ODE steps with CFG scale 3.
+4. Experimental Results
+4.1. Main Results
+We compare against Vevo2 [9], a token-based autoregressive
+model with disentangled timbre and melody control. For Sing
+Edit (self-timbre), the timbre and melody references share the
+same clip; for Melody Control (cross-timbre), the timbre refer-
+ence is replaced accordingly. Vevo2 is the most direct baseline,
+as it supports the same functionalities under comparable input
+conditions. Other recent systems operate under fundamentally
+different paradigms. In-context learning approaches require
+surrounding audio context with manually aligned edit bound-
+aries, restricting them to local segment editing. SoulX-Singer
+relies on precise character-level timestamps; obtaining such an-
+notations via ASR introduces non-trivial character-count mis-
+matches, while ground-truth timestamps from curated datasets
+would grant an unrealistic advantage absent in practice.
+As shown in Table 2, YingMusic-Singer consistently out-
+performs Vevo2 across all six modification types under both
+Melody Control and Sing Edit settings in PER, F0-CORR,
+and VS, demonstrating strong adherence to both the reference
+melody and modified lyrics. The intelligibility gap is most
+pronounced on Trans and Mix tasks, indicating that recon-
+structing a substantially different phoneme sequence while pre-
+serving melody is inherently challenging. Note that PER on
+Mix tasks may be further inflated by ASR hallucinations on
+code-switched utterances. Vevo2’s incomplete melody disen-
+tanglement tends to reduce intelligibility and introduce halluci-
+nations, whereas YingMusic-Singer’s unified IPA tokenization
+and GRPO-based lyric adherence optimization maintain robust-
+ness even under these extreme conditions. F0-CORR further
+distinguishes the two systems: benefiting from CKA alignment
+and GRPO, YingMusic-Singer maintains consistently high cor-
+relation across all tasks and languages, whereas Vevo2 fluctu-
+ates considerably, suggesting less robust melody control. For
+SIM, Vevo2 benefits from its multi-stage architecture, where
+an autoregressive LLM handles melody and content generation
+while a dedicated CFM focuses on timbre reconstruction, ef-
+fectively easing speaker modeling. YingMusic-Singer instead
+adopts a single-stage CFM that jointly models all factors, prior-
+itizing architectural simplicity for practical deployment. How-
+ever, the higher SIM of Vevo2 comes at the cost of degraded
+PER and F0-CORR. In practice, faithfully rendering modified
+lyrics while preserving the original melodic structure remains
+the primary concern in lyric editing. As shown in Table 3,
+YingMusic-Singer consistently achieves higher N-MOS and M-
+MOS than Vevo2 across both tasks and languages. The strong
+subjective scores also indicate that GRPO optimization does not
+1578
+Table 2:Comparison with Baseline Model on LyricEditBench across Task Types in Table 1 and Languages. Metrics (M): P: PER, S:
+SIM, F: F0-CORR, V: VS are detailed in Section 3. Best results are inbold.
+Task Model M Chinese English
+PSub FSub Del Ins Trans Mix PSub FSub Del Ins Trans Mix
+Melody
+Control
+(cross-timbre)
+Vevo2 [9]
+P↓0.1378 0.1462 0.1545 0.1872 0.4409 0.4757 0.3352 0.3481 0.3812 0.3135 0.8019 0.5132
+S↑0.6462 0.6550 0.6457 0.65510.6115 0.6490 0.6357 0.6161 0.6277 0.6359 0.6237 0.6325
+F↑0.8471 0.8188 0.8345 0.8552 0.7678 0.8526 0.8794 0.8409 0.8924 0.8888 0.8776 0.8927
+V↑1.3578 1.3784 1.3491 1.1346 1.3061 1.4208 1.0340 1.1217 1.0476 0.9610 1.0281 1.0925
+Ours
+P↓0.0192 0.0197 0.0458 0.0208 0.0881 0.1563 0.0685 0.0692 0.1053 0.0716 0.0413 0.2668
+S↑0.6543 0.6561 0.6489 0.65520.5791 0.6395 0.6078 0.5914 0.6001 0.5889 0.5982 0.6076
+F↑0.9364 0.9428 0.9351 0.9381 0.9378 0.9352 0.9355 0.9279 0.9309 0.9315 0.9290 0.9389
+V↑2.0779 2.1419 2.1219 1.9887 1.9372 2.1002 1.5054 1.5418 1.6081 1.4036 1.5769 1.5060
+Sing Edit
+(self-timbre)
+Vevo2 [9]
+P↓0.1290 0.1303 0.1596 0.1810 0.4111 0.4659 0.3414 0.3538 0.3531 0.2944 0.7680 0.4951
+S↑0.7875 0.7729 0.8269 0.8324 0.7252 0.8015 0.7971 0.7729 0.8183 0.8378 0.7563 0.8346
+F↑0.8858 0.8805 0.8969 0.9115 0.8456 0.9023 0.9258 0.9278 0.9365 0.9415 0.9137 0.9465
+V↑1.4860 1.5100 1.5094 1.2935 1.3535 1.4377 1.0910 1.1110 1.1682 1.1156 1.1178 1.1453
+Ours
+P↓0.0214 0.0186 0.0946 0.0426 0.1009 0.1903 0.0906 0.0782 0.1700 0.1070 0.0538 0.2946
+S↑0.7622 0.7392 0.7874 0.8028 0.6539 0.7564 0.7398 0.7105 0.7764 0.7714 0.6918 0.7708
+F↑0.9615 0.9587 0.9628 0.9642 0.9542 0.9607 0.9610 0.9563 0.9675 0.9660 0.9498 0.9668
+V↑1.9761 2.0345 1.8837 1.7689 1.9371 1.9283 1.4448 1.4086 1.3820 1.2553 1.4788 1.3464
+Table 3:Subjective evaluation on LyricEditBench. N-MOS
+and M-MOS denote naturalness and melody adherence, respec-
+tively.
+Task Model ZH EN
+N↑M↑N↑M↑
+Melody
+Control
+Vevo2 [9] 4.25±0.06 4.28±0.05 4.31±0.05 4.31±0.04
+Ours4.31±0.04 4.44±0.04 4.36±0.05 4.51±0.03
+Sing
+Edit
+Vevo2 [9] 4.48±0.05 4.41±0.05 4.44±0.04 4.50±0.04
+Ours4.52±0.04 4.55±0.04 4.55±0.04 4.58±0.03
+overfit to the reward models but generalizes to human percep-
+tion. Vevo2 receives lower ratings overall with notably higher
+variance, and listeners report perceptible artifacts such as un-
+faithful lyric rendering and melodic misalignment in its outputs,
+suggesting less robust generation quality.
+Beyond model comparison, the breadth of evaluation across
+six editing types, two languages, and both objective and subjec-
+tive metrics further validates LyricEditBench as a comprehen-
+sive benchmark for melody-preserving lyric editing, supporting
+future research on song adaptation, cover generation, and cross-
+lingual vocal arrangement.
+4.2. Ablation Study
+As shown in Table 4, the curriculum learning pipeline intro-
+duces clearly separable improvements at each stage. TTS Pre-
+train establishes articulatory priors but lacks singing capability
+(F0-CORR near zero), with PER degrading significantly when
+a singing clip serves as the ICL prompt, indicating poor domain
+adaptation. SFT Phase 1 substantially improves all metrics,
+achieving the lowest PER as the model adapts to the singing
+domain while freely generating melody from the ICL prompt,
+bypassing the demanding task of explicit melody alignment.
+F0-CORR under Sing Edit improves slightly, showing partial
+melody capture from context alone, yet explicit guidance re-
+mains necessary for faithful reproduction. SFT Phase 2 acti-
+vates the Melody Extractor and raises F0-CORR above 0.92,
+though PER increases, reflecting the difficulty of jointly main-
+taining melody fidelity and lyric faithfulness. GRPO resolves
+Table 4:Ablation Study on LyricEditBench. Best results are
+bold, second best underlined.
+Lg Variant Melody Control Sing Edit
+P↓S↑F↑V↑P↓S↑F↑V↑
+ZH
+TTS Pretrain 0.41 0.57 0.01 0.50 0.37 0.59 0.06 0.49
+SFT Phase10.05 0.680.03 1.550.050.73 0.31 1.53
+SFT Phase2 0.08 0.63 0.92 1.57 0.11 0.75 0.95 1.62
+-w/o CKA 0.08 0.64 0.91 1.57 0.12 0.75 0.93 1.61
+-w/o Dist 0.45 0.630.941.42 0.460.790.95 1.55
+Full Model 0.06 0.64 0.94 2.060.08 0.75 0.96 1.92
+EN
+TTS Pretrain 0.46 0.54 0.01 0.49 0.43 0.56 0.00 0.50
+SFT Phase10.10 0.650.03 1.070.110.73 0.40 1.13
+SFT Phase2 0.14 0.60 0.92 1.17 0.19 0.75 0.961.21
+-w/o CKA 0.14 0.60 0.90 1.19 0.20 0.75 0.94 1.18
+-w/o Dist 0.48 0.580.951.00 0.490.78 0.960.98
+Full Model0.100.60 0.93 1.520.13 0.740.96 1.39
+this trade-off by recovering PER while further improving F0-
+CORR and VS with SIM unchanged, confirming that reward-
+based optimization jointly enhances all dimensions.
+In SFT Phase 2, incorporating CKA further improves
+melody adherence, as reflected in F0-CORR gains. For the per-
+turbation ablation (w/o Dist), we remove the temporal dropout
+applied to the melody latent ˜h. This causes severe intelligibility
+degradation, as the unperturbed latent retains residual semantic
+information that the model exploits to bypass genuine lyric gen-
+eration. Temporal dropout eliminates this leakage, forcing re-
+liance on the abstract melodic contour and preserving prosodic
+structure while allowing free generation of modified lyrics.
+5. Conclusion
+We present YingMusic-Singer, a melody-controllable singing
+voice editing model that synthesizes from a timbre reference,
+a melody-providing singing clip, and modified lyrics without
+manual alignment. Through curriculum training and GRPO-
+based reinforcement learning, YingMusic-Singer achieves su-
+perior melody preservation and lyric adherence on LyricEdit-
+Bench, the first comprehensive benchmark we introduce for
+this task, demonstrating strong potential for practical end-to-
+end singing voice editing.
+1579
+6. Generative AI Use Disclosure
+Generative AI tools are used solely for linguistic refinement and
+play no role in methodology, experimentation, interpretation, or
+the production of scientific results. The authors bear full intel-
+lectual responsibility for all content in this manuscript.

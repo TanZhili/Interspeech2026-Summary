@@ -1,0 +1,461 @@
+ParaSpeechCLAP: A Dual-Encoder Speech-Text Model for
+Rich Stylistic Language-Audio Pretraining
+Anuj Diwan ID 1, Eunsol Choi ID 2, David Harwath ID 1
+1 Department of Computer Science, The University of Texas at Austin, USA
+2 Computer Science and Data Science, New York University, USA
+anuj.diwan@utexas.edu, eunsol@nyu.edu, harwath@utexas.edu
+Abstract
+We introduce ParaSpeechCLAP, a family of dual-encoder mod-
+els that map speech and text style captions into a shared em-
+bedding space, supporting rich intrinsic (speaker-level) and sit-
+uational (utterance-level) descriptors, such as pitch, texture,
+and emotion, beyond the narrow set handled by existing mod-
+els. We train separate Intrinsic and Situational models along-
+side a unified Combined model, finding that specialized mod-
+els are stronger on individual style dimensions while the unified
+model excels on compositional evaluation. We further show that
+ParaSpeechCLAP-Intrinsic benefits from an additional classifi-
+cation loss and class-balanced training. We demonstrate per-
+formance on style caption retrieval, speech attribute classifica-
+tion, and usability as inference-time reward models for style-
+prompted TTS. ParaSpeechCLAP models outperform baselines
+on most metrics across all three applications. Our models and
+code are released at https://github.com/ajd12342/
+paraspeechclap.
+Index Terms: rich styles, contrastive learning, reward model-
+ing, speech representations
+1. Introduction
+Existing speech-caption alignment models [1] handle only a
+narrow set of stylistic attributes. Yet, real-world speech varies
+along many more dimensions: pitch, texture, clarity, and be-
+yond [2]. While emotion recognition has made significant
+progress [3–5], support for this broader set of speech styles,
+especially when specified as freeform natural-language descrip-
+tions, remains lacking. Closing this gap would benefit a range of
+applications, including style-prompted text-to-speech (TTS) [2,
+6, 7], expressive speech retrieval [1, 8], speech style caption-
+ing [9, 10], and expressive spoken dialog systems [11, 12].
+This paper introduces ParaSpeechCLAP, a family of
+CLAP [13]-style dual-encoder models designed to map speech
+and rich textual style descriptions into a common embedding
+space. Following the ParaSpeechCaps [2] taxonomy, we train
+three models: ParaSpeechCLAP-Intrinsic for speaker-level tags
+(e.g., pitch, texture, clarity) and ParaSpeechCLAP-Situational
+for utterance-level tags (e.g. emotion), and ParaSpeechCLAP-
+Combined trained on both tag types. We find that special-
+ization yields stronger performance on individual style dimen-
+sions, while ParaSpeechCLAP-Combined excels on composi-
+tional evaluation that requires joint knowledge of both intrinsic
+and situational tags, suggesting the two strategies are comple-
+mentary. Our models are among the first dual-encoder models
+to support intrinsic tags and a wider range of situational tags.
+We further demonstrate the use of such models for inference-
+time reward guidance to improve the style consistency of style-
+prompted TTS models in a training-free manner. While best-of-
+N selection with a learned scoring function has been explored
+in language modeling [14] and image generation [15], to our
+knowledge this is the first application of a reward model for
+style-guided TTS selection.
+Our approach builds upon the dual-encoder paradigm pop-
+ularized by CLIP [15] for image-text tasks and extended to
+general audio by CLAP [13]. In the speech domain, related
+methods have focused on other modalities or limited style sets;
+SpeechCLIP [16] aligns speech with images rather than text
+style descriptions, while ParaCLAP [1] and SSE [17] handle
+only a small set of situational emotion tags. Unlike these,
+ParaSpeechCLAP models are trained on diverse, rich style cap-
+tions that span both intrinsic and situational attributes. Further-
+more, we find that ParaSpeechCLAP-Intrinsic benefits from a
+multitask contrastive plus classification loss that allows it to
+also predict specific style attributes. While ParaSpeechCLAP-
+Situational and ParaSpeechCLAP-Combined do not introduce
+architectural novelties beyond the encoder upgrades, we include
+them to provide complete coverage of the ParaSpeechCaps rich
+style tag taxonomy and to enable direct comparison between
+specialized and unified training strategies.
+We validate our models on three downstream applications:
+style caption retrieval, rich speech attribute classification, and
+inference-time guidance for TTS. For the latter, we perform
+best-of-N selection by scoring multiple generated candidates
+against a target style caption, effectively guiding the TTS sys-
+tem toward more stylistically faithful output. In summary:
+• We introduce ParaSpeechCLAP, a family of dual-encoder
+models that learn a joint embedding space for speech and
+rich textual style descriptions spanning both intrinsic and sit-
+uational attributes, making it one of the first model families
+to support this breadth of tags. We compare specialized and
+unified training strategies, finding them to be complementary.
+• We propose a classification loss for ParaSpeechCLAP-
+Intrinsic that uses the text encoder to produce class embed-
+dings, and show it improves performance over a contrastive-
+only objective.
+• We demonstrate a novel application of dual-encoder mod-
+els as inference-time reward models for style-prompted TTS
+through best-of-N selection, improving style consistency
+without any additional training.
+2. Methodology
+As depicted in Figure 1, each ParaSpeechCLAP model consists
+of speech and text encoders that project raw speech and text
+captions into a common multimodal embedding space. Their
+architecture is similar to that of the Contrastive Language-
+Audio Pretraining (CLAP) [13]-based ParaCLAP [1] model,
+but we use more modern and powerful encoders (detailed
+4128
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1437
+Audios
+Speech
+Encoder
+Text Style Prompts
+A female speaker has a shrill
+nasal American accent.
+Text
+Encoder
+T1
+T2
+T3
+A3A2A1
+A1•T1 A2•T1 A3•T1
+A1•T2 A2•T2 A3•T2
+A1•T3 A2•T3 A3•T3
+Contrastive Loss
+Audio
+Speech
+Encoder
+Class-based Prompts
+deep
+Text
+Encoder
+T1
+T2
+T3
+A1
+A1•T1
+A1•T2
+A1•T3
+Classification Loss
+shrill
+husky
+A person is speaking
+in a {label} style
+(shrill, American voice)
+Figure 1: An overview of the ParaSpeechCLAP dual-encoder training methodology. (Left) All ParaSpeechCLAP models are trained
+with an InfoNCE contrastive loss to align speech and text embeddings. (Right) For ParaSpeechCLAP-Intrinsic, this is supplemented
+with a classification loss, where audio embeddings are aligned with text embeddings generated from templates filled with class labels.
+in our experimental section) and train with a dataset of
+rich speech style captions, ParaSpeechCaps [2]. We train
+ParaSpeechCLAP-Intrinsic and ParaSpeechCLAP-Situational
+as two specialized models and additionally train a unified
+model, ParaSpeechCLAP-Combined, on the combined dataset.
+For ParaSpeechCLAP-Intrinsic, we use a multitask objective
+combining contrastive and classification (Lcontrastive +Lclassify),
+while for ParaSpeechCLAP-Situational and ParaSpeechCLAP-
+Combined, we use only Lcontrastive; these losses are defined in
+Section 2.3 and Section 2.4. Although the three models differ in
+their tag focus and training objectives, they share the same en-
+coder architecture and embedding space, enabling direct com-
+parison of specialization versus unification strategies.
+2.1. Training Example Format
+Each training example is a triplet {(Ai,T i,Y i)}N
+i=1: a speech
+clip Ai, a text caption Ti, and a multi-hot tag vector Yi ∈
+{0, 1}M , whereYik = 1 ifTi expresses tagk. For example, for
+the text caption “A man speaks in a guttural tone with a British
+accent”, the guttural and British entries in the tag vector are 1
+while all others are 0. Yi is only used for ParaSpeechCLAP-
+Intrinsic’s classification loss, for whichM = 28.
+2.2. Encoder Architecture
+Each model consists of a speech encoder fA(·) and a text en-
+coderfT (·). Both encoders consist of a transformer backbone
+and a projection head (two linear transformations with a GELU
+activation and layer normalization) that map speech waveforms
+and text captions to a common 768-dimensional embedding
+space. We use the 317M-parameter WavLM-Large [18] (cho-
+sen for its strong SUPERB benchmark [19] performance) as the
+speech encoder’s backbone and compute a speech embedding
+by mean-pooling the last layer’s hidden states and applying the
+projection head. We use Granite Embedding 278M Multilin-
+gual [20] (chosen for its MTEB benchmark [21] ranking among
+300M-parameter models) as the text encoder’s backbone and
+compute a text embedding by taking the final-layer CLS token
+embedding and applying the projection head.
+2.3. Contrastive Loss
+The contrastive objective aligns speech clips with their corre-
+sponding text prompts using a standard bidirectional InfoNCE
+loss [23]. We compute anN×N cosine similarity matrixS be-
+tween batch speech embeddings and text prompt embeddings,
+whereSij =
+fA(Ai)T·fT (Tj )
+∥fA(Ai)∥∥fT (Tj )∥ . The loss is computed bidirec-
+tionally with a learnable temperatureτ:
+Lcontrastive = 1
+2N
+NX
+i=1
+
+− log exp(Sii/τ )P
+j exp(Sij/τ )
+− log exp(Sii/τ )P
+j exp(Sji/τ )
+
+2.4. Inference-Like Classification Loss
+Rather than training ParaSpeechCLAP-Intrinsic using a sepa-
+rate classification head, we use the text encoder itself to pro-
+duce class embeddings that can then be used to create classifi-
+cation logits. The advantage of this approach over a dedicated
+head is that it keeps the text encoder active during classification
+training, reinforcing modality alignment. We first use Gemini
+2.5 Pro [24] to generate 6 paraphrased captions for each of the
+M = 28 rich intrinsic tags in the vocabulary. Then, for each
+minibatch, we freshly sample one caption for each tag and pass
+them through the text encoder to produce a set ofM tag embed-
+dings{Ek}|M
+k=1, wherek is the class index. For each example,
+we compute classification logits by taking the speech embed-
+ding’s dot product with these embeddings,lik =fA(Ai)·ET
+k .
+A binary cross-entropy loss is then applied using the ground-
+truth tag vectorYi, whereσ(·) is the sigmoid function:
+L(i)
+classify =−
+MX
+k=1
+[Yik logσ(lik) + (1−Yik) log(1−σ(lik))]
+The final classification loss is the average over the batch:
+Lclassify = 1
+N
+PN
+i=1L(i)
+classify.
+3. Experimental Setup
+3.1. Training
+Dataset We train our models on ParaSpeechCaps [2], a
+large-scale dataset that provides both manually and automat-
+ically annotated style prompts for speech clips from Ex-
+presso, EARS, and subsets of V oxCeleb and Emilia. We train
+ParaSpeechCLAP-Intrinsic and ParaSpeechCLAP-Situational
+on the intrinsic-tag and situational-tag subsets, respectively
+(2412 hr and 298 hr), and train ParaSpeechCLAP-Combined
+on their union (upsampling the situational data to balance the
+two equally). We randomly truncate or pad each speech clip to
+a fixed 10-second length.
+4129
+Situational Intrinsic Combined
+Model R@1 R@10 MedR ↓ UAR F1 R@1 R@10 MedR ↓ UAR F1 R@1 R@10 MedR ↓
+Dual-Encoder Baselines
+Random Projection 0.14 2 .65 170 6 .56 2 .66 1 .45 17 .66 28 23 .64 16 .21 0 .00 0 .49 725
+ParaCLAP [1] 0.41 3 .98 106 11 .56 3 .67 1 .95 26 .32 19 29 .16 20 .65 0 .34 1 .67 462
+ParaCLAP-PSC 15.64 72 .55 5 23 .91 23 .57 11 .49 60 .69 8 40 .27 37 .27 5 .58 32 .12 23
+Classifier Baseline
+V oxProfile-VQ [22] - - - - - - - - 41.40 40.24 - - -
+PSCLAP-Situational 24.79 88.82 3 56 .30 58.01 5.35 37 .67 15 31 .08 25 .05 12 .71 50 .48 10
+PSCLAP-Intrinsic 4.54 27 .93 26 5 .73 3 .08 18.62 65.23 6 46 .58 38.27 1 .53 8 .24 163
+PSCLAP-Combined 25.62 83.58 3 56 .43 55.60 13 .51 58 .14 7 32 .83 31 .74 14.31 52.17 10
+Table 1: Performance on situational, intrinsic, and combined evaluation datasets. We report retrieval metrics (Recall@k, Median Rank)
+and classification metrics (Unweighted Average Recall, Macro F1). For all metrics except median rank, higher is better. PSCLAP refers
+to ParaSpeechCLAP . Our ParaSpeechCLAP models outperform all baselines on most metrics. The unified ParaSpeechCLAP-Combined
+model is weaker than the specialized variants on specialized evaluation datasets and stronger on the combined evaluation dataset.
+Hyperparameters We train all models for 4500 steps using
+the Adam optimizer with a constant learning rate of 10−5 on
+4 NVIDIA A40 GPUs with a per-GPU batch size of 32. We
+train all model parameters including the backbone encoders.
+Our learnable temperature parameter is initialized to 0.07. For
+ParaSpeechCLAP-Intrinsic, we additionally use class-balanced
+training by upsampling examples annotated with rare tags,
+using inverse tag sampling frequencies. ParaSpeechCLAP-
+Situational and Combined are trained without class-balanced
+sampling as we did not observe improvements.
+3.2. Evaluation
+We evaluate models for three applications: retrieval, classifi-
+cation, and inference-time guidance for TTS on situational,
+intrinsic, and combined-tag evaluation sets.
+Datasets For retrieval and classification, we use the
+ParaSpeechCaps [2] holdout set subdivided into three new eval-
+uation sets: Situational, Intrinsic, and Combined. The Intrin-
+sic set is drawn from the V oxCeleb portion of the ParaSpeech-
+Caps holdout set and contains 2819 speech clips and 64 text
+style prompts with intrinsic-tag captions. The Situational and
+Combined sets are drawn from the Expresso-EARS portion
+of the ParaSpeechCaps holdout set, containing 1432 speech
+clips each; the Situational set uses only situational-tag captions
+(346 in total), while the Combined set uses captions contain-
+ing both situational and intrinsic tags ( 1432 in total). For TTS
+inference-time guidance, we use the tag-balanced test set from
+ParaSpeechCaps [2], consisting of 246 examples with 5 ex-
+amples per tag. We evaluate on ParaSpeechCaps holdout and
+test sets because, to our knowledge, no existing benchmark
+supports the full breadth of rich style tags ( 23 situational and
+28 intrinsic) that the ParaSpeechCLAP model family supports.
+Standard situational benchmarks such as IEMOCAP [25] and
+RA VDESS [26] cover only5–6 emotions.
+Retrieval Setup Given Ns speech clips and Nt text style
+prompts (where multiple clips may map to the same prompt),
+we compute embeddings for all of them, construct anNs×Nt
+cosine similarity matrix, and rank text prompts per speech clip
+in descending order. We report:
+• Recall@k (R@k): The percentage of speech clips for which
+the corresponding style prompt is ranked within the top k∈
+{1, 10} results.
+• Median Rank (MedRank) : The median rank of the ground-
+truth style prompt computed across all speech clips.
+Classification Setup For classification, we evaluate on speech
+clips that are each assigned to one of C classes. Each class
+label is converted to a text prompt via the template A person
+is speaking in a{label} style.1 We compute cosine similarities
+between each speech clip’s embedding and allC prompts, apply
+softmax, and predict the highest-scoring class. We report:
+• Unweighted Average Recall (UAR): Recall is computed per
+class and then averaged across all classes.
+• Macro F1-score (F1): The F1-score (the harmonic mean of
+precision and recall) is calculated per class and then averaged
+across all classes.
+Inference-Time Guidance for TTS Setup We perform experi-
+ments on the best style-prompted TTS model from ParaSpeech-
+Caps [2], which takes a style prompt and a transcript as in-
+put and generates speech. We generate N = 10 candidate
+speech clips from the TTS model and compute cosine sim-
+ilarities between their ParaSpeechCLAP speech embeddings
+and the text embedding of the input style prompt, select-
+ing the speech clip with the highest cosine similarity. We
+use ParaSpeechCLAP-Intrinsic for intrinsic-tag prompts and
+ParaSpeechCLAP-Situational for situational-tag prompts. We
+evaluate the selected clips using the same evaluation met-
+rics and protocol as ParaSpeechCaps [2]: Consistency MOS
+(CMOS), Intrinsic and Situational Tag Recalls, Naturalness
+MOS (NMOS), and WER. CMOS, NMOS, and tag recalls are
+obtained via human listening tests with three raters per sam-
+ple and both AB and BA presentation orders to minimize first-
+option bias. CMOS and NMOS use a 5-point Likert scale. WER
+is computed automatically.
+4. Results and Discussion
+4.1. Baselines
+For TTS guidance, we compare inference with and without
+ParaSpeechCLAP guidance. For retrieval and classification:
+• Random Projection: Our ParaSpeechCLAP architecture with
+pretrained encoder weights and random projector weights.
+• ParaCLAP [1]: An existing speech-prompt model trained on
+MSP-Podcast, which contains a 6-tag subset of ParaSpeech-
+Caps’ rich situational tags and none of its intrinsic tags.
+• ParaCLAP-PSC: The ParaCLAP model fine-tuned on
+ParaSpeechCaps. This baseline isolates the contribution of
+1While classification performance may be sensitive to prompt word-
+ing, we leave its analysis to future work.
+4130
+the ParaSpeechCaps data to our ParaSpeechCLAP models.
+• VoxProfile-Voice Quality [22]: An existing speech classifier
+(classification head over a WavLM [18] encoder) trained on
+the human-annotated intrinsic-tag subset of ParaSpeechCaps.
+We only evaluate this model for intrinsic-tag classification as
+it cannot be used for situational tags or retrieval.
+4.2. Main Results
+Retrieval and Classification We present results for the re-
+trieval and classification tasks on situational, intrinsic, and
+combined evaluation datasets in Table 1. Our ParaSpeech-
+CLAP models significantly outperform existing dual-encoder
+baselines on all metrics. ParaCLAP-PSC improves over the
+original ParaCLAP, confirming that ParaSpeechCaps is a valu-
+able training dataset, but ParaSpeechCLAP models outperform
+ParaCLAP-PSC, demonstrating that our encoder choice and
+training methodology improvements provide gains beyond what
+the data offers. Our models are competitive with the V oxPro-
+file [22] classifier baseline, outperforming it on UAR (46.58 vs.
+41.40) while underperforming on macro F1 ( 38.27 vs. 40.24),
+i.e., achieving better per-class recall but worse precision, sug-
+gesting that ParaSpeechCLAP-Intrinsic overpredicts certain fre-
+quent tags. We note that while the classifier baseline can only
+perform classification on a fixed set of intrinsic tags, our models
+support both intrinsic and situational tags and can perform both
+retrieval and classification using natural-language prompts.
+The ParaSpeechCLAP-Combined model achieves the
+strongest results on the combined evaluation dataset (e.g.,14.31
+R@1 and 52.17 R@10), outperforming specialized models. 2
+However, on the specialized evaluation sets, ParaSpeechCLAP-
+Combined underperforms the corresponding specialized model:
+it trails ParaSpeechCLAP-Intrinsic on intrinsic evaluation (e.g.,
+13.51 vs. 18.62 R@1) and is slightly weaker than or matches
+ParaSpeechCLAP-Situational on situational evaluation (e.g.,
+83.58 vs. 88.82 R@10). The mismatched specialized mod-
+els also show cross-domain transfer, both substantially exceed-
+ing the Random Projection baseline on the other’s evaluation
+set. Overall, a single model struggles to excel on all tag types,
+but ParaSpeechCLAP-Combined offers the best trade-off when
+both tag types are present simultaneously.
+Inference-Time Guidance for TTS We present results for
+ParaSpeechCLAP-guided best-of-N TTS inference in Table 2.
+We find that using ParaSpeechCLAP models for TTS guidance
+results in improved style consistency for both intrinsic and sit-
+uational tags, demonstrating a novel use case of dual-encoder
+models as a training-free method to improve speech synthesis
+models. We also confirm that this selection method does not
+degrade naturalness (NMOS) and intelligibility (WER).
+4.3. Ablation Study: ParaSpeechCLAP-Intrinsic
+While ParaSpeechCLAP-Situational and ParaSpeechCLAP-
+Combined train well with a contrastive loss, we make additional
+design choices, such as a multitask classification loss and class
+balancing, to improve the performance of ParaSpeechCLAP-
+Intrinsic. To understand the contribution of each of these com-
+ponents, we conduct ablations that remove each one at a time,
+with all other training settings kept the same: w/o New En-
+coders uses the original ParaCLAP [1] encoders (a fine-tuned
+wav2vec2 and BERT), w/o Multitask uses only the contrastive
+2We report only retrieval metrics for the combined evaluation set,
+as the compositional captions do not map to single class labels, making
+the classification setup inapplicable.
+Style Consistency Quality Intell.
+Model CMOS Int TR Sit TR NMOS WER ↓
+GT 4.04±0.07 73.1% 82 .3% 4 .42±0.06 8.04
+Vanilla 3.61±0.07 57.9% 69 .2% 3.34±0.09 8.14
+w/ PSCLAP 3.70±0.07 62.4% 74.3% 3.35±0.09 7.56
+Table 2: Evaluation results comparing TTS inference without
+(Vanilla) and with ParaSpeechCLAP-guided best-of-N selec-
+tion. We report style consistency (CMOS, Intrinsic Rich Tag Re-
+call, and Situational Rich Tag Recall), speech quality (NMOS),
+and intelligibility (WER). PSCLAP refers to ParaSpeechCLAP .
+Using ParaSpeechCLAP models results in improved style con-
+sistency without affecting quality or intelligibility.
+Intrinsic
+Model R@1 R@10 MedR ↓ UAR F1
+PSCLAP-Intrinsic 18.62 65.23 6 46 .58 38.27
+Ablations
+w/o New Encoders 11.77 63 .63 7 41 .44 33 .18
+w/o Multitask 13.76 63 .17 7 33 .11 30 .00
+w/o Class-Balancing 13.94 63 .92 6 40.60 31 .87
+Table 3: Ablation study for PSCLAP-Intrinsic. We compare our
+final model against versions with components removed.
+loss, and w/o Class-Balancing removes class-balanced batch
+sampling. Table 3 shows the results of these ablations. We
+find that removing any one of these components degrades per-
+formance, showing that each is important. Combined with the
+ParaCLAP-PSC baseline in Table 1, which controls for training
+data, these ablations confirm that our gains stem from both the
+stronger encoders and the additional training techniques (mul-
+titask loss and class-balanced sampling), not from data scale
+alone. We focus ablations on ParaSpeechCLAP-Intrinsic, as
+it uses the most design components (multitask loss and class-
+balanced sampling); ParaSpeechCLAP-Situational uses only
+the contrastive loss with no additional techniques, leaving fewer
+components to ablate.
+5. Conclusion
+We introduced ParaSpeechCLAP, a family of dual-encoder
+models that create a shared embedding space for speech and
+rich textual style descriptions. Through extensive experiments,
+we demonstrated the ParaSpeechCLAP model family’s ability
+to handle a diverse range of intrinsic and situational attributes
+for retrieval and classification, pioneered the use of its mod-
+els as inference-time reward models for TTS systems, and ab-
+lated their design choices. A practical limitation of the special-
+ized models is that they require selecting the appropriate variant
+at inference time; closing the gap between ParaSpeechCLAP-
+Combined and the specialized models remains an open chal-
+lenge. Extending the best-of-N guidance strategy (which cur-
+rently scales linearly with N in inference cost) to more efficient
+approaches such as guided decoding is also a promising future
+direction. We hope that ParaSpeechCLAP will encourage fur-
+ther research on rich style modeling and the development of rich
+style evaluation benchmarks.
+4131
+6. Generative AI Usage Disclosure
+The authors take full responsibility and are accountable for the
+contents of this paper. Generative AI tools were only used for
+light editing, polishing, and finding typos.

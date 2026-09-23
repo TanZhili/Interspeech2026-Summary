@@ -1,0 +1,489 @@
+Y our U-Net Dereverberation Model is Secretly an RIR Encoder
+Sina Khanagha1, Timo Gerkmann1
+1 Signal Processing Group, University of Hamburg, Germany
+sina.khanagha@uni-hamburg.de
+Abstract
+In this work, we analyze the ability of NCSN++ U-Net based
+audio dereverberation models to capture global room charac-
+teristics in their intermediate representations. Through an em-
+pirical study of both a state-of-the-art diffusion-based model
+and a discriminative counterpart, we show that deeper lay-
+ers encode structured room impulse response (RIR)-dependent
+embeddings. Moreover, the discriminative ability of this im-
+plicit room representation correlates with dereverberation per-
+formance across objective metrics. Motivated by this observa-
+tion, we propose a training strategy that explicitly conditions
+the network on pre-trained RIR embeddings, obtained via self-
+supervised contrastive learning. Incorporating RIR condition-
+ing improves representation quality, accelerates convergence,
+and enhances dereverberation performance, while significantly
+reducing the number of reverse diffusion steps required by the
+diffusion-based model during inference.
+Index Terms: audio dereverberation, contrastive learning,
+knowledge localization, diffusion models
+1. Introduction
+The reverberation effect originates from reflection of acoustic
+waves in closed environments from various surfaces which in
+turn degrades the intelligibility and the overall perceived quality
+of speech [1]. Therefore, the goal of dereverberation models is
+to revert this effect and retrieve the anechoic speech from the
+reverberant mixture. More specifically, in this work we will
+focus on the single-channel case where the audio samples are
+recorded using a single microphone.
+Earlier dereverberation methods relied mainly on statistical
+assumptions regarding anechoic and reverberant mixture speech
+to perform the task [2, 3, 4]. These methods can be further cat-
+egorized intoinformed[4] andblind[5, 6] depending on the
+availability of the room impulse response (RIR). Prior knowl-
+edge of the RIR in informed scenarios simplifies the task but
+precise knowledge of the RIR in real-world scenarios is a rel-
+atively unrealistic assumption limiting the applicability of in-
+formed methods compared to blind counterpart.
+Most recent methods utilize deep neural networks (DNNs)
+and tackle the problem from a data-driven angle [7, 8, 9, 10].
+The typical procedure is to train a DNN on pairs of anechoic
+and reverberant speech pairs in a supervised manner. There
+are also unsupervised blind methods [11, 12] that typically
+show worse performance in matched condition evaluations but
+demonstrate superior robustness in mismatched conditions (out-
+of-distribution data).
+Diffusion-based models have gained significant popularity
+in speech enhancement (SE) tasks in recent years [8, 9]. The
+general SE problem is typically formulated as an additive pro-
+cess, which is well aligned with the denoising principles un-
+derlying diffusion-based generative models. Nevertheless, it
+has been empirically demonstrated that diffusion models are
+also competitive with discriminative baselines in dereverbera-
+tion tasks and can even exhibit superior robustness under mis-
+matched conditions [11].
+A common hypothesis explaining the strong performance
+of diffusion models in additive SE is that these methods aim to
+learn the conditional probability paths that progressively trans-
+form a noisy sample, drawn from different noise level distribu-
+tions, into a clean speech sample through multiple refinement
+steps [8, 9, 10]. However, reverberation arises from a deter-
+ministic convolutional process rather than a random additive
+one. Therefore, the same probabilistic interpretation provided
+by diffusion-based SE literature does not directly apply. In con-
+trast, discriminative models are typically trained to learn a di-
+rect, deterministic mapping between a noisy input and its corre-
+sponding clean target which is more aligned with the determin-
+istic convolutional nature of the reverberation theory. Despite
+the growing success of diffusion-based methods for the task,
+theoretical or empirical analysis of their probabilistic interpreta-
+tion under deterministic reverberation has remained largely un-
+explored.
+To better understand the behavior of diffusion-based and
+discriminative models for dereverberation, we first analyze the
+internal representations learned by two state-of-the-art models.
+By extracting features from deeper U-Net layers, we show that
+both diffusion-based and discriminative approaches learn simi-
+lar structured, RIR-dependent representations. This observation
+suggests that diffusion-based baselines in fact exhibit hybrid be-
+havior, combining generative modeling with implicit determin-
+stic RIR encoding. Furthermore, we demonstrate a strong cor-
+relation between our diffusion baseline’s ability to cluster indi-
+vidual RIRs and its dereverberation performance. Motivated by
+this finding, we propose a practical strategy to enhance repre-
+sentation learning by conditioning the diffusion-based baseline
+on RIR embeddings obtained from a pre-trained contrastive RIR
+encoder. We show that this proof-of-concept approach acceler-
+ates convergence, improves representation quality, and signifi-
+cantly reduces the number of reverse diffusion steps needed to
+reach desirable performance.
+2. Background
+Reverberation in speech is the result of sound reflections from
+surfaces in an enclosed environment, which results in tempo-
+ral smearing of the original signal. In signal processing theory,
+it is commonly modeled as a linear time-invariant convolution
+between the clean speechx(t)and the RIRh(t):
+y(t) =x(t)∗h(t),(1)
+4501
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2707
+wherey(t)is the observed reverberant signal. The RIRh(t)
+characterizes the environment’s acoustic properties, including
+reflection delays, decay rates, and frequency-dependent absorp-
+tion. For simulation, reverberation is applied by convolving
+clean speech with pre-recorded or synthetic RIRs, enabling con-
+trolled evaluation of dereverberation methods.
+Even with a known room impulse response (RIR), perfect
+dereverberation is a non-trivial task since real RIRs are often
+non-minimum phase, making direct inversion unstable [4, 13].
+Therefore, DNN-based dereverberation models often aim to di-
+rectly undo the effect of the convolved RIR and recover the
+clean speech sample instead of RIR approximation.
+Discriminative dereveberation models learn a deterministic
+mappingf θ(y)from reverberant speechyto clean speechx
+via supervised regression [14]. The training objective is often
+simply defined as a mean-squared error (MSE):
+Ldisc(θ) =E (x,y)∥fθ(y)−x∥ 2
+2.(2)
+Diffusion-based dereverberation models, in contrast, im-
+plicitly learn the conditional distributionp(x|y)of clean
+speech given a noisy observation. During training, the model
+predicts the Gaussian noise added at each diffusion step [8].
+By learning these conditional denoising steps, diffusion mod-
+els approximate the full distribution of clean speech and enable
+iterative reconstruction.
+However, an important design choice in many of the recent
+diffusion-based dereverberation models is that the reverberant
+speechyitself is also concatenated with the current process
+statext as one of the input channels to the U-Net DNN at every
+time stept[8, 9, 10]. We argue that availability of the orig-
+inal reverberant sample at every step of diffusion process in-
+herently results in a hybrid model that combines discriminative
+deterministic mapping functions with the conditional generative
+properties of diffusion models. We will provide a more in-depth
+discussion about this theory in section 5.
+3. Method
+3.1. RIR Encoder Training
+Inspired by recent work in this field [15, 16, 17, 18, 19], we train
+the RIR encoder using a contrastive learning framework that en-
+courages embeddings from the speech samples corrupted by the
+same RIR to be close while pushing embeddings from different
+RIRs apart. For each training batch, two speech utterances are
+convolved with the same RIR to produce a positive pair. The en-
+coder outputs fixed-length embeddings for each convolved sig-
+nal, which are then normalized and compared using a cosine
+similarity-based InfoNCE loss [20]:
+Lpos =− 1
+B
+BX
+i=1
+log
+
+
+P
+j∈P(i) exp
+
+z⊤
+i zj
+τ
+
+P
+ℓ̸=i exp
+ z⊤
+i zℓ
+τ
+
+
+.(3)
+whereBis the batch size,z i∈R d denotes theℓ 2-normalized
+embedding of samplei,P(i)denotes the set of positive indices
+for anchori, andτis a temperature hyperparameter. A sec-
+ondary hard negative-pair loss is also included to explicitly en-
+courage the model to ignore the speech content of a sample.
+Hard negatives are created by convolving the same speech ut-
+terance with two different RIRs and trying to minimize the sim-
+ilarity between the output embeddings of these two samples:
+Lneg = 1
+B
+BX
+i=1
+z⊤
+i z−
+i .(4)
+Since the embeddings in both loss terms areℓ 2-normalized, the
+loss reduces to cosine similarity in the range of[−1,1]. The to-
+tal training objective is a weighted combination of these terms:
+Ltotal =L pos +λL neg.(5)
+enabling the encoder to learn a rich embedding space that cap-
+tures the variability of RIRs while remaining invariant to the
+convolved speech content.
+3.2. FiLM Conditioning
+Both discriminative and diffusion-based models commonly em-
+ploy U-Net based architectures. In particular, the NCSN++ U-
+Net, originally proposed by [21] for diffusion-based image gen-
+eration, has demonstrated strong performance in both SE and
+dereverberation tasks. As a result, it has become a popular back-
+bone for state-of-the-art SE and dereverberation models. Both
+of our baseline models adopt the NCSN++ architecture with the
+exact configurations specified by the original authors, resulting
+in negligible differences in model size across the baselines.
+Feature-wise Linear Modulation (FiLM) [22] is a condi-
+tioning mechanism that adapts intermediate network features
+using external information. Given an intermediate feature map
+F∈R C×T and a conditioning vectorc, a small conditioning
+network learns channel-wise scaling and shifting parameters:
+γ=f γ(c),β=f β(c),(6)
+whereγ,β∈R C. The modulated features are then given by
+FiLM(F|c) =γ⊙F+β.(7)
+We inject the RIR embedding into each BigGAN-style [23]
+residual block of NCSN++ at every resolution using a FiLM-
+based modulation applied after the second normalization layer.
+The conditioning embedding is first normalized via LayerNorm
+and passed through a linear projection to produce channel-wise
+scaling and shifting parameters, which are split intoγandβ. To
+ensure stable training, the FiLM layer is initialized to behave as
+an identity mapping by zero-initializing its weights and biases.
+Furthermore, the modulation parameters are bounded byγ=
+1 + 0.1 tanh(γraw)andβ= 0.1β raw, limiting the magnitude of
+the initial perturbation.
+4. Experimental Setup
+4.1. Dataset
+We use the VCTK corpus [24] as clean speech, selecting 103
+speakers for training, two for validation, and two for testing.
+The dataset contains approximately 44 hours of audio, which
+we downsample to 16 kHz for all experiments. Reverberant
+conditions are simulated using around 10K real RIRs collected
+from multiple public datasets [11], which we split into training,
+validation, and test sets with a 0.9/0.05/0.05 ratio. We refer to
+this dataset as VCTK-Reverb.
+Naturally, due to the fact that in our VCTK-Reverb test set
+each RIR has been used 1 to 3 times, it is difficult to directly
+conduct RIR representation analysis on the data. Therefore, in
+4502
+(a) SGMSE+ | PESQ: 2.62
+ (b) SGMSE+ w/ ResNet34 Embeddings | PESQ: 2.86
+ (c) SGMSE+ w/ Conformer Embeddings | PESQ: 2.89
+(d) NCSN++ | PESQ: 2.77
+ (e) ResNet34 RIR Encoder
+ (f) Conformer RIR Encoder
+RIR ID
+rir0 rir1 rir2 rir3 rir4 rir5 rir6 rir7 rir8 rir9
+Figure 1:t-SNE visualizations of embeddings extracted from 950 simulated reverberant samples. For the dereverberation models
+(a–d), embeddings are taken from the attention block of the NCSN++ backbone. For the proposed RIR encoders (e–f), embeddings are
+obtained directly from the encoder outputs. The corresponding dereverberation performance on the VCTK-Reverb test set (Figure 2),
+with N=50 for diffusion-based models, is also reported for each model.
+order to investigate and visualize the RIR embeddings of our
+RIR encoders and attention features of dereverberation base-
+lines, we created a secondary dataset. For this dataset, we ran-
+domly select 95 clean utterances from the two VCTK test speak-
+ers and 10 RIRs from the test set and convolve each RIR with
+every utterance, resulting in 950 reverberant samples.
+All reported speech quality metrics are computed strictly
+on the 774 samples of the VCTK-Reverb test set; the secondary
+dataset is used only for embedding visualization.
+4.2. Baselines
+For our experiments, we selected two dereverberation models:
+the diffusion-based SGMSE+ [8] and NCSN++ U-Net as a dis-
+criminative baseline, which also serves as the backbone for the
+diffusion model. We train SGMSE+ using the official imple-
+mentation provided by the authors and adopt all default training
+hyperparameters as described in the original work [8], unless
+stated otherwise. Note that we use the smaller SGMSE+M and
+NCSN++M configurations [9] with 27.8M parameters. For sim-
+plicity, we omit the suffix “M” throughout the paper.
+Furthermore, we used wide-band PESQ [25] and DNSMOS
+[26] as comparison metrics. All models are trained from scratch
+until convergence, and for evaluation, we selected the check-
+point achieving the highest wide-band PESQ on a smaller sub-
+set of validation samples.
+Additionally, we train two RIR encoders: a ResNet34-
+based encoder [27] and a Conformer-based encoder [28] (10
+layers, 256 hidden units, 4 attention heads), both followed
+by a two-layer projection head producing 256-dimensionalℓ 2-
+normalized embeddings. Both models were trained using the
+same modified InfoNCE objective (λ= 0.2andτ= 0.07) with
+AdamW (learning rate10−4, weight decay10−2, batch size 16)
+for 200 epochs, with the best model selected based on validation
+loss. Complete architectural specifications and training hyper-
+parameters are available in the accompanying repository1.
+5. Results and Discussion
+5.1. RIR Representation Analysis
+For this analysis, reverberant speech samples are passed through
+the model, and embeddings are extracted from the attention
+block of NCSN++ via global average pooling over the spatial
+dimensions. LetF att∈R C×H×W denote the attention feature
+tensor, whereCis the number of channels andHandWare the
+spatial dimensions. The corresponding embedding is obtained
+via global average pooling:
+eatt = 1
+HW
+HX
+h=1
+WX
+w=1
+Fatt(:,h,w),(8)
+wheree att ∈R C. Subsequently, we apply the unsupervised
+t-SNE [29] clustering algorithm on the extracted embeddings.
+The results are illustrated in Figure 1. From the first column of
+the figure, we can clearly observe that, regardless of the training
+paradigm or loss function, both of our baseline methods learn a
+strong global representation of the degradation operator (RIR).
+The resulting clusters closely resemble an RIR encoder.
+Notably, these clusters begin to emerge in the early layers,
+become increasingly stronger toward the bottleneck and atten-
+tion blocks of NCSN++, and gradually diminish near the final
+layers. However, this behavior is expected since the initial and
+1https://github.com/sp-uhh/rir-encoder
+4503
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+3.00PESQ
+N=15 N=30 N=50 N=100
+3.2
+3.3
+3.4
+3.5
+3.6
+3.7DNSMOS
+Discriminative NCSN++
+SGMSE + Conf. Embs.
+SGMSE + ResNet Embs.
+SGMSE w/o EMA
+SGMSE
+Figure 2:PESQ and DNSMOS for different models across var-
+ious reverse diffusion steps (N).
+output representations are closer to the raw STFT domains of
+the input and reconstructed speech, where features are more
+strongly influenced by speech content than by the underlying
+RIR. We chose to visualize the attention block features as we
+observed the strongest clusters at these blocks.
+Moreover, the plots suggest that diffusion models exhibit a
+hybrid behavior. Specifically, they appear to learn determinis-
+tic representations associated with individual RIRs, largely in-
+dependent of the diffusion timesteptand process statex t. We
+argue that since our diffusion baseline explicitly provides the re-
+verberant sample as one of the input channels at every time step,
+the learned representations exhibit deterministic, degradation-
+specific structure, while the sampling process preserves gener-
+ative characteristics. At the same time, they generate perceptu-
+ally more natural outputs, likely due to the stochastic generative
+mechanism of the diffusion process. We hypothesize that this
+combination of structured degradation encoding and stochastic
+refinement contributes to the adaptability of diffusion models to
+the non-additive nature of reverberation problem.
+The first row also indicates that there may be a correlation
+between the strength of the model in creating well-delimited
+clusters and its ability in dereverberation task. We can observe
+that the SGMSE+ trained with the exponential moving aver-
+age (EMA) of 0.99 has simultaneously the weakest clustering
+ability and weakest dereverberation performance of the three
+models. In the following section we will further investigate this
+theory by trying to enhance the RIR representation learning of
+the SGMSE+ model.
+5.2. Improving Representation Learning
+In this section, we will investigate whether conditioning the
+backbone U-Net on pre-trained RIR embeddings can improve
+the dereverberation performance of the model. First, (e) and (f)
+0 50K 100K 150K 200K 250K 300K 350K 400K
+Training Steps
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75PESQ
+SGMSE
+SGMSE w/o EMA
+SGMSE + Conf. Embs.
+SGMSE + ResNet Embs.
+Figure 3:Validation PESQ over training steps.
+plots from Figure 1 verify the fact that our pre-trained RIR en-
+coders are able to produce similar contextual representations to
+representations learned by the dereverberation models.
+Comparing Figure 1(a) with (b) and (c), conditioning
+SGMSE+ on pre-trained RIR embeddings leads to more struc-
+tured and separable RIR-dependent clusters in the latent space.
+As shown in Figure 2, this representation improvement is ac-
+companied by consistent PESQ gains of 0.17, 0.24, 0.27, and
+0.28 for different numbers of reverse diffusion inference steps
+N for the Conformer-conditioned model. A similar trend is
+also observable for DNSMOS metric for both of our RIR-
+conditioned models. These results support our hypothesis that
+strengthening RIR discriminability is associated with improved
+dereverberation performance.
+We also want to highlight an important detail in training
+SGMSE+ with our proposed RIR embeddings which is the fact
+that the EMA should be excluded from training for results to
+improve. Conversely, setting EMA to zero for the baseline
+SGMSE+ has detrimental effects on its convergence (Figure 3)
+and the number of required steps to reach desirable performance
+(Figure 2). However, with much longer training and twice as
+many reverse diffusion steps at inference compared to our RIR-
+conditioned models, it does outperform the baseline SGMSE
+and demonstrate competitive performance with our proposed
+models. The inferior performance of SGMSE+ baseline com-
+pared to our models could also be potentially explained by the
+dependence of SGMSE+ baseline on EMA for stable training
+limiting its learning capabilities. Evidently, our conditioning
+method solves this optimization issue and stabilizes the opti-
+mization in earlier stages (Figure 3). A summary of the results
+is presented in Figure 2.
+6. Conclusion
+In this work, we investigated the RIR representation learning
+capability of diffusion-based and discriminative NCSN++ U-
+Net–based dereverberation models by applying unsupervised
+clustering to spatially averaged embeddings extracted from
+mid-level attention features. Our analysis reveals that these
+models implicitly learn strong RIR-dependent representations.
+Additionally, we observed a correlation between the discrimi-
+native strength of learned representations and dereverberation
+performance. Motivated by this observation, we proposed a
+conditioning strategy in which the network is trained with pre-
+trained RIR embeddings learned via a contrastive framework.
+This approach leads to improved RIR representation learning,
+faster convergence, and enhanced dereverberation performance.
+4504
+7. Acknowledgments
+Funded by the Deutsche Forschungsgemeinschaft (DFG, Ger-
+man Research Foundation) – 545210893, 498394658. The au-
+thors gratefully acknowledge the scientific support and HPC re-
+sources provided by the Erlangen National High Performance
+Computing Center (NHR@FAU) of the Friedrich-Alexander-
+Universitat Erlangen-Nurnberg (FAU) under the NHR project
+f102ac. NHR funding is provided by federal and Bavarian state
+authorities. NHR@FAU hardware is partially funded by the
+German Research Foundation (DFG) – 440719683.
+8. Generative AI Use Disclosure
+Generative AI tools were used only for minor language editing
+(clarity, grammar, and polishing). All ideas, methods, experi-
+ments, results, and conclusions were produced and verified by
+the authors, who take full responsibility for the paper.
+9. References
+[1] P. A. Naylor and N. D. Gaubitch, Eds.,Speech Dereverberation.
+London: Springer, 2010.
+[2] E. A. P. Habets,Speech Dereverberation Using Statistical Rever-
+beration Models. London: Springer, 2010, pp. 57–93.
+[3] T. Gerkmann and R. Martin, “Empirical distributions of dft-
+domain speech coefficients based on estimated speech variances,”
+inProc. Int. Workshop Acoust. Echo Noise Control, 2010.
+[4] I. Kodrasi, T. Gerkmann, and S. Doclo, “Frequency-domain
+single-channel inverse filtering for speech dereverberation: The-
+ory and practice,” inIEEE Int. Conf. Acoustics, Speech, Signal
+Proc. (ICASSP), Florence, Italy, 2014.
+[5] T. Nakatani, B.-H. Juang, T. Yoshioka, K. Kinoshita, M. Delcroix,
+and M. Miyoshi, “Speech dereverberation based on maximum-
+likelihood estimation with time-varying gaussian source model,”
+IEEE Transactions on Audio, Speech, and Language Processing,
+vol. 16, no. 8, pp. 1512–1527, 2008.
+[6] F. Yohena and K. Yatabe, “Single-channel blind dereverberation
+based on rank-1 matrix lifting in time-frequency domain,” inIEEE
+Int. Conf. Acoustics, Speech, Signal Proc. (ICASSP), Seoul, Ko-
+rea, Republic of, 2024.
+[7] D. S. Williamson and D. Wang, “Time-frequency masking in
+the complex domain for speech dereverberation and denoising,”
+IEEE/ACM Transactions on Audio, Speech, and Language Pro-
+cessing, vol. 25, no. 7, pp. 1492–1501, 2017.
+[8] J. Richter, S. Welker, J.-M. Lemercier, B. Lay, and T. Gerkmann,
+“Speech enhancement and dereverberation with diffusion-based
+generative models,”IEEE/ACM Transactions on Audio, Speech,
+and Language Processing, vol. 31, pp. 2351–2364, 2023.
+[9] J.-M. Lemercier, J. Richter, S. Welker, and T. Gerkmann, “Storm:
+A diffusion-based stochastic regeneration model for speech en-
+hancement and dereverberation,”IEEE/ACM Transactions on Au-
+dio, Speech, and Language Processing, vol. 31, pp. 2724–2737,
+2023.
+[10] S. Welker, B. Lay, M. Hillemann, T. Peer, and T. Gerkmann,
+“Real-time streamable generative speech restoration with flow
+matching,”arXiv preprint arXiv:2512.19442, 2025.
+[11] J.-M. Lemercier, E. Moliner, S. Welker, V . V¨alim¨aki, and T. Gerk-
+mann, “Unsupervised blind joint dereverberation and room acous-
+tics estimation with diffusion models,”IEEE Transactions on Au-
+dio, Speech and Language Processing, vol. 33, pp. 2244–2258,
+2025.
+[12] P. Wang and X. Li, “Rvae-em: Generative speech dereverberation
+based on recurrent variational auto-encoder and convolutive trans-
+fer function,” inIEEE Int. Conf. Acoustics, Speech, Signal Proc.
+(ICASSP), Seoul, Korea, Republic of, 2024.
+[13] S. T. Neely and J. B. Allen, “Invertibility of a room impulse re-
+sponse,”The Journal of the Acoustical Soc

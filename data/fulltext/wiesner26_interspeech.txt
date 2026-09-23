@@ -1,0 +1,546 @@
+Modeling Overlapped Speech with Shuffles
+Matthew Wiesner ID 1,2, Samuele Cornell ID 3, Alexander Polok ID 4, Lucas Ondel Yang ID 2,
+Luk´aˇs Burget ID 4, Sanjeev Khudanpur ID 1
+1 Johns Hopkins University, USA, 2 LISN, CNRS, France
+3 Carnegie Mellon University, USA, 4 Brno University of Technology, Czechia
+{wiesner,khudanpur}@jhu.edu, lucas.ondel@cnrs.fr, samuele.cornell@ieee.org,
+{ipoloka,burget}@fit.vutbr.cz
+Abstract
+We propose to model parallel streams of data, such as over-
+lapped speech, using shuffles. Specifically, this paper shows
+how the shuffle product and partial order finite-state automata
+(FSAs) can be used for alignment and speaker-attributed tran-
+scription of overlapped speech. We train using the total score on
+these FSAs as a loss function, marginalizing over all possible
+serializations of overlapping sequences at subword, word, and
+phrase levels. To reduce graph size, we impose temporal con-
+straints by constructing partial order FSAs. We address speaker
+attribution by modeling (token, speaker) tuples directly. Viterbi
+alignment through the shuffle product FSA directly enables one-
+pass alignment. We evaluate performance on synthetic Lib-
+riSpeech overlaps. To our knowledge, this is the first algorithm
+that enables single-pass alignment of multi-talker recordings.
+All algorithms are implemented using k2 / Icefall.1
+Index Terms: Multi-talker ASR, Overlap, Shuffles
+1. Introduction
+This work demonstrates a way to extend models of concurrency
+to the problem of end-to-end (e2e) speaker-attributed align-
+ment and transcription of overlapped speech. Two commonly
+used models for representing concurrent processes are partial
+orders [1, 2], and shuffle products [3, 4]. The shuffle prod-
+uct, which generates all possible interleavings of sequences that
+preserve the internal order of each sequence, has been used
+to represent the space of possible serializations of concurrent
+events [4]. Similarly, one can represent a partial order on a sub-
+set of sequences as the set of all admissible serializations.
+Overlapped speech presents a natural instance of this prob-
+lem. We model multi-talker transcription as the recovery of
+interleaved sequences of discrete linguistic units: subwords,
+words, or phrases, observed through a shared acoustic channel.
+Since the exact temporal ordering of tokens across speakers is
+unknown, we show that the Connectionist Temporal Classifi-
+cation (CTC) [5] objective can be extended to this setting by
+replacing the standard supervision sequence with a finite-state
+automaton (FSA) representing the shuffle product of utterance
+transcripts. The forward algorithm on this FSA marginalizes
+over all valid interleavings, in the same way that standard CTC
+marginalizes over all valid frame-to-token alignments. To keep
+the approach tractable, we introduce partial order constraints
+that prune the shuffle FSA using approximate token timing,
+yielding a principled trade-off between flexibility and computa-
+tional cost. We show that other approaches for multi-talker ASR
+such as utterance-level Serialized Output Training (SOT) [6],
+token-level SOT [7], and Speaker-Distinguishable SD-CTC [8]
+1https://github.com/geolocation-from-speech/jsalt2025.git
+can be understood as special cases or relaxations of this frame-
+work.
+A benefit of this formulation is that it produces aligned,
+speaker-attributed transcripts even in the presence of overlapped
+speech. The Viterbi path through the shuffle product FSA di-
+rectly provides a single-pass alignment of overlapped speech,
+which, to our-knowledge, has not previously been done. We
+extend this framework to also model speaker attribution by aug-
+menting the CTC output to (token, speaker) tuples, and propose
+both factored and joint models of this distribution. We describe
+methods for 1-pass speaker-attributed decoding for multi-talker
+speech using CTC argmax decoding and a target-speaker de-
+coding method that enables standard WFST language model in-
+tegration.
+These contributions open up new research possibilities par-
+ticularly relevant for processing in-the-wild multi-talker data
+e.g. from webvideos [9], where per-speaker audio streams are
+unavailable and existing annotations—such as subtitles or ap-
+proximate transcripts with speakers turn—are often temporally
+misaligned especially when speakers overlap.
+More broadly, although we demonstrate our approach us-
+ing CTC for simplicity, it should be readily extensible to other
+objective functions that can be represented by weighted finite-
+state transducers (WFSTs) [10], including the transducer [11]
+and hidden Markov models (HMMs) [12]. The formulation it-
+self is also not specific to speech: it applies whenever multiple
+independent processes emit sequences that are observed inter-
+leaved through a single channel without a known ordering, as
+in polyphonic music transcription, multi-agent activity recogni-
+tion, or multi-event detection.
+This paper first introduces the shuffle product and shows
+how partial order constraints can be included to make the graph
+size manageable, even for long sequences of overlapped speech.
+Then we show how these core techniques can be applied to the
+problem of training, decoding, and aligning overlapped speech.
+In the process we show how prior work including tSOT, SOT,
+and SD-CTC relate to the shuffle product. Finally, we explore
+our proposed training, decoding, and alignment methods on
+synthetic LibriSpeech overlaps.
+2. Related Work
+Several approaches have been proposed for handling over-
+lapped speech in multi-talker ASR. Early work used Permu-
+tation Invariant Training (PIT) [13, 14], where multiple output
+heads share an encoder and each branch is trained with a CTC
+loss [15–17]. However, PIT requires fixing the maximum num-
+ber of speakers a priori and scales poorly, as each additional
+speaker introduces a new branch and increases the number of
+loss evaluations combinatorially.
+6171
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2462
+Serialized Output Training (SOT) [6] sidesteps this by con-
+catenating multi-speaker transcripts into a single output se-
+quence, enabling standard sequence-to-sequence training. The
+utterance-level FIFO ordering it imposes, however, may not re-
+flect the temporal dynamics of the signal. In token-level SOT
+(tSOT) [7], tokens are ordered according to their start times,
+so they are temporally aligned, but this requires accurate word-
+level alignments which do not generally exist for in-the-wild
+data where overlapped speech must be handled directly.
+More recently, Speaker-Distinguishable CTC (SD-
+CTC) [8] extends CTC to multiple speakers by introducing
+speaker-specific blank symbols and an auxiliary speaker output.
+We show in Section 3.6 that SD-CTC can be interpreted as
+a relaxation of our framework and that token-level SOT,
+and SD-CTC can all be viewed as special cases within our
+formulation (Sections 3.2), providing a unifying perspective on
+these seemingly disparate approaches. Recent models such as
+Serialized Output Prompting [18] and GEncSep [19] also use
+CTC to produce speaker-ordered representations of overlapped
+speech, which are then passed to a downstream attention
+decoder or LLM. Our method could similarly replace the
+speaker-serialized CTC component used in those approaches.
+Our work builds on a line of research extending CTC-
+like marginalization to weakly supervised settings. Semi-
+supervised MMI training [20, 21] uses ASR lattices as super-
+vision, while Bypass Temporal Classification [22], OTC [23],
+and Star-CTC [24] extend CTC to work directly on errorful
+transcripts without prior lattice construction from existing ASR
+systems. [25] even use a full language model for phoneme de-
+cipherment. These ideas have also been extended to transducer
+models [26, 27]. These methods show that composing the CTC
+topology with flexible supervision graphs that accept all admis-
+sible sequences subject to annotation constraints enables train-
+ing in weakly supervised settings. We extend this concept to
+multi-talker transcripts: since the exact interleaving of tokens
+across speakers is unknown, we compose the CTC topology
+with shuffle product FSAs that encode all valid interleavings.
+3. Method
+3.1. Shuffles for Multi-talker Speech
+The shuffle product, which generates all possible interleavings
+of sequences while preserving the internal order of each, is a
+well-studied construct in formal language theory and concur-
+rency modeling [1, 3, 4]. In theposet(partially ordered sets)
+literature [28], these interleavings are called linear extensions,
+or linearizations. We use the term serialization here to empha-
+size the connection with serialized output training commonly
+used in multi-talker ASR.
+Regular languages are closed under the shuffle operator,
+and the resulting language can be compactly represented as
+a finite-state automaton (FSA). To our knowledge, the shuf-
+fle product has not previously been used in multi-talker speech
+recognition. We show that it provides an elegant framework for
+modeling overlapped speech, where the interleaving of tokens
+from concurrent speakers is unknown.
+Lety,zbe two sequences and letyzdenote the shuffle
+between them. It is the set of all possible riffle shuffles of the
+two sequences. For example, ify=abc,z=xy, then
+yz={abcxy,abxyc,axybc,xyabc,abxcy,axbcy,
+xabcy,axbyc,xabyc,xaybc}.
+The notion of shuffle can be extended to sets of sequences. Let
+0,0 0,1 0,2
+1,0 1,1 1,2
+2,0 2,1 2,2
+3,0 3,1 3,23,2
+a
+b
+c
+a
+b
+c
+a
+b
+c
+x y
+x y
+x y
+x y
+0,0
+1,0
+2,0
+1,1
+2,1
+1,2
+2,2
+3,2
+a
+b b b
+c
+x y
+x y
+(a) (b)
+0,0
+1,0
+2,0
+3,0 3,1 3,2
+a
+b
+c
+x y
+0,0
+1,0 1,1
+2,1 2,2
+3,2
+a
+x
+b
+y
+c
+(c) (d)
+Figure 1:FSAs representing different utterance group serializa-
+tions. Tuples on states represent indices into the two serialized
+sequences. Colors represent unique sources. (a) The shuffle
+product FSA between two sequencesy 1 =abc,y 2 =xy. (b)
+The pruned shuffle FSA obtainable from application of partial
+order constraints (see Section 3.2). (c) The subgraph corre-
+sponding to utterance-level serialized output training (SOT). (d)
+The subgraph corresponding to token-level SOT, assuming to-
+ken ordera≤x≤b≤y≤c.
+L1,L 2 be two such sets. ThenL 1 L 2 =S
+y∈L1
+S
+z∈L2yz
+with∅{y}={y}. Defining the shuffle of a sequence with
+a set enables shuffling more than two sequences together via
+iterative pairwise shuffling, which returns the same set regard-
+less of the shuffling order because the shuffle is both associative
+and commutative [4]. We use y∈Lyto represent the iterated
+shuffle product of sequences inL.
+For two sequences of lengthM,N, each element in the
+shuffle has lengthM+N. The number of elements in the
+shuffle is
+ M+N
+N
+
+. An FSA, accepting all elements of the shuf-
+fle product can be constructed from a set of sequences. Fig-
+ure 1(a) shows the FSA shuffle product for two example se-
+quences. Consider the shuffle ofk, length-Nsequences. The
+space complexity of the graph isO
+ 
+kNk
+(Nk states for the
+hypercube, each withkoutgoing arcs). Scaling to more than
+2 overlapping sequences, especially longer ones, therefore re-
+quires strategies to limit graph size.
+3.2. Partial Orders and Serialization
+Partial order constraints are one way of limiting the size of the
+shuffle product FSA. A partial order is a precedence relation-
+ship on a subset of elements. Elements in this subset are called
+comparable elements [28], while those not in the subset cannot
+be ordered. The shuffle product itself encodes a partial order
+since it requires that the internal order of each shuffled sequence
+be preserved without imposing any ordering between elements
+6172
+of different sequences. Intra-sequence elements are therefore
+comparable while inter-sequence elements are not.
+The precedence relationship of the shuffle product can be
+extended to inter-sequence tokens by using approximate token
+start times to discard unlikely interleavings, which enables fur-
+ther pruning of states in the shuffle graph. Token start times
+can be approximated by linearly interpolating between utter-
+ance start and end times (see Section 3.2.1).
+Letti,tj∈Rbe the start times of thei th andj th tokens in
+sequencesyandzrespectively, and letκbe a threshold control-
+ling the amount of uncertainty allowed in the temporal ordering,
+i.e., a “collar.” We can then define a partial order over tokens,
+yi⪯z j ift i < tj−κ, meaningy i must appear beforez j in
+any valid serialization. Tokens whose start times fall withinκof
+each other are left unordered, allowing for all possible interleav-
+ings between them. The resulting FSA is obtained by pruning
+the full shuffle product FSA to retain only paths consistent with
+these temporal constraints via a breadth-first search. 2
+Figure 1(b) depicts the pruned shuffled graph from (a) af-
+ter imposing additional inter-sequence partial order constraints.
+Given the ordering constraints a⪯b⪯c, x⪯y, a⪯x,
+and y⪯c, only tokens b, x, and y remain mutually unordered,
+significantly reducing the number of valid paths. The forward
+algorithm on this pruned FSA marginalizes over the remaining
+valid interleavings.
+3.2.1. Relationship to existing serialization schemes
+Lety={y 1,...,y M},z={z 1,...,y N}represent utterance
+transcripts ofMandNtokens respectively, with known start
+times,b y≤b z, and end timese y,ez. Commonly used serial-
+izations can be viewed as distinct partial order constraints.
+1.Utterance-level SOTimposes a total order at the speaker
+level, concatenating all tokens of the first utterance before
+the second:{y 1,...,y M,z 1,...,z N}(Figure 1(c)). This is
+a serialization strategy that constrains the order of speakers.
+2.Token-level SOT, such as in [7], orders tokens by start time,
+which requires token alignments. Lett yi, be the start time
+of thei th token in the sequencey. We approximately infer
+these start times using the heuristic
+tyi =b y +i· ey−by
+M .(1)
+This enforces a single deterministic interleaving (Figure 1(d))
+and corresponds toκ= 0in our framework.
+3.Partial ordering with a collarallows any interleaving for
+which token start times are withinκof each other. Intuitively,
+this is analogous to the time-constrained permutation used
+in tcpWER [29]: just as tcpWER allows flexible speaker-to-
+reference matching within a time collar during evaluation,
+our partial order allows flexible token interleaving within a
+collar during training.
+4.Full shuffleis recovered whenκ→∞, encoding all possible
+interleavings with no temporal constraints.
+Sweepingκfrom0to∞provides a continuum from token-level
+SOT to the full shuffle, where the appropriate collar depends on
+the accuracy of the available token-level timing supervision.
+2We defined the partial order on tokens for ease of exposition, how-
+ever, defining the partial order over the states of the shuffle graph is
+more appropriate and resolves some ambiguity regarding tokens with
+the same label in different sequences. All states in the shuffle graph that
+do not obey the imposed partial order are pruned.
+3.3. CTC with Shuffles
+We now show how to train acoustic models using these shuffle-
+graph supervisions in conjunction with CTC. The loss used in
+CTC is a particular instance of the forward algorithm computed
+on an FSA representing all possible alignments of a ground-
+truth output sequence to the input acoustic sequence. Be-
+cause the exact alignment is unknown, the forward algorithm
+marginalizes over all admissible alignments. We extend this
+idea to multi-talker transcripts without known token-level time
+information. Since we do not know the exact order of token se-
+quences among the utterances, we use shuffles and partial orders
+to construct the set of all possible interleavings. In the same way
+that CTC marginalizes over all valid alignments of input frames
+to output tokens, the forward algorithm on the shuffle product
+FSA marginalizes over all possible ways of interleaving training
+utterances.
+3.3.1. Extending CTC to Utterance Groups with Shuffles
+Letx t be a sample of speech at timetandx= (x 1,...,x T )
+be a sequence of such samples, i.e., an audio input. Let
+a=a 1...a T , be an alignment of the speech frames to the
+transcript, wherea t is either an element from a vocabulary,
+Vor no-speech, also commonly called blank and denoted by
+⊘. The transcript can be recovered from an alignment by col-
+lapsing repeated symbols and removing any⊘symbols. Let
+β()represent this token collapsing function, and letβ −1 (y) =
+{a|β(a) =y}be the set of all admissible alignments for tran-
+scripty. CTC models the probability of a transcript,y, by
+marginalizing over all alignments,a, and assuming output sym-
+bol probabilities are independent conditioned on the input, i.e.,
+p(y|x) =
+X
+a∈β−1(y)
+p(a|x) =
+X
+a∈β−1(y)
+TY
+t=1
+p(at|x).(2)
+Consider a set ofkutterances,G={u 1,...,u k}, some-
+times called an utterance group in the literature [30] associated
+with the audio input,x. LetS={1,...,s max}be an ordering
+of up tos max speakers inx, e.g., the order in which speakers
+first appear, and letybe a token sequence. Finally, lett b,te be
+utterance beginning and end times. Thenu i = (tb,te,s,y). To
+denote the start,tb, or speaker,s, of the utterance we useui [tb],
+ui [s]etc.. LetY= 
+u∈G
+u[y]be the shuffle product of the to-
+ken sequences inGand letβ −1 (Y)be the set of alignments, to
+frames inx, of elements of the shuffle product corresponding to
+the utterance group,G. We want to maximize the probability of
+the utterance group transcripts.
+p(G|x) =
+X
+y∈Y
+p(y|x) =
+X
+y∈Y
+X
+a∈β−1(y)
+p(a|x)(3)
+=
+X
+a∈β−1(Y)
+TY
+t=1
+p(at|x).(4)
+This looks exactly like the probability of a transcript as
+modeled by CTC, but we have expanded the set of possible
+alignments to include multi-talker FSAs using shuffles. We re-
+fer to the negative log of this quantity as the shuffle loss. It can
+be implemented using the FSAs shown in Figure 1. LetU(x)
+be the dense FSA that encodes the probabilitiesp(a t|x)∀t, of
+each possible output token,a t, at each moment in time,t. Let
+G(Y)represent the supervision graph, i.e., the shuffle FSA.
+Then in the log-semiring
+6173
+0 1 2
+⊘:ϵ
+a:a ⊘:ϵ
+⊘:ϵ
+b:b
+Figure 2:The compact selfless label topology from [33]. Note
+that, different from the traditional CTC-topology, it forces to-
+kens to appear on exactly one frame, and forces⊘between ev-
+ery token in the transcript, i.e., between “a” and a subsequent
+“b”.
+logp(G|x) =JU(x)◦(T◦G(Y))K.(5)
+◦is the FST composition, andJAKis the forward score (sum
+of products) over all paths in the graph,A. See [31] for more
+background on FSA algorithms.
+Prior work [32] has shown that allowing the⊘symbol be-
+tween any tokens results in peaky label predictions. [33] lever-
+age this behavior to reduce the size of decoding graphs by ex-
+ploring alternative CTC topologies,T. Since we are modeling
+overlapped speech as a sequence of discrete, interleaved events
+(word / phoneme start-times), and we are not aiming for frame-
+level classification, the peaky behavior of CTC is actually de-
+sirable. Using a reduced topology that exaggerates the peaky
+behavior of CTC also helps to reduce the size ofT◦G(Y),
+which is critical sinceYcan be large. We therefore use the
+compact selfless topology of [33] (see Figure 2).
+3.4. Speaker Attribution with Shuffles
+We now discuss how to attribute tokens to speakers. To each
+token,y t, in each element in the shuffle product,y∈Y, we
+will associate a speaker tag,s t ∈ S, from some predefined
+set of speaker labels. In other words, the shuffle elements,
+y= ((y 1,s 1),(y 2,s 2),...,(y T,sT ))∈Y×S, are now in-
+terleaved tuples. LetY ′ denote this speaker augmented shuffle
+product. In CTC-like objective functions, e.g., Equation 4, we
+can replaceat so that instead of tokens,at∈V S{⊘}, they are
+now tuples or blank symbols,a′
+t∈(V×S) S{⊘}, e.g.,
+a′ = (⊘,⊘,(υ 3,σ 3),⊘,...,⊘,(υ T−1,σT−1 ),⊘).
+The supervision graph,G(Y), in Equation 5, changes corre-
+spondingly toG(Y ′). Letϕ(x)represent the outputs from a
+neural network,ϕ(·), such as WavLM [34]. LetW y,Ws be
+linear projections from the neural network output embedding
+dimension to the output vocabulary and number of speakers re-
+spectively. Let ¯⊘be the shorthand fora ′
+t̸=⊘. We can model
+the joint, frame-level probability by computing joint scores for
+speakers and tokens using a factored joint model as in speaker
+distinguishable CTC [8]:
+pa′
+t
+ 
+a′
+t|x
+
+=
+(
+pυt (⊘|x) ;a ′
+t =⊘
+pυt (υt|x)pσt (σt|x, ¯⊘) ;a ′
+t̸=⊘
+pυt (υt|x) =Softmax(W yϕ(x))t
+υt
+pσt (σt|x, ¯⊘) =Softmax(W sϕ(x))t
+σt.
+The way to interpretp σt (σt|x, ¯⊘), especially in the con-
+text of overlapped speech, is the probability of speakerσt given
+that time,t, is the start of a non-⊘token. Note that we have
+overloadedυ t to be simultaneously the index of a symbol and
+its representation.
+Alternatively, we can directly normalize over scores for all
+speaker-token pairs,
+f(⊘|x) = (W yϕ(x))t
+⊘,
+f(υ t,σt|x, ¯⊘) = (Wyϕ(x))t
+υt + (Wsϕ(x))t
+σt,
+and unrolling into a vector the scoresf(υ t,σt|x, ¯⊘)of all
+speaker, token pairs lets us define the joint probability,
+p
+ 
+a′
+t|x
+
+=Softmax([f(⊘|x),{f(υ t,σt|x)}υ,σ∈V×S ]).
+We refer to this as the direct joint model.
+Speaker labels can be produced as in [35, 36], where the
+speaker label is assigned by the order in which speakers appear
+in the conversation, but other heuristics such as total amount of
+spoken time could be used.
+3.5. Multi-talker Decoding
+CTC decoding is commonly improved by fusion with a lan-
+guage model. In the WFST framework this is done by compos-
+ing a graph representation of the neural network output prob-
+abilities with FSTs representing n-gram language models and
+perhaps a pronunciation, or byte-pair encoding (BPE)-unit lex-
+icon. Unfortunately, we do not have shuffle n-gram language
+models. The space of all possible shuffles is also too large to
+represent as a graph. Instead, we propose two methods to per-
+form multi-talker decoding with shuffles.
+3.5.1. 1-pass Decoding
+The simplest approach is 1-pass greedy CTC decoding, which
+simultaneously transcribes all speakers. Since the model pre-
+dicts a (BPE unit, speaker label) tuple at each frame, the opti-
+mal token sequence and speaker assignment can be recovered
+directly:
+a∗
+t = argmax
+at∈(S×V) S⊘
+p(at|x)
+y∗ =β(a ∗
+1||···||a ∗
+N),
+where||represents concatenation andβ(·)is the CTC-collapse
+function that removes repeated and then blank symbols. The
+only remaining issue is how to recover word-level transcripts
+from this token sequence. Decoded tokens,(υ,σ), with the
+same speaker label,σ, are concatenated and detokenized ac-
+cording to the BPE model.
+Some evaluation metrics (see Section 4) additionally re-
+quire timing information. We take the start time of each token
+to be the frame at which it was decoded. Its duration is the
+number of frames until the same speaker’s next token. If the
+gap between consecutive tokens from the same speaker exceeds
+a threshold (we use 0.5 s), we treat it as an utterance boundary
+and set the final token’s duration to the average duration of the
+other tokens in that utterance.
+3.5.2. N-pass Decoding
+Language model integration requires disentangling the output
+sequences so that each is a single speaker utterance. A multi-
+pass decoding method can be applied whereby the neural net-
+work outputs are repeatedly masked and passed through a CTC
+decoding graph,TLG. Let⊘ σ, be a new speaker specific
+blank probability, as used in SD-CTC [8]. The following target
+6174
+speaker network outputs are used for decoding target speakerσ:
+p(⊘σ|x) =p υt (⊘|x) +
+X
+ρ̸=σ
+pυt (υt|x)pσt (ρ|x, ¯⊘)
+(6)
+pt (υ,σ|x, ¯⊘) =p υt (υt|x)pσt (σ|x, ¯⊘)(7)
+In other words, the probability mass corresponding to other
+speakers is transferred to⊘. Let the WFSA,U σ (x), be the
+dense FSA representing these target-speaker frame-level prob-
+abilities. Then decoding can be performed as
+ˆwσ =Proj w (ShortestPath(Uσ (x)◦(T◦L◦G)))
+G={ˆwσ|σ∈1,...,|S|},
+where Projw is the FST projection onto the output labels. Tim-
+ing information is recovered in the same way as in the 1-pass
+decoding algorithm.
+3.6. Relationship to Speaker Distinguishable CT

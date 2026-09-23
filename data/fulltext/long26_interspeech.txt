@@ -1,0 +1,452 @@
+Benchmarking Language Modeling for Lossless Compression of Full-Fidelity
+Audio
+Phillip Long ID 1,∗,∗∗, Zachary Novack ID 1,∗, Chris Donahue ID 2
+1 Computer Science and Engineering Department, University of California, San Diego, USA
+2 School of Computer Science, Carnegie Mellon University, USA
+p1long@ucsd.edu
+Abstract
+Autoregressive “language” models (LMs) trained on raw wave-
+forms can be repurposed forlosslessaudio compression, but prior
+work is limited to 8-bit audio, leaving open whether such ap-
+proaches work for practical settings (16/24-bit) and can compete
+with existing codecs. We benchmark LM-based compression
+on full-fidelity audio across diverse domains (music, speech,
+bioacoustics), sampling rates (16kHz-48kHz), and bit depths
+(8, 16, 24-bit). Standard sample-level tokenization becomes
+intractable at higher bit depths due to vocabulary size (65K for
+16-bit; 16.7M for 24-bit). We proposeTrilobyte, a byte-level
+tokenization schema for full resolution audio, improving vocabu-
+lary scaling fromO(2b) toO(1) and enabling the first tractable
+24-bit LM-based lossless compression. While LMs consistently
+outperform FLAC and yield state-of-the-art compression at 8-bit
+and 16-bit, we observe that compression gains become more
+modest as bit depth increases beyond 8-bit.
+Index Terms: lossless audio compression, full-fidelity audio,
+autoregressive language models
+1. Introduction
+Recent work has demonstrated that neural-based approaches
+can yield dramatic improvements inlossyaudio compression
+[1, 2, 3], with learned codecs achieving an order of magnitude
+better compression rates than traditional codecs like MP3 [ 4]
+while maintaining comparable perceptual quality. However, the
+potential of ML forlosslessaudio compression remains largely
+unexplored at practical fidelities. Autoregressive (AR) language
+models (LMs) offer a potential solution, as such models trained
+on raw audio samples can be repurposed as lossless compres-
+sors via arithmetic coding [5], where compression rate improves
+as the model’s log likelihood increases. However, prior work
+has been constrained to 8-bit quantization at 16kHz sampling
+rates [6, 7, 5, 8, 9]. This poses a practical problem as 8-bit, low
+sampling-rate audio is of limited downstream relevance—the
+perceptual quality is poor enough that audio is almost never
+distributed at this fidelity. Professional recording and produc-
+tion workflows universally operate at 16-bit, 44.1kHz or higher,
+and users of lossless audio compression expect “CD-quality”
+(44.1kHz, 16-bit) at minimum, or even higher-resolution formats
+(24-bit). Additionally, directly modeling higher bit-depth audio
+creates exponentially larger vocabularies for LMs (216 = 65,536
+tokens for 16-bit; 224 = 16,777,216 for 24-bit), rendering stan-
+dard AR approaches computationally intractable. Whether lan-
+guage model compression can thus scale to these full-fidelity
+regimes remains an open question.
+*These authors contributed equally.
+**indicates the corresponding author.
+To counteract the exponential scaling of vocabulary size as
+bit depth increases, we introduceTrilobyte, a byte-level tok-
+enization scheme that improves vocabulary scaling from expo-
+nentialO(2b) to constant O(1) in bit depth. We demonstrate
+that not only does Trilobyte improve compression rates for 16-
+bit audio relative to sample-level modeling, but it also enables
+the first tractable language model compression of 24-bit audio.
+The Trilobyte tokenization scheme is compatible with any AR
+modeling framework—here we explore standard decoder-only
+Transformers specifically.
+We systematically evaluate LM-based compression, includ-
+ing pre-trained LLMs and models trained from scratch on audio
+with and without Trilobyte encoding, on full-fidelity audio across
+diverse domains (music, speech, and bioacoustic signals), sam-
+pling rates (16-48kHz), and at 8-, 16-, and 24-bit quantization.
+Our results primarily highlight thatbit depth, rather than sam-
+pling rate or data domain, is the limiting factor in LM-based
+compression. Specifically, while LM-based approaches can out-
+perform the industry-standard lossless codec FLAC [10] at 8-bit
+(consistent with prior work), the performance gap narrows sub-
+stantially at higher bit depths.
+Our contributions include: (1) Trilobyte, enabling tractable
+24-bit modeling through hierarchical tokenization with linear
+vocabulary scaling; (2) the first comprehensive benchmarking of
+LM compression on full-fidelity audio (16/24-bit) across diverse
+domains; and (3) evidence characterizing the performance gap
+between learned and traditional compressors across bit depths.
+2. Related Works
+2.1. Traditional Lossless Audio Compression
+FLAC (Free Lossless Audio Codec) [10] is the de facto standard
+for lossless audio compression, achieving typical compression
+rates of 2x for CD-quality music [ 11]. FLAC uses linear pre-
+dictive coding to approximate audio in chunks and Rice coding
+[12] to efficiently encode residuals [13]. Although FLAC does
+attempt to exploit stereo redundancy via mid-side encoding, this
+yields only marginal compression rate improvements for CD-
+quality audio because the small chunk size of around 4,096
+samples is insufficient to accommodate the stereo delays com-
+monly present in music production, which prevents effective
+decorrelation of the left and right channels.
+2.2. ML for Lossless Compression
+While recent work has shown that machine learning can dramat-
+ically improvelossyaudio compression [ 1, 2, 3], the lossless
+setting remains less explored. Del ´etang et al. [ 5] and Li et al.
+[8] proposed using large language models like Llama [14, 15]
+and Chinchilla [16] for general-purpose lossless compression
+via arithmetic coding [ 17, 18]. However, these works’ explo-
+3889
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1748
+StandardProposed
+narrow, 
+low fidelity
+Audio (-bit PCM)b
+diverse, 
+high fidelity
+Tokenization Step
+sample-level tokenization
+ 
+exponential 
+scaling!
+ 
+constant 
+scaling!
+💥
+⚠
+👍
+intractable @ 
+higher bit depths!
+enables full-
+fidelity modeling!
+😔
+😊
+✅
+❌
+🦜
+🎸
+📻
+Arithmetic Coder
+Compressed Audio
+10101100111000111101001000…
+Autoregressive 
+Language Model
+Vocabulary Size
+🎉
+Samples
+Tokens
+1 Token per Sample, |𝒱|=2b
+byte-level tokenization
+Samples
+Tokens
+1 Token per Byte, |𝒱|=28
+⋯ ⋯ ⋯ ⋯
+⋯MSB LSB
+Figure 1:Tokenization strategies for language model compression. Standard sample-level tokenization (top) yields vocabulary size
+|V|= 2 b. This exponential scaling inhibits modeling of industry-standard bit depths ( 16, 24). Trilobyte’s hierarchical byte-level
+tokenization (bottom) decomposes samples into bytes, yielding constant |V|= 256 regardless of bit depth (at the cost of increasing
+sequence length by⌈b/8⌉). Both feed into an AR LM and arithmetic coder , but Trilobyte enables tractable 24-bit modeling.
+ration ofaudiois limited to 8-bit Librispeech [ 19] and LJSpeech
+[20], where they outperform FLAC. This 8-bit regime is not
+representative of real-world lossless audio applications, which
+typically require at least CD-quality (44.1kHz, 16-bit) formats.
+Heurtel-Depeiges et al. [9] further demonstrate that small pre-
+trained Transformers can achieve competitive compression rates
+to FLAC on 8-bit audio. Critically, none of these works ex-
+plore whether compression gains extrapolate to higher bit depths.
+Whether ML-based compression remains competitive at full-
+fidelity audio is the central question we investigate.
+Prior work on AR modeling of raw audio waveforms [6, 21,
+7] has focused on generation rather than compression, operating
+primarily on 8-bit audio at 16–24kHz. Despite this early interest
+in waveform-level modeling, such approaches have largely fallen
+out of favor for generation tasks, supplanted by methods that
+train on compressed audio tokens [ 22, 23, 24]; however, raw
+waveform modeling remains promising for lossless compression.
+Traditional approaches address the vocabulary explosion through
+µ-law companding [25], which reduces bit depth via non-linear
+quantization. Recent work on byte-level modeling [26] explores
+tokenization strategies that could scale to larger vocabularies,
+though these have not been tested on higher bit-rate audio. To our
+knowledge, no prior work has successfully trained AR models
+for 16- or 24-bit audio compression at CD-quality sample rates.
+3. Methods
+AR models offer a fundamentally different paradigm from tradi-
+tional codecs like FLAC: rather than using a bottleneck represen-
+tation plus residuals, they directly model the probability distribu-
+tion over the next sample given all previous samples. The key
+insight is that any AR probabilistic modelP(xi|x <i) over dis-
+crete sequences can be used with arithmetic coding [17, 18, 27]
+to achieve compression rates that approach the entropy of the
+data [5]. Unlike FLAC’s local chunk-based prediction, AR mod-
+els can capture arbitrarily long-range dependencies in the audio
+signal, potentially discovering structure that linear prediction
+cannot. The compression pipeline operates as follows: we train
+an AR model to predictP(xi|x <i) at each position, then dur-
+ing compression, we iteratively compute these probabilities and
+use arithmetic coding to encode the sequence into a bitstream.
+Decompression reverses this process, using the same AR model
+and arithmetic decoder to sequentially reconstruct each sample.
+3.1. Arithmetic Coding
+Unlike FLAC’s use of Rice coding which assumes a fixed geo-
+metric distribution, arithmetic coding [17, 18, 27] can efficiently
+encode any sequence given an arbitrary probability distribution
+at each step. The core principle is to encode an entire sequence
+into a single fractional number in [0,1) by iteratively narrowing
+an interval based on the cumulative probability distribution. The
+encoding process begins with the interval[0,1) ; for each symbol
+xi, we partition the current interval according to P(xi|x <i)
+and select the sub-interval corresponding to the observed symbol.
+The final interval uniquely identifies the sequence, and we output
+a binary representation of any number within this interval.
+Arithmetic coding achieves theoretical optimality, approach-
+ing the Shannon entropy [28]. The key advantage is the ability
+to exploit arbitrary probability distributions from the AR model,
+not just geometric ones. This creates a direct connection to lan-
+guage models: the cross-entropy loss (negative log-likelihood)
+minimized during training directly corresponds to the expected
+coding length [5, 9]. Specifically, average per-token log like-
+lihoodbθ =− 1
+N ΣN
+i=1 log2Pθ(xi|x<i) corresponds to the ex-
+pected number of bits needed to encode each token. Accordingly,
+if each token was originally b bits uncompressed, then the in-
+duced compression rate is b/bθ. Therefore, we can estimate
+compression performance directly from model loss without im-
+plementing the full arithmetic encoder.
+3.2. Standard LM Compression
+Here we formalize our baseline AR setup for audio waveforms.
+Each sample of uncompressed audio is a signed integer of b
+bits from Zb ={z∈Z|−(2 b−1)≤z <2 b−1}, and a wave-
+form w∈Z Tf s×c
+b is an array of samples whereT is duration,
+fs is sample rate, c is number of channels, and b is bit depth.
+We first convert signed samples to unsigned via x=w+ 2 b−1,
+yielding x∈N Tf s×c
+b , where Nb ={z∈N|0≤z <2 b}. We
+feed x through a standard decoder-only Transformer [29] with
+3890
+causal masking, similar to GPT-2 [30]. The model outputs prob-
+ability distributions over the next sample Pθ(xi|x <i) for all
+vocabulary tokens, and the training objective is to maximize the
+likelihoodLθ = PN
+i=1 logPθ(xi|x <i), equivalent to mini-
+mizing cross-entropy loss.
+In past work, each audio sample is treated as a token, in-
+ducing a vocabulary size is|V|= 2 b tokens. While this works
+reasonably for 8-bit audio (|V|= 256 ), it becomes prohibitive
+at higher bit depths: 16-bit requires 65,536 tokens and 24-bit
+requires 16,777,216 tokens. The embedding and output lay-
+ers scale asO(d·2 b) parameters whered is model dimension,
+quickly exceeding the size of the entire transformer backbone
+and creating intractable memory requirements. The context win-
+dow is limited by the Transformer’s maximum sequence length
+(e.g., 2,048–8,192 samples,∼ 50–200ms at 44.1kHz), neces-
+sitating sliding windows or chunking for longer audio. This
+intractability at higher bit depths motivates the byte-level tok-
+enization approaches we explore next.
+3.3. Trilobyte: Hierarchical Byte-Level Tokenization
+To address the vocabulary explosion of sample-level tokenization
+we introduce Trilobyte, which decomposes each b-bit sample
+intoB=⌈b/8⌉ bytes. Rather than modeling these bytes with
+distinct subvocabularies, Trilobyte simply predicts over 256 pos-
+sible values at each byte position in the sequence, maintaining a
+constant vocabulary size regardless of bit depth. This reduces vo-
+cabulary scaling from exponentialO(2b) to constantO(1) while
+enabling the model to implicitly learn separate distributions for
+each byte position autoregressively through the one-to-one map-
+ping between byte position and sequence index. We interleave
+the constituent bytes of each audio sample (MSB, middle byte(s),
+LSB), and train a GPT-2 architecture [ 30] on these byte-level
+sequences. We also experimented with an expanded vocabulary
+variant that partitions tokens into explicit subvocabularies per
+byte position (linear rather than constant scaling with bit depth),
+but this yielded negligible compression gains (<0.003 x), sug-
+gesting the constant vocabulary already learns separate byte
+distributions implicitly through AR context.
+For stereo audio, we concatenate left and right channels
+in random order (either xL
+1,xL
+2,...,x L
+N/2,xR
+1,xR
+2,...,x R
+N/2
+or vice versa) rather than interleaving at the sample level
+(xL
+1,xR
+1,xL
+2,xR
+2,... ), allowing the model to exploit cross-
+channel correlations when transitioning between channels in
+its AR predictions. We found that compression rates are nearly
+identical between concatenation and sample-level interleaving,
+so we use concatenation for simplicity. By conditioning the
+second channel’s predictions on the first channel’s context, the
+model can potentially capture redundancies beyond FLAC’s mid-
+side encoding, which is limited by small block sizes.
+Trilobyte enables the first tractable language model compres-
+sion of 24-bit professional audio while achieving comparable
+performance to naive 16-bit modeling with full softmax. Since
+Trilobyte operates on byte-level sequences, we compute bits per
+byte (BPB) and convert to compression rate as8/BPB. Note that
+at 8-bit, Trilobyte’s tokenization collapses to standard sample-
+level tokenization (1 byte per sample, vocabulary of 256), so
+Trilobyte is identical to standard LMs for the 8-bit regime. We
+compare Trilobyte against both sample-level tokenization and a
+byte-level in-context LM baseline.
+4. Experimental Setup
+Our evaluation spans multiple datasets across diverse audio do-
+mains. Formusic, we use MusDB18 [ 31], a multi-track music
+database with stereo mixes and stems in various configurations
+(stereo mixes, mono mixes, stereo stems, mono stems, combined
+stereo, combined mono). To better reflect real-world compres-
+sion scenarios, we additionally include a dataset of commer-
+cial music data at multiple bit depths and quality levels (16-bit
+and 24-bit): 1,569 songs (120 hours) at 16-bit, and 933 songs
+(70 hours) at 24-bit, with the latter including high-resolution
+recordings up to 192kHz sampling rate. Unlike many academic
+music datasets, which are often distributed in processed or lossy
+formats and may not reflect the distribution of commercially
+released recordings, this music more closely represents the types
+of lossless audio files that users seek to store and compress in
+practice. However, for consistency, we resample all commercial
+music data to 44.1kHz, the most common sample rate in the
+corpus. We additionally incorporate music datasets Beethoven
+[7, 21] (recordings of Ludwig van Beethoven’s piano sonatas)
+and YouTube Mix [ 7, 32] (piano music from YouTube) into
+our experiments. Forspeech, we evaluate on LibriSpeech [ 19]
+(clean read English speech), LJSpeech [20] (single-speaker au-
+diobook recordings), SC09 [7, 33, 34] (spoken digit recognition),
+and VCTK [35] (multi-speaker English corpus). We also eval-
+uate on other audio domains: Birdvox [ 36] (bioacousticbird
+vocalizations) and Epidemic Sound [37] (sound effectslibrary).
+We evaluate at each dataset’s native bit depth: 8-
+bit (Beethoven, YouTube Mix, SC09, all 16kHz), 16-bit
+(LibriSpeech 16kHz, LJSpeech 22.05kHz, Birdvox 24kHz,
+MusDB18 44.1kHz, VCTK and Epidemic Sound 48kHz, and
+commercial 16-bit at 44.1kHz), and 24-bit (commercial 24-bit at
+44.1kHz). We compare FLAC (compression level 8, maximum),
+sample-level tokenization (90M params at 8-bit, 140M at 16-bit),
+and Trilobyte (90M). All trained models are trained for a fixed
+number of 300K steps. As an additional baseline, we compare to
+the in-context compression approach of Del´etang et al. [5] and
+Li et al. [8], using the pretrained Llama-2-7B model [15]. Here,
+instead of training on audio, audio byte streams are compressed
+by naively encoding the bytes as gibberish text and compressing
+the text using the pre-trained LM. As this method is intractably
+slow, following previous work [ 5] we report results over 1K
+randomly sampled, 1,024-sample chunks across each dataset.
+4.1. Results
+Table 1 presents compression rates across all methods and bit
+depths. Throughout this section, percentages refer to relative
+gains (e.g., 2x to 3x is a 50% improvement, yielding 50% smaller
+files). At 8-bit, the standard and proposed Trilobyte tokenization
+schemes are equivalent: both substantially outperform FLAC,
+achieving 370%, 163%, and 119% improvements on Beethoven,
+YouTube Mix, and SC09, respectively. The wide variation in
+Trilobyte’s 8-bit performance (2.08–7.94x) indicates that com-
+pression gains depend heavily on audio domain structure—here,
+the music datasets are acoustically narrow (solo piano) and com-
+press better than SC09 (multi-speaker, multi-microphone).
+At 16-bit, AR modeling provides consistent compression
+gains relative to FLAC, though the gains are modest compared to
+those seen for 8-bit audio: 15%, 31%, and 21% improvements on
+VCTK, MusDB18 Mono, and LibriSpeech, respectively. More-
+over, at 16-bit, FLAC compression rate correlates to Trilobyte
+compression rate across datasets (r= 0.92 ,p≪0.01 ). Higher
+sample rates appear to have less of an effect on overall compres-
+sion rate relative to bit depth—some high sample rate datasets
+compress better than low rate ones (VCTK at 48kHz is 2.66x
+vs. LibriSpeech at 16kHz is 2.11x). Sample-level tokenization
+performs comparably to Trilobyte on some datasets (VCTK,
+Birdvox, MusDB18 Mono) but generally falls short, particularly
+3891
+Table 1:Compression rates across methods and bit depths. FLAC uses compression level 8. In-context uses pretrained Llama-2-7B
+[15]. Standard refers to sample-level tokenization; Trilobyte uses hierarchical byte-level tokenization (both with trained Transformers).
+Sample-level is equivalent to Trilobyte at 8-bit and intractable at 24-bit (16.7M vocabulary). Transfer denotes a single 24-bit Trilobyte
+model trained on all datasets with lower bit masking for lower bit depths. Bold indicates best performance.
+b(Bits)f s (Hz)/c(#Ch) Domain Dataset FLAC In-context Standard Trilobyte Transfer
+8
+16000 / 1 Speech SC09 0.95 1.80 2.08 2.08 2.88
+16000 / 1 Music Beethoven 1.69 1.33 7.94 7.94 7.45
+16000 / 1 YouTube Mix 1.58 1.28 4.15 4.15 5.14
+16
+48000 / 1 Speech VCTK 2.32 1.75 2.66 2.66 2.68
+22050 / 1 LJSpeech 1.69 1.49 1.982.08 2.04
+16000 / 1 LibriSpeech 1.74 1.64 2.062.11 2.10
+24000 / 1 Bioacoustics Birdvox 2.33 1.75 2.472.48 2.48
+48000 / 1 SFX Epidemic Sound 2.63 1.70 3.003.40 3.10
+44100 / 1 Music MusDB18 (All) 2.15 1.53 2.642.82 2.75
+44100 / 2 MusDB18 (Mixes) 1.87 1.27 1.852.08 1.98
+44100 / 2 Commercial 16-bit 1.74 1.26 1.641.86 1.74
+24 44100 / 2 Music Commercial 24-bit 1.631.07 ✗1.48 1.47
+on music. Notably, Epidemic Sound achieves 3.40x compression
+with Trilobyte, a 29% improvement over FLAC.
+At 24-bit, bit depth becomes the fundamental barrier: the
+16.7M-token vocabulary required for sample-level tokenization
+is completely intractable, requiring approximately 12B parame-
+ters for the output projection matrix alone. Trilobyte’s hierarchi-
+cal byte-level decomposition sidesteps this exponential scaling
+by reducing the vocabulary to just 256 tokens, enabling the first
+tractable 24-bit language model compression. However, our
+approach (1.48x) falls 9% short of FLAC (1.63x). One possible
+explanation is that a non-trivial amount of the information in the
+least significant bits at 24-bit is imperceptible noise—audio tool
+chains with up to144dB of dynamic range are needed to preserve
+the signal at 24 bits. Rice coding in FLAC may be nearly optimal
+for compressing this noise. The in-context LM approach with
+pretrained Llama-2-7B underperforms both FLAC and Trilobyte
+across all datasets and bit depths except for 8-bit SC09, suggest-
+ing that text-pretrained models without domain-specific training
+struggle to capture audio structure effectively.
+4.1.1. Transfer Learning with Trilobyte
+We further investigated Trilobyte’s ability to losslessly com-
+pressarbitrary bit depthswith asinglemodel. Specifically, by
+masking out the lower bytes with a learned null token, we can
+simultaneously model multiple bit depths within a single model
+during training, synthetically interleaving lower bit-rate audio
+with such null tokens at inference to perform any-bit lossless
+compression. To evaluate this capability, we train models on
+Commercial (24-bit) and MusDB18 Stereo (16-bit) with an ad-
+ditional mask token and randomly drop out lower-significance
+bytes during training (p= 0.1 ), then test whether the resulting
+models can compress audio at multiple bit depths without re-
+training. For 24-bit Commercial music, we attain 1.49x (24-bit),
+1.78x (16-bit), and 3.4x (8-bit) compression rates with a single
+model, while on 16-bit MusDB18 stereo we attain 2.07x (16-bit)
+and 3.8x (8-bit) compression.
+From this initial result, we then trained asingleTrilobyte
+model over all data using our multi-bit-rate masking scheme,
+with results shown in the final column of Table 1 (Transfer).
+We find that the compression performance is similar to the
+per-dataset Trilobyte models (with our joint model performing
+slightly worse on some datasets and better on others), showing
+that we can successfully train a single generalist LM-based com-
+pressor (even without scaling the model size) over diverse audio
+corpora using Trilobyte and our lower byte masking.
+5. Conclusion
+Our evaluation reveals that Trilobyte achieves consistent, albeit
+modest, gains over FLAC at 16-bit, with an average improvement
+of 18% across domains. These modest 16-bit gains contrast
+sharply with 8-bit performance (217% average improvement). At
+24-bit, Trilobyte trails FLAC by 9% but enables the first tractable
+LM compression at this bit depth where sample-level approaches
+are completely infeasible. Transfer results show a single 24-bit
+Trilobyte model trained on all datasets achieves compression
+rates comparable to dataset-specific models across bit depths.
+Our results also highlight that bit depth, not sampling rate or data
+domain, becomes the primary bottleneck, as LMs consistently
+outperform FLAC at 8-bit but gains quickly diminish at higher bit
+depths. This suggests FLAC operates near fundamental entropy
+bounds for full-fidelity audio and our empirical compression
+rates establish lower bounds across audio domains.
+We acknowledge that our ML approaches are orders of mag-
+nitude slower than FLAC—their modest compression wins are
+unlikely to justify their computational costs for real-world de-
+ployment. Nevertheless, this work addresses a critical gap in
+the literature: prior LM-based compression research 

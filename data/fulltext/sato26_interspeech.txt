@@ -1,0 +1,406 @@
+Latency Controllable Speech Enhancement
+Hiroshi Sato ID 1, Takafumi Moriya ID 1, Tsubasa Ochiai ID 1, Marc Delcroix ID 1
+1 NTT, Inc. Japan
+hrs.sato@ntt.com
+Abstract
+Streaming speech enhancement must meet latency budgets
+ranging from a few milliseconds (for hearing devices) to hun-
+dreds of milliseconds (for telephony/offline applications). Since
+latency–quality is a trade-off, an enhancer should exploit as
+much lookahead as the budget allows; yet most neural mod-
+els are trained for a single fixed lookahead, so multiple budgets
+usually require multiple full models. We propose a latency-
+controllable speech enhancement framework consisting of a
+causal enhancement model augmented with Latency Control
+Adapters (LCAs) that allow switching the model’s latency by
+changing how much future context it can exploit. With intra-
+batch multi-latency training, one LCA model supports seven la-
+tency modes; it surpasses per-latency models in enhancement
+quality, maintains constant inference MACs, and reduces stored
+parameters by 76%.
+Index Terms: speech enhancement, noise reduction, latency,
+streaming, real-time, low latency
+1. Introduction
+Speech enhancement (SE) aims to estimate a clean speech sig-
+nal from a noisy observation by suppressing undesired compo-
+nents such as environmental noise and competing sounds. SE is
+a core front-end technology in telecommunication, hearing as-
+sistive devices, and robust speech interfaces, where it improves
+perceptual quality and downstream recognition accuracy [1–5].
+In many real-world deployments, SE is not judged solely
+by enhancement quality. The end-to-end user experience is
+strongly affected by thelatencybetween capturing a micro-
+phone signal and rendering the enhanced output. For interac-
+tive communication (e.g., teleconferencing or V oIP), conver-
+sational quality is known to degrade as one-way delay grows
+to the order of a few hundred milliseconds [6–8]. For hear-
+ing assistive and acoustically transparent devices, the constraint
+is much stricter: when direct sound leaks and mixes with pro-
+cessed sound, even a few milliseconds of delay can cause audi-
+ble coloration (comb-filtering) and reduced preference [9–14].
+At the other end of the spectrum, one-way broadcast or of-
+fline post-processing applications may tolerate much larger la-
+tency, e.g., several hundred milliseconds or more [15,16]. Con-
+sequently, the latency budget available to the SE module is
+highly application- and deployment-dependent, and may vary
+even within the same application due to network jitter buffers,
+echo cancellation pipelines, and device-side scheduling.
+In general, there is a well-known trade-off between latency
+and enhancement performance [12, 17–19]. Non-causal mod-
+els (or models with larger lookahead) can exploit future con-
+text to disambiguate speech and noise patterns, which often
+improves perceptual quality compared with strictly causal in-
+ference [7, 17]. When a bounded amount of future context is
+acceptable, increasing lookahead can yield better enhancement,
+and the optimal operating point depends on the latency budget.
+Despite this, most existing SE systems are trained and deployed
+under a single, pre-determined latency. Supporting multiple la-
+tency budgets in practice often requires maintaining multiple
+separately trained models and switching the entire model at run-
+time, which increases development, validation, and deployment
+complexity.
+Motivated by these observations, we propose the concept of
+latency-controllable speech enhancement: a single SE system
+that can operate at multiple latency budgets and leverage avail-
+able lookahead to maximize quality, while sharing the majority
+of parameters across budgets. The key idea is to decouple (a) a
+shared backbone that performs most of the enhancement com-
+putation from (b) a lightweight, latency-specific module that in-
+jects the appropriate amount of future context. As a first step
+toward latency-controllable SE, we investigate a mechanism for
+incorporating a fixed amount of future context into a streaming
+enhancement backbone, named the lookahead module (LAM).
+Based on LAM, we develop Latency Control Adapter (LCA),
+a lightweight adapter inserted into the SE network; by select-
+ing an adapter corresponding to the available latency budget,
+the system can switch its effective lookahead at inference time
+without reloading the full model. Experiments show that a sin-
+gle LCA-equipped model can cover multiple latency budgets
+with improved performance, while avoiding the need to train
+separate models for each latency.
+2. Related work
+2.1. Latency performance trade-offs
+Several works explicitly analyze the trade-off between latency
+and performance under controlled settings. Sch ¨uldtet al.stud-
+ied real-time inference behavior of a convolutional time-domain
+separation/denoising network and reported that a small amount
+of lookahead can substantially improve denoising quality at the
+cost of additional delay [17]. Satoet al.confirmed that an
+additional 120 ms of lookahead substantially improved SDR
+and DNSMOS values in the target speaker extraction (TSE)
+task [19]. Sch ¨uldtet al.and Satoet al.employ an imple-
+mentation that is similar to the convolution-lookahead LAM
+explored in our study. The key difference from our approach
+is that they switch the causality of the 1-d convolution layers
+withinthe Conv-TasNet model, whereas LAM is a lightweight
+DNNappendedto the model, designed to introduce additional
+lookahead to an arbitrary existing system. More recently, Wu
+and Braun conducted a comprehensive comparison of multiple
+low-latency strategies under unified training and evaluation con-
+ditions, and reported a performance drop at low latencies [12].
+3009
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2997
+These studies collectively suggest that the “best” latency setting
+is use-case dependent, and that exploiting additional lookahead
+when available can improve quality.
+2.2. Latency-controllable models in related speech tasks
+While most SE systems are designed for a fixed latency con-
+figuration, the speech community has exploredcontrollablela-
+tency and multi-mode operation in automatic speech recogni-
+tion (ASR). Dual-mode ASR unifies streaming and full-context
+recognition by sharing weights across modes and performing
+joint training (optionally with in-place distillation), reducing
+deployment overhead and improving streaming accuracy [20].
+Adaptive non-causal architectures further relax the fixed looka-
+head constraint by dynamically selecting when and how much
+future context to consume, explicitly trading off latency against
+accuracy during inference [21]. Accordingly, the proposed
+LCA in this study could also be applied to other speech tasks
+beyond SE, such as ASR.
+3. Background
+3.1. Speech enhancement with an encoder–separator–
+decoder backbone
+We consider single-channel additive noise,y=x+n∈R T ,
+wherey,x, andnare the observed, clean, and noise signals,
+respectively.Trepresents the number of samples. A DNN-
+based SE modelSE(·)estimates ˆxfromyas ˆx=SE(y;θ),
+whereθdenotes the learnable parameters.
+Many modern SE systems adopt an encoder–separator–
+decoder structure [22–26]:
+Zenc =Encoder(y;θ enc)∈R T ′×D,(1)
+Zsep =Separator(Z enc;θ sep)∈R T ′×D,(2)
+ˆx=Decoder(Z sep;θ dec),(3)
+whereT′ andDdenote the number of frames (sequence length)
+and feature dimension in the latent representation, respectively.
+The latent representations at the output of the encoder and
+separator are denoted byZ enc andZ sep, respectively. In
+time–frequency domain SE,Encoder/Decoderare typically
+STFT/iSTFT and the separator estimates a mask or mapping in
+the STFT domain [27]. In time-domain SE,Encoder/Decoder
+are commonly learned 1-D convolutional filterbanks [28]. All
+parametersθ={θ enc,θ sep,θ dec}are trained jointly by mini-
+mizing a criterion between ˆxandx.
+3.2. Algorithmic latency in neural SE
+We focus onalgorithmic latency, i.e., the delay induced by
+buffering and the use of future context (excluding compute
+time). LetL len andL shift be the analysis window length and
+hop size (in samples), andf s be the sampling rate. For time-
+domain convolutional encoders,L len andL shift correspond to
+kernel size and stride. The encoder must accumulateL len sam-
+ples before producing the first latent frame, yielding latency in
+secondsτ enc asτ enc =L len/fs.Note that some studies report
+latency without explicitly accounting for this buffering term, so
+care is needed when comparing them [29].
+In general, the separator may exploit future latent frames.
+LetT la,sep be the number of future frames used by the separator
+(in the latent frame rate). This introduces additional latency in
+secondsτ sep asτ sep =T la,sep·L shift/fs.We call a system
+causalif the separator itself uses no future frames (Tla,sep = 0),
+Figure 1:Illustration of lookahead realized by convolution
+lookahead blocks (kernel size3). Switching a block from causal
+to non-causal adds dilation-dependent right context.
+even thoughτ enc is still present. The total algorithmic latency
+τis expressed asτ=τ enc +τ sep.
+3.3. Lookahead module (LAM)
+We insert alookahead module(LAM) into a causal backbone
+(where the separator uses no future frames) or semi-causal
+backbone (with a limited amount of latency) to give it access
+to a specified additional amount of lookahead. For exposition,
+assume the separator is composed ofRblocks and denote the
+intermediate representation after thei-th block asZ i∈R T ′×D
+withZ 0 =Z enc andZ R =Z sep. If LAM is inserted after
+r-th block, LAM transformsZ r intoZ′
+r by consuming past and
+future frames:
+Z′
+r[t] =LAM(Z r[t−T lb :t+T la];θ lam),(4)
+whereT lb andT la are the lookback/lookahead (in frames).
+Therefore, LAM introduces additional algorithmic latencyτ lam
+asτ lam =T la·L shift/fs. LAM parametersθ lam are trained
+jointly with the backbone parametersθ.
+One simple LAM instantiation is a stack of dilated 1-D con-
+volutional blocks. We use kernel size3andXblocks whose
+dilations ared= 2 0,2 1,...,2 X−1. Each block can operate
+either (i)causally(no right context) or (ii)non-causally(sym-
+metric context), which enables controlling the total lookahead.
+Letb={b i}X
+i=1 andb i∈{0,1}indicate whether thei-th di-
+lated block is non-causal. With kernel size3, a non-causal block
+with dilation2 i introduces2 i frames of right context, and the
+total lookahead becomes:
+Tla =
+XX
+i=1
+bi 2i−1.(5)
+Figure 1 illustrates how different binary patterns yield differ-
+ent lookahead. In addition, each 1-D convolution layer is im-
+plemented with depthwise-separable convolution (as in Conv-
+TasNet) [28], for improved efficiency.
+In the literature, a single 1-D convolutional layer was used
+to introduce lookahead [30]. By extending this method to di-
+lated 1-D convolutions, we can achieve reduced computational
+3010
+Figure 2:Conceptual diagram of the proposed Latency Con-
+trol Adapter (LCA). Each adapter corresponds to a different
+convolution-lookahead configuration, and a switch selects the
+adapter at inference time.
+cost, particularly when a long-term future context is desired. 1
+4. Proposed method
+4.1. Latency Control Adapter (LCA)
+We aim to realizelatency-controllable SE, where a single model
+supports multiple lookahead budgets and switches its latency
+at runtime without reloading the full network. To this end,
+we propose aLatency Control Adapter (LCA): a bank of rel-
+atively lightweight adapters inserted into the separator, where
+each adapter is an LAM configured for a specific lookahead.
+Figure 2 shows the conceptual diagram. At inference time, we
+select an adapter according to the available latency budget.
+4.1.1. Parameter sharing across adapters
+A simple implementation learns a separate parameter set for
+each adapter, resulting in a linear increase in the number of
+parameters with the number of latency modes. Formally, let
+the number of adapters and model parameters per adapter beK
+andM, respectively. Then, the total number of model parame-
+ters in LCA isK·M, which raises scalability concerns when
+Kis large. To address this, we consider further reducing the to-
+tal number of parameters in LCA by sharing model parameters
+across adapters. In this study, we evaluate a scheme where, for
+thei-th 1-D Conv Block, parameters are shared across adapters
+for causal blocks and, separately, shared across adapters for
+non-causal blocks. In this case, the total number of model pa-
+rameters of LCA becomes2·M, which has the advantage of
+being independent of the number of adaptersK.
+4.1.2. Intra-batch multi-latency training
+We promote knowledge sharing across latency modes byintra-
+batch multi-latency training. For each mini-batch, we run the
+same input through allKadapters and average the losses. Using
+the SNR objective, we minimize
+L= 1
+K
+KX
+i=1
+
+−SNR(ˆx(i),x)
+
+,(6)
+where ˆx(i) is the enhanced waveform produced by selecting
+adapteri. All parameters, including the shared backbone and
+adapter parameters, are optimized jointly.
+1In preliminary experiments, we confirmed that, for achieving an
+equivalent lookahead, using dilated 1-D convolutions yields better en-
+hancement performance than using a single convolution layer.
+Table 1:Computational cost to support seven latency modes.
+Systems MACs
+[G/s]
+Total #params
+[M]
+(A-1) Causal 1.31 13.3
+(B-1) Convolution lookahead (7 models) 1.46 104.1
+(C-1) LCA (shared adapter params) 1.46 16.5
+(C-2) LCA (no sharing) 1.46 24.5
+5. Experiments
+5.1. Experimental setup
+5.1.1. Data
+Training and evaluation were conducted on simulated noisy
+mixtures generated from clean speech in LibriSpeech [31] and
+noise clips from the DNS4 challenge dataset [32]. All audio
+was sampled atf s = 16 kHz. Noisy mixtures were created
+by adding a randomly selected noise segment at an SNR uni-
+formly sampled from[0,20] dB. We generated 50,000, 3,000,
+and 2,000 mixtures for training, development, and evaluation,
+respectively.
+5.1.2. System configuration
+As the SE backbone, we used a time-domain Conv-TasNet [28],
+which offers a strong accuracy–efficiency trade-off, is real-time
+capable on CPU, and remains a well-established baseline with
+many extensions [19,33–36]. Following the notation in [28], we
+setB = 256,R = 4,X = 8,H = 512, andP = 3. We eval-
+uated two encoder–decoder configurations to cover both mod-
+erate and ultra-low base latency regimes: (i) astandard latency
+setting with encoder kernel/stride(L len,L shift) = (320,160)
+and 4096 encoder filters, yieldingτ enc = 20 ms; (ii) anultra-
+low latencysetting with(L len,L shift) = (80,40)and 1024 en-
+coder filters, yieldingτ enc = 5 ms. Unless otherwise stated,
+results use the standard latency setting.
+For both LAM and LCA, we consideredK= 7looka-
+head budgets,T la ∈ {0,1,3,7,15,31,63}(in frames) In
+the standard latency setting, this yields total latenciesτ∈
+{20,30,50,90,170,330,650}ms; in the ultra-low latency set-
+ting,τ∈{5,7.5,12.5,22.5,42.5,82.5,162.5}ms. We used
+a stack ofX=6dilated convolution blocks (kernel size3; di-
+lations2 0–25). To realize the 7 lookahead candidates, we used
+the monotone binary patterns of causalityb(defined in Section
+3.3),b∈ {0,[1,0,...],[1,1,0,...],...,1}. The insertion
+position of LAM and LCA is after ther= 4-th block of Conv-
+TasNet withinR= 4blocks, i.e., after the separator. 2
+5.1.3. Training and evaluation
+All systems were trained under the same recipe, using the neg-
+ative SNR objective. For LCA, we applied intra-batch multi-
+latency training, i.e., averaging losses over allKadapters in
+each mini-batch. At inference time, only one adapter is selected
+according to the target latency budget. As objective metrics, we
+report SDR [37] and DNSMOS P.835 OVRL [38]. To charac-
+terize efficiency, we report (i) multiply–accumulate operations
+per second of audio (MACs, in G/s), and (ii) the total number
+of learnable parameters required to support all seven latency
+modes (Table 1).
+2We preliminarily tested three insertion positions within the separa-
+tor: (i) before the separator, (ii) in the middle of the separator (after the
+second repeat), and (iii) after the separator. Condition (iii) yielded the
+best results.
+3011
+Figure 3:Latency–performance trade-offs in (a) and (b) the standard encoder setting (τenc = 20ms) and in (c) the low-latency encoder
+setting (τenc = 5ms). (a) and (c) show SDR and (b) shows DNSMOS P .835 OVRL.
+Table 2:Ablation study on LCA training and design
+Systems Add. lookahead [ms]
+10 70 310
+(C-2) LCA (no sharing)17.03 17.30 17.43
+w/o joint training of the whole model 16.67 16.73 16.77
+w/o causal blocks in LCA 16.75 17.00 17.11
+w/o intra-batch multi-latency training 16.80 17.08 17.22
+5.2. Experimental results
+Figure 3 (a) and (b) compares latency–performance trade-offs
+between baseline systems and LCA. We consider: (A-1) a
+causal Conv-TasNet, (A-2) a non-causal Conv-TasNet, (B-1)
+multi-modelconvolution lookahead with LAM, where a sepa-
+rate model is trained for each latency, and (C-1)/(C-2)single-
+modelLCA, where latency is switched by selecting an adapter
+at inference time. (C-1) shares adapter parameters across la-
+tency modes, while (C-2) uses separate parameters per adapter.
+All streaming systems exhibit a clear latency–performance
+trade-off: larger lookahead yields higher SDR and DNSMOS.
+Notably, (C-2) achieves higher SDR and DNSMOS than (B-1)
+across most latency points, despite using a single shared back-
+bone; the average SDR gain over the seven operating points is
+0.13 dB in this setting. We attribute this improvement to intra-
+batch multi-latency training, which encourages knowledge dis-
+tillation across latency modes during joint optimization.
+Table 1 summarizes compute and parameter costs. Adding
+a LAM increases MACs compared with the causal baseline.
+This runtime cost is identical for (B-1) and the LCA variant
+because only one lookahead path (either a LAM or a selected
+adapter) is executed at inference time. In contrast, the param-
+eter cost differs substantially when supporting multiple latency
+modes. To cover seven budgets, (B-1) requires storing seven
+separately trained full models (104.1 M parameters total). LCA
+shares the backbone across modes and stores only the adapter
+bank, reducing total parameters to 16.5 M (C-1) or 24.5 M (C-
+2). The shared-parameter design (C-1) keeps the adapter param-
+eter overhead independent of the number of supported latency
+modes, while (C-2) provides better quality at the expense of
+more parameters.
+Figure 3 (c) repeats the SDR analysis under the ultra-low
+latency encoder configuration (τ enc = 5ms). The same qual-
+itative trend holds, and LCA remains effective in this stricter
+regime. When compared at the same amount of latency, the
+ultra-low latency condition yields better performance than the
+standard latency condition because the finer analysis window
+shift in the Conv-TasNet encoder/decoder enables a more pre-
+cise projection of the waveform into the feature domain at the
+expense of additional MACs [19, 28, 39]. Compared with the
+multi-model baseline (B-1), (C-2) yields a larger improvement
+in SDR (0.53 dB on average across the seven operating points),
+suggesting that joint multi-latency training is particularly bene-
+ficial when the base latency is very small. It is worth noting that
+under the 5 ms latency setting, system (C-2) improves SDR by
+0.45 dB over the causal model (A-1). This gain is attributable
+to knowledge distillation from a larger lookahead system; con-
+sequently, even in scenarios where only a single low-latency
+model is required, the proposed LCA can still deliver improved
+enhancement performance.
+Table 2 investigates factors contributing to LCA effective-
+ness (using (C-2) as the reference). First, training only the
+LCA on top of a pretrained backbone while freezing the rest of
+the model degrades performance substantially, indicating that
+adapting shared backbone parameters is important when ac-
+commodating multiple latency modes. Second, removing the
+causal blocks inside LCA (i.e., constructing adapters only from
+the non-causal blocks required for each lookahead) also re-
+duces performance, suggesting that keeping a consistent adapter
+structure across modes stabilizes optimization. Finally, replac-
+ing intra-batch multi-latency training with a weaker strategy
+(randomly selecting a single adapter per mini-batch) leads to
+lower SDR, supporting the role of joint multi-latency training
+for cross-latency knowledge sharing.
+6. Conclusion
+This paper introduces the concept oflatency-controllable
+speech enhancement, which adapts the lookahead to meet la-
+tency requirements and leverages the available future context
+for more effective inference. To realize this, we proposed a
+Latency Control Adapter (LCA)based on alookahead module
+(LAM)using dilated convolutions, and enabled runtime latency
+switching by selecting a latency-specific adapter. Compared
+with a baseline that prepares separate models for each latency,
+the proposed LCA shares the backbone parameters across la-
+tency budgets and switches only the lightweight adapter, reduc-
+ing the total number of model parameters while improving en-
+hancement performance at each latency.
+3012
+7. Generative AI use disclosure
+This manuscript was drafted by the authors and edited and pol-
+ished with the assistance of a generative AI tool (ChatGPT). All
+experimental design, implementation, and analysis were con-
+ducted by the authors, who assume full responsibility for the
+content.

@@ -1,0 +1,465 @@
+Does Fine-tuning by Reinforcement Learning Improve Generalization in
+Binary Speech Deepfake Detection?
+Xin Wang ID , Wanying Ge ID , Junichi Yamagishi ID
+National Institute of Informatics, Japan
+wangxin@nii.ac.jp
+Abstract
+Building speech deepfake detection models that are general-
+izable to unseen attacks remains a challenging problem. Al-
+though the field has shifted toward a pre-training and fine-tuning
+paradigm using speech foundation models, most approaches
+rely solely on supervised fine-tuning (SFT). Inspired by the
+field of large language models, wherein reinforcement learning
+(RL) is used for model fine-tuning, we investigate the impact of
+RL, specifically Group Relative Policy Optimization (GRPO).
+The results from experiments using multiple detectors and test
+sets indicate that pure GRPO-based fine-tuning improves per-
+formance on out-of-domain test sets while maintaining perfor-
+mance on target-domain test data. This approach outperforms
+both SFT-only and hybrid setups. Our ablation studies further
+suggest that the negative reward in GRPO may be a key factor
+in this improvement.
+Index Terms: speech anti-spoofing, deepfake detection, rein-
+forcement learning
+1. Introduction
+Speech deepfake detection is an important, if not the ultimate,
+countermeasure against speech deepfake [1]. It is by conven-
+tion formulated as a binary classification task—given an input
+utterance, a speech deepfake detection model makes a decision
+on whether the input is uttered by a real human speaker [2].
+The goal is to develop a detection model that is generalizable to
+unseen deepfake types, data from unseen speakers, etc.
+Training the detection model using a carefully curated
+dataset, which contains real and fake data, has been a com-
+mon practice over the past decade [3], [4]. A surging trend in
+the field, however, is the framework of pre-training plus fine-
+tuning [5], [6], [7]. The pre-training stage [8], usually con-
+ducted by teams with abundant computation power and data,
+uses a huge amount of diverse real data and self-supervised
+learning (SSL) criteria to build speech foundation models (e.g.,
+wav2vec 2.0 [9]). The foundation model is then tuned using
+supervised fine-tuning (SFT) on small data for speech deep-
+fake detection. Models built from this two-stage approach
+have demonstrated top performance in recent benchmarks [10],
+[11]. The pre-training and fine-tuning framework was recently
+extended to include a post-training phase in the middle [12],
+which is illustrated in Figure 1. The post-training leverages
+a large amount of real, fake, and simulated fake data (e.g.,
+vocoded data [12]) from various domains to adapt the general-
+purpose foundation models, assuming that the adapted model
+can produce representations more suitable for deepfake detec-
+tion, source tracing [13], and other related downstream tasks.
+It is obvious that the above multi-stage training pipeline re-
+sembles that of large language models (LLMs) [14]. An LLM
+SFT
+SFT GRPO
+Post-training
+GRPO
+Real human 
+speech data Real FakeVoc oded
+(75k hours) (54 hours)
+...
+(500k hours)
+Pre-training Fine-tuning
+Figure 1:Illustration of multi-stage training pipeline for speech
+deepfake detection models. This paper investigates different
+fine-tuning algorithms in shaded area.
+also undergoes pre-training to learn general language patterns,
+optionally mid-training [15], followed by fine-tuning to align
+the LLM with human preferences or specific tasks. An issue
+common to both fields, however, is that the model fine-tuned
+towards a specific task or data domain is prone to degradation in
+other tasks or data domains, which is also known as catastrophic
+forgetting [16]. The LLM field has explored various fine-tuning
+setups, for example, combining SFT and reinforcement learning
+(RL) [14], or RL-only fine-tuning via the Group Relative Policy
+Optimization (GRPO) [14]. Regardless of the pipeline, RL was
+found to be an essential step into improving the LLM perfor-
+mance across tasks and domains [14] and better preserving the
+prior knowledge acquired during pre-training [17].
+Because most studies on speech deepfake detection only
+conducted SFT (even for post-training [12]), we were inspired
+by the progress in the LLM field and investigatedwhether RL-
+based fine-tuning can improve the generalization performance
+of speech deepfake detectors. We thus applied RL, particularly
+GRPO, to fine-tune speech deepfake detection models, as illus-
+trated in Figure 1. Our contributions are summarized below.
+• We applied GRPO to multiple post-trained SSL-based speech
+deepfake detectors and found that pure GRPO-based fine-
+tuning improved the detection performance on all the out-of-
+domain test sets, outperforming other fine-tuning setups such
+as only SFT or SFT plus GRPO.
+• We conducted ablation studies and found that the negative
+reward in GRPO may be a key component for this improve-
+ment. The regularization term in GRPO was less impactful.
+• We measured the drift of the test data distributions using a
+recently published tool [18] and found evidence to support
+the above findings.
+A recent study applied GRPO to LLM-based speech deepfake
+detectors [19], but our above findings are new, to the best of our
+knowledge, to the mainstream approach using SSL-based front
+ends. The code is released via AntiDeepfake project1.
+1https://github.com/nii-yamagishilab/AntiDeepfake
+5446
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-589
+2. Methods
+2.1. Training paradigm and scope of this paper
+Given an input waveformx∈R T , our detection model is ex-
+pected to produce a labely∈Y={REAL,FAKE}that flags
+whether the input is real or not. For model training, we tune
+the parameter setΘof a modelp Θ(y|x)via a training pipeline.
+When using the trained model for making decisions, we com-
+pute the probabilityp Θ(y=REAL|x=x test)(or its logit)
+for an input samplex test. If the probability is higher than a pre-
+defined threshold, we decideby=REAL; otherwise,by=FAKE.
+In this paper, we consider the multi-stage training pipeline
+(Figure 1) and detection models with an SSL-based front end
+and a binary classification back end. We assume that the pa-
+rameter setΘ, including both the front and back ends, has been
+post-trained, and we only focus on fine-tuningΘusing a rela-
+tively small-scale training setD={x (k),y (k)}k from a spe-
+cific domain. 2 Note that, for a conventional setup with only
+pre-training and fine-tuning,Θconsists of the parameters of the
+pre-trained front end and a randomly initialized back end.
+2.2. Supervised fine-tuning
+The most common way of fine-tuningΘis using SFT. It min-
+imizes the negative log-likelihoodL ne of the training dataD,
+which can be written as
+Lne(Θ) =−E x,y∼D
+h
+logp Θ(y|x)
+i
+(1)
+≈−
+|D|X
+i=1
+X
+˜y∈Y
+δ(˜y=y (i)) logpΘ(˜y|x(i)),(2)
+whereδ(·)is an indicator function.
+2.3. Reinforcement learning
+RL is an alternative to SFT. Among many RL-based algorithms,
+we consider the policy-based algorithm that defines the loss as
+LRL(Θ) =−E x∼D,˜y∼pbΘ(y|x)
+h
+A(˜y,y)pΘ(˜y|x)
+p bΘ(˜y|x)−βL p( ˙Θ,Θ)
+i
+,
+(3)
+where˜yis a label sampled from the model with a snapshot of the
+‘old’ parameter set bΘ(e.g., the one from the previous training
+epoch). An advantage functionA(˜y,y) :Y×Y→Rmeasures
+how well the sampled label˜ymatches the ground truthy. The
+regularization termL p penalizes the distance between the fine-
+tuned model and a reference model (e.g., a pre-/post-trained one
+with a frozen parameter set ˙Θ), even though the regularization
+is argued to be non-essential [17]. It can be implemented using
+an approximated Kullback–Leibler divergence [20, § 2.3].
+GRPO is a common RL algorithm for fine-tuning
+LLMs [17]. It enhances Eq. (3) by sampling multiple instances
+{˜yj}G
+j=1 for each training inputxand computing a group-
+normalized advantageA(˜yi,{˜yj}G
+j=1,y)using
+A(˜yi,{˜yj}G
+j=1,y) = r(˜yi,y)−¯r({˜y}G
+j=1,y)
+σ({˜y}G
+j=1,y) ,(4)
+wherer(˜yi,y)is a reward function that measures the goodness
+of˜yi when compared againstyor pre-defined rules [21], and
+2To avoid notion clutter, we drop the sample index(k)unless it is
+necessary. We do not distinguish between random variables and their
+values (e.g.,yvs.y) unless the distinction is necessary.
+where¯randσare the mean and standard deviation ofrover
+the group of sample outputs{˜yj}G
+j=1.
+GRPO also clips the ratio pΘ(˜y|x)
+p bΘ(˜y|x), which is skipped to
+avoid notation clutter. GRPO also requires three parameter sets:
+the one to be updated (Θ) at every training step, the ‘old’ set (ˆΘ)
+that is updated less frequently, and the frozen reference (˙Θ). For
+simplification, we can set ˆΘ = Θand add a stop-gradient opera-
+tor in pΘ(˜y|x)
+[pΘ(˜y|x)]sg
+in Eq. (3). We can further remove the clipping
+function. ThissimplifiedGRPO (GRPO s) updates the model
+after every batch of sampled data, similar to on-policy RL by
+definition [22].
+2.4. Applying GRPO to deepfake detector
+Fine-tuning using GRPO can be directly applied to binary deep-
+fake detectors. The essential difference from the case of LLM
+is that the sampled output˜yfor the deepfake detector is ei-
+therFAKEorREAL, rather than a sequence of tokens. The re-
+ward can be simply defined as an indicator functionr(˜yi,y) =
+δ(˜yi =y)so thatr= 1for˜y i =y; otherwise,0. The reference
+parameter ˙Θcan be that of the post-trained model.
+In addition to directly applying GRPO, we intend to under-
+stand the differences between GRPO and SFT that potentially
+affect the generalization capability of the fine-tuned detection
+model. Notable differences are listed below.
+a)Regularization termL p: Regularization w.r.t. a ‘good old’
+model is assumed to alleviate the issue of catastrophic for-
+getting during fine-tuning [23]. Although a few studies argue
+thatL p is not essential for LLMs [24], it may affect the per-
+formance of the binary detector, the output of which is binary.
+b)Advantage functionA(˜y i,{˜yj}G
+j=1,y): the advantage func-
+tion in GRPO accumulates positive and negative rewards
+frombothmatched (˜y i =y) and unmatched (˜y i̸=y) sam-
+ples, even if we define a 1-0 rewardr(˜yi,y) =δ(˜y i =y). 3
+This is different from SFT where the loss is computed using
+only the ground-truth, i.e.,byis always equal toyin Eq. (2).
+To analyze the impact of the two factors, we introduce a few
+variants and compare their performance through experiments:
+• GRPO (β= 0): this variant sets the weight ofL p to 0 and
+testifies whether GRPO benefits from the regularization;
+• GRPO using a largeβ(GRPO (β= 1)) 4: it examines
+whether excess regularization degrades performance.
+• GRPO without any negative sample (GRPO w/o neg.): it de-
+finesA(˜yi,y) =r(˜y i,y) =δ(˜y i =y), hence removes the
+negative casebyi̸=y. This variant is similar to SFT plus the
+regularization term (ref. supplementary material).
+The above variants can be applied to the simplified GRPO
+(GRPOs), but we skip these configurations in this paper.
+3. Experiments
+3.1. Model configuration
+We follow the training pipeline in Figure 1 and compare SFT,
+GRPO, and its variants for fine-tuning (§ 2).
+For fine-tuning the post-trained models, we use the post-
+trained models released by the AntiDeepfake project [12],
+specifically those using the multi-lingual SSL-based front end:
+3Specifically, we obtainA(˜yi,{˜yj}G
+j=1,y) = (1−¯r)/σand−¯r/σ
+for matched (r(˜yi,y) = 1) and unmatched (r(˜yi,y) = 0) samples.
+4β= 1is 25 times larger than the defaultβ= 0.04[21].
+5447
+Table 1:Test set EERs (%). Each EER was average afterthreetraining-evaluation rounds. Columns ‘ave. ’ list average EERs of in- or
+out-of-domain. GRPO by default usesβ= 0.04(§3.1). In each column, higher EER is in darker shade.
+Pre-
+train
+Post-
+train
+Fine-
+tune
+DFE24eva. set (in-domain) Other eva. sets (out-of-domain) Row
+ID4 s 10 s 13 s 30 s 50 s ave.ADD23 FoR DV ItWave.
+XLS-R-2B
+✓ ✓× 27.73 23.45 21.74 20.62 19.64 22.64 4.67 2.61 2.23 1.24 2.69 1
+✓ ✓
+SFT 12.17 10.28 10.11 9.50 9.23 10.26 6.09 3.92 8.75 6.35 6.28 2
+GRPOs 12.45 11.07 11.06 10.44 10.98 11.20 3.95 0.65 6.72 2.44 3.44 3
+GRPO 11.06 9.99 9.90 9.45 9.27 9.93 5.34 0.47 2.76 2.19 2.69 4
+SFT→GRPO s 12.17 10.20 10.07 9.36 9.43 10.24 6.42 3.11 8.20 6.24 5.99 5
+SFT→GRPO 11.53 9.94 9.88 8.93 8.76 9.81 5.78 2.75 7.04 5.89 5.37 6
+GRPO (β= 0) 11.58 10.32 10.00 9.64 9.51 10.21 4.43 0.47 6.50 2.71 3.53 7
+GRPO (β= 1) 19.37 15.61 15.27 14.63 14.24 15.83 4.02 1.34 1.66 1.13 2.04 8
+GRPO w/o neg. 13.30 11.60 11.23 10.64 10.31 11.41 6.69 0.83 3.09 3.14 3.44 9
+✓× SFT 12.24 10.34 10.20 9.63 9.83 10.45 17.81 29.83 16.21 13.49 19.34 10
+GRPOs 14.33 12.65 12.02 11.27 10.87 12.23 22.88 29.71 23.67 23.03 24.82 11
+GRPO 12.93 11.18 11.06 10.24 10.35 11.15 17.57 25.68 25.19 19.00 21.86 12
+MMS-1B
+✓ ✓× 27.68 23.49 22.94 22.64 22.59 23.87 9.06 1.23 2.47 1.82 3.64 13
+✓ ✓
+SFT 11.86 9.87 9.51 9.07 9.08 9.88 4.14 1.35 5.35 6.59 4.36 14
+GRPOs 12.47 10.90 10.22 9.45 9.47 10.50 3.73 0.73 2.68 4.52 2.92 15
+GRPO 11.87 10.41 9.87 9.21 9.47 10.17 4.25 1.78 2.84 2.98 2.96 16
+MMS-300M
+✓ ✓× 32.87 30.08 29.38 26.33 27.51 29.23 7.96 1.51 2.35 2.91 3.68 17
+✓ ✓
+SFT 14.45 11.83 11.55 11.90 11.41 12.23 8.81 3.61 4.37 14.17 7.74 18
+GRPOs 13.46 11.60 11.16 11.27 10.74 11.65 5.70 1.40 2.91 8.31 4.58 19
+GRPO 14.05 11.73 11.42 11.12 11.37 11.94 4.99 1.57 2.64 5.91 3.78 20
+XLS-R-2B [25], MMS-1B [26], or MMS-300M.5 All the mod-
+els use a similar architecture: the SSL-based front-end pro-
+cesses the input waveform, and the features from its last layer
+are merged into a fixed-dimensional vector via global average
+pooling. The vector is then transformed with a linear layer and
+softmax into the probabilities forFAKEandREAL. During in-
+ference, the logit forREALis used for scoring.
+For reference, we also include two setups: 1) pre-training
+plus post-training without fine-tuning and 2) pre-training plus
+fine-tuning without post-training. In the latter, the front end is
+initialized using the corresponding SSL model pre-trained by
+Fairseq [27], and the back end is randomly initialized.
+The fine-tuning recipe forallthe models is the same as An-
+tiDeepfake [12] but with changes to fit the computation budget:
+a maximum number of 10 epochs and early-stop validation per
+20k training steps. The checkpoint with the lowest EER on the
+validation set is used for evaluation. For models using GRPO
+and variants, we follow the DeepSeekMath recipe [21] and set
+the number of rollouts and penalty weight toG= 64and
+β= 0.04, respectively. For fine-tuning using SFT and GRPO
+(SFT→GRPO), each stage runs at maximum for 10 epochs.
+The loop of fine-tuning and evaluation is conducted for
+three rounds, and the average equal error rate (EER) is reported.
+All experiments are conducted using a single H100 GPU card.
+3.2. Data & protocols
+We use the data protocol from the fine-tuning experiment of An-
+tiDeepfake [12]. The fine-tuning data (and the target domain)
+are the training partition of the Deepfake-Eval-2024 dataset
+5Corresponding checkpoints arexlsr 2b.ckpt,mms 1b.ckpt,
+andmms 300m.ckpt(DOI:10.5281/zenodo.15580543).
+(DFE24) [28]. It contains around 50 hours of real and fake
+speech data from the social network in 2024, which has a di-
+verse amount of background noise and acoustic conditions. To
+fit the GPU memory, utterances in the fine-tuning set are seg-
+mented with a maximum duration of 15 seconds.
+The in-domain evaluation data are from the evaluation par-
+tition ofDFE24. Specifically, we use the five segmented ver-
+sions provided by [12], which have a maximum utterance du-
+ration of 4, 10, 13, 30, and 50 seconds, respectively. The out-
+of-domain evaluation datasets include the Audio Deepfake De-
+tection Challenge Track 1.2 evaluation set (ADD23) [4], Fake-
+OrReal test set (FoR) [29], segmented DEEP-VOICE dataset
+(DV) [30], and In-the-Wild dataset (ItW) [31]. They cover un-
+seen data with different acoustic conditions from the target do-
+main ofDFE24, thus are expected to measure the generalization
+performance of the fine-tuned models. 6
+3.3. Results comparing GRPO and SFT
+Table 1 lists the average EERs over three rounds of the ex-
+periment. The first observation is thatmodels fine-tuned via
+SFT show varied degrees of degradation on out-of-domain
+test sets.Compared with the post-trained models without fine-
+tuning (rows 1, 13, and 17), their SFT fine-tuned counterparts
+(rows 2, 14, and 18, respectively) achieved lower EERs on the
+in-domain evaluation sets (DFE24) but higher EERs on most of
+the out-of-domain test sets. For the post-trained model using
+XLSR-R-2B, for example, the EER is 1.24% onItW(row 1)
+but increased to 6.35% after SFT fine-tuning (row 2).
+6Because the post-trained checkpoints were trained on many
+databases as well as their evaluation partitions, some commonly used
+test data (e.g., ASVspoof [3]) cannot be used for evaluation.
+5448
+Compared with SFT, fine-tuning using pure GRPO (or
+GRPOs) alleviates the degradation on out-of-domain test
+data while maintaining the performance on in-domain test
+data.7 With XLS-R-2B, comparison between fine-tuning using
+SFT (row 2) and GRPO (row 4) shows that the latter achieved
+lower EERs on all four out-of-domain test sets. For example,
+the EER onItWdecreased from 6.35% (row 2) to 2.19% (row
+4). Meanwhile, using GRPO led to EERs of 10% on the in-
+domain test sets, which are on a par with those of using SFT.
+Of course, the EERs on the in-domain test sets are much lower
+than those without fine-tuning (row 1).
+Fine-tuning using GRPO s achieved similar results to the
+case of using GRPO, for all three types of detection models
+(with post-training). This indicates that implementation differ-
+ences, such as clipping reward and keeping a separate ‘old’ pa-
+rameter set ˆΘ, are not critical, at least in our experiment.
+From other setups of the experiments, we have two addi-
+tional observations. First,SFT→GRPO does not outperform
+GRPO-only fine-tuning. While the EERs on the in-domain test
+sets are comparable, the former (row 6) obtained higher EERs
+than the latter (row 4) on the out-of-domain test sets, especially,
+onDV(7.04 vs. 2.76%) andItW(5.89 vs. 2.19%). The same
+trend was observed by comparing SFT→GRPO s (row 5) and
+pure GRPOs (row 3). Second,GRPO is effective when applied
+to post-trained models, but not to the pre-trained models.
+This is obvious if we compare the results on the out-of-domain
+test data in rows 4 and 12. 8
+In summary, the results indicate that SFT applied to the
+post-trained model improves the performance on in-domain
+datasets, but it may lose some knowledge from the post-training
+and degrade the out-of-domain detection performance. In con-
+trast, the GRPO-tuned model tends to retain the knowledge
+from post-training while learning from the new training data.
+3.4. Results of drift analysis
+We further analyzed the drift of data distribution using tools
+from [18]. The overall procedure is to extract the fixed-
+dimensional embedding vector (after average pooling) for each
+fakeutterance in a test set as well as a reference set. An Wasser-
+stein distance, or the drift, between the distribution of the em-
+bedding vectors in the test set and that of the reference set are
+then measured. We followed [18] and used the ASVspoof 2019
+development set as the reference set.
+We measured the drift using the post-trained XLS-R-2B
+model, the SFT fine-tuned version, and the GRPO fine-tuned
+version. The results are plotted in Figure 2 (a). For the post-
+trained model (in grey bold profile), the drift measured on the
+fiveDFE24test sets was higher than the other four test sets
+(ADD23,FoR,DV,ItW). This is not surprising because the
+DFE24test sets are relatively newer and more varied in terms
+of acoustic conditions. SFT fine-tuning using domain-matched
+data reduced the drift values on theDFE24test sets (in black
+dotted profile), but the drift onDVandItWbecame higher. In
+contrast, GRPO fine-tuning reduced the drift on theDFE24test
+sets while not making the out-of-domain data drift away. This
+result further supports the finding that fine-tuning using GRPO
+can alleviate the degradation caused by out-of-domain data.
+7This setup is conceptually similar to the idea of DeepSeek-R0 [14]
+that conducts RL without SFT. In contrast, fine-tuning via SFT→GRPO
+is part of the DeepSeek-R1 pipeline.
+8In fact, SFT on the post-trained model (row 10) also outperformed
+SFT on the pre-trained model (row 2) on the out-of-domain test sets,
+which supports the assumed advantage of post-training [12].
+4s 10s 13s 30s 50s ADD23 FoR DV ItW
+10−1
+100
+Drift measured by 
+ Wasserstein distance
+pre-post
+pre-post-sft
+pre-post-grpo
+(a)Comparing models using different fine-tuning algorithms
+4s 10s 13s 30s 50s ADD23 FoR DV ItW
+10−1
+100
+Drift measured by 
+ Wasserstein distance
+pre-post
+pre-post-grpo
+pre-post-grpo β=0
+pre-post-grpo β=1
+(b)Comparison between different GRPO variants
+Figure 2:Drift values measured on different test sets
+3.5. Ablation study on GRPO
+Next, we investigated the impact of the regularization termL p
+in GRPO. Compared with the default setting (row 4), GRPO
+without regularization (β= 0, row 7) achieved similar EERs on
+in-domain test sets but an increased EER of 6.50% on the out-
+of-domainDV. However, when the regularization was stronger
+(β= 1, row 8), the model obtained higher EERs than on the
+in-domain test sets and seemed to under-fit the target domain.
+Hence, unlike studies on LLMs [17], [24], we cannot conclude
+that the regularization is nonessential. The impact of the regu-
+larization term is also supported by the drift analysis in Figure 2
+(b). SFT may also be enhanced with proper regularization, but
+it is not the focus of our current work.
+In terms of the negative reward in GRPO, not using the
+negative reward (row 9) obtained higher EERs on all the test
+sets than the default GRPO configuration (row 4). The nega-
+tive reward may be a key difference between SFT and GRPO.
+While more exploration is needed to explain the improvement
+by GRPO, it is left to future work.
+4. Conclusion
+In this paper, we investigated whether GRPO-like reinforce-
+ment learning is effective in fine-tuning SSL-based speech
+deepfake detection models. Using multiple post-trained detec-
+tion models with different SSL-based front ends, we conducted
+experiments and found that, compared with conventional su-
+pervised fine-tuning SFT, fine-tuning with GRPO alleviated the
+degradation on out-of-domain data while maintaining perfor-
+mance on in-domain test sets.
+We also identified the preferred recipes of GRPO. Namely,
+GRPO-only fine-tuning is superior to SFT-then-GRPO; GRPO
+is effective when it is applied to a post-trained model rather than
+one using a pre-trained SSL front-end and a randomly initial-
+ized back end. The negative reward in GRPO was also found to
+be essential. While the regularization term makes a difference,
+strong regularization may lead to under-fitting. We hope that
+these findings can inspire more related studies.
+5449
+5. Acknowledgment
+This work is supported by JST PRESTO Grant (JPMJPR23P9).
+This study is based on results obtained from a project,
+JPNP22007, commissioned by the New Energy and Industrial
+Technology Development Organization (NEDO). Experiment
+was carried out using TSUBAME4.0 supercomputer of Institute
+of Science Tokyo.
+6. Generative AI Use Disclosure
+Generative AI was ONLY used to fix grammatical errors of the
+draft. The paper was then human-proofread via a paid service.

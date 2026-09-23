@@ -1,0 +1,513 @@
+NoiseLoRA-SV: Hierarchical Noise-Conditioned Adaptation with Embedding
+Distillation for Robust Speaker Verification
+Dai Gao1,∗, Chen Jiang2,∗, Sizhe Liu3, Peng Zhang4,∗∗
+1 School of Future Science and Engineering, Soochow University, China
+2 School of Computer Science and Technology, Beijing Jiaotong University, China
+3 Sino-French Institute, Renmin University of China, China
+4 Shandong Computer Science Center (National Supercomputer Center in Jinan), Qilu University of
+Technology (Shandong Academy of Sciences), China
+dgaogaod1@stu.suda.edu.cn, 23722093@bjtu.edu.cn, liusizhe2023@ruc.edu.cn,
+zhangp@sdas.org
+Abstract
+Current speaker verification (SV) models, including Low-Rank
+Adaptation (LoRA) variants, rely on static inference-time pa-
+rameters and show limited robustness to non-stationary noise.
+We propose NoiseLoRA-SV, a dynamic framework that gener-
+ates instance-adaptive weights on-the-fly during inference. In-
+stead of full end-to-end fine-tuning, it injects noise-conditioned
+LoRA modules into a lightly fine-tuned backbone with mod-
+erate additional parameter overhead. A Convolutional Recur-
+rent Network (CRN) extracts hierarchical noise representations:
+global embeddings drive a hypernetwork to generate LoRA
+matrices, while local embeddings control a frame-level time-
+varying gate. Optimized via InfoNCE-based contrastive dis-
+tillation, NoiseLoRA-SV aligns noisy embeddings with clean
+speaker representations. Evaluated on the V oxCeleb1 corpus
+with MUSAN and unseen NonSpeech100 noises, NoiseLoRA-
+SV consistently yields lower equal error rates (EERs) than static
+baselines.
+Index Terms: speaker verification, noise-conditioned LoRA,
+dynamic adaptation, contrastive distillation
+1. Introduction
+Speaker verification (SV) systems are critical for secure authen-
+tication [1, 2]. However, complex background noise severely
+degrades performance [3]. Conventional methods typically cas-
+cade a separately trained speech enhancement (SE) frontend
+with an SV backend [4, 5]. Unfortunately, independently op-
+timized SE modules lack awareness of speaker-discriminative
+tasks. They may introduce artifacts during noise suppression,
+degrading embeddings and verification accuracy [6, 7, 8].
+To mitigate these issues, recent studies have explored joint
+SE-SV optimization [9, 10], adversarial noise disentangle-
+ment [11], and advanced data augmentation [12]. Further-
+more, large-scale Self-Supervised Learning (SSL) models have
+demonstrated improved robustness for SV [13]. Alternatively,
+Knowledge Distillation (KD) [14, 15] offers a lightweight solu-
+tion by aligning the embedding manifold of noisy speech with
+that of clean speech using a teacher network. Despite these ad-
+vances, most SV backends still operate with static network pa-
+rameters at inference time. Static models learn shared weights
+to generalize across acoustic conditions, but this rigidity re-
+stricts their representational capacity and limits instance-level
+∗ These authors contributed equally to this work.
+∗∗ Corresponding author
+adaptation to rapidly changing noise [16].
+Meanwhile, deploying large robust models imposes pro-
+hibitive computational demands on resource-constrained edge
+devices [17]. Driven by these constraints, Parameter-Efficient
+Fine-Tuning (PEFT) paradigms, such as Low-Rank Adapta-
+tion (LoRA) [18], offer efficient adaptation to unseen envi-
+ronments. Yet, standard LoRA employs fixed low-rank matri-
+ces post-training, lacking responsiveness to noise fluctuations.
+We therefore make adaptation modules noise-conditional and
+instance-adaptive. Inspired by explicit noise modeling [19, 20],
+we proposeNoiseLoRA-SV, a unified and dynamic noise-
+conditioned adaptation framework for noise-robust SV . We em-
+ploy a Convolutional Recurrent Network (CRN) to reconstruct
+noise spectrograms and extract hierarchical noise representa-
+tions for stationary and transient characteristics. A hypernet-
+work uses the global noise feature to generate low-rank adap-
+tation matrices for ECAPA-TDNN speaker encoder [21], effec-
+tively re-parameterizing key layers for the specific input, while
+local temporal features drive a time-varying gate to modulate
+representations frame-by-frame. Finally, a contrastive distilla-
+tion objective pulls the adapted noisy embeddings closer to their
+clean anchors, ensuring high speaker discriminability.
+In summary, the contributions of this paper are: (1) We pro-
+pose a Hierarchical Noise-Conditioned LoRA framework that
+leverages global noise representations to dynamically generate
+adaptation weights via a hypernetwork, addressing the limita-
+tions of static models in noisy environments. (2) We introduce
+a time-varying gating mechanism driven by local multi-scale
+noise embeddings, enabling frame-level modulation that effec-
+tively handles non-stationary noise and transient interference.
+(3) We design an integrated training paradigm combining ex-
+plicit noise reconstruction and contrastive distillation, which
+encourages alignment of the dynamically adapted noisy em-
+beddings with the clean speaker manifold. This enhances the
+noise-invariance of the features, achieving robustness across
+diverse acoustic scenarios. The code is available athttps:
+//github.com/peter112231/NoiseLoRA-SV.
+2. Proposed Method
+2.1. Overview of NoiseLoRA-SV
+As illustrated in Fig. 1, NoiseLoRA-SV comprises two tightly
+coupled branches: (i) a Noise Representation and Reconstruc-
+tion Network and (ii) a Speaker Encoder. The Noise Represen-
+tation and Reconstruction Network adopts an encoder–decoder
+414
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-64
+ECAPA-TDNN
+Decoder
+Teacher
+embedding
+Ldist
+Student
+embedding
+Speaker Encoder (ECAPA-TDNN backbone)
+PoolS3S2S1C Lspk
+Encoder
+E4E3E2E1 R D1D2D3D4
+Noise Representation and Reconstruction Network
+Lnoise
+Training & Inference Training-Only Frozen parameters
+Noisy speech
+Clean speech
+Reconstructed noise
+HNCHNCGG
+Zglobal
+Zlocal
+AAM-Softmax
+MS-NRH
+Figure 1:Overview of the NoiseLoRA-SV architecture. Solid arrows indicate modules used during both training and inference, while
+dashed arrows denote training-only paths. The snowflake symbol marks frozen parameters that are kept fixed during training.
+design with four encoder stages{E1,E 2,E 3,E 4}, a bottleneck
+R, and four decoder stages{D 4,D 3,D 2,D 1}with skip con-
+nections, and reconstructs a noise spectrogram for explicit su-
+pervision. The Speaker Encoder consists of an initial stemC,
+intermediate blocks{S 1,S 2,S 3}, and a statistics pooling layer
+(Pool) to produce an utterance-level embedding.
+To provide hierarchical noise guidance, we attach a Multi-
+Scale Noise Representation Head (MS-NRH) to the noise en-
+coder to extract a global noise embeddingZ global and a local,
+time-varying noise embeddingZ local. NoiseLoRA-SV inserts
+noise-conditioned LoRA modules at multiple depths: Global
+LoRA (G) blocks and Hierarchical Noise-Conditioned LoRA
+(HNC) blocks. The G blocks are conditioned only onZ global,
+while HNC blocks leverage bothZglobal andZ local for deeper fea-
+ture modulation. The model is optimized with speaker classifi-
+cation, noise reconstruction, and contrastive distillation losses.
+2.2. Noise Representation and Reconstruction Network
+To capture acoustic interference, we build the Noise Represen-
+tation and Reconstruction Network on a CRN backbone [20].
+Given a noisy log-Mel spectrogram, the CRN backbone ex-
+tracts hierarchical encoder features{E 1,E 2,E 3,E 4}and re-
+constructs an estimated noise spectrogram, which provides ex-
+plicit supervision.
+In addition, we attach the MS-NRH to the noise encoder to
+extract hierarchical noise embeddings (Fig. 2(a)). For the global
+noise embedding, we apply a lightweight projection head on the
+deepest feature mapE 4 (3×3Conv→ReLU→1×1Conv ),
+followed by global average pooling over frequency and time,
+yieldingZ global∈R D, whereDdenotes the embedding channel
+dimension, which summarizes the stationary background noise
+context. For the local noise embedding, we align multi-scale
+features{E 2,E 3,E 4}to a common resolution and concatenate
+them, followed by a Multi-scale Aggregation Gating Fusion
+(MAGF) module that reweights and fuses the aligned features
+before a final1×1convolution producesZ local∈R D×F×T ,
+whereFandTdenote the frequency and time dimensions, re-
+spectively. Compared with simple fusion, MAGF emphasizes
+informative noise cues and suppresses speech-dominant com-
+ponents under non-stationary interference.
+2.3. Noise-Conditioned LoRA Speaker Encoder
+We propose a dynamic adaptation framework consisting of two
+types of modules: the G block and the HNC block (Fig. 2(b)).
+As shown in Fig. 1, these modules are inserted at different
+depths of the speaker encoder [21] to overcome the static na-
+ture of standard LoRA [18].
+To capture macro acoustic variations, both modules uti-
+lize a hypernetwork [22] that dynamically generates projection
+matrices based on the global noise context. GivenZ global, a
+lightweight linear conditioning head predicts the parameters of
+A(Zglobal)andB(Z global), which are reshaped into matrices in
+Rr×ds andR ds×r, respectively, whered s denotes the channel
+dimension of the intermediate speaker features andrdenotes
+the LoRA bottleneck rank (r≪d s). To increase representa-
+tion capacity, a Swish activation is inserted between the linear
+projections. For an input featureS i∈R ds×T , the core noise-
+adaptive transformationF(S i)is computed as:
+F(S i) =B(Z global)Swish
+ 
+A(Zglobal)Si
+
+(1)
+In the shallower layers, we employ the G block. Since these
+layers capture generic features, the adaptation is conditioned
+solely on the stationary noise profile via residual injection:
+Si+1 =S i + α
+rF(S i)(2)
+whereαis a scaling factor. However, deeper layers require
+fine-grained modulation to handle transient and non-stationary
+interferences. Thus, we introduce the HNC block, which incor-
+porates a temporal gating mechanism driven by the local noise
+embeddingZ local. A lightweight convolutional networkψmaps
+Zlocal to a frame-level gating sequenceg∈R 1×T :
+g=σ
+ 
+ψ(Zlocal)
+
+(3)
+whereσdenotes the Sigmoid activation function. The final
+modulated representation for the HNC block is computed by
+applying this time-varying gate to the LoRA residual path:
+Si+1 =S i + α
+r
+ 
+F(S i)
+
+⊙g(4)
+415
+3x3 Conv
+
+E2 E3 E4
+BatchNorm
+SiLU
+3x3 Conv
+BatchNorm
+Sigmoid
+
+
+Align 3x3 Conv
+MAGF 1x1 Conv
+1x1 Conv
+3x3 Conv
+Swish 1x1 Conv
+(b) Hierarchical Noise-Conditioned LoRA 
+(HNC)
+A(Zglobal)
+
+Sigmoid
+Linear
+Linear
+ReLU
+ReLU
+Si
+Si+1
+(a) Multi-Scale Noise Representation Head 
+(MS-NRH)
+
+
+Concat
+Pool
+Addition
+ElemMul
+MatMul Zglobal Zlocal
+ZglobalZlocal
+B(Zglobal)
+g
+F(Si)
+ScalePool
+Figure 2:Detailed structures of (a) the MS-NRH incorporating
+the MAGF module, and (b) the HNC block.
+where⊙denotes element-wise multiplication. The gategis
+broadcast along the channel dimension when applied toF(S i).
+This hierarchical design allows the model to transition from
+global parameter adaptation in early layers to fine-grained lo-
+cal noise suppression in deeper layers.
+2.4. Loss Functions
+The proposed NoiseLoRA-SV is optimized using a multi-task
+learning objective, integrating speaker classification, noise re-
+construction, and contrastive distillation into a framework:
+Ltotal =L spk +λ distLdist +λ noiseLnoise (5)
+whereλ noise is set to0.1to balance the noise reconstruction task.
+For the contrastive distillation, we assign a weight ofλdist = 1.0
+to ensure sufficient gradient contribution relative to the primary
+task. For the primary verification task, the SV lossLspk employs
+the Additive Angular Margin (AAM) Softmax loss [23] to en-
+courage intra-class compactness and inter-class discrepancy.
+To guide the CRN in capturing acoustic interference, the
+noise extraction lossL noise is formulated as MSE between pre-
+dicted and ground-truth noise spectrograms. This encourages
+noise extraction while reducing speech leakage. To align the
+dynamically adapted noisy embeddings with the clean speaker
+manifold, we incorporate a contrastive embedding distillation
+loss (Ldist). Using a frozen teacher to extract clean embeddings,
+we apply a masked InfoNCE-based objective [24]:
+Ldist =− 1
+B
+BX
+i=1
+log
+exp
+
+sim(z(i)
+s ,z (i)
+t )/τ
+
+P
+j∈Ki
+exp
+
+sim(z(i)
+s ,z (j)
+t )/τ
+ (6)
+whereBdenotes the batch size, sim(·,·)is cosine similarity,
+andτis a temperature hyper-parameter. Here,z s andz t are
+student and teacher embeddings. This objective pulls the noisy
+embedding toward its clean anchor while pushing apart nega-
+tives within the batch. To prevent false negatives from the same
+speaker, we employ supervised masking. Specifically, the de-
+nominator in Eq. 6 is restricted toKi ={j∈{1,...,B}|j=
+i∨y j̸=y i}, where∨denotes the logical OR operator andy j
+is the speaker identity of samplej. This ensures that only the
+positive pair and true negatives contribute.
+3. Experimental Settings
+3.1. Datasets
+To evaluate the method under noisy conditions, we utilize the
+MUSAN corpus [25] to represent in-domain, or seen, noise
+Table 1:Architectures of the Noise Representation and Recon-
+struction Network (Encoder NE, Decoder ND) and the Speaker
+Encoder (denoted as SV). The SV backbone is based on ECAPA-
+TDNN, into which our proposed Global LoRA and Hierarchi-
+cal LoRA modules are injected. L denotes the layer identifier,
+and Ch. denotes output channels. Abbreviations: BN (Batch
+Normalization), TConv2d (Transposed Convolution), and SE-
+Res2Block (Squeeze-and-Excitation Residual Block).
+L NE
+Structure L ND
+Structure L SV
+Structure
+E1 (Conv2d, BN, PReLU)×2
+Ch. = 32 R
+Conv2d
+GRU
+Linear
+Ch. = 64
+C
+Conv1d
+Global LoRA
+Ch. = 1024
+E2 (Conv2d, BN, PReLU)×2
+Ch. = 64 D4
+TConv2d
+Concat
+(Conv2d, BN, PReLU)×2
+Ch. = 64
+S1
+SE-Res2Block
+Global LoRA
+Ch. = 1024
+E3 (Conv2d, BN, PReLU)×2
+Ch. = 128 D3
+TConv2d
+Concat
+(Conv2d, BN, PReLU)×2
+Ch. = 32
+S2
+SE-Res2Block
+Hierarchical LoRA
+Ch. = 1024
+E4 (Conv2d, BN, PReLU)×2
+Ch. = 256 D2
+TConv2d
+Concat
+(Conv2d, BN, PReLU)×2
+Ch. = 32
+S3
+SE-Res2Block
+Hierarchical LoRA
+Ch. = 1024
+– – D1
+TConv2d
+Conv2d
+Ch. = 1
+Pool
+Conv1d
+AttentiveStatsPool
+Linear
+Ch. =1536→192
+sources. To ensure strict separation between training and eval-
+uation, the MUSAN dataset is partitioned into disjoint training
+and test subsets, ensuring no overlap of noise segments while
+preserving acoustic diversity. The base clean speech utterances
+are sourced from the V oxCeleb1 training set [2]. Noisy training
+samples are dynamically synthesized by additively mixing the
+clean speech with MUSAN training noises at signal-to-noise ra-
+tio (SNR) values uniformly sampled between 0 dB and 20 dB.
+For evaluation, the standard V oxCeleb1 test set provides
+the clean trials. Corresponding noisy evaluation trials are con-
+structed by contaminating these test utterances with the MU-
+SAN test subset at discrete SNR levels of 0, 5, 10, 15, and
+20 dB. Furthermore, to assess generalization capabilities against
+out-of-domain, or unseen, environments, we conduct additional
+evaluations using the NonSpeech100 dataset [26] under identi-
+cal noise configurations. System performance is quantified us-
+ing the equal error rate (EER), which is derived from the cosine
+similarity scores between the extracted speaker embeddings.
+3.2. Implementation Details
+The network is trained for 200 epochs on an NVIDIA A100
+GPU with a batch size of 300, using the Adam optimizer with
+a weight decay of2×10 −5. The initial learning rate is0.001,
+decaying by0.97per epoch. To preserve discriminative repre-
+sentations acquired during the pre-training phase, the learning
+rate applied to the speaker encoder is scaled down by a factor of
+0.1. For the loss configurations, the AAM-Softmax employs a
+margin of0.2and a scale of30, while the temperature parame-
+terτfor contrastive distillation is set to0.07. The shared LoRA
+scaling factor (α) is set to8for both G and HNC blocks. The
+frozen pre-trained teacher model adopts the identical architec-
+ture as the student’s backbone ECAPA-TDNN and is trained on
+clean data to provide clean speaker-manifold guidance.
+We extract 80-dimensional log-Mel spectrograms from 3-
+second speech crops (25 ms window, 10 ms shift), regularized
+via SpecAugment [12] prior to being processed by the network,
+whose detailed architectural configurations are summarized in
+Table 1, with the bottleneck rankrfixed at4. The final output
+of the system is a 192-dimensional speaker embedding vector.
+416
+Table 2:EER (%) results on the VoxCeleb1 test set under seen noise conditions (Babble, Music, and Noise) from the MUSAN corpus at
+varying SNR levels (0, 5, 10, 15, 20 dB). The bottom section presents ablation studies of our proposed framework. The best results are
+highlighted in bold and the second-best results are underlined.
+Models
+EER (%)
+Clean Babble Music Noise Avg.0 5 10 15 20 0 5 10 15 20 0 5 10 15 20
+V oiceID [27] 6.79 37.96 27.12 16.66 11.25 8.99 16.24 11.44 9.13 8.10 7.48 16.56 12.26 9.86 8.69 7.83 13.52
+NDML [28] 2.90 10.96 6.13 4.28 3.52 3.21 10.84 6.52 4.66 3.67 3.21 10.24 6.96 5.02 3.91 3.40 5.59
+FSEF [29] 4.26 27.56 15.28 9.04 6.47 5.41 8.47 6.31 5.14 4.71 4.56 7.88 6.42 5.50 4.87 4.66 7.91
+NDAL [11] 2.63 6.144.00 3.23 2.97 2.80 6.43 4.44 3.59 3.08 2.87 5.87 4.19 3.53 3.23 3.09 3.88
+Diff-SV [10] 2.35 8.74 4.51 3.33 2.82 2.61 6.04 3.96 3.10 2.75 2.60 6.01 4.52 3.49 2.93 2.64 3.90
+NA-ExU-Net [30] 1.99 9.88 4.57 3.10 2.43 2.09 6.24 3.95 2.80 2.39 2.17 5.85 3.90 3.05 2.54 2.37 3.71
+SEU-Net [31] 2.52 8.54 5.16 3.67 3.10 2.78 6.25 4.36 3.55 3.10 2.79 6.41 4.42 3.74 3.20 2.92 4.16
+NISRL [32] 2.40 7.81 4.25 3.28 2.78 2.60 5.19 3.58 3.11 2.75 2.57 4.943.69 3.43 2.94 2.68 3.62
+ParaNoise-SV [33] 1.75 9.46 4.37 2.64 2.13 1.84 6.20 3.62 2.46 1.95 1.81 5.603.642.75 2.122.00 3.40
+w/o Distill 2.05 7.16 3.32 2.61 2.15 2.06 5.73 3.62 2.73 2.38 2.08 6.04 3.97 3.05 2.42 2.10 3.34
+w/o NoiseLoss 1.88 7.28 3.34 2.79 2.32 2.24 5.65 3.76 2.97 2.51 2.30 6.13 4.19 3.23 2.64 2.25 3.47
+LoRA (one block only) 2.11 7.49 3.72 2.86 2.44 2.38 5.84 3.88 3.04 2.68 2.34 6.28 4.29 3.27 2.75 2.28 3.60
+LoRA (static) 1.84 7.03 3.18 2.56 2.18 2.08 5.48 3.52 2.75 2.37 2.13 5.90 3.94 3.01 2.43 2.12 3.28
+NoiseLoRA-SV (full) 1.70 6.89 2.92 2.34 1.991.87 5.17 3.27 2.432.15 1.93 5.53 3.822.742.20 1.91 3.05
+Table 3:EER (%) on the VoxCeleb1 test set with an out-of-
+domain noise source (NonSpeech100).
+SNR (dB) NDML Diff-SV NA-ExU-Net ParaNoise-SVNoiseLoRA-SV
+0 20.49 8.23 7.82 7.617.14
+5 15.09 5.06 4.78 4.404.11
+10 11.96 3.85 3.46 3.172.88
+15 9.96 3.19 2.75 2.222.07
+20 8.64 2.89 2.44 2.091.80
+Avg. 13.23 4.65 4.25 3.903.60
+Table 4:Comparison of auxiliary objectives in terms of EER
+(%): explicit noise modeling vs. noise attribute estimation.
+Noise Type Counterpart (attr. est.) NoiseLoRA-SVClass SNR Class+SNR
+Seen 3.56 3.45 3.38 3.05
+Unseen 4.28 4.13 4.09 3.60
+4. Results and Discussion
+Performance on Seen Noise Conditions.Table 2 presents
+the EER results on the V oxCeleb1 test set contaminated with
+the MUSAN corpus (seen noise). NoiseLoRA-SV consistently
+outperforms existing static robust speaker verification methods
+across most SNR levels, achieving the lowest average EER
+of 3.05% under noisy conditions and 1.70% on clean speech.
+Compared to joint learning approaches like Diff-SV (3.90%)
+and ParaNoise-SV (3.40%), our dynamic instance-level adap-
+tation framework proves more effective at balancing aggressive
+noise suppression and fine-grained speaker feature preservation.
+Ablation Studies.The bottom section of Table 2 de-
+tails our ablation studies. Removing noise reconstruction (w/o
+NoiseLoss) or contrastive distillation (w/o Distill) increases the
+average EER to 3.47% and 3.34%, respectively. This confirms
+the importance of both noise modeling and clean-manifold
+alignment. Furthermore, single-block LoRA (one block only)
+or static LoRA (static) performs worse than our full hierarchical
+configuration, indicating that multi-scale adaptation suppresses
+both low-level artifacts and high-level semantic distortions.
+Generalization to Unseen Out-of-Domain Noise.Table 3
+evaluates generalization capabilities using the out-of-domain
+NonSpeech100 dataset. NoiseLoRA-SV obtains the lowest av-
+erage EER of 3.60%. Compared to strong baselines like Diff-
+SV (4.65%) and ParaNoise-SV (3.90%), our framework ex-
+Table 5:Cross-backbone applicability results (EER%). Params
+indicates the number of total parameters for each configuration.
+Backbone Seen Unseen Params
+ECAPA-TDNN [21] 5.84 7.20 14.73M
+NoiseLoRA-SV (ECAPA-TDNN) 3.05 3.60 24.19M
+HuBERT Base [34] 5.25 5.39 94.68M
+NoiseLoRA-SV (HuBERT) 3.42 3.76 113.22M
+WavLM Base+ [13] 3.54 3.88 94.70M
+NoiseLoRA-SV (WavLM) 2.87 3.22 119.95M
+hibits much lower performance degradation, validating that the
+extracted noise representations capture universal acoustic inter-
+ference rather than overfitting to the training noise distribution.
+Comparison with Noise Attribute Estimation.Table 4
+highlights the advantage of explicit noise reconstruction over
+implicit noise attribute estimation (predicting noise class, SNR,
+or both). NoiseLoRA-SV outperforms all attribute-estimation
+variants, achieving a 3.60% unseen EER compared to 4.09% for
+the Class+SNR variant. This demonstrates that predefined dis-
+crete attributes are too coarse, whereas explicitly reconstructing
+the noise provides the rich, continuous, frame-level guidance to
+effectively drive our fine-grained temporal gating mechanism.
+Cross-Backbone Applicability.Finally, Table 5 demon-
+strates the cross-backbone generality of our method. Integrat-
+ing NoiseLoRA-SV into ECAPA-TDNN, HuBERT Base, and
+WavLM Base+ consistently yields substantial improvements.
+Importantly, the addition of the Noise Representation and Re-
+construction Network and Hierarchical LoRA blocks introduces
+a moderate parameter overhead, confirming NoiseLoRA-SV as
+a scalable and noise-robust solution for speaker verification.
+5. Conclusion
+NoiseLoRA-SV is a highly effective modulation framework for
+noise-robust speaker verification, integrating explicit noise re-
+construction with dynamic network adaptation. Its hierarchical
+noise-conditioned LoRA architecture employs a hypernetwork
+for global context and a time-varying gate for local features, en-
+abling fine-grained adaptation to non-stationary noises while ro-
+bustly preserving speaker-discriminative features. Demonstrat-
+ing lower EERs across various noise conditions, our work high-
+lights the potential of noise-guided, instance-level adaptation
+for robust speaker verification in real-world scenarios.
+417
+6. Use of Generative AI Disclosure
+Generative AI tools were used only for language polishing. All
+scientific content was authored and verified by the authors.

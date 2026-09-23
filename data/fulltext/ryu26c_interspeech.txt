@@ -1,0 +1,490 @@
+SPOT-TSE: Spatial Point-Guided Target Speech Extraction
+Taewon Ryu ID 1, Joon-Hyuk Chang ID 1,2,∗∗
+1 Department of Artificial Intelligence, Hanyang University, Seoul, Republic of Korea
+2 Department of Electronic Engineering, Hanyang University, Seoul, Republic of Korea
+{taewonryu, jchang}@hanyang.ac.kr
+Abstract
+Wearable devices such as smart glasses increasingly demand
+selective listening. Accordingly, recent works often explore
+region-based spatial target speech extraction (TSE). However,
+conventional fixed-boundary selection is sensitive to small spa-
+tial shifts near boundaries, and methods relying only on distance
+or azimuth become ambiguous under spatial overlap (e.g., shar-
+ing the same distance or azimuth). To address these issues, we
+propose SPOT-TSE, a multi-channel point-guided TSE frame-
+work where the target is specified by a continuous spatial point
+query in distance and azimuth. We stabilize point-based con-
+ditioning via spatial query encoding and proximity-weighted
+soft targets during training. To further handle overlap cases,
+we adopt hard-negative spatial sampling. Experiments on sim-
+ulated smart glasses datasets show improved spatial selectivity
+and lower word error rate, while reducing computational cost
+compared to a recurrent baseline.
+Index Terms: target speech extraction, spatial conditioning,
+multi-channel speech separation
+1. Introduction
+The ability to isolate a specific speaker in a noisy, multi-speaker
+environment is a fundamental requirement for wearable audio
+devices such as smart glasses and hearables [1, 2]. In such
+scenarios, users often seek selective listening, where speech
+of interest is preserved while interfering speakers and back-
+ground noise are suppressed. Target speech extraction has been
+widely studied to achieve this by utilizing various auxiliary
+cues [3]. While effective for personalized extraction, identity-
+conditioned TSE systems typically require enrollment utter-
+ances or pre-defined speaker embeddings [4, 5]. Such cues are
+often impractical when the target is specified only by spatial lo-
+cation in wearable scenarios, and they may also raise privacy
+concerns by exposing personal voice attributes [6].
+To enable TSE without enrollment, multi-channel spatial
+selection systems have leveraged directional cues through neu-
+ral spatial filtering, beamforming, and azimuth-conditioned sep-
+aration [7–13]. These approaches exploit inter-channel infor-
+mation to emphasize signals from a desired direction, but re-
+lying on azimuth alone can degrade performance when mul-
+tiple sources share similar or identical azimuths despite being
+located at different distances. Motivated by proximity as an-
+other strong criterion for selective listening, recent work has
+also explored distance-based TSE [14–16]. In particular, [15]
+conditioned extraction on an exact queried distance, making it
+one of the few prior approaches that targets a specific distance
+rather than a distance interval. However, conditioning on only
+one spatial dimension (azimuth or distance) remains vulnerable
+**indicates the corresponding author.
+Interference 
+Speaker
+Spatial
+point
+(𝑑𝑞, 𝜃𝑞)
+Multi-channel
+Mixture
+Interference 
+Speaker
+Target Speech
+𝜃𝑞
+𝜃𝑞
+SPOT-TSE
+Target 
+Speaker
+Noise
+𝑑𝑞
+Figure 1: Overview of SPOT-TSE. A spatial point query
+q = (dq,θq) conditions extraction from a multi-channel mix-
+ture, producing a single-channel estimate of the source atq.
+when sources overlap in that dimension. To improve spatial se-
+lectivity, several region-based frameworks conditioned extrac-
+tion on intervals (zones) defined by distance and/or azimuth, re-
+taining sources inside the specified region and suppressing oth-
+ers [17–20]. Thus, even when both distance and azimuth are
+used, the target is often defined as a region rather than a pre-
+cise spatial point. Although effective in sparse environments,
+such boundary-constrained formulations can be imprecise when
+multiple speakers fall within the same region. They are also
+problematic when a farther target lies behind a nearer inter-
+ferer at a similar azimuth, because distance-aware region se-
+lection may retain all sources within the queried distance range
+instead of isolating only the source at the queried distance itself.
+Moreover, strict hard-label supervision induced by rigid region
+boundaries can lead to boundary sensitivity, where small spatial
+shifts near a boundary cause abrupt changes in the target label.
+To address these limitations, we propose spatial point-
+guided target speech extraction (SPOT-TSE), a multi-channel
+TSE framework that conditions extraction on a continuous spa-
+tial point query in distance and azimuth. SPOT-TSE combines
+spatial query encoding (SQE) with ambiguity-aware training
+for precise point-guided conditioning under spatial overlap and
+in near-boundary cases, while adopting a Mamba-based time-
+frequency grid network (TF-GridNet) backbone to reduce com-
+putational cost [21, 22]. Figure 1 shows the SPOT-TSE frame-
+work. Our main contributions are as follows:
+• We propose SPOT-TSE, a point-guided spatial TSE frame-
+work that replaces region-based selection with a continuous
+spatial point query in distance and azimuth.
+• We introduce SQE to represent continuous spatial point
+queries defined by distance and azimuth for precise point-
+guided conditioning.
+• We propose ambiguity-aware training with proximity-
+weighted soft targets to reduce boundary sensitivity and
+hard-negative spatial sampling to improve discrimination in
+7164
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3266
+spatially confusable cases.
+Even in the challenging setting with random rooms and mi-
+crophone positions, SPOT-TSE achieved 11.05 dB signal-to-
+distortion ratio (SDR) and 0.22 word error rate (WER).
+2. Proposed Method
+2.1. Problem Formulation
+Consider an acoustic environment with K source signals
+sk ∈ RN at positions pk = (dk,θk), where dk denotes the
+distance from the array center and θk denotes the azimuth of
+sourcek, fork∈{ 1,...,K }. Here, N denotes the number of
+time-domain samples. For a C-microphone array, the mixture
+signal xc ∈ RN captured at microphone c is modeled in the
+time domain as:
+xc =
+KX
+k=1
+sk∗hc
+k +nc, c = 1,...,C, (1)
+wherehc
+k is the room impulse response (RIR) from sourcek to
+microphone c,∗ denotes convolution, and nc ∈ RN is addi-
+tive noise at microphone c. Unlike conventional methods that
+rely on binary selection to extract sources within a fixed spa-
+tial region Ω (e.g.,strgt =P
+pk∈Ωsk), SPOT-TSE introduces
+a continuous spatial weighting function w(pk,q ) based on the
+proximity between the source position pk and the spatial point
+queryq = (dq,θq), where dq andθq denote the distance and
+azimuth of the query, respectively. Here, w(pk,q ) ≥ 0 is a
+proximity weight that increases as pk gets closer to q; its con-
+crete form is specified in Sec. 2.3. The ideal target signal strgt
+for a given queryq is defined as:
+strgt =
+KX
+k=1
+w(pk,q )sk,ref, (2)
+where sk,ref = ( href
+k ∗ sk) denotes the k-th source image
+at the reference microphone. This formulation provides a
+smoother transition near spatial boundaries, effectively reduc-
+ing the boundary sensitivity of rigid region-based extraction.
+2.2. Model Architecture
+Given the multi-channel time-domain mixture, we first trans-
+form it into the short-time Fourier transform (STFT) domain
+and construct the input by concatenating the real–imaginary
+spectra with inter-channel spatial cues. Specifically, we com-
+pute inter-channel level difference (ILD), inter-channel phase
+difference (IPD), and coherent-to-diffuse ratio (CDR) features
+relative to a reference microphone using the remaining chan-
+nels, and concatenate them with the complex STFT features be-
+fore the front-end convolutional encoder. ILD and IPD are ef-
+fective for azimuth discrimination, but can be less informative
+when sources share similar azimuths. CDR complements them
+as a diffuseness-related cue; under diffuse-field assumptions,
+it is correlated with the direct-to-reverberant ratio (DRR) [23],
+providing additional near/far information.
+To reduce computational cost for wearable deployment, we
+replace the bidirectional long short-term memory (BiLSTM)
+blocks and causal long short-term memory (LSTM) blocks in
+the TF-GridNet backbone used in SoundBubble [1] with Bi-
+Mamba and Mamba blocks [22], respectively. BiMamba mod-
+els global spectral dependencies along the frequency axis, while
+causal Mamba handles streaming temporal modeling. This de-
+sign leverages the linear scaling of state-space models while
+preserving the original streaming formulation.
+STFT
+iSTFT
+IPD & ILD & CDR
+Features
+Concatenation
+2D Convolution
+2D Deconvolution
+BiMamba
+Causal Mamba
+Layer norm
+Layer norm
+Multi-channel Mixture
+Target Speech
++
++
++
+Linear
+Tanh
+Layer norm
+Spatial Query
+Encoding (SQE)
+Separation Block
+Separation Block
+Separation Block
+Separation Block
+Separation Block
+Separation Block
+FiLM
+Layer
+Figure 2: SPOT-TSE architecture with spatial query encoding
+and a Mamba-based TF-GridNet backbone.
+To condition the backbone on precise spatial coordinates,
+we propose an SQE module that maps the spatial point query
+q = (dq,θq) into a latent embedding zq for conditioning. The
+coordinates are normalized using the workspace bounds:
+˜dq = dq−dmin
+dmax−dmin
+, ˜θq = θq−θmin
+θmax−θmin
+. (3)
+Here,dmin anddmax are the lower and upper bounds of query
+distance, andθmin andθmax are the lower and upper bounds of
+query azimuth. We then apply a Fourier feature mappingϕ(·) to
+each scalar to better capture fine-grained spatial variations [24]:
+ϕ(u) = [sin(ωℓu), cos(ωℓu)]L−1
+ℓ=0
+⊤∈ R2L, (4)
+where u ∈ { ˜dq, ˜θq}, L is the number of Fourier fre-
+quency bands, and ωℓ = 2 ℓπ. The resulting vector
+eq = [ϕ( ˜dq);ϕ(˜θq)]∈ R4L is projected to a Dq-dimensional
+spatial query embedding:
+zq = LN (tanh (Linear(eq))), (5)
+where Linear denotes a learnable linear projection and LN de-
+notes layer normalization. The embeddingzq is broadcast along
+the frequency axis to form Zq∈ RDq×F , whereF is the num-
+ber of frequency bins, and is injected into the separation blocks
+(b≥ 2) via feature-wise linear modulation (FiLM) [25]:
+FiLM(Hb; Zq) =γb(Zq)⊙ Hb +βb(Zq), (6)
+whereγb(·) andβb(·) are block-specific learnable FiLM gen-
+erators that produce multiplicative and additive modulation
+terms, respectively, and ⊙ denotes element-wise multiplica-
+tion. The intermediate feature map at block b is denoted by
+Hb∈ RD×F×T , where D is the backbone feature dimension
+andT is the number of time frames. The FiLM generators out-
+putγb(Zq),βb(Zq)∈ RD×F×1, which are broadcast along the
+time axis to match Hb. This conditioning enables the backbone
+to emphasize the target at the queried point while suppressing
+off-query sources. Figure 2 summarizes this overall architec-
+ture: the multi-channel STFT features and spatial cues are pro-
+cessed by the backbone, while the spatial point query is encoded
+by SQE and injected into the Mamba-based TF-GridNet blocks
+via FiLM.
+7165
+2.3. Ambiguity-Aware Training
+To address spatial ambiguity during training, we adopt two
+complementary components: proximity-weighted soft targets
+to reduce boundary sensitivity and hard-negative spatial sam-
+pling to improve discrimination in spatially confusable cases.
+We first define proximity-weighted soft targets based on a gen-
+eralized Gaussian weighting function. For a queryq = (dq,θq)
+andK sources atpk = (dk,θk), define ∆dk =|dk−dq| and
+∆θk =|θk−θq|. The target weight is:
+w(pk,q ) = exp
+"
+−
+∆dk
+σd
+βd
+−
+∆θk
+σθ
+βθ
+#
+, (7)
+whereσd andσθ control the spatial spread, andβd andβθ con-
+trol the selection sharpness. The training target is constructed
+as strgt = PK
+k=1w(pk,q )sk,ref. Although the query is de-
+fined as a single spatial point, this soft target is used only dur-
+ing training to smooth supervision near ambiguous boundaries;
+inference remains conditioned on the queried point itself.
+We further apply hard-negative spatial sampling with two
+complementary cases: (i) close in azimuth but far in distance
+and (ii) close in distance but far in azimuth. Concretely, we
+construct mixtures where an interfereri satisfies|θi−θq|<τ θ
+with|di−dq|≥ τd, or|di−dq|<τ d with|θi−θq|≥ τθ. Here,
+τθ and τd denote azimuth and distance margins, respectively.
+This forces the model to jointly exploit azimuth-sensitive cues
+and distance-sensitive cues, instead of collapsing to a single cue.
+3. Experiments
+3.1. Dataset and Simulation Setup
+Following the multi-channel simulation pipeline in SoundBub-
+ble [1], we generated 5-second acoustic mixtures with a sam-
+pling rate of 24 kHz using pyroomacoustics [26]. Clean
+speech was sourced from the VCTK Corpus [27] and the Lib-
+riSpeech family [28], with background noise from WHAM!
+[29]. We simulated a 7-channel smart glasses array based on
+the Project Aria topology [30].
+To systematically evaluate spatial generalization, we con-
+structed three datasets with increasing geometric complexity:
+1) D1 Fixed room size and fixed microphone position: The
+room geometry was fixed to 7×8×3 m. The 7-channel array
+center was fixed at (3.5, 4.0, 1.1) m with a fixed yaw of 90◦.
+Reverberation was controlled with a fixed reverberation time
+(RT60) target of 0.2 s (equivalently fixed absorption in simula-
+tion).
+2) D2 Fixed room size and random microphone posi-
+tions: The room remained 7×8×3 m with the same RT60 tar-
+get ( 0.2 s), while array placement was randomized per mix-
+ture: x ∈ [1, 6], y ∈ [1, 7], z ∈ [1.2, 1.8] m and yaw
+∈ [−180◦, 180◦].
+3) D3 Random room sizes and random microphone po-
+sitions: Both room and array were randomized. Room di-
+mensions were sampled as L ∈ [5, 8], W ∈ [4, 8], and
+H∈ [2, 4] m. The array placement followed the same margin
+and height constraints as D2, with random yaw. Reverberation
+was diversified by sampling absorption in [0.1, 0.9], yielding a
+broad range of effective RT60 values.
+Across D1–D3, the speaker policy was shared: three can-
+didate speakers were sampled in the frontal hemisphere (±95◦,
+0.5–3.5 m), and 1–2 rear interferers were added with probabil-
+ity 0.35 outside±100◦. Minimum inter-speaker spacing was
+0.5 m. Thus, the number of sourcesK ranged from 3 to 5 across
+mixtures. To implement hard-negative spatial sampling, we
+used azimuth and distance margins ofτθ = 5◦ andτd = 0.5 m,
+respectively, and generation followed a deterministic curricu-
+lum: 30% close in azimuth but far in distance, 30% close in
+distance but far in azimuth, and 40% default random place-
+ment. For the main separation evaluation, we used the full split
+with train/validation/test = 50,000/5,000/5,000 mixtures. For
+ablation studies, we used a reduced subset (train/validation/test
+= 10,000/2,000/2,000) under the same simulation protocol to
+reduce computation time. For objective evaluation, we re-
+port SDR [31], perceptual evaluation of speech quality (PESQ)
+[32], and short-time objective intelligibility (STOI) [33]. For
+automatic speech recognition (ASR)-oriented evaluation, we
+report WER, computed by transcribing signals with Whisper
+small.en [34] and scoring them against the clean target tran-
+script with standard text normalization.
+3.2. Training Setup
+Front-end and backbone. We used a streaming STFT front-
+end module with a 288-point Hann window and a 192-point
+hop, corresponding to a 12 ms analysis window with an 8 ms
+current chunk and 4 ms lookahead at 24 kHz. The resulting 7-
+channel complex STFT was concatenated with the aforemen-
+tioned spatial cues via early fusion. For all experiments, we
+used the first channel (microphone 0) as the reference micro-
+phone for both spatial-cue computation and definition of the tar-
+get imagesk,ref. The separator was a 6-layer TF-GridNet [21]
+(B = 6 , feature channels = 32 ), using the same streaming
+setup as the front-end. Intra-frame processing used BiMamba
+blocks, and the query was injected via FiLM from the second
+block onward. For SQE, we set (dmin,d max) = (0.5 m, 3.5 m)
+and (θmin,θ max) = (−95◦, 95◦), L = 32 Fourier frequency
+bands, and set Dq = 128 for the spatial query embedding di-
+mension.
+Optimization. Training used 4.5 s random crops with batch
+size 4. For proximity-weighted soft targets, we set σd = 0.5 m
+and σθ = 5.0◦ with βd = βθ = 2 . Following SoundBub-
+ble [1], we optimized the signal-to-noise ratio (SNR) recon-
+struction loss,L =−SNR(strgt, ˆs), where ˆs denotes the es-
+timated target signal, for 200 epochs using Adam [35] (initial
+learning rate 1.2× 10−3), with gradient clipping at 1.0 and au-
+tomatic mixed precision (AMP).
+4. Results
+4.1. Overall Separation Performance
+Table 1 reports separation performance, perceptual quality, and
+ASR metrics across D1–D3, which increase in geometric and
+acoustic complexity. The unprocessed mixtures remain chal-
+lenging across all three settings, whereas SPOT-TSE yields
+large gains in every case. On D1, D2, and D3, it improves SDR
+from -4.94, -4.79, and -4.64 dB to 14.95, 13.94, and 11.05 dB,
+respectively. Over the same datasets, it reduces WER from 1.05,
+1.03, and 1.05 to 0.12, 0.14, and 0.22, indicating that the sepa-
+rated outputs remain effective for downstream speech recogni-
+tion. Performance decreases gradually from D1 to D3, but the
+gains remain substantial even in the most challenging setting.
+The smaller gap between D1 and D2 suggests that randomiz-
+ing microphone placement alone is less challenging than jointly
+randomizing room acoustics and array placement, as in D3. The
+consistent gains in PESQ and STOI further indicate that contin-
+uous spatial point conditioning improves perceptual quality and
+intelligibility while suppressing interfering sources.
+7166
+Table 1: Separation performance, speech quality, and recogni-
+tion results across datasets of increasing complexity.
+Dataset Model SDR ↑ PESQ↑ STOI↑ WER↓
+D1 Mixture -4.94 1.33 0.60 1.05
+SPOT-TSE 14.95 2.94 0.93 0.12
+D2 Mixture -4.79 1.34 0.60 1.03
+SPOT-TSE 13.94 2.83 0.91 0.14
+D3 Mixture -4.64 1.35 0.57 1.05
+SPOT-TSE 11.05 2.59 0.87 0.22
+Table 2: Ablation SDR (dB) on the reduced D3 subset. Azimuth-
+close and distance-close columns report ambiguity-focused lo-
+cal evaluations with |∆θ| ≤5◦ and|∆d| ≤0.5 m, respec-
+tively, while Overall reports SDR over the full subset.
+Method Azimuth-close Distance-close Overall
+SPOT-TSE 4.15 7.95 8.31
+w/o HN 2.93 8.46 8.17
+w/o soft targets 3.33 7.16 7.31
+w/o spatial cues 2.38 7.55 7.14
+w/o distance query 0.15 4.53 5.26
+w/o azimuth query -1.47 -1.50 -0.01
+w/o SQE -2.51 -0.97 -0.61
+4.2. Spatial Selectivity and Query Robustness
+We further evaluated robustness on two ambiguity-focused sub-
+sets of reduced D3: azimuth-close mixtures ( |∆θ|≤ 5◦) and
+distance-close mixtures (|∆d|≤ 0.5 m). For each subset, we
+averaged SDR over nearby offsets along the other spatial di-
+mension, rather than at a single exact offset, to summarize local
+spatial selectivity around the queried point. Table 2 also reports
+the overall SDR on the full reduced D3 subset.
+Removing hard-negative (HN) sampling degraded the
+azimuth-close case (4.15 vs. 2.93 dB) and lowered the overall
+SDR (8.31 vs. 8.17 dB), while the distance-close case remained
+comparable (7.95 vs. 8.46 dB). This suggested that HN mainly
+helped when the model had to avoid over-relying on azimuth
+cues and instead use both distance and azimuth information un-
+der confusable conditions. Removing proximity-weighted soft
+targets degraded both ambiguity-focused cases (3.33 and 7.16
+dB) and lowered the overall SDR to 7.31 dB, supporting its role
+in reducing boundary sensitivity around the queried point.
+Removing spatial cues (ILD, IPD, and CDR) lowered the
+azimuth-close and overall SDR to 2.38 and 7.14 dB, respec-
+tively, while the distance-close case remained relatively close
+to the full model at 7.55 dB. This indicated that explicit
+inter-channel spatial cues were especially helpful for azimuth-
+confusable cases. Removing either query axis also degraded
+performance: removing distance consistently lowered SDR,
+while removing azimuth pushed SDR below 0 dB across set-
+tings. This confirmed that both query dimensions were neces-
+sary for reliable point-guided extraction. We compared SQE
+against a simpler query-conditioning variant that directly pro-
+jected the normalized distance and azimuth scalars with a linear
+layer. Replacing SQE with this scalar-only input caused large
+drops in both settings ( −2.51 and−0.97 dB) and in overall
+SDR (−0.61 dB), confirming that richer query encoding was
+important for precise point-guided separation.
+To qualitatively analyze this precise spatial selectivity, Fig-
+Table 3: Complexity and SDR comparison between LSTM and
+Mamba backbones.
+Model Params [M] MAC/s [G/s] SDR
+TF-GridNet (LSTM) 0.52 40.19 8.29
+SPOT-TSE (Mamba) 1.46 10.54 8.31
+Figure 3: Composite spatial selectivity map from three point-
+guided queries. Red stars denote queried target positions, and
+gray circles denote unqueried interferers.
+ure 3 shows a composite spatial map of the maximum SDR im-
+provement over three independent target queries in one multi-
+speaker scene. The highly localized high-performance regions
+(dark blue areas) align with the queried target locations (red
+stars), whereas unqueried interferers (gray circles) and back-
+ground regions remain close to 0 dB improvement (white ar-
+eas). This behavior was consistent with the proposed proximity-
+weighted soft targets and showed that the model can still sepa-
+rate targets reliably even in geometrically ambiguous scenes.
+4.3. Computational Complexity
+For wearable and always-on scenarios, computational com-
+plexity is strictly constrained. To evaluate this, we compared
+the proposed BiMamba-based SPOT-TSE against a conven-
+tional LSTM-based TF-GridNet baseline from SoundBubble
+[1]. For a controlled comparison, both models were trained
+and evaluated on the same reduced D3 subset. As shown in
+Table 3, replacing recurrent BiLSTM/LSTM layers with Bi-
+Mamba/Mamba blocks reduced MAC/s by 74% (from 40.19
+to 10.54 G/s) while maintaining comparable SDR (8.31 vs.
+8.29 dB), although the parameter count increased (1.46M vs.
+0.52M). These results suggest lower arithmetic complexity with
+similar separation performance in this setting.
+5. Conclusion
+We presented SPOT-TSE, a multi-channel point-guided TSE
+framework that conditions extraction on a continuous spatial
+point query rather than a fixed spatial region. By combining
+SQE, proximity-weighted soft targets, and hard-negative spa-
+tial sampling, the proposed method improved robustness un-
+der spatial overlap and other confusable scenarios. Exper-
+iments demonstrate improvements in separation quality and
+downstream ASR performance across increasingly challeng-
+ing settings, while reducing computational cost relative to an
+LSTM baseline. Future work will explore stronger distance-
+aware modeling and validation on real-device recordings and
+real-world datasets.
+7167
+6. Acknowledgements
+This work was supported by Institute of Information &
+communications Technology Planning & Evaluation (IITP)
+grant funded by the Korea government (MSIT) (No.RS-2020-
+II201373, Artificial Intelligence Graduate School Program
+(Hanyang University)).
+7. Generative AI Use Disclosure
+Generative AI tools were used solely for language editing and
+polishing of the manuscript.

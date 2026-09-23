@@ -1,0 +1,470 @@
+Mixture-of-Accent-Adapters for Robust ASR: Injecting Accent Cues into
+Pretrained Whisper
+Mehedi Hasan Bijoy ID 1, Yaroslav Getman ID 1, Tamás Grósz ID 2, Mikko Kurimo ID 1
+1 Department of Information and Communications Engineering, Aalto University, Finland
+2 Walton Institute, South East Technological University, Ireland
+{mehedi.bijoy, yaroslav.getman, mikko.kurimo}@aalto.fi, tamas.grosz@setu.ie
+Abstract
+Accented speech remains a key challenge for inclusive ASR, yet
+adapting large pretrained models often relies on costly full fine-
+tuning. Moreover, previous methods lack integration of accent-
+specific adapters, controlled encoder-level accent-cue injection,
+and multitask supervision for specialization regulation and gen-
+der information leakage mitigation. We propose Mixture-of-
+Accent-Adapters (MoAA), a novel adaptation framework for
+Whisper that enables on-demand specialization while default-
+ing to the frozen backbone when unnecessary. A pooled-state
+control bottleneck estimates accentedness, guiding accent-cue
+injection via weighted retrieval from a learnable soft accent
+codebook and routing lightweight accent-specialist adapters,
+while calibrating a gated blend with the backbone. An adversar-
+ial gender head reduces leakage, and reference-free hallucina-
+tion suppression mitigates rare decoding artifacts. On AESRC
+benchmark, MoAA achieves 7.49% WER and 3.81% CER.
+Index Terms: Accent-Robust ASR, Adapter Routing, Soft
+Codebook Conditioning, Hallucination Suppression
+1. Introduction
+Accented automatic speech recognition (ASR) poses a barrier
+to speech technologies. Although modern end-to-end systems
+can achieve strong accuracy on well-represented varieties of En-
+glish, their error rates often increase markedly when pronunci-
+ation patterns shift due to regional or non-native accents. As
+ASR systems are increasingly built on large pretrained encoder-
+decoder or self-supervised backbones, an enduring challenge is
+adapting model capacity to preserve accent-robust recognition
+without maintaining a separate full model per accent.
+A substantial body of work has investigated special-
+ization and routing mechanisms as strategies for mitigat-
+ing accent-induced variability. Early studies on multi-dialect
+training demonstrated that carefully structured learning ob-
+jectives can disentangle pronunciation-related representations
+from grapheme prediction [1]. Subsequent mixture-based meth-
+ods introduced explicit accent- or attribute-conditioned trans-
+formations, using auxiliary predictors to generate gating signals
+that combine experts specialized for accent variability [2]. More
+broadly, dynamic routing and mixture-of-experts architectures
+have been scaled to large acoustic models, with particular at-
+tention to routing stability and effective expert utilization [3–5].
+Taken together, these findings suggest that accent variability is
+not well captured by a single uniform representation, whereas
+conditional computation yields improved robustness.
+In parallel, existing research suggests that parameter-
+efficient adaptation is a viable alternative to full fine-tuning.
+In accent-conditioned adapter frameworks, a frozen backbone
+is adapted through compact trainable modules, which can be
+Encoder
+Linear
+Projection
+GRL
+Gender 
+Classifier
+Accent 
+Classifier
+𝓛ge
+𝓛ac
+𝓛ad
+Ca
+...
+Accent
+Conditioned
+Projection
+Adapter I
+Adapter II
+Adapter X
+Router Cb
+Decoder
+Text𝓛asr
+❄ 🔥
+🔥
+🔥
+🔥Accentedness
+Classifier
+🔥
+🔥
+🔥
+❄
+🔥
+🔥
+Unaccented
+Codebook
+Accented 
+Codebook
+Figure 1:Overview of the proposed MoAA framework.
+blended using accent-dependent coefficients to modulate contri-
+butions [6]. Residual adapter methods further show that training
+a tiny subset of parameters can capture shifts characteristic of
+accented speech [7–9]. Complementary developments in low-
+rank adaptation (LoRA) and modular model libraries extend this
+principle by constructing LoRA experts that can be composed
+across conditions [10–12]. Collectively, these approaches moti-
+vate accent robustness through lightweight specialization while
+preserving the strengths of a pretrained base model.
+Another approach employs multi-task learning to integrate
+accent features into ASR objectives. Prior work indicates that
+accent embeddings and auxiliary accent-recognition objectives
+can enhance recognition in accented settings [2, 13]. Moreover,
+joint modeling approaches may exploit accent identification to
+drive specialization [14]. More recent multi-task formulations
+emphasize both opportunities and pitfalls, showing that auxil-
+iary accent recognition can strengthen accent modeling yet in-
+duce negative transfer to ASR when the objectives are not care-
+fully balanced [15], thereby motivating more structured designs
+that decouple and subsequently re-couple accent and speech
+modeling to improve recognition [16]. In contrast, adversarial
+domain-invariant learning suppresses accent cues in intermedi-
+ate representations via gradient reversal, often with relabeling
+strategies to better handle unseen accents [17–20]. Further-
+more, memory-oriented approaches incorporate accent-specific
+prototypes or codebooks that the model can attend to during en-
+coding, such as search-based selection [21, 22] or frame-level
+accent cue derivation to adjust accent bias [23].
+Despite substantial progress, several gaps remain. First,
+accent awareness is often treated as always-on conditioning
+[6, 23, 24] or always-off invariance [17, 19], whereas real-world
+speech requires selective use of accent-specialized capacity.
+Second, routing and multi-task supervision are frequently stud-
+ied in isolation, as auxiliary heads can provide supervision yet
+may induce negative transfer [15], while routing can be unsta-
+ble without a gating control [3, 21]. Third, robustness is rarely
+4618
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1373
+considered alongside accent-correlated speaker attributes, even
+though adversarial mitigation of these confounds can improve
+generalization [17, 20]. Finally, Whisper-style encoder-decoder
+systems can exhibit rare but severe decoding artifacts, which
+can disproportionately inflate word error rate (WER) and char-
+acter error rate (CER), yet are often under-analyzed in accented
+ASR evaluations. These limitations suggest that accent-robust
+ASR should not rely on either uniformly applied accent con-
+ditioning or fully invariant representations. Instead, it should
+support selective, input-dependent specialization, while remain-
+ing self-contained at inference time. This motivates combin-
+ing multitask supervision, soft accent conditioning, and adapter
+routing. Multitask heads provide structured utterance-level sig-
+nals for estimating accentedness and accent-related variation,
+soft codebook retrieval transforms these predictions into con-
+tinuous accent cues without requiring hard test-time labels, and
+routing uses the resulting conditioned representation to allocate
+specialized capacity only when needed.
+To address these issues, we propose Mixture-of-Accent-
+Adapters (MoAA), a unified framework that combines soft ac-
+cent cue injection, accentedness-gated adapter routing, and ad-
+versarial multitask supervision in a frozen Whisper-small back-
+bone (Figure 1). MoAA uses a pooled-state control bottleneck
+to support auxiliary prediction, soft codebook retrieval, and sta-
+ble routing. The predicted accentedness score jointly governs
+accent-cue injection and interpolation between the frozen back-
+bone and routed adapter outputs, enabling on-demand special-
+ization without requiring ground-truth accent labels at inference
+time. In addition, we apply gradient reversal layer (GRL)-based
+supervision to reduce gender leakage in the shared control rep-
+resentation, and we complement the model with a lightweight
+deterministic module to suppress rare hallucination errors.
+The key contributions of this work are as follows:
+• We introduce a router-controlled bank of bottleneck adapters
+and a learnable soft accent codebook with posterior-weighted
+retrieval, thereby injecting accent cues into Whisper without
+requiring any ground-truth accent labels at inference.
+• We integrate multi-task supervision with GRL-based mitiga-
+tion of gender information leakage while supporting accent-
+robust recognition. Moreover, accentedness-gated routing
+enables on-demand accent specialization.
+• We validate the effectiveness of our method by comparing it
+against full fine-tuning, LoRA, and single-adapter baselines.
+We further mitigate rare insertion-burst decoding failures us-
+ing a lightweight reference-free post-decoding module, de-
+terministic hallucination filtering (DHF).
+2. Method
+2.1. Overview and backbone
+Our goal is to allocate adaptation capacity only when accent-
+induced variability is likely to harm recognition. MoAA
+achieves this by integrating (i) a compact shared representation
+with multitask supervision to stabilize conditional computation,
+(ii) accent cue injection through a learnable soft codebook with-
+out requiring ground-truth accent labels at test time, and (iii)
+accentedness-gated routing over lightweight adapters, while re-
+taining the pretrained backbone as a reliable default. Moreover,
+we incorporate adversarial supervision to reduce gender infor-
+mation leakage in the shared representation.
+We build on Whisper-small [25], an encoder–decoder
+model pretrained on large-scale multilingual speech. Given log-
+mel featuresx, the Whisper encoder produces hidden states
+H= Enc(x)∈R T×d . We compute a global utterance em-
+bedding by mean pooling [26], ¯h= 1
+T
+PT
+t=1 Ht∈R d, and
+project it through a learnable linear layer, ˜h=W p¯h∈R d.
+Here, ˜hserves as a control bottleneck that drives auxiliary pre-
+dictions and provides a stable latent representation for routing
+and conditioning. Finally, the decoder attends to a gated en-
+coder representationH′ that balances between the original en-
+coder states and an accent-conditioned adapter-routed variant.
+During training, ASR is optimized with standard autoregressive
+cross-entropy over the output token sequence.
+2.2. Accent-specialist adapters and routing
+To introduce specialization without maintaining a separate full
+model per accent, we insert a bank ofNlightweight bottleneck
+adapters. Each adapter is a residual bottleneck module:
+Adapteri(Z) =Z+σ
+
+ZW(i)
+down
+
+W(i)
+up,(1)
+whereZ∈R T×d ,W (i)
+down∈R d×r,W (i)
+up∈R r×d,r≪dis
+the bottleneck size, andσ(·)is ReLU. This design is parameter-
+efficient as adaptation is confined to small adapter modules
+rather than updating or duplicating the full Whisper backbone.
+Given an utterance-level summary of the conditioned en-
+coder states, ¯z= 1
+T
+PT
+t=1 Zt∈R d, a router predicts mixture
+coefficients over adapters,a= softmax (W r ¯z)∈R N . The
+routed representation is then computed as a weighted mixture
+of adapter outputs,H adapt = PN
+i=1ai Adapteri(Z). Thus,
+routing induces emergent accent specialists while keeping the
+computation differentiable and lightweight.
+2.3. Adversarial multitask gender leakage mitigation
+We jointly train accentedness, accent, and adversarial gender
+heads on the shared latent embedding ˜hto guide specialization
+and mitigate gender information leakage.
+Accentedness prediction.A binary classifier predicts
+whether an utterance is accented:p ad = softmax(W ad˜h)∈
+R2. We define the accentedness gate asp=P(y ad=1|x) =
+pad,1, wherep ad = [pad,0,p ad,1] = [unaccented,accented].
+Accent classification.AK-way classifier produces an ac-
+cent posteriorπ= softmax(W ac˜h)∈R K. During training,
+we exclude unaccented samples from the accent classification
+loss by using an ignore index. Consequently,L ac is computed
+only over utterances labeled as accented, ensuring that the ac-
+cent head focuses on discriminating among accented categories.
+Adversarial gender removal.To discourage the control
+bottleneck from encoding gender-correlated cues, we employ
+a gradient reversal layer (GRL). LetR λ(·)denote GRL with
+coefficientλ, acting as the identity in the forward pass and mul-
+tiplying upstream gradients by−λin the backward pass. The
+gender head predictsp ge = softmax(W geRλ(˜h)). Conse-
+quently, the gender classifier is optimized to predict gender,
+while the encoder-side parameters are pushed to make ˜hless
+informative of gender.
+2.4. Soft codebook conditioning and training objective
+We couple the multitask supervision to conditional compu-
+tation through soft codebook-based accent conditioning and
+accentedness-gated routing with the pretrained representation.
+Soft codebook-based accent conditioning (self-
+contained cue injection).We maintain a learnable soft accent
+codebookE∈R K×d, where each row corresponds to an accent
+codeword. From the predicted accent posterior, we compute a
+soft codebook readout:e ac =π ⊤E∈R d. We additionally
+learn an unaccented codeworde un∈R d. Using the accented-
+ness gatep, we combine,e=pe ac + (1−p)e un∈R d. We
+then inject this cue into the encoder states via a conditioning
+4619
+projection:Z t = (Ht +e)W c, whereWc is a learnable linear
+layer. Notably, this mechanism does not require ground-truth
+accent labels at inference time asπandpare predicted from
+the input, and codewords are retrieved on-the-fly via soft
+codebook readout.
+Accentedness-gated adapter routing (on-demand spe-
+cialization).After computingH adapt, we combine the adapted
+and original encoder states using the same gate:H ′ =
+pH adapt + (1−p)H. This design choice selectively applies
+accent-specialist transformations while maintaining access to
+the pretrained backbone when specialization is unnecessary.
+Training objective.We optimize a weighted sum of ASR
+and auxiliary losses:L=w asrLasr +w adLad +w acLac +
+wgeLge.Here,L asr is token-level cross-entropy between de-
+coder logits and reference tokens.L ad,L ac, andL ge are cross-
+entropies for accentedness, accent, and gender classifications,
+respectively. In practice, we emphasize accent supervision by
+settingw ac higher than the other auxiliary weights. At inference
+time, the model remains fully self-contained and predictspand
+π, performs soft codebook readout, computes routing weights,
+and decodes usingH′.
+2.5. Deterministic hallucination filtering (DHF)
+DHF first normalizes and tokenizes each hypothesis into alpha-
+betic, numeric, and ordinal units. For hypotheses flagged as
+suspicious, it generates a small set of deterministic candidate
+cleanups by removing noise tokens, compressing consecutive
+repetitions, compressing repeated multi-token blocks, truncat-
+ing at the second occurrence of repeated longern-grams, and
+cutting number-dominated tails. Extremely apostrophe-heavy
+garbage strings are mapped to an empty output. A reference-
+free quality score then ranks the original and cleaned candi-
+dates by penalizing repetition, low lexical diversity, spam-like
+tokens, excessive numeric content, and numeric-only outputs,
+and replacement is made only when the cleaned candidate is
+clearly better under a score-based criterion. This deterministic
+post-decoding step targets pathological repetition and numeric
+hallucination artifacts while preserving normal ASR behavior.
+3. Experimental setup
+3.1. Datasets
+We train on a mixture of AESRC [27] training data and Lib-
+riSpeech train-clean-100 [28]. AESRC provides≈200 hours of
+English speech spanning 10 L1/L2 accents, while LibriSpeech
+is used as a proxy for unaccented speech. Evaluation is per-
+formed on the AESRC test set, which contains≈20 hours of
+speech drawn from the same accent pool as the training data.
+3.2. Baselines
+We consider the following four baselines:
+(a)Zero-Shot, using Whisper-small without any adaptation.
+(b)Full Fine-Tuning, updating all parameters during training.
+(c)LoRA, a parameter-efficient baseline that trains low-rank
+updates while keeping the backbone largely fixed [29].
+(d)Single Adapter, a non-routed variant of MoAA with a sin-
+gle shared bottleneck adapter.
+3.3. Training details and evaluation
+We use Whisper-small for all experiments and baselines to en-
+sure a controlled and practically relevant evaluation setting. We
+train a pooled-state projection, multitask heads with GRL-based
+gender nuisance control (λ=1.0), accent prototypes, a condi-
+tioning projection, and a router overNbottleneck adapters
+(N=10,r=192), with loss weights(w asr,w ad,w ac,w ge) =
+(1,1,2,1). Training runs for 10 epochs with batch size 16,
+learning rate5×10 −4, warmup ratio 0.05, weight decay 0.01,
+and FP16. We evaluate ASR performance using WER and CER.
+Our code is publicly available at GitHub repository.
+4. Results
+4.1. Main results
+Table 1 summarizes ASR performance on the AESRC test set
+under a fixed Whisper-small backbone. The zero-shot model
+performs poorly, confirming that the pretrained model alone is
+not sufficiently robust to accent variability. Full fine-tuning
+substantially reduces errors, but requires updating the entire
+model (≈241.7M parameters). LoRA approaches this perfor-
+mance with only≈1.77M trainable parameters, and DHF yields
+only marginal additional gains for both methods. Furthermore,
+Table 1:Comparison of MoAA against baseline methods, where
+#Param denotes the number of trainable parameters.
+Method WER↓CER↓#Param
+Zero-Shot 35.17 13.26 —-
+Full Fine-Tuning 15.50 4.10 ≈241.7M+ DHF 15.44 3.89
+LoRA 15.83 4.15 ≈1.77M+ DHF 15.83 4.14
+Single Adapter 14.49 8.27 ≈1.19M+ DHF 10.25 6.14
+(Ours) MoAA13.50 8.02 ≈2.51M+DHF 7.49 3.81
+the single-adapter baseline improves over LoRA in WER be-
+fore post-processing (14.49), but remains substantially weaker
+in CER (8.27), suggesting less stable token-level modeling. Al-
+though DHF notably improves this baseline (10.25 WER, 6.14
+CER), our proposed MoAA performs better both before and af-
+ter post-processing. Specifically, before DHF, MoAA reduces
+WER from 14.49 to 13.50. After DHF, MoAA further re-
+duces WER from 10.25 to 7.49, which amounts to a 26.9%
+relative improvement, while also reducing CER from 6.14 to
+3.81, yielding a 38.0% relative improvement. The larger DHF
+gain over MoAA (+6.01 WER) than over the Single Adapter
+(+4.24 WER) reflects that richer accent-conditioned encoder
+states occasionally destabilize the frozen decoder, producing
+repetition artifacts that DHF removes. The two are comple-
+mentary, as MoAA improves what enters the decoder and DHF
+stabilizes what comes out of it. These consistent gains validate
+the central advantage of MoAA: accentedness-gated, codebook-
+conditioned mixture routing enables more effective utterance-
+level accent specialization than a single shared adapter. The re-
+sults further show that DHF is most effective when paired with
+a stronger accent-aware backbone adaptation strategy, yielding
+the best overall performance in the table. Overall, MoAA+DHF
+achieves the highest accuracy while updating only about 1%
+of the Whisper-small backbone, demonstrating that targeted
+accent-conditioned specialization is more effective than generic
+parameter-efficient adaptation and even full fine-tuning.
+4.2. Comparison with prior work
+Table 2 compares MoAA with representative prior systems in
+terms of WER, language-model usage, and parameter foot-
+print. Earlier end-to-end architectures such as LS-Transducer
+4620
+and Conformer-based models improve over weaker baselines
+but rely on substantially larger models (110M–373M parame-
+ters). Systems with external language-model support or multi-
+stage decoding perform more strongly as Chain Model + 3-gram
+LM reaches 13.68 WER, while Transformer + RNNLM reaches
+8.63 WER, and CTC + RNNLM + LAS reports WER of 4.47.
+Table 2:Comparison of MoAA with prior work.
+Method LM WER↓#Param
+Chain Model + 3-gram LM [27] External 13.68≈22M
+Transformer + RNNLM [27] External 8.63≈27M
+CTC + RNNLM + LAS [30] External 4.47≈40M
+LS-Transducer [28] Internal 20.70≈373M
+Conformer + NNLM [31] Internal 14.80≈110M
+Wav2vec-MoE [32] Internal 10.33≈33M
+(Ours) MoAA + DHF Internal 7.49≈2.51M
+However, the CTC+RNNLM+LAS [30] result is not di-
+rectly comparable to ours. In addition to external neural lan-
+guage modeling, it incorporates noise and reverb augmentation,
+speed perturbation, SpecAugment, transfer learning, multi-level
+modeling, and two-pass decoding. Its performance therefore
+reflects the benefit of a substantially more elaborate training
+and inference pipeline, rather than adaptation within a single
+frozen pretrained backbone alone. By contrast, MoAA is a self-
+contained adaptation framework built on frozen Whisper, with-
+out external LM fusion or multi-pass decoding. Under this more
+constrained setting, MoAA+DHF remains highly competitive,
+achieving 7.49 WER with only≈2.51M trainable parameters.
+It outperforms Wav2vec-MoE (10.33 WER,≈33M) and Trans-
+former+RNNLM (8.63 WER,≈27M) while using far fewer
+trainable parameters, hilighting the efficacy of accent injection.
+4.3. Method component evaluation
+Table 3 quantifies the effect of each component in the MoAA
+framework. The base MoAA yields 13.50 WER and 8.02 CER,
+while adding DHF significantly reduces errors to 7.49 WER
+and 3.81 CER, confirming that pathological decoding outputs
+can disproportionately inflate aggregate error rates. Component
+Table 3:Effect of key design components in MoAA.
+Approach WER↓CER↓
+Mixture-of-Accent-Adapters (MoAA) 13.50 8.02
++DHF 7.49 3.81
+−Linear Projection 18.01 5.82
+−Linear Projection + UnfreezeNEn./De. layers 21.38 7.84
+analysis further validates the design choices that distinguish
+our approach from partial fine-tuning. Removing the pooled-
+state linear projection degrades accuracy (18.01 WER), indi-
+cating that a compact, learnable control representation is es-
+sential for stable routing and effective conditioning of accent-
+specialist adapters. It indicates that MoAA’s routed specializa-
+tion depends on a constrained pooled-state control bottleneck
+that reliably couples accent cue injection with mixture rout-
+ing. Partial unfreezing of the lastNencoder/decoder layers
+performs worst (21.38 WER), suggesting that increasing back-
+bone trainability disrupts transcription reliability when routing
+are not mediated through a constrained control projection. In-
+terestingly, auxiliary-head behavior does not track downstream
+ASR performance monotonically. The variant without the lin-
+ear projection but with partial unfreezing attains higher accent
+accuracy (0.9895 vs. 0.8708) and slightly higher accentedness
+accuracy (0.9995 vs. 0.9976) than the MoAA, yet performs sub-
+stantially worse in recognition (21.38 vs. 13.50 WER before
+DHF). Likewise, removing the linear projection yields high ac-
+centedness accuracy (0.9964) but still degrades WER to 18.01.
+This dissociation suggests that MoAA’s gains do not arise from
+auxiliary prediction quality alone, but from the proposed bot-
+tleneck’s ability to transform accent evidence into routing deci-
+sions that are useful for transcription. In this sense, the superior
+performance of MoAA lies not in broader adaptation capacity,
+but in more structured and task-aligned conditional computa-
+tion. Finally, the GRL is effective: gender classifier accuracy
+collapses to 29.8% under MoAA versus 98.63% without the lin-
+ear projection, confirming reduced gender leakage in the control
+bottleneck.
+4.4. Analysis
+Performance is strong, reaching 7.49 WER and 3.82 CER.
+Residual errors are dominated by substitutions (77.6%), with
+smaller insertion (12.4%) and deletion (10.0%) contributions,
+indicating that the system generally preserves utterance struc-
+ture and fails mainly through localized lexical mismatches.
+The per-utterance WER distribution is highly skewed (median
+0.000, mean 0.083), showing that most test utterances are tran-
+scribed perfectly. This pattern is consistent with the core con-
+tribution of MoAA under accent variability. Rather than rely-
+ing on generic adaptation, MoAA performs accent-conditioned
+routing over lightweight adapters within frozen adaptation, en-
+abling selective specialization within a frozen Whisper back-
+bone. Its improvement over a single shared adapter suggests
+that the gain comes not merely from

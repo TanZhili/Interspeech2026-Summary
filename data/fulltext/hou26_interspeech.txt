@@ -1,0 +1,453 @@
+UGPCB: Uncertainty-Gated Phonetic Contextual Biasing for Improving
+Hotword Recognition in Large Speech Models
+Yong-Jie Hou ID 1,2, Yun-Fei Shao ID 1, Wei-Qiang Zhang ID 1,∗∗
+1 Department of Electronic Engineering, Tsinghua University, China
+2 Tiangong University, China
+18235281143@163.com, wqzhang@tsinghua.edu.cn
+Abstract
+Automatic speech recognition systems exhibit recognition bias
+when processing hot words. Context bias techniques effectively
+tackle this issue by integrating user-defined vocabularies, thus
+enhancing keyword transcription accuracy. Although speech
+matching technology has advanced context bias techniques by
+resolving subword fragmentation, existing methods still face
+challenges with over-bias and homophone misclassification. To
+address this, this study proposes a training-free decode-time
+framework named Uncertainty-Gated Phonetic Contextual Bias
+(UGPCB). This framework employs an entropy-driven gating
+mechanism and bimodal contrastive penalties, and it is eval-
+uated on the Dolphin base model. The experimental results
+demonstrate a 16.04% recall improvement (achieving an F1
+score of 90.81%) while restricting precision reduction to 0.78%.
+Even when 1,000 distractors are introduced, the recall still in-
+creases by 14.26%, fully demonstrating the method’s potential
+for ASR applications.
+Index Terms: automatic speech recognition, hotword recogni-
+tion, contextual biasing, entropy-driven, zero-shot decoding
+1. Introduction
+Although end-to-end (E2E) automatic speech recognition
+(ASR) architectures [1] have achieved strong performance in
+conversational transcription, their reliance on training data dis-
+tributions often causes severe degradation in hotword recogni-
+tion, including proper nouns, domain-specific terms, and user-
+defined keywords [2]. Contextual biasing mitigates this is-
+sue by injecting target vocabularies during decoding to encour-
+age correct keyword transcription. Common approaches range
+from shallow fusion [3] to unsupervised biasing without explicit
+metadata [4]. However, integrating external knowledge with-
+out disrupting the model’s general language capability remains
+challenging [5, 6].
+A key limitation of exact-matching biasing is its depen-
+dence on subword tokenization (e.g., BPE), the basic unit in
+many E2E ASR systems. Hotwords are often fragmented into
+irregular subword sequences that are difficult to predict, mak-
+ing text-only matching brittle. To reduce sensitivity to subword
+boundaries, pronunciation-aware matching has been explored
+[7], where fuzzy matching in the phonetic or pinyin space im-
+proves recall. However, phonetic biasing introduces two vul-
+nerabilities: over-biasing and homophone ambiguity. Apply-
+ing global bias scores regardless of acoustic confidence can dis-
+tort posterior distributions and degrade recognition quality [6].
+This work was supported by the National Natural Science Founda-
+tion of China under Grant No. 62276153.
+**indicates the corresponding author.
+Moreover, phonetic similarity can trigger false positives, espe-
+cially when the biasing lexicon contains many distractors [8],
+leading to a trade-off between recall and hallucinations.
+Large-scale speech foundation models, such as Whisper
+[9], improve general robustness through scaling, but resolving
+homophone ambiguity often incurs substantial overhead. Re-
+cent methods increasingly rely on parameter-intensive designs,
+including contrastive retrieval for scalable biasing (e.g., BR-
+ASR) [10] and learnable context adapters for selective gating
+[11]. LLM-based rescoring has also been used to filter hal-
+lucinations via semantic context [12]. While effective, these
+approaches typically require training, architectural changes, or
+prohibitive inference latency.
+To address these limitations, we propose Uncertainty-Gated
+Phonetic Contextual Biasing (UGPCB), a training-free decod-
+ing framework. UGPCB estimates model uncertainty on the
+fly using normalized Shannon entropy from acoustic posteri-
+ors via a lightweight logit bridge. It activates biasing only un-
+der high uncertainty, reducing over-biasing in confident regions.
+To suppress homophone hallucinations, a Grapheme-Phoneme
+Contrastive Penalty cross-validates graphemic and phonetic ev-
+idence and penalizes phonetic-only matches. Evaluated on Dol-
+phin with up to 1,000 distractors, UGPCB improves hotword re-
+call with small background degradation, providing a lightweight
+inference-only solution for contextual ASR.
+2. Methodology
+This paper presents an uncertainty-gated phonetic contextual bi-
+asing framework. Unlike existing deep biasing approaches [13,
+14], the proposed framework operates on top of a pretrained
+acoustic foundation model and builds on shallow fusion and
+N-best rescoring, with uncertainty-aware gating as the main
+control mechanism and grapheme-phoneme matching as the
+Mandarin-specific matching layer. It requires neither additional
+learnable parameters nor fine-tuning of the foundation ASR
+model. The core idea is to leverage the model’s own predictive
+uncertainty during decoding to adaptively modulate the injec-
+tion strength of external biasing signals, while exploiting Man-
+darin homophone characteristics and prior homophone-aware
+contextual biasing [15] to construct a multi-granularity match-
+ing mechanism. This design targets a better trade-off between
+hotword recall and background false alarm rate. For clarity, bi-
+modal refers to two matching channels: graphemic (BPE trie)
+and phonetic (pinyin trie). The contrastive penalty enforces
+cross-channel consistency at decoding time, without any con-
+trastive learning.
+3106
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1577
+Figure 1:Overview of the UGPCB framework. (a) Acoustic decoding with a parameter-free logit bridge and hotword tries. (b)
+Uncertainty gating driven by normalized entropy. (c) N-best rescoring with bimodal contrastive homophone penalty.
+2.1. Architecture and Logit Bridge
+As illustrated in Figure1, given an acoustic feature sequence
+Xand a target hotword setH={h 1,...,h M}, contextual
+biasing aims to steer beam search decoding toward hypothesis
+spaces containing entities fromH. Conventional shallow fusion
+strategies [3, 16] treat hotwords as static lexical patterns and ap-
+ply fixed score weighting. This paradigm has two limitations:
+it overlooks the homophone variants prevalent in spoken Man-
+darin, and the static bias scores, applied regardless of acous-
+tic confidence, can distort the model’s posterior distributions in
+high-confidence regions.
+Training-Free Logit Bridge.To couple biasing signals
+with acoustic uncertainty without modifying model parameters,
+we introduce a logit-bridging mechanism between the decoder
+and the external biasing module. At each autoregressive time
+stept, this mechanism intercepts the decoder’s forward pass and
+caches the raw unnormalized logitslt into a shared tensor space,
+without modifying model parameters or decoder computations.
+The biasing module then retrieves these logits to perform en-
+tropy computation and dynamic gating. This parameter-free de-
+sign enables token-level posterior estimation at each step while
+maintaining full decoupling between the biasing algorithm and
+the backbone parameters.
+2.2. Grapheme-Phoneme Dual-Track Alignment
+To capture both orthographic and phonetic features of tar-
+get hotwords, we construct parallelgrapheme-phoneme dual-
+track tries. In the orthographic space, target hotwords are de-
+composed into BPE [17] subword sequences to build a BPE trie.
+In the phonetic space, hotwords are mapped into both tone-
+aware and tone-agnostic pinyin sequences, which are used to
+build two parallel phonetic tries for strict matching and fuzzy
+matching that tolerates tonal variation, respectively.
+A key challenge is that BPE tokens span variable num-
+bers of characters, causing conventional prefix-based phonetic
+matching to suffer from traversal interruptions—a problem we
+termphonetic truncation. To address this, our system pre-
+compiles a global phonetic mapping tablePcovering the entire
+vocabulary. The pinyin sequences are obtained using a stan-
+dard Mandarin pinyin toolkit with canonical pronunciation (i.e.,
+without enumerating heteronyms). At each decoding stept,
+the historical token sequence is projected into a phonetic sym-
+bol sequence:Φ(Y <t) = [phon(y 1),...,phon(y t−1)]. For
+multi-character BPE tokens, only thefirst phonemeis indexed
+into the reverse lookup table to prevent misaligned insertions
+from internal syllable offsets. The phonetic tries then perform
+sliding-window queries over this phonetic sequence. Com-
+bined withexplicit whitespace boundariesinjected at both
+ends of the pattern strings, this design eliminates matching fail-
+ures caused by subword tokenization. The whitespace bound-
+aries further prevent false matches from cross-syllable recom-
+bination.
+2.3. Uncertainty-Aware Dynamic Gating
+Injecting static bias when the model is confident can distort
+posteriors and degrade accuracy. We therefore introduce an
+uncertainty-aware gating mechanism. Given logitsl t∈R |V|
+from the logit bridge, posterior probabilities are computed as
+pt = softmax(l t). To normalize across vocabulary sizes, we
+define the acoustic entropy
+Ht =
+−P
+v∈Vvalid
+pt(v) log(pt(v) +ϵ)
+log(max(|Vvalid|,2)) ,(1)
+whereV valid excludes special tokens. The smoothing termϵ
+avoidslog(0), and denominator clamping prevents division by
+zero. SinceH t∈[0,1], token-level gating is computed as
+gtok
+t = max
+
+gmin,σ
+Ht−τ
+T
+
+,(2)
+with thresholdτ, temperatureT, and lower boundg min. When
+Ht <τ, biasing is suppressed; whenH t >τ, it is activated.
+In practice,g tok
+t is refined with a segment-level gate over
+recent entropy values and a trajectory momentum term cap-
+turing monotonic trends. A low-entropy confidence floor sup-
+presses bias injection during stable regions. If the local homo-
+phone confusion rate exceeds a preset limit, biasing is activated
+regardless of entropy (homophone bypass). For the BPE chan-
+nel, a higher gate floormax(˜g t,0.5)preserves reliable ortho-
+graphic evidence.
+3107
+To prevent disproportionate bias amplification, the gain for
+candidatevis controlled by exponential rank decay:
+∆St(v) = min
+
+bt,v·˜gt·exp
+
+−αrv
+γ
+
+, Smax
+
+,(3)
+whereb t,v is the base match score,r v the posterior rank, andα,
+γ, andS max hyperparameters. This ensures large gains are as-
+signed only to acoustically supported candidates. The modified
+logits arel′
+t =l t + ∆St.
+2.4. Contrastive Homophone Penalty
+Relying only on phonetic biasing exacerbates homophone sub-
+stitution errors [15]. To decouple hotword recall from the false
+alarm rate, UGPCB incorporates a Contrastive Homophone
+Penalty (CHP) duringN-best rescoring.
+For each hypothesis ˆY, the system independently counts the
+match frequencies of target hotwordhin the BPE and pinyin
+tries, denotedC bpe(h)andC py(h), performing grapheme-
+phoneme cross-validation. We define the synergistic fre-
+quency asM both = min(C bpe,C py)and the unilateral
+graphemic frequency asM bpe only =C bpe−M both. Can-
+didates with dual-track matches (M both >0) receive a syn-
+ergistic reward of+γ bothαhMboth. Candidates with BPE-
+only matches (M bpe only >0) receive a baseline reward of
++γbpeαhMbpe only.
+Conversely, phonetic-only matches without graphemic sup-
+port are treated as potential homophone errors. Defining the
+unilateral phonetic excess as∆C py(h) = max(0,C py(h)−
+Cbpe(h)), a step-wise penalty is applied:
+Pchp(h) =
+
+
+
+−βmild·α h·∆C py(h),if|h|≥3
+andC bpe(h)>0
+−βsevere·α h·∆C py(h),otherwise
+(4)
+The step-wise design accounts for BPE subword fragmenta-
+tion: if the hotword is sufficiently long (|h| ≥3) and has
+partial graphemic hits (C bpe(h)>0), a mild penaltyβ mild is
+applied to preserve recall; otherwise, a severe penaltyβ severe
+is enforced. In our experiments,β mild = 0.3·w py and
+βsevere = 1.5·w py, wherew py denotes the pinyin rescoring
+weight, andγ both = 1.5·w hw withw hw as the hotword rescor-
+ing weight.
+To handle spurious substitutions that bypass prefix-trie
+matching yet remain globally phonetically similar, we use the
+Needleman-Wunsch (NW) algorithm [18] as a fuzzy penalty.
+Here, NW is not used for alignment-based distance compen-
+sation. If phonetic similarity exceedsθ(defaultθ= 0.6) and
+no graphemic hits exist (C bpe = 0), we add virtual phonetic
+matches,C py ←C py +K(defaultK= 2), to trigger the
+βsevere penalty. This extends coverage beyond prefix matching
+and enforces orthographic consistency.
+3. Experiments
+3.1. Experimental Setup
+3.1.1. Dataset and Evaluation Protocol
+The proposed UGPCB framework is evaluated on AISHELL-
+1 [19], a publicly available Mandarin speech corpus, following
+the evaluation protocol of the SeACo benchmark [20]. The test
+set consists of 808 utterances specified by the official SeACo ut-
+terance list, with the target hotword list adopted from the SeACo
+repository without modification. Hyperparameters are tuned on
+an independent development subset of 550 utterances randomly
+sampled from the SeACo development set (1,334 utterances),
+with no overlap with the test set. For the distractor experiments,
+distractors are synthetically generated (random seed 2026) by
+sampling from a curated word pool and random character com-
+positions, followed by filtering to ensure that no distractor ap-
+pears as a contiguous substring in any reference transcript.
+3.1.2. Baseline and Contrastive Systems
+Dolphin [21], a multilingual speech foundation model (small
+variant, 372M parameters, BPE tokenization, beam size 5),
+serves as the base ASR system. Four contrastive configurations
+are evaluated:
+•B1 (Baseline): Unmodified Dolphin without contextual bias-
+ing.
+•B2 (Text Shallow Fusion): Exact BPE-matching trie prefix
+boosting [22] withN-best rescoring; phonetic matching dis-
+abled.
+•B3 (Decode-time UGPCB): Entropy gating with dual-track
+pinyin matching applied during decoding;N-best rescoring
+disabled to isolate decode-time contributions.
+•B4 (Full UGPCB): The complete framework combining
+decode-time entropy gating, dual-track pinyin matching,
+andN-best rescoring with grapheme-phoneme contrastive
+penalty.
+3.1.3. Evaluation Metrics
+•CER: Character error rate computed via Levenshtein dis-
+tance.
+•B-CER (Background CER): Error rate over non-hotword
+regions, quantifying the side effect of biasing on background
+recognition. LetNdenote the total number of reference char-
+acters andHthe set of character positions belonging to hot-
+word spans, identified through Levenshtein alignment. Let
+S′,D′, andI′ denote substitution, deletion, and insertion er-
+rors at non-hotword positions, respectively:
+B-CER= S′ +D′ +I′
+N−|H| (5)
+Insertions adjacent to a hotword span on either side are at-
+tributed to hotword-induced hallucination and excluded from
+I′.
+•Precision, Recall, and F1: Entity-level metrics computed
+over multisets, with hotword frequencies determined by
+longest-match-first counting to prevent substring nesting.
+•FA (count): Total number of false positives at the hotword-
+entity level.
+3.1.4. Hyperparameter Selection
+A grid search on the development set covers the entropy
+thresholdτ∈ {0.05,0.10,0.15,0.20,0.25}and hotword
+weightλ hw∈{1.5,2.0,2.5,3.0}. The configurationτ=0.10,
+λhw=2.0achieves the highest F1 and is adopted for all
+subsequent experiments. The remaining parameters (fuzzy
+threshold= 0.35, homophone boost= 0.8) are fixed based on
+preliminary experiments.
+3.2. Component Ablation
+Table 1 reports the ablation results on the SeACo test set.
+3108
+Table 1:Ablation results on the SeACo test set (808 utterances).
+FA: false alarms (count).
+System CER B-CER Prec. Rec. F1 FA
+B1 (Baseline) 7.28 4.44 99.35 68.15 80.85 4
+B2 (Text SF) 6.40 4.47 98.89 79.51 88.15 8
+B3 (Dec. UGPCB) 6.40 4.36 99.38 70.94 82.78 4
+B4 (Full UGPCB) 5.60 4.61 98.57 84.19 90.81 11
+/uni00000025/uni00000014
+/uni0000000b/uni00000025/uni00000044/uni00000056/uni00000048/uni0000004f/uni0000004c/uni00000051/uni00000048/uni0000000c
+/uni00000025/uni00000015
+/uni0000000b/uni00000037/uni00000048/uni0000005b/uni00000057/uni00000003/uni00000036/uni00000029/uni0000000c
+/uni00000025/uni00000016
+/uni0000000b/uni00000027/uni00000048/uni00000046/uni00000011/uni00000003/uni00000038/uni0000002a/uni00000033/uni00000026/uni00000025/uni0000000c
+/uni00000025/uni00000017
+/uni0000000b/uni00000029/uni00000058/uni0000004f/uni0000004f/uni00000003/uni00000038/uni0000002a/uni00000033/uni00000026/uni00000025/uni0000000c
+/uni00000019/uni00000013
+/uni00000019/uni00000018
+/uni0000001a/uni00000013
+/uni0000001a/uni00000018
+/uni0000001b/uni00000013
+/uni0000001b/uni00000018
+/uni0000001c/uni00000013
+/uni0000001c/uni00000018/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni0000000b/uni00000008/uni0000000c
+/uni00000019/uni0000001b/uni00000011/uni00000014/uni00000018/uni00000008
+/uni0000001a/uni0000001c/uni00000011/uni00000018/uni00000014/uni00000008
+/uni0000001a/uni00000013/uni00000011/uni0000001c/uni00000017/uni00000008
+/uni0000001b/uni00000017/uni00000011/uni00000014/uni0000001c/uni00000008
+p/uni00000003/uni0000001f/uni00000003/uni00000013/uni00000011/uni00000013/uni00000013/uni00000014
+/uni00000059/uni00000056/uni00000011/uni00000003/uni00000025/uni00000017
+p/uni00000003/uni0000001f/uni00000003/uni00000013/uni00000011/uni00000013/uni00000013/uni00000014
+/uni00000059/uni00000056/uni00000011/uni00000003/uni00000025/uni00000017
+p/uni00000003/uni0000001f/uni00000003/uni00000013/uni00000011/uni00000013/uni00000013/uni00000014
+/uni00000059/uni00000056/uni00000011/uni00000003/uni00000025/uni00000017
+Reference
+/uni00000025/uni00000017/uni00000003/uni0000000b/uni00000029/uni00000058/uni0000004f/uni0000004f/uni00000003/uni00000038/uni0000002a/uni00000033/uni00000026/uni00000025/uni0000000c
+/uni00000025/uni00000014/uni00000025/uni00000016
+Figure 2:Recall (%) of each ablation system compared to B4
+(Full UGPCB). Dark blue bars indicate B4 (reference); light
+blue bars indicate B1–B3. All differences are statistically sig-
+nificant (p<0.001, paired permutation test,n=10,000).
+Overall effectiveness (B4 vs. B1).Full UGPCB reaches
+90.81% F1, a +9.96 pp gain over the baseline (80.85%), while
+reducing CER from 7.28% to 5.60%.
+Pinyin matching (B4 vs. B2).B4 improves recall by +4.68 pp
+and F1 by +2.66 pp over text-only shallow fusion. Exact BPE
+matching is brittle for Mandarin homophones that map to differ-
+ent subword sequences; dual-track pinyin matching alleviates
+this. The B-CER increase (4.47%→4.61%) indicates a modest
+background cost from expanding into the phonetic space.
+Entropy gating (B3 vs. B2).Restricting bias injection to
+high-entropy steps reduces FA (8→4), increases precision to
+99.38%, and lowers B-CER to 4.36% (below B1 at 4.44%), sug-
+gesting effective suppression of over-biasing at confident steps.
+The four false alarms in B1 come from incidental matches pro-
+duced by the base model, independent of biasing.
+Rescoring and CHP (B4 vs. B3).AddingN-best rescoring
+with CHP improves recall from 70.94% to 84.19%, F1 from
+82.78% to 90.81%, and CER from 6.40% to 5.60%, showing
+that rescoring recovers hotwords missed by decode-time gating.
+B3 has lower recall than B2 by design, sinceN-best rescoring
+is disabled to isolate decoding effects.
+CER parity of B2 and B3.Both yield 6.40% CER despite
+different trade-offs: B2 improves recall via rescoring but raises
+FA (8), whereas B3 reduces FA (4) via gating at the expense of
+recall, showing that CER can mask precision–recall differences.
+Statistical significance.Paired permutation tests (n=10,000)
+and bootstrap 95% CIs over 808 utterances show that B4’s recall
+gains are highly significant (p <0.001; Figure 2). The preci-
+sion difference between B4 and B2 is not significant (p=0.366),
+indicating that F1 gains are primarily recall-driven with negli-
+gible precision cost.
+/uni00000013/uni00000014/uni00000013/uni00000013/uni00000018/uni00000013/uni00000013/uni00000014/uni00000013/uni00000013/uni00000013
+/uni00000031/uni00000058/uni00000050/uni00000045/uni00000048/uni00000055/uni00000003/uni00000052/uni00000049/uni00000003/uni00000027/uni0000004c/uni00000056/uni00000057/uni00000055/uni00000044/uni00000046/uni00000057/uni00000052/uni00000055/uni00000056/uni00000003/uni0000000bN/uni0000000c
+/uni0000001a/uni0000001b
+/uni0000001b/uni00000013
+/uni0000001b/uni00000015
+/uni0000001b/uni00000017
+/uni0000001b/uni00000019/uni00000035/uni00000048/uni00000046/uni00000044/uni0000004f/uni0000004f/uni00000003/uni0000000b/uni00000008/uni0000000c
+/uni0000001a/uni0000001c/uni00000011/uni00000018
+/uni0000001b/uni00000017/uni00000011/uni00000015
+/uni0000001a/uni0000001c/uni00000011/uni00000019
+/uni0000001b/uni00000016/uni00000011/uni00000019
+/uni0000001a/uni0000001c/uni00000011/uni00000019
+/uni0000001b/uni00000015/uni00000011/uni00000018
+/uni0000001a/uni0000001c/uni00000011/uni00000018
+/uni0000001b/uni00000015/uni00000011/uni00000017
+/uni00000025/uni00000015/uni0000001d/uni00000003/uni00000037/uni00000048/uni0000005b/uni00000057/uni00000003/uni00000036/uni0000004b/uni00000044/uni0000004f/uni0000004f/uni00000052/uni0000005a/uni00000003/uni00000029/uni00000058/uni00000056/uni0000004c/uni00000052/uni00000051
+/uni00000025/uni00000017/uni0000001d/uni00000003/uni00000029/uni00000058/uni0000004f/uni0000004f/uni00000003/uni00000038/uni0000002a/uni00000033/uni00000026/uni00000025
+Figure 3:Recall under increasing distractors. B4 maintains a
+consistent advantage of 3–5 percentage points over B2.
+Table 2:Distractor robustness of B2 and B4.N=0rows are
+from Table 1.
+B2 (Text SF) B4 (Full UGPCB)
+N Prec. Rec. F1 FA Prec. Rec. F1 FA
+0 98.89 79.51 88.15 8 98.57 84.19 90.81 11
+100 98.35 79.62 88.00 12 98.04 83.63 90.26 15
+500 98.08 79.62 87.89 14 97.12 82.52 89.22 22
+1000 97.14 79.51 87.45 21 95.73 82.41 88.57 33
+3.3. Robustness to Distractors
+To evaluate robustness to noisy hotword lists, synthetic distrac-
+tors are injected at moderate scalesN∈ {100,500,1000},
+comparing B2 with B4. TheN=0rows correspond to Table 1.
+Table 2 reports the full results, and Figure 3 visualizes the recall
+trends.
+Recall.B4 consistently outperforms B2 across all distractor
+scales (Figure 3). B2 shows nearly constant recall (approx-
+imately 79.5%), bounded by exact BPE matching’s coverage
+ceiling. B4 gradually declines from 84.19% to 82.41% as dis-
+tractors increase, yet keeps a 3–5 percentage point advantage at
+every scale, confirming durable recall gains from pinyin match-
+ing under list noise.
+Precision and false alarms.As reported in Table 2, B4’s pre-
+cision decreases from 98.57% to 95.73% and FA rises from 11
+to 33 atN=1000, due to the broader phonetic search space.
+B2 declines more mildly, from 98.89% to 97.14%. Despite this
+steeper precision cost, B4 retains a higher F1 than B2 at every
+distractor scale (88.57% vs. 87.45% atN=1000), confirming
+that the recall gain outweighs the precision cost.
+4. Conclusion and Future Work
+The ablation confirms that dual-track pinyin matching and en-
+tropy gating are complementary: pinyin matching improves
+recall by mitigating the phonological blind spot of BPE-level
+graphemic matching, while entropy gating preserves precision
+by suppressing over-biasing at confident steps. Unlike end-to-
+end biasing approaches such as SeACo [20] and TCPGen [23],
+UGPCB operates purely at decode time with frozen parameters,
+yet achieves competitive recall (84.19%) and F1 (90.81%). Un-
+der larger distractor catalogs, UGPCB maintains a recall advan-
+tage. Future work will reduce false alarms via adaptive gating
+and candidate pre-filtering, and evaluate UGPCB on multilin-
+gual datasets and additional speech foundation models.
+3109
+5. Generative AI Use Disclosure
+Generative AI tools (ChatGPT-5.4) were used only for language
+polishing, grammar correction, and phrasing suggestions during
+manuscript preparation. All scientific content, method design,
+experiments, analysis, and conclusions were designed, imple-
+mented, and verified exclusively by the authors.

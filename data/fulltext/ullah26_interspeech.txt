@@ -1,0 +1,560 @@
+Music Artistic Captioning: Towards Translating Music into Expressive
+Language
+Ubaid Ullah ID 1, Hyun-Chul Choi ID 1,∗∗, Zied Bouraoui ID 2,∗∗
+1 Yeungnam University, Department of Electronic Engineering, ICVS Lab, Gyeongsan, South Korea
+2 Univ. Artois, CRIL CNRS, Lens, France
+ubaid95@yu.ac.kr, pogary@ynu.ac.kr, zied.bouraoui@cril.fr
+Abstract
+Automated music captioning remains difficult for narrative-rich
+works (e.g., opera) where instrumentation, affect, and struc-
+ture evolve over time. Existing LLM-based captioners depend
+on scarce paired audio–text data, and fine-tuning can overfit
+to dataset-specific phrasing, limiting transfer and controllable
+narration. We propose Music Artistic Captioning (MAC), a
+training-free framework that generates long-form, grounded de-
+scriptions by conditioning an instruction-following LLM on au-
+tomatically extracted multi-scale audio evidence. MAC aggre-
+gates frame-, segment-, and song-level descriptors, from low-
+level acoustics (e.g., tempo) to predicted high-level semantic
+cues (e.g., instrumentation), into constrained pseudo-evidence
+for hierarchical captioning. To support user-preferred style,
+MAC uses a one-time iterative prompt optimization to balance
+narrative voice and evidence faithfulness. Experiments on an
+opera corpus and caption benchmarks show consistent gains
+over strong baselines.
+Index Terms: Music-to-Language, Multimodal-LLM, Music
+Narrative, Cross-Modal, Music Feature Extraction
+1. Introduction
+Music can tell stories: narrative-rich forms such as orchestral
+suites and opera [1] convey evolving musical narratives (tension
+and release, thematic development, structural transitions) even
+without lyrics [2]. Most Music Automated Audio Captioning
+(AAC) systems pair a pretrained music encoder with an LLM
+and train on paired audio–text clips, butlong-form(i.e., multi-
+minute tracks with evolving structure and affect, unlike stan-
+dard 10–30 s clips) captioning remains challenging. Generating
+a multi-sentence, coherent narrative for a minutes-long piece re-
+quires integrating multi-scale cues [3], from low-level acoustics
+(tempo, rhythm, timbre, dynamics) to higher-level perceptions
+(affect, motifs, form), while staying consistent across sections.
+Consequently, current pipelines often missartistically aligned
+long-horizon captions: narratives that satisfy two properties at
+once: (i) they stay grounded in audible structure and attributes;
+and (ii) they read as coherent, program-note-like prose rather
+than generic or hallucinated text. (Table 1).
+Prior AAC for music largely follows two paradigms. (i)
+Paired-supervision captioning/tag-to-textfor short, fixed-length
+audio, typically encoder–decoder generation [4, 5], with data-
+scarcity mitigations via pseudo-captions [6]. (ii)Retrieval-
+augmented or instruction-tuned audio–LLM pipelinesthat con-
+dition an LLM on music embeddings and/or retrieved text to
+improve alignment [7, 8, 9]. Extensions add reasoning [10],
+efficiency under limited supervision [11], and broader multi-
+**indicates the corresponding author.
+Table 1:Comparison with SOTA LLM-based captioners. E/F/S:
+expressivity/flow/semantics;+=yes,(+)=limited,−=no.
+Method Example Output Output patternE F S
+TaggingClassical; Orchestral; Joyful;
+Energetic; Violin; Piano
+Fixed label vo-
+cabulary
+− −+
+LLM Cap-
+tioning
+“A lively orchestral piece with
+uplifting strings and bright
+brass.”
+Data-centric,
+short
++ (+) +
+Music QAQ: “What instruments are
+prominent?” A: “Violin and
+cello lead with soft piano.”
+Narrow QA pat-
+terns
+(+)−+
+MAC
+(ours)
+Strings swell as tempo drives
+forward, a bright violin holds
+hopeful tension . . . final surge:
+full orchestra, triumphant re-
+lease.
+Evidence-
+grounded,
+style-variable
++ + +
+modal generation/QA beyond captioning [12, 13]. However,
+many systems remain tuned to short clips or factual retrieval
+and struggle to sustain coherence and multi-layer understand-
+ing over minutes-long audio. A key bottleneck is supervision:
+with scarce paired data, captioners tend to overfit the phrasing
+of their training captions, so they transfer poorly and are hard to
+adapt when applied to music captioning style unlike the training
+set [14, 15].
+Training-free adaptation via in-context learning and struc-
+tured prompting has shown that LLMs can follow task in-
+structions without weight updates [16, 17, 18], and retrieval-
+augmented generation can further ground outputs with external
+text [19]. However, for long-form music AAC, grounding can-
+not rely on external documents alone: captions must stay faith-
+ful to time-varying audio cues, and naive prompting can halluci-
+nate or drift when the input spans minutes and exhibits repeated
+or subtle patterns. This motivates a lightweight, audio-grounded
+alternative that reduces dependence on paired captions while ex-
+plicitly anchoring long-horizon generation.
+To address these limitations, we proposeMusic Artistic
+Captioning(MAC), a modular,training-freeframework for the
+task of producing a long-form, multi-sentence narrative that
+is grounded in audible attributes and remains coherent across
+the sections of a minutes-long piece; the LLM is prompted
+off-the-shelf, unlike fine-tuned paired-supervised baselines.
+MAC generates long-form music narratives by conditioning
+an instruction-following LLM on a structured set of automat-
+ically extracted audio descriptors (an evidence layer) that con-
+strains what the caption may assert, without any task-specific
+parameter updates. Concretely, MAC performs multi-scale seg-
+mentation and extracts descriptors spanning low-level acous-
+tics (e.g., tempo, onset rate, dynamics) and higher-level per-
+ceived attributes (e.g., instruments, mood, multi-dimensional
+1411
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2618
+emotions). These descriptors are aggregated into structured
+evidence dictionaries and verbalized into interpretable natural-
+languagepseudo-evidence(evidence slots) that explicitly an-
+chor generation. MAC composes hierarchical context (global
+summaries, segment-level descriptors, and local neighbors) and
+prompts the LLM torelate and reconcile cues across scales
+(e.g., connect local changes to segment roles and the global tra-
+jectory) to produce coherent, progressive captions while main-
+taining the requested narration style; slot-filling further enforces
+audio-consistent grounding. Finally, to support user-preferred
+artistic narration while preserving grounding, MAC applies a
+one-timeIterative Prompt Optimization(IPO) to select style-
+and-grounding instructions. We evaluate MAC against strong
+open-source baselines [6, 20, 9, 8, 21, 22] on captioning bench-
+marks and out-of-domain artistic captioning of long-form audio
+(e.g., opera): though not best on every metric, it generalizes
+more evenly without paired fine-tuning and leads on emotional
+and artistic alignment in the artistic setting (Sec. 3). 1
+2. Methodology
+In this section, we present the MAC framework: Sec-
+tion 2.1 describes multi-scale music structure analysis
+(global/functional/local segmentation), Section 2.2 details
+multi-resolution audio encoding into per-scale evidence dictio-
+naries, and Section 2.3 introduces hierarchical evidence ground-
+ing for schema-validated LLM captioning. Section 2.4 then
+presents the one-time IPO procedure used to calibrate style
+while preserving evidence faithfulness.
+2.1. Stage 1: Music Structure Analysis (MSA)
+Given an input waveformx: [0,T]→R, we form multi-scale
+temporal partitions:
+Bs ={[t (s)
+i ,t (s)
+i+1]}Ns
+i=1,∀s∈S={global,functional,local},
+(1)
+wheret (s)
+i is thei-th boundary at scalesandN s the num-
+ber of segments. We defineglobal(song-level) as coarse
+equal-length splits over[0,T];functional(segment-level) via
+structure-informed boundaries (e.g., novelty/recurrence cues
+using MSAF [23]); andlocal(frame/window-level) as fixed-
+size sliding windows. Each segmentb (s)
+i = [t (s)
+i ,t (s)
+i+1]∈B s
+is stored with its time span and, when available, a structural tag
+(e.g., verse/chorus), yielding a multi-resolution basis for later
+encoding.
+2.2. Stage 2: Multi-Resolution Audio Encoding
+For each segmentb (s)
+i , we extractlow-level acousticsandhigh-
+level semantics. Using standard MIR tools, we compute tempo
+τ (s)
+i , meterm (s)
+i , onset rateρ (s)
+i , and dynamicse (s)
+i , forming:
+a(s)
+i = [τ (s)
+i , m(s)
+i , ρ(s)
+i , e(s)
+i ]∈R da.(2)
+whered a = 4in this work. For high-level cues, a pretrained
+music foundation model (MERT [24]) produces hidden states
+H(s)
+i ∈R L×D. Pretrained heads on the pooled MERT embed-
+dings yield per-task categorical distributionsp(s)
+i,task over tasksT
+(genre/instrument/mood/vocals/tags), plus a 28-D emotion vec-
+1Code, with examples:https://github.com/uu95/MAC
+torϵ (s)
+i from a regression head, giving:
+h(s)
+i =
+
+{p(s)
+i,task},task∈T,ϵ (s)
+i
+
+.(3)
+For long-form audio, we processnchunks and aggregate per
+feature type to form a global representation; at finer scales, we
+suppress noise via thresholding and top-kselection:
+˜p(s)
+i,task = Top-k
+n
+p(s)
+i,task|p (s)
+i,task >θ
+o
+(4)
+whereθis a confidence threshold. Finally, we aggregate de-
+scriptors across segments into per-scale evidence dictionaries:
+Fs =G
+ 
+{(a(s)
+i ,h (s)
+i )}i
+
+, s∈S(5)
+2.3. Stage 3: Evidence-Grounded LLM Captioning
+We verbalize each scale-specific evidence dictionaryFs into an
+ordered natural-languageprompt context stringusing a summa-
+rizerS NL, i.e.,C s =S NL(Fs). For a target spanb (s)
+i , we build
+a hierarchical context by chaining global, functional, and local
+evidence with nearest neighbors:
+Cglobal =S NL(Fglobal)(song-level baseline),(6)
+C (i)
+functional =C global⊕C±
+functional,(7)
+C(s)
+i =C (i)
+functional⊕C±
+local.(8)
+Here⊕is ordered concatenation, the subscript indexes the
+scale, and the superscript±adds the target segment’s neigh-
+bors; thusC±
+functional andC±
+local pair each target segment/window
+with its neighbors for temporal coherence, whileC global gives
+long-range grounding.
+An instruction-following LLM [25] with prompt templateπ
+is conditioned onC (s)
+i and returns a JSON completiony (s)
+i con-
+taining the caption field. We then apply a lightweight determin-
+istic checkϕ(·)to (i) parse/validate the JSON format (retrying
+on invalid JSON if needed) and (ii) perform a minimal sanity
+check that the caption mentions at least one evidence cue from
+C(s)
+i (to filter malformed outputs), yielding:
+ˆy(s)
+i =ϕ
+ 
+y(s)
+i ,C (s)
+i
+
+.(9)
+2.4. Iterative Prompt Optimization (IPO)
+Inspired by auto prompting [26], IPO is a one-time, lightweight
+reflectiveloop that revises only the instruction prompt. We seed
+(πsys,π inst)by prompting a meta-instruction generator from a
+base guideline and one exemplar captiony ref; at each step an
+LLM-as-judgeΨchecks the caption for style match toy ref and
+faithfulness toF s and returns a critiqueRthatRefineappends
+before the LLM regenerates:
+πt+1 =Refine
+ 
+πt,R(y(πt),y ref,Fs)
+
+,
+J(π) =αBS(y(π),y ref) +βΨ(y(π),y ref,Fs),
+π⋆ = arg max
+π∈{π⋆,πt+1}
+J(π)
+(10)
+HereBS(BERTScore F1) measures similarity to a same-track
+referencey ref (ground truth where available, else a plain caption
+from the verbalized evidence). We do not tuneα,β:BSis
+coarse and cannot capture fine-grained emotion, intensity, or
+style, so it is weighted lower than the more direct judgeΨ(β >
+α). We cache the prompt maximizingJper scale and reuse it;
+to limit overfitting, IPO edits only a few instruction parameters
+(tone, granularity, ordering), with multiple exemplars tested in
+ablation.
+1412
+Algorithm 1:Hierarchical Music-to-Caption with
+Evidence Grounding and IPO
+Input:Audiox, hierarchyS, base instruction,
+exemplary ref
+Output:Multi-scale captions{ˆy (s)
+b }(optionally raw
+JSON{Fs})
+1foreachs∈{global,functional,local}do
+2PartitionxintoB s;
+3foreachb∈B s do
+4Extracta(b)andh(b);
+5F s←G
+ 
+{(a(b),h(b))}b∈Bs
+
+;
+6Build hierarchical contextsC(b,s);
+7Seed(π sys,π inst); run reflective IPO (per scale)
+→(π ⋆
+sys,π⋆
+inst);
+8foreachs∈Sdo
+9foreachb∈B s do
+10y (s)
+b ←LLM
+ 
+C(b,s);π ⋆(s)
+sys ,π⋆(s)
+inst
+
+;
+11ˆy (s)
+b ←ϕ
+ 
+y(s)
+b ,C(b,s)
+
+;
+12Storeˆy (s)
+b (and optionallyFs);
+2.5. Algorithmic Summary
+Algorithm 1 summarizes MAC end-to-end: multi-scale seg-
+mentation and encoding into per-scale evidence dictionariesFs,
+hierarchical contextC(b,s), one-time per-scale Reflective IPO
+yielding(π ⋆
+sys,π⋆
+inst), and per-segment generation with JSON
+validationϕto produce the final captionsˆy (s)
+b . Grounding
+comes from two reused components: cross-scale context link-
+ing each segment to its neighbors and the global summary, and
+a single cached IPO prompt per scale applied to all tracks.
+We implement MAC in Python (PyTorch). Stage 1 resam-
+ples audio to 24 kHz and partitions it intoglobal(4 equal-length
+splits),local(5.0 s non-overlapping windows), andfunctional
+segments via MSAF [23]. Stage 2 extracts low-/high-level cues
+as in Sec. 2.2, aggregates evidence withtop n=3, and ver-
+balizes top-klabels (k=5) aboveθ=0.1(fallback to top-1),
+skipping spans<2.0s. Stage 3 runs the LLM on the vLLM
+inference engine using the cached IPO prompts; outputs are
+JSON-parsed (up to three retries) and stored per song as ver-
+balized features (* nl features.json) and raw responses
+(* llm response.json). Hardware is in Sec. 3.
+3. Experiments and Results
+We evaluate our MAC framework in two settings: (i)Music
+Captioning Benchmark, using short-form datasets; and (ii)Mu-
+sic Artistic Captioning, targeting narrative-rich, long-form mu-
+sic such as opera.
+Experimental Setup.We use MSAF [23] for functional seg-
+mentation and MERT [24] for high-level semantic features
+(genre, instruments, vocals, mood, emotion). Low-level acous-
+tics (e.g., onset rate, RMS) are computed with standard MIR
+tools (e.g., librosa), and tempo is estimated with BeatNet [29].
+Captions are generated with GPT-OSS 20B [25] served via
+vLLM (temperature=0.2 andmax tokens=2048 (with
+seed=42). Experiments run on two RTX 3090 (24GB)
+GPUs: one for vLLM inference and one for feature extrac-
+tion/encoding.
+Datasets.We evaluate MAC on five datasets covering bench-
+mark and artistic captioning. For benchmarks, we use Music-
+Caps [27] (20s, human captions), a 30s subset of MQAD [13]
+(AI captions), and Song Describer [28] (longer audio with
+brief human annotations), which differ notably in caption style.
+For artistic captioning without paired ground truth, we use
+the Wagner Ring Cycle opera corpus [1] and full-length MSD
+tracks [13] to test narrative-rich and full-song settings. Statistics
+are in Table 3.
+Baselines.We compare MAC to open-source music–language
+models: FUTGA [20], MusiLingo [8], MU-LLaMA [9],
+Qwen-Audio [21], Qwen-Omni [22], and LP-MusicCaps [6].
+Forartistic captioning, we use Qwen-Omni and FUTGA
+as instruction-tuned baselines. For fairness (except LP-
+MusicCaps), we evaluate each baseline with (i) a shared min-
+imal prompt and (ii) its recommended prompt/template, report-
+ing the better score in the main table (both settings in the supple-
+ment). We also report an ablation that uses the same evidence
+text as MAC but removes hierarchical context and IPO, iso-
+lating gains from multi-scale context construction and prompt
+optimization. We omit baselines without public weights (e.g.,
+MMQAD [13], LLark [10], FUTGA-MIR [30]).
+Evaluation Protocol.Forbenchmark captioningwith
+references, we report BLEU, ROUGE-L, METEOR, and
+BERTScore. Forartistic captioningwithout references, we
+use three complementary checks that align with artistic ground-
+ing, expressivity, and long-horizon consistency. (i)Seman-
+tic alignment:we embed the audio and caption with MuQ-
+MuLan [31] and report their cosine similarity. (ii)Emo-
+tional alignment:we predict emotion from the caption us-
+ing a BERT classifier fine-tuned on CARER [32], and com-
+pare it to the audio-side emotion prediction (agreement score).
+(iii)Art score:our no-reference metric that combinesfactual-
+ity(caption mentions match pseudo-labels extracted from au-
+dio, e.g., key/tags/instruments/vocals/tempo/meter),expressiv-
+ity(caption specificity and lexical diversity), andcoherence
+(adjacent-window caption consistency via embedding similar-
+ity). Factuality uses soft synonym/number matching to reduce
+lexical bias. For songswith captions{c s,i}Ns
+i=1, we compute
+expressivityEs,i and factualitygs,i, and define coherence:
+C(s) = 1
+Ns−1
+Ns−1X
+i=1
+⟨e(cs,i),e(cs,i+1)⟩,
+E(s) = 1
+Ns
+NsX
+i=1
+Es,i, G(s) = 1
+Ns
+NsX
+i=1
+gs,i,
+Art(s) = 1
+2C(s) + 1
+2E(s)G(s).
+(11)
+Finally, we reportLLM-judgescores (0–5) for fluency, com-
+pleteness, and expressiveness using two independent evaluators
+(GPT-5 and Gemini), following evidence that LLM judgments
+correlate well with human evaluation [13].
+3.1. Quantitative Results
+Table 2 reports corpus-level results. For fair comparison, we
+limit the hierarchical context to the functional level and gen-
+erate global captions using only functional summaries. On
+MQAD,MACachieves the best scores across metrics, indi-
+cating effective instruction/style adaptation via IPO. On Mus-
+icCaps and SongDesc,MACyields smaller and less consistent
+gains: human captions often emphasize rare instruments and
+cultural/situational cues that are weakly captured by MIR evi-
+dence, and their caption styles differ substantially (MusicCaps:
+long/diverse; SongDesc: short), often omitting explicit MIR at-
+tributes (e.g., tempo/meter). Fine-tuned baselines benefit from
+1413
+Table 2:Quantitative results on three captioning benchmarks.Italic=ours;bold/underline =best/2nd per column.
+Model MQAD (test) [13] MusicCaps[27] SongDesc[28]
+B1 B2 M R-L BS-F1 B1 B2 M R-L BS-F1 B1 B2 M R-L BS-F1
+LP-MusicCaps [6] 0.1972 0.0697 0.1959 0.1495 0.0216 0.4157 0.3448 0.5949 0.4574 0.4629 0.0201 0.0080 0.0871 0.0333−0.2132
+FUTGA [20] 0.1949 0.0975 0.16540.1926 0.2705 0.2500 0.1125 0.2045 0.2120 0.2622 0.1528 0.0508 0.17450.1465 0.2132
+MU-LLaMA [9] 0.0592 0.0252 0.0925 0.1614 0.2466 0.0839 0.0294 0.1042 0.1629 0.2518 0.1816 0.06020.1553 0.1727 0.2689
+MusiLingo [8] 0.0324 0.0114 0.0708 0.1285 0.1373 0.1197 0.0394 0.1145 0.1513 0.1767 0.0513 0.0149 0.0529 0.0628−0.1421
+Qwen-Audio [21] 0.0657 0.0247 0.0778 0.1057 0.0736 0.2377 0.1184 0.2161 0.2139 0.2040 0.1280 0.0365 0.1216 0.1357 0.1730
+Qwen-Omni [22] 0.1166 0.0441 0.1056 0.1216 0.0612 0.1682 0.0679 0.1523 0.1637 0.1585 0.1141 0.0301 0.1097 0.1103 0.0849
+MAC w/o IPO 0.2452 0.1147 0.2070 0.1440 0.1352 0.1360 0.0336 0.1475 0.1020 0.0188 0.0676 0.0183 0.1407 0.0842 0.0052
+MAC (ours) 0.3112 0.1414 0.22710.1614 0.1807 0.1984 0.0546 0.1785 0.1316 0.0932 0.1395 0.0380 0.1411 0.1261 0.1708
+Table 3:Datasets for benchmark and artistic captioning.
+Setting Dataset Samples Hours
+Benchmark MusicCaps (20s, human) 1.1k 5.7
+MQAD subset (30s, AI) 1.1k 9.1
+Song Describer (2m, human) 706 23.2
+Artistic Wagner Ring Cycle (opera) 11 15.1
+MSD full tracks 100 6.2
+Table 4:Evaluations on No-reference Data.Italic=ours;
+bold/underline=best/2nd per column. Emo/Sem/Art: Emo-
+tional/Semantic/Artistic.
+MSD Full [13] Opera [1]
+ModelEmo Sem Art Emo Sem Art
+Qwen-Omni 0.780.650.25 0.660.600.25
+FUTGA 0.85 0.60 0.36 0.49 0.49 0.35
+MAC0.900.570.63 0.800.510.55
+w/o IPO 0.71 0.55 0.57 0.78 0.50 0.43
+w/o Hier. Ctx. 0.89 0.56 0.58 0.800.52 0.45
+in-domain alignment but typically transfer less reliably across
+datasets. Overall,MACfavors robustness and modularity, en-
+abling stronger cross-dataset generalization without retraining.
+Table 4 shows thatMACleadsEmoandArton both
+datasets, while Qwen-Omni is best onSem. The smaller
+Sem gains are consistent with MuQ–MuLan favoring short,
+generic matches, which can under-reward MAC’s longer, struc-
+tured captions; this also explains why removing hierarchy
+slightly increases Opera Sem despite lowering Art. Ablations
+isolate our contributions: removing hierarchical context pri-
+marily degradesArtbecause it weakens cross-segment link-
+ing and adjacent-window consistency. Removing IPO reduces
+Emo/Artby pushing outputs toward safer, less expressive prose
+and weaker evidence usage, with a larger Art drop on the long-
+form Opera setting, where maintaining a coherent narrative
+voice across sections is crucial.
+3.2. Qualitative Results
+We conduct an LLM-as-a-judge study on MSD Full [13] (0–5)
+forFluency,Completeness, andExpressiveness. Fluency evalu-
+ates readability and consistency with the provided musical con-
+text; Completeness measures cross-segment flow and coverage
+of salient cues; Expressiveness measures vivid, descriptive lan-
+guage. We compareMACto two ablations:w/o IPOandw/o
+Hier. Ctx.
+LLM-judge protocol.We sample 20% of MSD Full and Opera
+tracks, concatenate segment captions into full-song captions,
+and obtain[0,5]scores for three metrics using the same rubric
+Table 5:LLM-judge scores (0–5); best per column inbold.
+Variant Flu. Comp. Expr.
+GPT-5 Gem. GPT-5 Gem. GPT-5 Gem.
+MAC (ours)4.5 2.0 4.9 2.0 5.0 3.1
+w/o IPO 3.9 1.6 3.9 1.6 3.9 1.6
+w/o Hier. Ctx.4.51.1 4.7 1.85.03.0
+prompt with two independent judges (GPT-5.1 Thinking, Gem-
+ini 3 Thinking). We report per-metric means. As shown in
+Table 5, MAC leads Completeness and matches the best Flu-
+ency/Expressiveness under GPT-5, while ranking best overall
+under Gemini; absolute scores are not cross-judge comparable
+due to calibration differences.
+Example (MSD Full,10cc Woman In Love, first 5s).“A
+buoyant 107-BPM pulse, each beat arriving at almost five per
+second, propels a high-energy groove that feels like a bright,
+electric surge. The mix of electric guitar riffs, drums, and syn-
+thesizers paints a vivid, uplifting landscape, while a male vocal-
+ist adds a warm, throaty trill that swells with joy and excitement.
+The track’s key shifts between Bb minor and Gb major, giving
+it a playful, slightly edgy feel that keeps listeners energized as
+the rhythm rolls into the next section.”
+Color cues highlight evidence, artistic phrasing, and flow
+markers.
+4. Conclusion and Future Work
+We presentMusic Artistic Captioning(MAC), a training-free
+modular framework for long-form, artistically aligned music
+captioning. MAC conditions an instruction-following LLM on
+automatically extracted multi-scale audio evidence, verbalized
+as interpretable pseudo-evidence and integrated via feature-
+conditioned prompting. Iterative Prompt Optimization (IPO)
+enables user-preferred narration while preserving evidence con-
+sistency. Experiments on opera and standard benchmarks show
+gains over strong baselines in automatic metrics and LLM-
+judge evaluation, yielding more coherent and expressive long-
+horizon captions.
+Limitations and Future Work.Long-form artistic music cap-
+tioning remains underexplored, with reliable evaluation as the
+main open challenge. Our LLM-judge protocol is an indirect
+proxy with limitations, while human studies are also subjec-
+tive and costly. For no-reference analysis, Art may still carry
+self-preference because MIR/MERT pseudo-labels are used in
+both MAC generation and evaluation, although soft matching
+reduces circular lexical bias. Future work should further study
+this issue and develop hybrid measures combining automatic,
+LLM-based, and human assessments.
+1414
+5. Acknowledgments
+This work was supported by the Basic Science Research Pro-
+gram through the National Research Foundation of Korea
+(NRF) funded by the Ministry of Science, ICT & Future Plan-
+ning (NRF-2022R1A2C2013541), 2025 Yeungnam University
+Research Grant, and ANR-22-CE23-0002 ERIANA.
+6. Generative AI Use Disclosure
+We used large language models as productivity tools to improve
+code efficiency (e.g., refactoring, debugging assistance) and to
+help revise and polish the manuscript text. All technical con-
+tributions, experimental design, results, and final wording were
+produced, verified, and approved by the authors, who take full
+responsibility for the content.

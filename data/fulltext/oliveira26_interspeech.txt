@@ -1,0 +1,471 @@
+DIALOG DeID: Role and Privacy Aware Transcription for Clinical Interviews
+Beyond WER
+Guilherme C. Oliveira1,∗∗, Dominic Dwyer2,∗∗, Stephanie Fong1, Leandro A. Passos3, Dan Mo1,
+Benjamin Dixon4, Phillip Wolff4, Scott W. Woods5, Martha Shenton6, Barnaby Nelson2,
+Zongyuan Ge1,∗∗
+1Monash University, 2Centre for Youth Mental Health, University of Melbourne,
+3S˜ao Paulo State University, 4Emory University, 5Yale University,6Harvard Medical School
+dominic.dwyer@orygen.org.au, {zongyuan.ge,guilherme.camargodeoliveira}@monash.edu
+Abstract
+Clinical risk interviews depend on who said what and on
+meaning-critical cues such as negation, modality/uncertainty,
+and time. We present DIALOG-DeID, a configurable
+pipeline for long-form clinical dialogue that integrates
+ASR, diarization, automatic role mapping (clinician vs.
+interviewee), and transcript de-identification within a unified
+segment representation. We propose an evaluation recipe
+beyond WER by combining (i) speaker-attributed WER
+(sWER) to capture misattribution, and (ii) Qualifier/Temporal
+Preservation (QTP-F1), an auditable lexical cue metric
+targeting negation, modality/uncertainty, and temporal
+anchors. On PSYCHS-Bench, the best aggregate WER was
+13.3±1.4 while role-attributed sWER remained 33.1 ±6.7;
+semantic audit found cue drops in 20–24% of snippets and
+hard negation flips in 2–4%, motivating meaning-aware
+evaluation for privacy-constrained clinical ASR. Code:
+https://github.com/GuiCamargoX/dialog-deid.
+Index Terms: clinical speech, speech privacy, diarization, de-
+identification, PSYCHS
+1. Introduction
+With the growing integration of Natural Language Processing
+(NLP) in clinical care and research [1], accurate processing of
+dyadic health conversations such as intake visits, structured
+assessments, telehealth encounters, and psychotherapy
+are crucial for documentation and downstream modeling
+tasks [2]. Mental health interviews are particularly sensitive to
+transcription quality [3], since subtle differences in wording,
+speaker role, and temporal qualifiers directly influence clinician
+ratings.
+Recent speech processing pipelines have demonstrated
+substantial progress in role-aware transcription [4], telehealth
+automatic speech recognition (ASR) evaluations [5], and
+prediction from ASR-derived signals and uncertainty [6, 7].
+Despite these advances, current evaluation practices remain
+dominated by word error rate (WER) and diarization error
+rate (DER) [8], which do not quantify mismatches in
+clinical meaning. Infrequent errors in negation, temporality,
+certainty/hedging, or attribution can reverse clinical
+interpretation or misinterpret patient intent, even when
+overall WER appears low—a vulnerability amplified in clinical
+interviews with rapid turn taking, where short expressions (e.g.,
+“not”, “maybe”, “last week”) often carry critical meaning.
+**indicates the corresponding author.
+Mental health data also introduces stringent privacy
+constraints: clinical audio contains biometric identifiers
+and transcripts can include extensive personally identifiable
+information (PII), necessitating transcript de-identification
+(DeID) and careful governance. Prior efforts include
+DeID toolkits (e.g., Presidio) [9], audio-to-text redaction
+pipelines [10], dataset-level PII handling during collection [11],
+and acoustic anonymization [12]. Despite strong standalone
+tools, there is limited standardization in how diarization,
+role attribution, DeID, and meaning-critical evaluation are
+integrated and audited in Institutional Review Board (IRB)-
+governed clinical dialogue workflows.
+To address these evaluation and privacy challenges, we
+ground our analysis in semi-structured psychiatric interviews
+using the Positive SYmptoms and Diagnostic Criteria for
+the CAARMS Harmonized with the SIPS (PSYCHS)
+questionnaire [13, 14] for clinical high risk for psychosis
+assessment. This setting provides a stringent test case because
+symptom ratings depend directly on precise wording and
+correct speaker attribution. Prior work often relied on manual
+or manually corrected transcripts [15, 16, 17], implicitly
+assuming high fidelity to meaning and speaker role. When
+this step is automated, even rare ASR errors in negation,
+temporality, certainty/hedging, or attribution can change
+symptom interpretation and scoring.
+This work makes three main contributions by (i) an
+evaluation recipe that complements WER/DER with speaker-
+attributed WER (sWER; permutation-invariant stream
+alignment) and an auditable cue metric, Qualifier/Temporal
+Preservation F1 (QTP-F1), used to triage clinically
+consequential distortions; (ii) DIALOG-DeID, a modular
+pipeline combining ASR, diarization, LLM role mapping, and
+automated PII/PHI de-identification to produce role-labeled,
+de-identified transcripts with auditable attribution and privacy
+outputs; and (iii) evaluation on PSYCHS with cross-domain
+validation on AMI, showing similar WER can mask large
+differences in attribution-correct fidelity and cue retention,
+including speed–stability trade-offs under time-compression.
+2. DIALOG-DeID
+The DIALOG-DeID pipeline (Figure 1) consists of i) ASR with
+diarization; ii) text PII redaction; iii) downstream scoring.
+2.1. Modular architecture
+DIALOG-DeID is a modular pipeline for long-form dialogues
+that operates on a sequence of segments containing timestamps,
+text, speaker ID, role labels, and PII tags, which are passed
+2002
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1489
+Figure 1: DIALOG-DeID: time-accurate ASR with diarization (e.g., WhisperX + pyannote) → text PII redaction (e.g., Presidio +
+alignment)→ downstream scoring (e.g., PSYCHS positive-symptom severity). Stages are configurable so ASR, diarization, mapping,
+and DeID backends can be swapped without changing downstream code.
+through an ordered set of configurable processors that each
+select a concrete backend via a unified interface (Figure 1).
+We instantiate processors for time-accurate ASR (audio to
+timestamped words), diarization (speaker turns), role mapping
+(e.g., clinician vs. interviewee), text de-identification (detecting
+and redacting PII spans), and optional downstream modeling
+(e.g., PSYCHS severity regression). Because backends
+can be swapped per processor through configuration (e.g.,
+WhisperX/Amazon/Azure for ASR; pyannote for diarization;
+Presidio NER or LLM span extraction for DeID; LLM- or rule-
+based role mapping), all experimental conditions are expressed
+as backend substitutions without changing downstream code.
+2.2. ASR, diarization, and speaker/role mapping
+We support multiple ASR backends behind a shared interface:
+WhisperX, Amazon Transcribe, Azure Speech-to-Text, and
+Google Speech-to-Text (long-form) . WhisperX 1 provides
+word-level timestamps via V AD and forced alignment [18].
+WhisperX can be paired with pyannote.audio diarization2 [19];
+for cloud providers, we ingest available timing outputs into the
+same segment representation.
+When diarization is not provided by the backend, we
+run pyannote.audio [19] and align turns to ASR tokens
+by timestamp overlap. For multi-speaker validation, we
+map diarized speaker labels to reference speaker IDs using
+maximum time-overlap matching (Hungarian assignment) per
+session; this mapping is used only for attribution metrics.
+For clinical interviews, we additionally map speakers
+to coarse roles (clinician vs. interviewee) using a prompt-
+based LLM classifier applied to speaker-attributed segments.
+We aggregate each diarized speaker’s text within a session
+and apply a fixed prompt template (constraining outputs
+to the two-role label set) following standard prompt-based
+learning/template practice [20, 21].
+To test temporal robustness and efficiency, we run each
+ASR modelm on the original audio at 1.0× playback and treat
+the output as a model-specific reference. We then create pitch-
+preserving time-compressed versions (e.g.,1.5×), run the same
+model without re-tuning, and measure 1 ×-relative word error
+rate,
+WERrel(s) = WER
+ 
+ASRm(1.0×), ASRm(s×)
+
+,
+alongside real-time factor (RTF).
+1https://github.com/m-bain/whisperX
+2https://github.com/pyannote/pyannote-audio
+2.3. PII detection and redaction
+Text DeID uses interchangeable backends under a HIPAA-like
+label space [22]: (i) Microsoft Presidio NER [23]; (ii) LLM
+span extraction; and (iii) an optional cloud PII API backend.
+For the LLM backend, we use a prompt template adapted
+from prior LLM de-identification work [24] that specifies
+the label schema and requires JSON output of span offsets
+and labels (Figure 2). For evaluation, we apply the same
+deterministic post-processing policy to both gold labels and
+predictions to retain only “identifying information” spans under
+our schema and drop non-identifying mentions; retained spans
+are replaced with placeholders (e.g., [NAME], [DATE]) while
+preserving turn boundaries and tags, and we report span-level
+precision/recall and micro-F1 after this filter.
+2.4. PSYCHS positive symptom severity scoring
+Using de-identified, role-labelled transcripts, we estimate a
+continuous PSYCHS-aligned composite positive-symptom
+severity score with an interpretable feature set. For each
+session, we extract four features: (1) normalized word count,
+and densities of (2) negation cues, (3) hedging/modality cues,
+and (4) distress cues, computed as the percentage of tokens
+matching fixed lexicons (e.g., no/not/never, maybe/possibly/I
+think, anxious/scared/worried). We fit a ridge regressor on
+these features and evaluate with leave-one-session-out (LOSO)
+cross-validation to produce one out-of-fold prediction per
+session and avoid leakage.
+Figure 2: LLM prompt for HIPAA-style PII span extraction in
+DIALOG-DeID.
+2003
+3. Experimental setup
+Two datasets were used in this study:
+PSYCHS-Bench: We use semi structured psychiatric
+interviews from AMP SCZ 3, sampling 25 English language
+sessions with 10 minute excerpts. Gold transcripts are produced
+by the service TranscribeMe using human transcribers. Data are
+access controlled through the NIMH Data Archive.
+AMI Meeting Corpus 4: a public, multi-party meeting
+benchmark with fragmented turns and overlapping speech, used
+as an overlap-rich attribution stress test because PSYCHS is
+access controlled. We use the Hugging Face AMI (Kaldi)
+release, which provides transcripts, timestamps, and reference
+speaker id under close-talking ( ihm) and far-field ( sdm)
+conditions. For a fixed 5:00–15:00 window, we reconstruct a
+timeline-preserving mixture waveform by placing each segment
+at its true offset and mixing overlaps. To control compute and
+API cost, we evaluate this window on 16 test meetings forihm;
+for sdm, we run the same protocol on an anchor subset of 5
+meetings and report paired SDM–IHM comparisons.
+3.1. System variants and ablations
+We evaluate ASR-only and ASR + diarization . ASR-only
+reports standard transcription quality on the pooled transcript
+(WER), while ASR + diarization aligns diarization turns to
+ASR segments by timestamp overlap to enable speaker/role-
+conditioned evaluation (sWER, QTP-F1, and DER). Within
+each configuration, we swap ASR backends while holding
+other modules fixed. Unless otherwise stated, cross-backend
+comparisons fix diarization to pyannote and text DeID to
+Presidio.
+3.2. Metric correlations and semantic audit
+We descriptively assess whether standard ASR accuracy
+captures cue-sensitive quality by correlating WER, sWER,
+and QTP-F1 on PSYCHS-Bench across all session ×system
+pairs (Spearman ρ, Pearson r), treating these correlations as
+exploratory because sessions repeat across systems. We also
+run an extended audit on up to 50 cue-bearing snippets from
+25 sessions (negation, temporal, modality): per session, we
+select up to one snippet with an automatically detected cue
+drop (“risky”) and one without (control), where a cue drop is
+defined as a reference cue token missing from the time-aligned
+ASR window. We record cue drops and hard meaning flips
+(dropping not/never/don’t/didn’t).
+4. Metrics
+4.1. ASR, diarization, and role attribution
+We report word error rate (WER; computed after removing
+filled pauses) and diarization error rate (DER). To quantify
+attribution-correct transcription quality, we additionally report
+an established sWER under permutation-invariant stream
+alignment. For each session, let S denote the set of reference
+streams and ˆS the set of predicted streams (speaker streams on
+AMI and role streams on PSYCHS). Let Ts be the reference
+transcript for stream s∈ S and ˆT ˆs the predicted transcript for
+ˆs∈ ˆS. We compute a time-overlap matrix between reference
+and predicted streams by summing overlap between their time-
+3https://www.ampscz.org/
+4https://huggingface.co/datasets/
+edinburghcstr/ami
+stamped segments or words, then use the Hungarian algorithm
+to find a one-to-one assignment π : S → ˆS that maximizes
+total overlap. We report
+sWER = 1
+|S|
+X
+s∈S
+WER
+ 
+Ts, ˆTπ(s)
+,
+using the same text normalization as WER.
+4.2. Decision-critical meaning preservation
+We measure preservation of meaning-critical lexical cues
+(negation, modality/conviction, temporal anchors) using trigger
+lists, reflecting clinical NLP work on negation and contextual
+status such as NegEx and ConText [25, 26]. We report
+Qualifier/Temporal Preservation F1 (QTP-F1) as a lightweight
+monitoring metric: for each stream we check whether cue types
+present in the reference are also present in the corresponding
+predicted stream, and then average across stream.
+LetV be the union of all trigger types. For stream s∈ S,
+letRs⊆ V be the set of trigger types found in Ts andHs⊆
+V the set found in ˆTπ(s), using case-insensitive matching after
+normalization; multiword triggers are matched as exact phrases.
+We define
+QTPs =
+
+
+
+1, R s =∅∧ Hs =∅,
+0, R s =∅∧ Hs̸=∅,
+2|Rs∩Hs|
+|Rs|+|Hs|, otherwise,
+(1)
+and report
+QTP-F1 = 1
+|S|
+X
+s∈S
+QTPs.
+QTP-F1 is a lexical cue-preservation proxy, not a semantic-
+equivalence metric, and does not model cue scope, paraphrase,
+or clinical interpretation.5
+4.3. Privacy and clinical utility (feasibility)
+For DeID, we report span-level F1 when PHI labels are
+available; raw audio is handled under IRB controls. Clinical
+utility is evaluated on de-identified, role-labeled transcripts by
+regressing clinician-rated PSYCHS composite scores on an
+11-session subset using LOSO, reporting RMSE, CCC, and
+Spearman’sρ.
+5. Results
+Table 1 compares fixed-diarization (pyannote) pipelines
+on PSYCHS-Bench and AMI (IHM/SDM). On PSYCHS,
+attribution-aware evaluation exposes large gaps between
+aggregate transcription quality and attribution-correct fidelity:
+5Triggers: negation {no, not, never, none, nothing,
+nowhere, neither, without, cannot, can’t,
+don’t, doesn’t, didn’t, isn’t, aren’t, wasn’t,
+weren’t, won’t, wouldn’t, shouldn’t, couldn’t,
+hasn’t, haven’t, hadn’t }; modality/conviction {maybe,
+probably, possibly, definitely, certainly,
+unsure, sure, i think, i guess, i feel like,
+kind of, sort of, almost, likely, unlikely,
+seems, seems like }; temporal {today, yesterday,
+tomorrow, tonight, now, recently, lately,
+currently, earlier, later, last week, last
+month, last year, past week, past month, past
+year, for months, for years, in weeks, in
+months}.
+2004
+Table 1: ASR backends paired with fixed diarization (pyannote). Values are 95% CIs. Bold indicates the lowest sWER within each
+dataset block;⋆ indicates the lowest WER when it differs from the sWER-best system.
+PSYCHS-Bench AMI-IHM AMI-SDM
+ASR (+pyannote) WER↓ sWER↓ QTP-F1spk↑ WER↓ sWER↓ QTP-F1spk↑ WER↓ sWER↓ QTP-F1spk↑
+Azure STT 19.0 ± 1.7 44.7 ± 5.7 0.84 ± 0.05 27.5 ± 3.8 52.5 ± 6.5 0.72 ± 0.07 44.0 ± 4.5 62.5 ± 6.5 0.64 ± 0.10
+Amazon Transcribe 13.3 ± 1.4 33.1 ± 6.7 0.88 ± 0.05 22.7 ± 2.9 44.8 ± 5.7 0.76 ± 0.07 37.8 ± 3.0⋆ 53.1 ± 5.5 0.73 ± 0.05
+Google STT (long) 27.1 ± 2.4 47.6 ± 5.1 0.83 ± 0.05 28.6 ± 3.7 53.3 ± 5.2 0.74 ± 0.07 49.7 ± 2.2 65.3 ± 5.0 0.68 ± 0.11
+WhisperX 17.4 ± 1.5 36.9 ± 7.5 0.86 ± 0.07 25.8 ± 3.2 46.0 ± 6.8 0.76 ± 0.05 38.9 ± 3.8 52.6 ± 6.4 0.73 ± 0.08
+Table 2: Time-compression robustness at 1.5×: real-time factor
+(RTF) and 1×-relative transcript drift WERrel(1.5×).
+Backend RTF@1.5×↓ WERrel(1.5×)↓
+WhisperX 0.06 20.00
+Amazon Transcribe 0.18 12.29
+Azure Speech-to-Text 0.29 29.31
+Google STT (long) 0.39 26.32
+Table 3: Correlations among WER, sWER, and QTP-F1 role on
+PSYCHS-Bench (n = 57). (QTP↑, WER/sWER↓).
+Pair Spearmanρ Pearsonr
+WER vs. sWER +0.55 +0.48
+WER vs. QTP-F1role −0.24 −0.19
+sWER vs. QTP-F1role +0.08 +0.12
+Amazon attains the best WER (13.3 ±1.4) and also the best
+role-attributed sWER (33.1±6.7), while other backends show
+similar-order WER but much higher sWER (e.g., Azure
+19.0±1.7 WER vs. 44.7 ±5.7 sWER). Across n = 57
+session×system pairs (Table 3), WER and sWER are
+moderately correlated ( ρ = 0 .55), but cue preservation
+(QTP-F1role) is weakly related to WER (ρ =−0.24) and near-
+uncorrelated with sWER (ρ = 0.08), indicating complementary
+error modes. Diarization further inflates attribution error (e.g.,
+WhisperX+pyannote DER=19.55%), and the attribution penalty
+(sWER−WER) varies widely across systems.
+We audit semantic fragility on Amazon and WhisperX
+(Table 4) using 50 cue-bearing, time-aligned snippets (±1.5s);
+cue drops occur in 20.0% (Amazon) and 24.0% (WhisperX),
+and hard negation flips ( not/never/don’t/didn’t dropped) in
+2.0% vs. 4.0%. Controls are no-drop by definition (0/25 drops).
+On AMI (5:00–15:00 windows), speaker-attributed sWER
+and QTP-F1spk show expected degradation under SDM relative
+to IHM (Table 1). For text de-identification under a narrowed
+“identifying-only” policy, Presidio and AWS-PII achieve high
+precision and strong F1, while the LLM-based backend is
+recall-limited for dates/locations (Table 5). Finally, pitch-
+preserving time compression highlights speed–stability trade-
+offs (Table 2); WhisperX is fastest (RTF 0.06) but drifts
+more than Amazon (WER rel 20.0 vs. 12.29). On the 11-
+session subset with clinician PSYCHS composite scores,
+a lexical-cue ridge regressor on de-identified, role-labeled
+transcripts achieves feasibility-level agreement under LOSO
+(RMSE=3.84, CCC=0.44, Spearman’s ρ=0.53).
+Table 4: Extended meaning-critical audit on PSYCHS-Bench
+(50 snippets; 25/25 sessions).
+System Cue drops↓ Hard meaning flips↓
+Amazon Transcribe 10/50 (20.0%) 1/50 (2.0%)
+WhisperX 12/50 (24.0%) 2/50 (4.0%)
+Table 5: Text de-identification per-category on PSYCHS-Bench;
+gpt-oss-120b is the LLM backend.
+Category (F1↑) Presidio AWS-PII LLM
+Names 88.0% 85.9% 69.6%
+Dates 96.6% 83.3% 52.6%
+Locations 80.0% 66.7% 28.6%
+6. Discussion and conclusion
+Aggregate transcription metrics can hide clinically important
+failures in long-form health conversations, where both who
+said what and meaning-critical cues matter. On PSYCHS-
+Bench, role-attributed sWER is much higher than WER across
+backends, the attribution penalty (sWER−WER) varies widely,
+and cue preservation is poorly predicted by standard accuracy—
+indicating complementary error modes. Diarization remains a
+key bottleneck: “getting the words right” is insufficient when
+interpretation depends on attribution and qualifiers like negation
+and modality.
+A modest-cost extended audit makes rare-but-important
+behaviors visible: cue drops were common (20–24%) and
+hard meaning flips rare but non-zero (2–4%). On AMI, we
+see condition-sensitive degradation (SDM vs. IHM), and time-
+compression exposes runtime–drift trade-offs as an operational
+feasibility check.
+Under an “identifying-only” labeling policy, Presidio
+remains competitive—slightly best on micro F1 via higher
+recall while maintaining high precision—making it a practical
+default, with targeted pattern augmentation when recall is
+critical. De-identified, role-labeled transcripts still support
+feasibility-level PSYCHS-aligned scoring, suggesting privacy-
+preserving processing can retain clinically relevant signal when
+attribution-aware fidelity and cue monitoring are treated as first-
+class. Limitations include the small clinical evaluation, lack
+of acoustic anonymization, no isolated DER or role-mapper
+decomposition, and the intentionally lexical nature of QTP-F1.
+Future work should add speaker-level audio privacy, richer
+semantic fidelity checks, and robustness under overlap and
+far-field conditions.
+2005
+7. Acknowledgements
+We thank the Accelerating Medicines Partnership ® Program
+for Schizophrenia (AMP ® SCZ) for providing access to
+the clinical interview data. This work was supported by
+the Medical Research Future Fund and National Critical
+Research Infrastructure (NCRI) grants NCRI000033 and
+NCRI000211. Dominic Dwyer was supported by a National
+Health and Medical Research Council (NHMRC) Emerging
+Leadership Level 2 Fellowship (#2034943), and Leandro Passos
+acknowledges support from FAPESP grant 2025/13172-1.
+8. Generative AI Use Disclosure
+ChatGPT and GitHub Copilot were used to assist with code
+debugging and language editing. All outputs were manually
+reviewed and verified by the authors.
+9. References
+[1] H. Wu, M. Wang, J. Wu, F. Francis, Y .-H. Chang, A. Shavick,
+H. Dong, M. T. Poon, N. Fitzpatrick, A. P. Levineet al., “A survey
+on clinical natural language processing in the United Kingdom
+from 2007 to 2022,” NPJ Digital Medicine, vol. 5, no. 1, p. 186,
+2022.
+[2] W.-w. Yim, Y . Fu, A. Ben Abacha, N. Snider, T. Lin, and
+M. Yetisgen, “ACI-Bench: A novel ambient clinical intelligence
+dataset for benchmarking automatic visit note generation,” arXiv
+preprint arXiv:2306.02022, 2023.
+[3] H. Na, Y . Hua, Z. Wang, T. Shen, B. Yu, L. Wang, W. Wang,
+J. Torous, and L. Chen, “A survey of large language models in
+psychotherapy: Current landscape and future directions,” 2025,
+arXiv:2502.11095.
+[4] B. Kim, A. Ghosh, M. C. Fuhs, A. Chowdhury, D. Bagchi, and
+M. Woszczyna, “A hybrid approach to combining role diarization
+with ASR for professional conversations,” in Interspeech 2025,
+2025, pp. 5243–5247.
+[5] H. Wu, Y . Du, Z. Li, Y . Gu, D. T. Jayaprakash, and L. Sheng,
+“Evaluating automatic speech recognition pipelines for Mandarin-
+English bilingual child language assessment in telehealth,” in
+Interspeech 2025, 2025, pp. 3075–3079.
+[6] H. Titeux, Q. T. R. Nguyen, A. Gil-Salcedo, A.-C. Bachoud-
+Levi, and E. Dupoux, “A simple method for predicting clinical
+scores in Huntington’s disease by leveraging ASR’s uncertainty
+on spontaneous speech,” in Interspeech 2025, 2025, pp. 1868–
+1872.
+[7] Y .-L. Liu, R. Feng, J.-X. Chen, Y .-M. Wang, J.-H. Yuan,
+and Z.-H. Ling, “Beyond manual transcripts: The potential of
+automated speech recognition errors in improving Alzheimer’s
+disease detection,” in Interspeech 2025, 2025, pp. 5678–5682.
+[8] Z. Ellis, J. Joselowitz, Y . Deo, Y . He, A. Kalygina, A. Higham,
+M. Rahimzadeh, Y . Jia, I. Habli, and E. Lim, “WER is unaware:
+Assessing how ASR errors distort clinical understanding in patient
+facing dialogue,” Nov. 2025, arXiv:2511.16544.
+[9] Microsoft Corporation, “Presidio: Data protection and de-
+identification SDK,” https://microsoft.github.io/presidio/, 2020,
+accessed: 2025-12-11.
+[10] I. Cohn, I. Laish, G. Beryozkin, G. Li, I. Shafran, I. Szpektor,
+T. Hartman, A. Hassidim, and Y . Matias, “Audio de-identification
+- a new entity recognition task,” in Proc. NAACL-HLT, Volume 2
+(Industry Papers), 2019, pp. 197–204.
+[11] Z. Sheikh, S. Shimizu, S. Arora, J. Shi, S. Cornell, X. Li,
+and S. Watanabe, “Scalable spontaneous speech dataset (SSSD):
+Crowdsourcing data collection to promote dialogue research,” in
+Interspeech 2025, 2025, pp. 3963–3967.
+[12] C. Franzreb, A. Das, T. Polzehl, and S. M ¨oller, “Private kNN-VC:
+Interpretable anonymization of converted speech,” in Interspeech
+2025, 2025, pp. 3224–3228.
+[13] S. W. Woods, S. Parker, M. J. Kerr, B. C. Walsh, S. A. Wijtenburg,
+N. Prunier, A. R. Nunez, K. Buccilli, C. Mourgues-Codern,
+K. Brummitt et al. , “Development of the PSYCHS: Positive
+SYmptoms and diagnostic criteria for the CAARMS harmonized
+with the SIPS,” Early Intervention in Psychiatry , vol. 18, no. 4,
+pp. 255–272, 2024.
+[14] T. J. Miller, T. H. McGlashan, S. W. Woods, K. S

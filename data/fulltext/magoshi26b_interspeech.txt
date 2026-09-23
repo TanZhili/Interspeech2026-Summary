@@ -1,0 +1,405 @@
+Improving Zero-Shot Phonetic Classification
+through Language-Agnostic Articulatory Features
+Ryo Magoshi ID 1, Jaeyoung Lee ID 1,2, Shinsuke Sakai ID 1, Tatsuya Kawahara ID 1
+1 Graduate School of Informatics, Kyoto University, Japan
+2 NTT, Inc., Japan
+magoshi@sap.ist.i.kyoto-u.ac.jp, jalpr16@gmail.com, sakai@sap.ist.i.kyoto-u.ac.jp,
+kawahara@i.kyoto-u.ac.jp
+Abstract
+Recent Phonetic Foundation Models (PFMs) for Speech-to-IPA
+transcription rely on Grapheme-to-Phoneme (G2P) labels, but
+the phoneme labels are not necessarily phonetically faithful.
+To investigate this issue, we evaluate zero-shot phonetic clas-
+sification on Chinese aspiration and Japanese moraic nasals.
+A PFM trained on G2P-labeled data excluding these two lan-
+guages yields poor accuracy on both tasks, showing that multi-
+lingual coverage with discrete IPA tokens is not sufficient for
+unseen settings. To overcome this limitation, we propose a
+classification method based on continuous Articulatory Feature
+(AF) vectors extracted from each frame. This AF-based ap-
+proach outperforms discrete token-based methods, particularly
+for rare phones. We further show that it is crucial to adopt the
+optimal temporal aggregation of AF vectors for the target dis-
+tinction: single-frame classification is best for aspiration, while
+segmental classification substantially improves nasal classifica-
+tion.
+Index Terms: zero-shot phonetic recognition, IPA transcrip-
+tion, articulatory features
+1. Introduction
+Automatic transcription of speech into the International Pho-
+netic Alphabet (IPA), or Speech-to-IPA, is an important task.
+In principle, the IPA’s universality makes it possible to repre-
+sent all human speech sounds within a single framework. Thus,
+Speech-to-IPA is designed to transcribe acoustic reality directly
+beyond the limits of language-specific phonemic inventories.
+This objective distinguishes it from standard ASR, which is lim-
+ited by the orthographic rules of specific writing systems, and
+opens up several applications. First, it is essential for the anal-
+ysis of atypical speech, such as the pronunciation of L2 learn-
+ers [1, 2] and the evaluation of pathological speech [3]. Sec-
+ond, it contributes to transcription of endangered languages that
+lack a written form, aiding in cultural preservation [4,5]. Third,
+sharing an IPA token set across languages facilitates knowledge
+transfer from high-resource to low-resource languages [6–11].
+Speech-to-IPA research based on deep learning has pro-
+gressed rapidly. This progress has led to the emergence of
+Phonetic Foundation Models (PFMs) that claim universality
+through scaling [12, 13]. However, these models encounter
+a critical issue regarding the phonetic validity of their train-
+ing data. Most current datasets for Speech-to-IPA rely on
+Grapheme-to-Phoneme (G2P) conversion to generate labels. As
+a language-dependent processing, G2P maps graphemes to IPA
+symbols without observing the actual acoustic signal. This pro-
+cess inherently introduces conversion errors and inconsistent
+IPA notations across languages, making the labels phonemic
+rather than phonetic. Consequently, acoustic differences that
+helps distinguishing phonemes in one language may be treated
+as ignorable variations in another. For example, a G2P system
+for a language that does not distinguish aspiration will ignore
+these acoustic nuances and assign an identical label to different
+phones. These characteristics conflict with the goal of Speech-
+to-IPA, preventing the model from acquiring truly universal ar-
+ticulatory recognition.
+While existing PFMs claim zero-shot performance through
+multilingual training [12, 13], these evaluations often rely on
+unreliable G2P-derived data and language-specific training. To
+investigate this issue, this study first evaluates Speech-to-IPA
+models in a zero-shot setting. We select evaluation tasks where
+rule-based G2P produces reliable labels for the target contrasts,
+and show that current PFMs perform poorly when discriminat-
+ing unseen phones. These findings demonstrate that multilin-
+gual coverage alone is not sufficient for universal recognition in
+zero-shot settings, even if the target IPA tokens are included in
+the training data and are shared across languages.
+To overcome the limitations, we propose a classification
+framework based on 24-dimensional Articulatory Features (AF)
+estimated by a large-scale self-supervised model. The Articu-
+latory Feature Classification Module (AFCM) is jointly trained
+with the IPA tokens prediction and provides a phonetic-level
+representation. Therefore, it realizes language-agnostic classi-
+fication by examining relevant speech frames.
+This study makes two contributions. First, we reveal the
+limitations of current multilingual training approaches through
+zero-shot classification on distinct phones. Second, we propose
+an AF-based classification framework tailored to the acoustic
+and phonetic nature of the target distinction.
+2. Related Work
+Automatic transcription of speech into phonetic or phonemic
+representations can be categorized into two approaches.
+The first approach employs either the IPA, or language-
+specific symbols such as Hiragana for Japanese or Pinyin for
+Chinese within a specific linguistic framework [14–17]. These
+models can be accurate enough to serve as reliable front-ends
+for text-to-speech systems [15–17]. Consequently, they remain
+constrained by language-specific phonology and lack the capac-
+ity for universal transcription across diverse languages. Even
+when the IPA is utilized, selection of the symbol set is typically
+biased toward the phonemic inventory of the target language.
+The second approach utilizes a common symbol set, pri-
+marily the IPA, to achieve language-universal phonetic recog-
+nition [10, 12, 13, 18, 19]. Speech-conditioned G2P systems,
+which refine grapheme-to-phoneme conversion using acoustic
+information, also fall into this category [20–22]. While this
+3388
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2246
+Figure 1:Overview of three classification methods, illustrated on a Japanese word “ringo” [RiNgo] (apple) for a nasal classification
+task. (a) Decoder-based classification aligns the decoded IPA sequence with the reference via PFER minimization. (b) CTC-based
+classification takesarg maxof the frame-level posteriors at the peak framet∗ identified by forced alignment. (c) AF-based classification
+(proposed) computes the L1 distance between the continuous AF vector att∗ and PanPhon template vectors, selecting the closest match.
+approach can be applied to multilingual settings, it often suf-
+fers from degraded accuracy due to inconsistencies and errors
+in the underlying IPA labels. The primary bottleneck is that
+most large-scale datasets rely on G2P conversion tools rather
+than manual transcription, introducing the following issues:
+1. Acoustic-Agnostic Labeling: Because G2P operates solely
+on orthographic input, the resulting labels represent abstract
+phonemes and fail to capture the natural phonetic variations
+present in actual speech.
+2. Notational Divergence: Despite the IPA’s conceptual univer-
+sality, notation conventions and symbol subsets vary signif-
+icantly across languages and datasets, resulting in a lack of
+inter-dataset consistency.
+3. Algorithmic Errors: G2P systems, whether rule-based [23–
+25], statistical [26–28] or neural [29–34], are prone to con-
+version errors that propagate into training labels.
+These factors hamper phonetic faithfulness, hindering the
+development of models capable of universal recognition. On
+the other hand, AFs are phonetic descriptors that characterize
+each IPA symbol along dimensions such as nasality, voicing,
+and place of articulation, providing a continuous-valued and
+language-agnostic representation of speech sounds. To mitigate
+the limitations of discrete phonetic tokens, several studies have
+explored the use of AFs as an auxiliary or alternative represen-
+tation for speech recognition.
+Li et al. [35] utilized AFs as intermediate representations
+for grapheme-level output. However, their AFs are discrete
+and language-specific, precluding zero-shot application. Yen et
+al. [8] employed language-universal speech attribute constraints
+to improve multilingual phoneme recognition, demonstrating
+that AF-based regularization improves performance. Both ap-
+proaches used AFs with only two dimensions, place and manner
+of articulation, which limits their phonetic expressiveness.
+Magoshi et al. [10] adopted the AF system defined by Pan-
+Phon [36], which converts each IPA token into a 24-dimensional
+AF vector whose dimensions encode phonetic properties such
+as syllabic, sonorant, nasal, and continuant. Each dimension
+takes a value of+1(present),−1(absent), or0(not applica-
+ble), covering IPA symbols including those with diacritics such
+as aspirated stops. This representation is richer than the two-
+dimensional characterizations used in prior work. They pro-
+posed a frame-level AF classification method as an auxiliary
+task within a CTC-based Speech-to-IPA model, producing con-
+tinuous AF vectors alongside discrete IPA posteriors. Our work
+builds upon [10] but uses the AF vectors directly for phonetic
+classification, rather than relying on discrete IPA token outputs.
+3. Methods
+We compare two Speech-to-IPA models (§3.1) and design three
+complementary classification methods to assess their zero-shot
+phonetic discrimination capability (§3.2).
+3.1. Models
+POWSM [13] is a hybrid CTC/Attention model [37]. An
+Attention-based Encoder-Decoder (AED) autoregressively gen-
+erates an IPA token sequence, while a Connectionist Temporal
+Classification (CTC) [38] branch provides frame-level posterior
+distributions over the IPA token set. This architecture is repre-
+sentative of recent large-scale PFMs [13].
+XLS-R + AFCM is a CTC-based model that uses XLS-
+R [39] as a pre-trained encoder, augmented with an Articulatory
+Feature Classification Module (AFCM) [10] which estimates a
+24-dimensional AF vector at each frame in addition to the stan-
+dard CTC posteriors. We propose using this AF output for zero-
+shot phonetic classification. The AFCM is trained with cross-
+entropy loss to predict the PanPhon [36] AF vector correspond-
+ing to each frame’s IPA token. The resulting logits constitute
+the continuous AF vectors used for classification. It is jointly
+trained with CTC-based IPA token recognition. Although the
+AF labels inherit errors from the IPA labels, the AFCM learns
+distributed phonetic properties rather than discrete tokens, mak-
+ing it more robust to individual labeling errors.
+3.2. Classification Methods
+To assess whether each model correctly identifies the target IPA
+symbol, we design three classification methods (Figure 1) that
+share a common two-step procedure: (1) locate the segment
+in which the target IPA is expected to occur, and (2) examine
+the model’s output within that segment to determine correct-
+ness. Decoder-based and CTC-based classifications serve as
+baselines that operate on discrete IPA token outputs.
+Decoder-based classification aligns the decoded IPA se-
+quence ˆY= (ˆy 1,...,ˆy N)to the reference sequenceY ∗ =
+(y∗
+1,...,y ∗
+M)viaπ ∗ = arg minπ PFER( ˆY,Y∗;π), minimiz-
+ing the Phoneme-Feature Error Rate (PFER) [18]. Here,πde-
+notes an alignment mapping from the reference indices to the
+decoded indices. For the target positionk, the prediction is
+deemed correct if the aligned tokenˆyπ∗(k) matches the ground
+truthy∗
+k. If the alignment maps no decoded token at the position
+k(i.e., deletion), the prediction is treated as incorrect.
+CTC-based classification utilizes the CTC log-posterior
+probabilitieslogp(c|x t), wherecdenotes an IPA token and
+3389
+xt is the encoder output at framet. Given the interval(t s,te)
+of the target segment obtained by forced alignment, the peak
+framet∗ is identified as:
+t∗ = arg max
+ts≤t≤te
+logp(c ref|x t)(1)
+wherec ref is the reference token. The estimated token is then
+ˆc= arg maxc logp(c|x t∗).
+Building on the CTC framework, we propose AF-based
+classification, which replaces discrete token posteriors with
+continuous AFs. Leta t denote the AFCM output at framet,
+and lett∗ be the peak frame obtained as in CTC. We estimate
+the phonetic identity by computing the L1 distance between the
+AF vectora t∗ and the template vector derived from each can-
+didate categoryc∈C:
+ˆc= arg min
+c∈C
+X
+i∈D
+|at∗,i−fc,i|(2)
+wheref c is the PanPhon AF template vector for IPA tokenc,
+Cis the set of candidate IPA tokens, andDis the set of AF
+dimensions that are discriminative amongC. For example, the
+four Japanese nasals [m], [n], [N], [ñ] share identical values on
+all AF dimensions except five place features (anterior, coronal,
+labial, high, and back), yielding|D|= 5.
+For both CTC-based and AF-based methods, we compare
+two temporal aggregation methods. Thesingle-frameclassifi-
+cation directly uses the representation at the peak framet∗. The
+segmentalclassification instead averages the frame-level repre-
+sentations fromt∗ to the onset of the subsequent token:
+¯v= 1
+Tnext−t∗
+Tnext−1X
+t=t∗
+vt (3)
+whereT next is the onset frame of the subsequent IPA token and
+vt denotes the CTC log-posterior vector or the AF vectora t.
+Then, respective classification method is applied to ¯vin place
+of the single-frame representation.
+4. Experiments
+4.1. Experimental Settings
+The two models are trained on the Common V oice [40] and
+FLEURS [41] portions of IPAPack++ [12], which provides
+G2P-derived IPA labels for multiple speech corpora. After ex-
+cluding Chinese and Japanese, the training set covers 78 lan-
+guages and approximately 3,000 hours. IPA sequences in the
+training data are tokenized using PanPhon [36], yielding a vo-
+cabulary of 280 tokens. Table 1 shows the language family dis-
+tribution of the training data. The “Other” category groups six
+families each consisting of five or fewer languages: Austrone-
+sian, Uralic, Mongolic, Kartvelian, Constructed (Interlingua),
+and one language isolate (Basque).
+POWSM follows the architecture of [13] but is trained from
+scratch only with the IPA tokens in our training set, resulting in
+252M parameters due to the reduced vocabulary size. 1 XLS-R
++ AFCM combines a pre-trained XLS-R encoder with a CTC
+head and AFCM [10], totaling 318M parameters. Both models
+are trained with AdamW [42] at a learning rate of5×10 −4,
+with 10k warmup steps and a batch size of 10 minutes.
+1The original POWSM is not used because its training data includes
+Chinese and Japanese, which are used for the zero-shot evaluation.
+Table 1:Language family distribution of the training data.
+Language family # Lang. Hours
+Indo-European 40 2115.0
+Atlantic-Congo 8 568.2
+Dravidian 3 85.4
+Turkic 6 79.9
+Kra-Dai 2 46.2
+Sino-Tibetan 3 35.5
+Afro-Asiatic 3 16.4
+Austroasiatic 1 8.2
+Other (6 families) 12 45.1
+Total 78 3000
+Table 2:Distribution of target phones in the training data.
+“Ratio” denotes the proportion of aspirated tokens within each
+pair of voiceless stops (top) and the proportion of each phone
+in the nasal group (bottom).
+Phone Count Ratio
+[ph] 192k 9.6%[p] 1.80M
+[th] 264k 4.9%[t] 5.12M
+[kh] 267k 7.7%[k] 3.22M
+[m] 3.06M 31.6%
+[n] 5.63M 58.3%
+[N] 722k 7.5%
+[ñ] 253k 2.6%
+We design two zero-shot tasks with Chinese and Japanese,
+which are excluded from the training dataset. The first task clas-
+sifies Chinese voiceless stops ([ph]/[p], [th]/[t], [kh]/[k]) as aspi-
+rated or unaspirated, evaluated on the Chinese FLEURS test set
+from IPAPack++ (652 utterances, 2.0 hours). The second task
+classifies Japanese moraic nasals ([m], [n], [N], [ñ]), evaluated
+on the CSJ [43] eval2 and eval3 (586 utterances, 52 minutes)
+with human-verified IPA labels [25]. In both cases, a rule-based
+G2P produces faithful labels: Chinese aspiration is a phone-
+mic contrast and the Japanese nasals are conditional allophones
+which are predictable from the following consonant [44]. In
+AF-based classification, the PanPhon AF template vectorsf c
+are binarized from{−1,+1}to{0,1}to match the binary out-
+put of the AFCM. For evaluation, we report balanced accuracy,
+defined as the macro-average of per-IPA recall.
+Because phone frequencies in natural language are inher-
+ently imbalanced, the training data reflects this skew. Table 2
+shows the distribution of the target phones in the training data.
+Aspirated stops account for fewer than 10% of the voiceless
+stop tokens at every place of articulation, and [ñ] constitutes
+only 2.6% of nasal tokens.
+4.2. Experimental Results
+Table 3 presents the per-IPA recall and balanced accuracy for
+each task. POWSM yields poor accuracy on both tasks, in-
+dicating that training on G2P-labeled multilingual data is not
+sufficient for zero-shot phonetic discrimination. The proposed
+method of using XLS-R + AFCM with CTC achieves 94.5% on
+aspiration and 59.0% on nasal classification, demonstrating the
+benefit of finetuning with PanPhon-tokenized labels.
+For aspiration (Table 3(a)), POWSM with CTC exhibits a
+strong bias toward unaspirated stops, recalling aspirated stops
+at only 10–20% while unaspirated stops exceed 98%. XLS-R
+3390
+Table 3:Zero-shot phonetic classification results. (a) Three binary classifications of Chinese voiceless stops (aspirated vs. unaspirated)
+at each place of articulation. (b) A single four-way classification of Japanese nasals. All values are recalls in percentages and balanced
+accuracy is the macro-average of per-IPA recall. “AF segmental” denotes segmental AF classification.
+(a) Chinese aspiration: binary classification per place of articulation
+Model #Params Method [p h] [p] [th] [t] [kh] [k] Balanced Acc.
+POWSM 252M
+Decoder 58.8 43.9 69.0 37.7 39.9 63.3 53.1
+CTC single-frame 10.2 99.5 16.1 99.0 12.7 98.8 56.7
+CTC segmental 11.9 99.3 20.5 98.3 16.1 98.5 58.3
+XLS-R + AFCM 318M
+CTC single-frame 92.7 98.4 90.9 98.8 89.3 95.7 94.5
+CTC segmental 82.5 96.5 96.280.5 85.0 91.9 87.5
+AF single-frame93.297.9 91.499.3 93.694.195.4
+AF segmental 2.8100.0 1.9 99.6 1.7100.050.8
+(b) Japanese nasal: four-way classification
+Model #Params Method [m] [n] [N] [ñ] Balanced Acc.
+POWSM 252M
+Decoder 53.7 68.1 63.9 1.0 46.7
+CTC single-frame 73.1 87.2 32.7 1.0 48.5
+CTC segmental 74.6 88.4 30.2 4.2 49.3
+XLS-R + AFCM 318M
+CTC single-frame 65.7 97.9 69.3 3.1 59.0
+CTC segmental 62.799.746.5 6.2 53.8
+AF single-frame 74.6 92.8 83.2 12.5 65.8
+AF segmental86.671.693.6 38.5 72.6
++ AFCM with CTC single-frame resolves this bias, achieving
+over 89% recall for all categories (balanced accuracy 94.5%).
+The single-frame AF method further improves to 95.4%, with
+over 91% recall across all categories. However, segmental AF
+collapses to near-zero recall on aspirated stops ([p h] 2.8%, [t h]
+1.9%, [kh] 1.7%), as the transient aspiration burst is diluted by
+averaging over the segmental window (Figure 2(a)).
+For nasal classification (Table 3(b)), CTC-based methods
+achieve high recall on [m] and [n] but systematically misclas-
+sify [ñ]. The advantage of AF is pronounced on the rare cate-
+gories: for [ñ], segmental AF achieves 38.5% recall, whereas all
+non-AF methods remain below 7%. Since AF labels provide su-
+pervision for phonetic features shared across many phonemes,
+the model can learn acoustic-articulatory mappings even for
+phones that are rare in the training data. For [N], segmental AF
+reaches 93.6% compared to 69.3% with CTC single-frame. As
+shown in Figure 2(b), the place-of-articulation cues of [N] per-
+sist throughout the segment, enabling segmental aggregation to
+improve AF-based balanced accuracy from 65.8% to 72.6%.
+Overall, these results highlight two findings. First, temporal
+aggregation using XLS-R + AFCM outperforms existing dis-
+crete CTC posteriors, suggesting that existing methods can fur-
+ther be improved. Second, the effectiveness of the aggregation
+varies with the acoustic nature of the target distinction. Single-
+frame classification is preferable for temporally localized cues
+such as aspiration, while segmental aggregation is beneficial for
+sustained cues such as nasal place of articulation. The choice
+can be determined by the characteristics of target phones.
+5. Conclusions
+This study focuses on zero-shot phonetic classification on Chi-
+nese aspiration and Japanese moraic nasals. Our results show
+that relying solely on discrete IPA tokens fails to discriminate
+unseen phones, while classification using continuous AF vec-
+tors substantially improves performance, particularly for un-
+derrepresented categories. The optimal temporal aggregation
+varies with whether the target cue is transient or sustained.
+(a) [ph] (aspiration)
+(b) [N] (nasal)
+Figure 2:Spectrograms with single-frame (SF) and segmental
+(SG) windows. The aspiration burst in (a) is localized near S,
+while the nasal place cues in (b) persist across N.
+These findings have implications beyond the two tasks stud-
+ied here. First, classifying conditioned allophones such as
+Japanese moraic nasals shows that AF-based methods can cap-
+ture sub-phonemic variation. Second, our framework can facil-
+itate perceptual training of phones absent from the learner’s L1
+without native-speaker supervision, as it operates in a language-
+agnostic manner using articulatory representations. Third,
+the proposed approach provides a step toward truly language-
+agnostic zero-shot ASR, where unseen phones can potentially
+be handled without language-specific adaptation.
+3391
+6. Acknowledgments
+This work was supported by JST NEXUS 251043539.
+7. Generative AI Use Disclosure
+The authors used generative AI tools for editing and polishing
+the manuscript. The authors take full responsibility for all con-
+tent.

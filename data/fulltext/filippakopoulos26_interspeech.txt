@@ -1,0 +1,487 @@
+Segregate, Refine, Integrate: Decomposing Multimodal Fusion for Sentiment
+Analysis
+Alexios Filippakopoulos ID 1,5,Elias Kallioras ID 1,∗,Nikolaos Xiros ID 1,2,∗
+Efthymios Georgiou ID 1,3,‡,∗∗,Alexandros Potamianos ID 1,4,5
+1 National Technical University of Athens, Greece, 2 Athena Research Center, Greece,
+3 University of Bern, Switzerland, 4 Archimedes AI, Greece, 5 Synaptic Bloom PBC, US
+alexiosfilippakopoulos@mail.ntua.gr, eliaskallioras@gmail.com, n.xiros@athenarc.gr,
+efthymios.georgiou@unibe.ch, potam@central.ntua.gr
+Abstract
+Multimodal fusion must simultaneously refine modality-
+specific signals and model cross-modal interactions; two com-
+peting objectives typically entangled within the same operation.
+We proposeSeRIn(Segregate,Refine,Integrate), a multimodal
+LM fusion scheme that enforces this separation as an architec-
+tural prior. Modality-specific representations evolve along iso-
+lated pathways, each refined against its respective encoder con-
+text, while a dedicated cross-modal pathway accumulates their
+joint evolution without contaminating unimodal streams. Full
+cross-modal interaction is deferred to a final prediction step —
+ablations confirm that structured interactions, not added capac-
+ity, drive the gains; gate analysis under visual corruption re-
+veals emergent modality reweighting without explicit supervi-
+sion. SeRIn achieves state-of-the-art results on CH-SIMS and
+CMU-MOSEI, improving all metrics on both benchmarks.
+Index Terms: multimodal sentiment analysis, multimodal fu-
+sion, attention mechanisms, speech and language models
+1. Introduction
+Multimodal sentiment analysis (MSA) aims to predict the po-
+larity and intensity of speaker sentiment by jointly modeling
+linguistic content, acoustic signals, and visual cues. It is a key
+capability for affective computing applications including con-
+versational agents, mental health assessment, and social media
+opinion mining [1, 2]. The central technical challenge,mul-
+timodal fusion, involves learning representations that capture
+both unimodal cues and cross-modal interactions. This is non-
+trivial because the three modalities carry different types of in-
+formation and reside in different geometries and timescales [3].
+Furthermore, their interactions can be subtle, acoustic and vi-
+sual cues can reinforce, nuance, or outright contradict lexical
+content, as in sarcasm or emotional suppression [4, 5, 6].
+Two objectives arise naturally in multimodal fusion: refin-
+ing each modality and modeling their interactions. These objec-
+tives are typically entangled within a single fusion operation.
+Tensor and attention-based methods [7, 8, 9, 10, 11] perform
+both operations simultaneously, with no architectural separa-
+tion between the two. Disentanglement and auxiliary-objective
+approaches [12, 13, 14, 15] encourage modality-specific repre-
+sentations, but place no structural restriction on multimodal fu-
+sion during the forward pass, specialization depends on learned
+penalties rather than architectural constraints. We draw inspi-
+ration from DeepMLF [16], which introduced learnable fusion
+*These authors contributed equally.
+**indicates the corresponding author.
+‡Work done while at the National Technical University of Athens.
+tokens within a frozen language model (LM), providing mean-
+ingful separation between the text stream and the multimodal
+pathway. However, among the fusion tokens themselves, that
+act as multimodal information carriers, the model is left to im-
+plicitly decide when to preserve modality-specific signals and
+when to integrate them. More broadly,interaction topology, the
+pattern specifying which representations may exchange infor-
+mation, under what conditions, and at which processing stage,
+remains an underexplored design axis in multimodal fusion,
+complementary to depth and capacity. In particular, we argue
+that unimodal refinement and cross-modal integration should
+be treated as distinct stages rather than being coupled within
+a single fusion operation.
+We proposeSeRIn 1 (Segregate,Refine,Integrate), which
+enforces this separation as an architectural prior rather than an
+optimization penalty. Built on the learnable fusion token design
+of DeepMLF [16], SeRIn (i)Segregatesthe fusion tokens into
+per-modality groups confined to isolated pathways, alongside a
+cross-modal pathway that reads and aggregates them but never
+writes back; (ii)Refineseach pathway against its own encoder
+context through internally gated attention; and (iii)Integrates
+all representations under unrestricted cross-modal interaction
+only at the final prediction step. Segregation is enforced struc-
+turally, through modality-constrained attention masks that add
+no parameters, so that each modality is refined before any cross-
+modal mixing. With fusion depth and token count held fixed to
+DeepMLF’s optima, interaction topology is the sole free vari-
+able, and our ablations attribute the gains to this structure, not
+to added capacity. Our contributions can be summarized as:
+1. We frame interaction topology as a fusion design axis com-
+plementary to depth and capacity, and realize it in SeRIn,
+which segregates per-modality pathways via parameter-free
+masks, refines each against its own encoder context, lets
+an audiovisual pathway read-but-not-write, and defers unre-
+stricted interaction to a final head.
+2. SeRIn reaches SOTA on CH-SIMS and CMU-MOSEI across
+all metrics with depth and token count fixed; a capacity-
+matched ablation that keeps the added parameters but re-
+moves the topology falls below DeepMLF, and gate analy-
+sis under visual corruption reveals emergent, unsupervised
+modality reweighting
+2. Related Work
+Standard MSA taxonomies (early/late/deep stage, fusion mech-
+anism) capture integration timing but not the structural con-
+1Code is available on GitHub at SeRIn-MSA.
+6270
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1299
+straints governing how modality pathways interact during the
+forward pass. To motivate SeRIn, we reinterpret prior work
+along two axes: (i) fusion depth and interaction topology, and
+(ii) the mechanism of unimodal specialization: optimization ob-
+jectives versus architectural constraints.
+2.1. From Shallow to Deep Interaction Modeling
+Early multimodal sentiment models perform cross-modal inter-
+action in a single integration stage. Tensor Fusion Network
+(TFN) [7] and Low-rank Multimodal Fusion (LMF) [8] com-
+pute explicit cross-modal interactions but do not separate uni-
+modal refinement from multimodal integration within the ar-
+chitecture.
+Attention-based models introduce more flexible interaction
+patterns. MulT [9] models directional pairwise attention across
+every ordered modality pair, constraining the direction of in-
+fluence across modalities. Cross-modal attention architectures
+such as CENet [11] and MAG-BERT [10] inject acoustic and vi-
+sual context into textual representations through attention mod-
+ules. Although these methods improve cross-modal expressiv-
+ity, unimodal refinement and multimodal integration typically
+occur within the same attention operations, and cross-modal
+communication becomes unrestricted once introduced.
+Frozen pretrained language models enable layer-wise fu-
+sion within a fixed backbone, where interleaving fusion mod-
+ules with pretrained layers makes interaction structure an ex-
+plicit design choice. Flamingo [17] and Audio Flamingo [18]
+insert gated cross-attention modules between frozen decoder
+layers, using scalar residual gates to regulate the overall mag-
+nitude of injected multimodal signals. These gates apply scalar
+modulation, whereas SeRIn uses content-dependent, element-
+wise gating on the attention output before projection. Deep fu-
+sion in MSA traces back to DHF [19], the first such paradigm,
+which learns unimodal encoders followed by a fusion network.
+DeepMLF [16] brings this lineage into the frozen-LM setting,
+demonstrating that fusion depth and multimodal capacity are
+critical factors and introducing learnable fusion tokens to medi-
+ate cross-modal interaction across layers. However, the fusion
+token pool is undifferentiated, allowing every fusion token to
+accumulate the same pre-fused joint audiovisual context. As
+a result, modality-specific structure is not explicitly enforced
+by the forward architecture but emerges, if at all, through op-
+timization. SeRIn adopts DeepMLF, whose fusion token inter-
+face provides the controlled substrate needed to study interac-
+tion topology in isolation, a variable DeepMLF and most prior
+work leave unconstrained. Concretely, SeRIn partitions these
+tokens into modality-specific pathways with constrained inter-
+action, adds a read-only audiovisual pathway that maintains a
+cross-modal state without modifying unimodal streams, and de-
+fers unrestricted cross-modal interaction to a final integration
+head.
+2.2. Objective-Based vs Architectural Specialization
+A parallel line of work promotes unimodal specialization
+through representation-level constraints. These approaches de-
+compose each modality into shared (modality-invariant) and
+modality-private subspaces: MISA [12] enforces the split with
+a soft-orthogonality loss, whereas FDMER [13] learns the
+two subspaces adversarially through a modality discriminator.
+DRTSC [15] extends this framework with temporal smooth-
+ness losses and adversarial alignment to encourage consis-
+tency while preserving modality-specific components. Other
+approaches steer specialization through training objectives,
+learned reweighting, or input re-representation. Self-MM [14],
+JTUM [20], TETFN [21], and MTFN [22] introduce auxil-
+iary supervision or multi-task objectives to reinforce unimodal
+structure; KuDA [23] injects sentiment knowledge to dynam-
+ically reweight each modality’s contribution per sample; and
+DEV A [24] converts raw audio and visual signals into fine-
+grained textual emotional descriptions prior to a text-guided
+progressive fusion. In all these cases, however, the forward
+computational graph places no structural restriction on cross-
+modal mixing; modality-specific behavior is shaped by learned
+objectives or input re-representation rather than by architectural
+constraints.
+Architectural specialization has been explored more re-
+cently in DLF [25], which enforces asymmetric attention to-
+ward language (V→L, A→L, L→L) as a structural constraint.
+While this controls the direction of influence, every interaction
+is funneled into the language stream — audio and visual fea-
+tures act only as sources and never interact with each other —
+and language self-refinement (L→L) and cross-modal integra-
+tion (V/A→L) remain intertwined within each layer.
+In contrast, SeRIn seals unimodal pathways by construc-
+tion and restricts cross-modal interaction to a dedicated read-
+only pathway and a final integration stage, constraints DLF and
+prior work do not enforce. This architecturally decouples uni-
+modal refinement from multimodal integration during the for-
+ward pass, rather than delegating the trade-off to optimization
+— to our knowledge, a distinct departure from existing MSA
+fusion strategies.
+3. Preliminaries
+We formalise the MSA task and establish the notation used
+throughout the paper.
+3.1. Problem Formulation
+MSA is formulated as a supervised regression task that infers
+sentiment polarity and intensity from three modalities: text, au-
+dio, and visual. LetM={t,a,v}be the modality index set.
+For eachm∈M, the input for sampleiisX i,m∈R Lm×Dm,
+whereL m is the maximum sequence length andD m the fea-
+ture dimensionality. The goal is to learnfθ :Q
+m∈MXm→R
+mapping each multimodal inputXi ={X i,m}m∈M to a scalar
+sentiment labelyi∈R.
+3.2. Transformer Backbone
+SeRIn is instantiated within a frozen pre-norm decoder-only
+Transformer [26, 27]. Each LM Block applies causal self-
+attention (CSA) followed by a feed-forward network:
+˜H(l) =H (l−1) + SA
+ 
+Norm(H(l−1));M causal
+H(l) = ˜H(l) + FFN
+ 
+Norm( ˜H(l))
+
+.
+The causal maskM causal restricts each token to attend-
+ing only to itself and preceding positions. When fusion to-
+kens are appended to the text sequence,M causal is replaced by
+a modality-constrained maskM mc
+LM, the structural mechanism
+through which SeRIn enforces modality segregation inside the
+frozen LM (see Sec. 4.4.1).
+3.2.1. Attention masking
+A binary maskM∈{0,1} nq×nk prevents selected query–key
+interactions by injecting−∞before the softmax:
+6271
+Attn(Q,K,V;M) =σ
+QK⊤
+√dk
++ (1−M)(−∞)
+
+V.
+Mij = 1permits queryito attend to keyj, whileM ij = 0
+suppresses it. This formulation is used directly in Secs. 4.4.1
+and 4.4.2 to defineM mc
+LM andM mc
+MM. The unimodal en-
+codersE a,Ev (Figure 1) are standard pre-norm Transformer
+encoders [26] and share the same layer structure as described
+above, withM causal replaced by an unrestricting (full) atten-
+tion mask.
+4. Methodology
+4.1. Overview
+We presentSeRIn(Segregate,Refine,Integrate), a multimodal
+fusion framework that injects audiovisual information into a
+frozen pretrained language model through structured, gated
+cross-modal pathways.
+1.Segregate. The fusion process is organized around two struc-
+turally distinct representational pathways: modality-specific
+pathways, sealed from auxiliary-modality influence while re-
+maining grounded in linguistic context, and a cross-modal
+pathway that progressively reads from them and aggregates
+their joint evolution. These pathways are realized through
+learnable fusion tokens partitioned into disjoint modality-
+specific groups, with one-way flow enforced via modality-
+constrained attention masks.
+2.Refine. Within each pathway, learned gated modules actively
+update and consolidate representations without breaching
+segregation. Internally Gated Cross-Attention (IGCA) injects
+fresh encoder context into each pathway through content-
+dependent element-wise gates, while Internally Gated Self-
+Attention (IGSA) consolidates the injected information into
+a coherent pathway-level representation.
+3.Integratecompletes the staged design by lifting all segre-
+gation constraints only at prediction time. A standard late-
+fusion encoder mechanism aggregates the refined represen-
+tations, ensuring unrestricted cross-modal interaction occurs
+solely where it is appropriate: the final prediction step.
+We instantiate SeRIn within the frozen-LM paradigm of
+DeepMLF [16], whose fusion token interface provides a con-
+trolled substrate for studying how interaction topology shapes
+multimodal representation learning.
+As illustrated in Figure 1, the model consists of three com-
+ponents: (i) anAV Encoderthat independently encodes au-
+dio and visual sequences into latent representationsZ a,Z v,
+andZ av; (ii) aMultimodal Language Modelcomprising a
+frozen pretrained decoder augmented with modality-specific
+fusion tokens and MM Blocks that perform internally gated
+cross-attention and internally gated modality-constrained self-
+attention at selected layers; and (iii) anIntegration Headthat
+aggregates all representations for final sentiment prediction.
+The input sequence to the LM follows the layout:
+H0 = [X0
+t ;X 0
+fa;X 0
+fv;X 0
+fav]∈R (L+na+nv +nav )×d
+whereX t ∈R Lt×d denotes the text token embeddings and
+Xfm∈R nm×d denotes the learnable fusion tokens for modal-
+itym∈{a,v,av}, with total fusion token countn f =n a +
+nv +nav.
+4.2. A V Encoder
+The A V Encoder is a dual-stream Transformer-based architec-
+ture designed to learn temporally aligned representations from
+audio and visual sequences. Given the audio and visual in-
+put signals, the model first applies a deterministic alignment
+procedure to map each sequence to a fixed maximum length
+Lenc. This is achieved via padding, if necessary, followed by
+segment-wise mean pooling, ensuring consistent temporal res-
+olution across modalities. Each modality is then projected into
+a shared latent dimensiond enc, after which sinusoidal positional
+embeddings are added to encode temporal order. The unimodal
+representations are processed independently by stacks ofN
+Transformer encoder layersE a,Ev, each consisting of multi-
+head self-attention withHheads, a position-wise feed-forward
+network, and pre-layer normalization. This produces the en-
+coded unimodal sequencesZ a,Zv ∈R Lenc×denc. To obtain a
+joint multimodal representation, the encoded features are con-
+catenated along the feature dimension and passed through a lin-
+ear fusion layer, yieldingZ av∈R Lenc×denc. This encoder fol-
+lows [16] and is kept fixed to isolate interaction topology.
+Za =E a(Xa)Z v =E v(Xv)Z av =FFW(Z a||Zv)
+4.3. Modality-Specific Fusion Tokens
+Prior work appends a single pool of undifferentiated learnable
+fusion tokens to the LM input [16], providing no structural
+distinction between intra-modal and cross-modal interactions.
+SeRIn removes this ambiguity by initially partitioning then f
+fusion tokens into three disjoint, modality-specific groups (au-
+dio, visual, audiovisual) based on their interaction role:
+Xfm∈R nm×d, m∈{a,v,av}, n f =n a +n v +n av.
+Each groupX fm consists of learnable parameters initialized
+fromN(0,0.02)and appended to the text embedding se-
+quence before being fed into the first LM layer. This parti-
+tioning is structurally enforced through (i) the constrained self-
+attention mask applied in both the LM and MM blocks, and (ii)
+the modality-specific cross-attention routing within each MM
+block.
+The unimodal groups are strictly isolated, allowing audio
+and visual representations to evolve along independent path-
+ways throughout fusion. All three fusion token groups attend
+to the full text sequence at every LM layer, ensuring contin-
+uous linguistic grounding as representations develop. Within
+this shared grounding, each unimodal group builds special-
+ized representations along its dedicated pathway: accumulat-
+ing modality-specific context within its isolated group at every
+LM layer and receiving targeted encoder injections through its
+IGCA module at each MM Block.
+The audiovisual (A V) group plays a distinct role: its tokens
+form a dedicated cross-modal pathway that continuously reads
+and aggregates the evolving states of both unimodal groups, en-
+riching this summary at each MM Block via its IGCA module
+and the joint encoder representationZ av. Critically, A V tokens
+read from but never write to unimodal pathways, an asymmetry
+enforced by the Segregate principle that prevents cross-modal
+contamination while allowing the A V tokens to accumulate a
+layer-wise history of cross-modal co-evolution that neither the
+Integration Head norZ av alone can provide.
+6272
+Figure 1:Overview of the SeRIn architecture. Audio and visual inputs are encoded by modality-specific encoders and injected into a
+frozen language model via modality-partitioned fusion tokens. Structured MM Blocks enforce segregation through constrained atten-
+tion, regulate information flow via internal gating, and enable staged integration before final prediction by the Integration Head.
+4.4. Multimodal Language Model
+4.4.1. LM Block with Modality-Constrained Self-Attention
+The backbone of SeRIn is a frozen pretrained decoder-only lan-
+guage model. Each LM Block consists of a standard causal self-
+attention layer followed by a feed-forward network (Sec. 3.2).
+When fusion tokens are appended to the text sequence, the at-
+tention mask must be adapted. Prior work [16] keeps text to-
+kens causally masked among themselves while allowing every
+fusion token to attend to all text positions, so that fusion to-
+kens absorb linguistic context without altering the text stream.
+We retain these two properties but go further by structuring the
+inter-group interactions among fusion tokens themselves.
+Our modality-constrained mask is the structural mechanism
+through which the Segregate principle (Sec. 4.1) is enforced in-
+side the frozen LM. By partitioning fusion token attention into
+modality-specific blocks, it turns an operation already present
+at every layer, the LM’s self-attention, into the primary carrier
+of interaction topology, without additional parameters or com-
+putation.
+We therefore adopt amodality-constrainedmaskM mc
+LM∈
+{0,1}L×L that retains the text-causal and fusion-to-text prop-
+erties above but additionally partitions the fusion token atten-
+tion into modality-specific blocks. The mask has the following
+structure (whereCdenotes a causal block,1a full-attention
+block, and0a blocked interaction):
+Mmc
+LM =
+Xt Xfa Xfv Xfav
+Xt C 0 0 0
+Xfa 1 1 0 0
+Xfv 1 0 1 0
+Xfav 1 1 1 1
+Text tokens attend only to preceding text positions and never
+to fusion tokens, ensuring that the frozen LM’s text represen-
+tations remain identical to their pretrained behavior and are not
+altered by the multimodal pathway. This mask is precomputed
+and cached, introducing no additional parameters or computa-
+tion.
+4.4.2. MM Block
+The MM Block is the core fusion module of SeRIn, inserted
+at a selected subset of decoder layersL⊂{0,...,L dec−1}.
+At each such layer, the MM Block operates immediately after
+the frozen LM Block and applies three sequential gated stages
+to the fusion token representations. All LM parameters remain
+frozen, only the MM Block parameters are trained.
+Stage 1: Internally Gated Cross-Attention (IGCA).Each fu-
+sion token group independently attends to its designated en-
+coder output through a dedicated IGCA module: unimodal
+groups query their respective unimodal encoder representations
+Za,Z v, while the A V group queries the joint encoder repre-
+sentationZ av, enriching its cross-modal summary with a direct
+bottom-up audiovisual signal. The queries are derived from the
+(normalized) fusion tokens, and the keys and values from the
+A V Encoder representations:
+Xℓ
+t,Xℓ
+fa,Xℓ
+fv,Xℓ
+fav = split(Hℓ)
+∆ℓ
+fm = IGCAm
+
+Norm(Xℓ
+fm),Zm
+
+, m∈{a,v,av}.
+Standard gated cross-attention [17, 18, 16] controls informa-
+tion flow only at the residual-connection level, via a scalar gate
+on the output. OurInternally Gated Cross-Attention(IGCA)
+places the gateinsidethe attention mechanism, where the (nor-
+malized) fusion tokens query their respective A V encoder con-
+textZm. A content-dependent gateg∈[0,1] nm×d then mod-
+ulates the attention output, element-wisebeforethe output pro-
+jection; a gate placement that large-scale studies of standard
+attention have found most effective [28]:
+g=σ(W g Xq),IGCA(X q,Zm) =W O (A⊙g),
+6273
+allowing the model to selectively suppress or amplify individ-
+ual feature dimensions of the cross-attended representation on
+a per-token basis. The three cross-attention outputs are con-
+catenated and added to the fusion tokens via a gated residual
+connection controlled by a learnable scalarα 1:
+Xℓ
+f = [Xℓ
+t||Xℓ
+fa||Xℓ
+fv||Xℓ
+fav]
+¯Xℓ
+f =X ℓ
+f +σ(α 1)⊙
+h
+∆ℓ
+fa||∆ℓ
+fv||∆ℓ
+fav
+i
+.
+Sinceα 1 is initialized to zero (σ(α 1) = 0.5), the model can
+learn to close or open this pathway during training.
+Stage 2: Modality-Constrained Internally Gated Self-
+Attention (IGSA).After the IGCA stage, each fusion token
+carries a fresh injection of modality-specific context from its
+corresponding encoder stream. Before this propagates further,
+tokens must consolidate it: within each group, individually
+cross-attended views must be reconciled into a coherent group-
+level representation, while A V tokens must read from the up-
+dated unimodal groups to incorporate their most recently re-
+fined states into the evolving cross-modal summary. Uncon-
+strained self-attention at this point would allow premature mix-
+ing of the just-injected unimodal signals, undermining the seg-
+regation that Stage 1 enforces.
+We therefore apply the same block-structured interaction
+pattern asM mc
+LM (Sec. 4.4.1), now instantiated as a dedi-
+cated learned attention layer over fusion tokens only, via mask
+Mmc
+MM∈{0,1} nf×nf . Thus, unimodal fusion tokens can at-
+tend to their own group, whereas the A V tokens can attend to all
+fusion tokens. The update is:
+ˆXℓ
+f = ¯Xℓ
+f +σ(α 2)⊙IGSA
+ 
+Norm(¯Xℓ
+f);M mc
+MM
+
+.
+IGSA shares the IGCA gating architecture but operates as
+masked self-attention over fusion tokens only, the maskM mc
+MM
+restrict

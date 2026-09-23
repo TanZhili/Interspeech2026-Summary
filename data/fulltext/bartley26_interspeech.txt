@@ -1,0 +1,449 @@
+Bootstrapping Endangered Language ASR with Short-Form Corpora
+Christopher Bartley ID 1,∗, Anton Ragni ID 1,∗
+1 School of Computer Science, University of Sheffield, 211 Portobello, Sheffield S1 4DP, UK
+{csjbartley1, a.ragni}@sheffield.ac.uk
+Abstract
+Nearly half of the world’s languages are endangered. Speech
+technologies, such as Automatic Speech Recognition (ASR),
+have been shown to be central to revival efforts, yet most lan-
+guages remain unsupported because standard pipelines expect
+utterance-level supervised data. In this paper, we explore using
+speech-text pairs aligned at the level of words or short phrases
+as a more accessible entry point than conventional utterance-
+level corpora. Using a standard English ASR pipeline, we show
+how much performance is impacted by substituting a conven-
+tional corpus with short-form speech. We then source short-
+form data for 5 typologically diverse endangered languages
+and use them to force-align long-form speech, creating new
+utterance-level speech datasets for each language 1. Finally, we
+build ASR systems and compare them to SOTA multilingual
+models (OmniASR, MMS, Whisper), showing that better out-
+of-domain (OOD) performance can be achieved at a fraction of
+the computational cost.
+Index Terms: automatic speech recognition, low-resource
+1. Introduction
+More than 1,400 of the world’s∼7,000 languages have fewer
+than 1,000 speakers, and one disappears every two weeks on
+average. Reversing this trend depends on community effort
+to strengthen transmission and expand learning opportunities
+[1]. Speech technologies, like Automatic Speech Recogni-
+tion (ASR), have been shown to be central to these efforts
+[2, 3, 4, 5, 6], making oral archives more accessible to learn-
+ers, educators, and researchers. However, most endangered lan-
+guages remain unsupported by modern systems as they are as-
+sumed to lack what is believed to be the necessary resource,
+an utterance-level speech corpus (3–15 s speech segments with
+verbatim transcriptions).
+Whether endangered or not, languages with limited re-
+sources are often referred to as ”long tail languages” [7],
+as they comprise the sparsely represented portion of glob-
+ally distributed language data. In ASR, the prevailing strat-
+egy to address this problem is to pretrain models on vast
+amounts of multilingual speech and transfer this knowledge
+to underrepresented languages, either through zero- or few-
+shot generalisation [8] or by fine-tuning on a limited amount
+of target-language data [9]. Omnilingual ASR scales this
+paradigm further, pretraining a 7B-parameter self-supervised
+feature encoder and combining it with various decoder architec-
+tures and training end-to-end (E2E) on 120k hours of labelled
+*These authors contributed equally.
+1Cornish, Hawaiian, Jejueo, Manx, and Mohawk. The data is open-
+sourced:https://github.com/c-bartley/el-asr
+speech from over 1,600 languages [7]. Such approaches ex-
+pand nominal language coverage, and scaling trends observed
+in foundation models suggest that further increases in data
+and model capacity will continue to improve long-tail ASR
+[10]. However, these resource-focused strategies inadvertently
+marginalise endangered-language communities via two mech-
+anisms. Firstly, developing these systems requires vastcom-
+puteresources, which makes it impractical for endangered lan-
+guage communities, many of whom cannot afford a single GPU.
+Secondly, these systems typically require supervised speech
+aligned at theutterance-level. This narrow formatting require-
+ment advocated by industry and academia ignores a plethora
+of transcribed resources that already exist in many endangered
+languages.
+By contrast, language communities tend to create speech
+resources in different formats. The most common is long-form
+speech, such as text narrations or recorded interviews. If tran-
+scriptions exist, they are typically contiguous blocks of text
+and are thus unsuitable for speech systems due to the lack of
+utterance-level alignment. Another common resource is short-
+form speech (0-2 s segments), where spoken words or phrases
+are transcribed for educational purposes e.g., asay this word
+pronunciation exercise. Examples includeForvo[11], a crowd-
+sourced pronunciation resource covering over 430 languages;
+Talking Dictionariesprovides short-form data in over 200 en-
+dangered languages [12];FirstVoicesprovides spoken word
+data for 93 Native American languages and dialects [13], all
+of which are endangered. Additionally, a plethora of language
+language-specific sources exist, such as theLearnManx Spoken
+Dictionary[14], theHawaiian Language Pronunciation Guide
+[15], and Lakota language learning resources [16]. In contrast
+to long-form data, short-form can be used directly for super-
+vised speech technologies, however the effectiveness of such an
+approach for ASR has not been explored.
+In this work, we askDoes using short-form corpora for ASR
+incur a drop-off in performance compared to utterance-level?,
+Can leveraging in-the-wild speech help to overcome computa-
+tional and resource barriers?, andHow do SOTA multilingual
+models perform on OOD tests in endangered languages?We
+address these questions with a series of experiments and make
+the following contributions:
+i) Using English, we establish the viability of ASR using short-
+form speech data instead of utterance-level corpora.
+ii) We use short-form speech ASR to force-align and segment
+long-form recordings to better leverage existing data.
+iii) We create and open-source utterance-level speech corpora for
+five endangered languages.
+iv) We compare the OOD performance of state-of-the-art
+(SOTA) models (Omnilingual ASR, MMS, Whisper) to our
+3376
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1302
+ASR systems built using substantially less compute.
+The rest of this paper is organised as follows. Section 2
+discusses prior work, section 3 presents the experimental setup
+and results, while section 4 concludes our findings.
+2. Prior Work
+2.1. Independence Assumptions in ASR
+Independence and conditional independence assumptions have
+historically been a key driver of computational tractability in
+ASR systems. At the lowest level, Hidden Markov Models
+(HMMs) assume conditional independence of acoustic frames
+given the hidden state sequence [17]; a feature that was criti-
+cised as insufficient for modelling the temporal complexities of
+natural speech [18]. More recently, however, frame-level con-
+ditional independence assumptions are seldom found in ASR
+systems due to the shift towards neural architectures [19, 9, 7].
+Instead of frames, these models operate over a bounded con-
+text window defined by a training unit that roughly corresponds
+to a unit of language. These commonly consist of phrases or
+sentences, and are most often assumed to be independent and
+identically distributed (IID).
+At the other end of the scale, work in long-context ASR ex-
+pands the IID assumption, accommodating dependencies across
+the typical 30 second boundary [20]. Recent work takes this fur-
+ther, finding significant gains in modelling dependencies in se-
+quences up to 1-hour in length, especially during domain shifts
+[21]. In the middle of these extremes is the utterance; the de
+facto training unit that has governed standard practice in ASR
+since the 1990s [22, 23]. While there is no consensus on ex-
+actly what constitutes an ”utterance”, speech corpora are com-
+monly distributed in sentence-like speech-text pairs, typically
+3-15 seconds in length [24, 25]. Utterances ensure computa-
+tional tractability and are considered to be linguistically mean-
+ingful. Yet, they often don’t make sense in isolation. Whether
+utterances are in fact more informative than sub-utterance units,
+such as words or short-phrases, has not been explored.
+2.2. Supervised Learning with Limited Resources
+Isolated words and short phrases are commonly used in speech
+tasks outside of ASR, such as spoken digit recognition [26], in-
+tent recognition [27], and keyword spotting [28]. Such tasks are
+referred to aslimited-vocabulary speech recognition[29] and
+are considered to be separate from continuous speech recog-
+nition systems. On the other hand, limiting resource quan-
+tity is a much more explored topic in ASR. For instance, the
+IARPA BABEL program used as little as three hours of tele-
+phone speech [30, 31] to build ASR. Zero- or few-shot adapta-
+tion have pushed requirements lower [32, 33], although the suc-
+cess of these approaches often depends on similarities between
+the target language and those seen during pre-training [34].
+Driving down supervision requirements is also a common
+topic in a variety of NLP tasks [35, 36, 37], however this re-
+search often considers not just quantity, but also other formats,
+particularly those which are expected to be common to many
+languages. For instance, bilingual dictionaries have proven
+highly effective in machine translation, both as the primary
+source of supervision [38] and as components integrated di-
+rectly into model architectures [39]. Similarly, MTOB (Ma-
+chine Translation from One Book) is a benchmark that asks
+large language models to translate Kalamang (∼200 speakers)
+by reading a single grammar book [40]. Similar techniques are
+yet to be applied in ASR.
+3. Experimental Setup
+We begin our experiments with English to establish the viabil-
+ity of training on word-level rather than utterance-level data,
+quantifying the performance trade-offs between the two (sec-
+tion 3.1). In section 3.2, we evaluate whether a seed model
+trained on short-form speech can be used to force-align and
+segment long-form recordings into new utterance-level corpora
+for five endangered languages. Finally, in section 3.3, we use
+these corpora to train ASR models, assessing their performance
+against SOTA multilingual model (Omnilingual, MMS, Whis-
+per) on both in-domain and out-of-domain (OOD) test sets.
+All experiments are conducted using HMM-based systems
+built with the Kaldi toolkit [41]. The reason for this choice
+is threefold: it ensures computational accessibility for lan-
+guage communities since training and inference can be per-
+formed entirely on CPU; it provides recipes for training models
+from scratch, allowing for fairer comparisons between different
+forms of supervision; HMM-based systems have been proven
+to work well for the forced alignment of established datasets
+like LibriSpeech [24], making it an ideal choice for segmenting
+long-form recordings.
+3.1. From Utterances to Words
+To measure the effect of utterance length, we focus on English
+data to ensure comparability with established ASR research. We
+first obtain shorter-form versions of LibriSpeechtrain-clean-
+100using the same forced alignment and segmentation steps de-
+scribed in the paper [24]. We adjust silence and min/max length
+thresholds to produce progressively smaller segments, with the
+shortest corpus having an average length of 0.35s which is close
+to the average word duration in LibriSpeech (0.30s).
+For training, we use the standard LibriSpeech recipe from
+the Kaldi toolkit 2. The final model is a triphone GMM-HMM
+system trained with Linear Discriminant Analysis (LDA) en-
+hanced with Maximum Likelihood Linear Transforms (MLLT)
+and Speaker Adaptive Training (SAT) using fMLLR. While the
+standard recipe uses speaker-level CMVN, we calculate CMVN
+statistics on a per-segment basis to reflect endangered language
+scenarios where speaker information is likely unavailable. We
+usetest-cleanto report our results and use the TIMIT [23] and
+TED-LIUM [25] test sets to assess OOD performance. We re-
+port %WER results using the pre-built 4-gram ARPA language
+model used in LibriSpeech (fglarge). This process is repeated
+for each granularity, ranging from 12.03 s to 0.35 s utterances
+(avg. duration). To better simulate low-resource conditions, we
+perform the same test for 10-hour, 3-hour, and 1-hour subsets
+oftrain-clean-100.
+Across domains and subset sizes, figure 1, shows that
+%WER results remain stable or improve until the average ut-
+terance length moves below 1 second. This stability suggests
+that a second of speech provides the HMM with enough acous-
+tic context to model coarticulation across word boundaries; past
+this point, WER rises significantly. The average relative rise in
+%WER from the originaltrain-clean-100to 0.35 s is +19.97 for
+test-cleanand +14.27 for TED-LIUM and TIMIT, suggesting
+that the effect of shorter utterances is less pronounced for OOD
+data. A similar effect can be seen at smaller data budgets, with
+degradation being the smallest for the 1-hour set (100h: +17.05;
+10h: +17.80; 3h: +15.66; 1h: +14.16). Taken together, these
+suggest that the relative importance of the standard utterance-
+level format diminishes as data becomes scarce.
+2commite6cc1eef1, August 2021.
+3377
+Figure 1:%WERs of GMM-HMMs across granularities and
+subset sizes. Point at 12.03s represents the original train-clean-
+100 subset of LibriSpeech. 1s = 2.74 words; 0.30s = 1 word
+10
+20
+30
+40
+50
+60
+100h 10h
+024681012
+10
+20
+30
+40
+50
+60
+3h
+024681012
+1h
+LibriSpeech (test-clean) TIMIT TED-LIUM v3
+WER (%)
+Avg. Duration (s) of Training Data
+3.2. Aligning Long-Form Speech
+Given we have established short-form resources as a viable al-
+ternative, we ask whether we can use such resources to boot-
+strap the forced alignment of pre-existing long-form data in
+endangered languages. To do this, we choose 5 endangered
+languages from 4 typologically and geographically diverse lan-
+guage families: Indo-European (Cornish, Manx), Austronesian
+(Hawaiian), Koreanic (Jejueo), and Iroquoian (Mohawk). We
+collect data from various sources 3 and split them according to
+language and whether they are short- or long-form. We then
+convert all audio to a common format of 16-bit PCM, single-
+channel W A V , with a sampling rate of 16 kHz. We take the same
+approach to text normalisation for all languages: we standard-
+ise whitespace and remove all punctuation except for intra-word
+punctuation (e.g.,mother-in-law) to preserve lexical meaning.
+We replace diacritic markers with their canonical variants (e.g.,
+C ¸→C;´E→E; ˜N→N). We then remove non-ASCII characters
+and convert to uppercase (exc. Jejueo due to Hangul script). To
+perform forced alignment, we use the same LibriSpeech [24]
+recipe as before with two changes (figure 2). Firstly, we adopt
+a Unicode graphemic lexicon [42] since most endangered lan-
+guages do not have a phonemic pronunciation dictionary. Sec-
+ondly, instead of using a pre-built acoustic model, we train a
+monophone GMM–HMM 4 on our short-form speech collec-
+tions which is then used to bootstrap Viterbi forced alignment
+[17] of the long-form audio. We train a triphone model using
+these alignments which is used together with biased language
+models (LMs) to decode the long-form audio. The subsequent
+Smith–Waterman alignment and segmentation steps remain the
+same as [24].
+The results of our approach are presented in table 1. For all
+languages, we were able to use short-form data to build a seed
+model capable of force-aligning a larger set of long-form data
+with>70% success. These enabled bootstrapped triphone sys-
+tems which, when used for decoding, resulted in highly accu-
+rate hypotheses (<5% WER) for 3 out of 5 languages. Cornish
+in particular aligned smoothly; we attribute this to the Cornish
+3Full list of resources given in https://github.com/c-bartley/el-asr
+4Training a robust triphone (context-dependent) system at this scale
+is challenging mainly due to data sparsity.
+Figure 2:Kaldi-based pipeline for force-aligning long-form
+transcribed speech.
++ Our Approach + Panayotov et al., 2015
+Text Norm. Biased LMs
+MFCC Extraction
+Decode Alignment
+CMU Dict.Graphemic Lexicon
+Pre-built
+Triphone
+(V oxforge)
+Short-Form
+Data Monophone Bootstrapped
+Triphone
+Lexicon
+Seed Acoustic Model
+Table 1:Alignment success rates per language, shown as: % of
+long-form files successfully aligned with a monophone system
+trained on short-form data; total %WER results from the boot-
+strapped triphone model that decodes the long-form speech; du-
+ration of aligned utterances as a % of long-form duration.
+Lang. Mono. Ali.
+Success (%) → Triphone
+%WER → Audio Kept
+(% total dur.)
+cor 86.06→3.26→90.00
+glv 72.42→12.12→69.70
+haw 85.80→36.75→23.20
+jje 71.40→2.32→82.40
+moh 89.40→3.77→74.80
+long-form data coming from a single speaker in a read-speech
+domain. Conversely, Manx and Hawaiian proved to be particu-
+larly problematic. For Manx, this was mainly because approx.
+1/4 of the long-form audio came from archived conversational
+recordings which are degraded in quality. Hawaiian was the
+most problematic; we had an initial total %WER of 62.11 which
+was inflated due to a portion of recordings that were more than
+30 minutes in length failing to align. The Hawaiian collection
+also came from broadcast data which contains a lot of music. To
+mitigate this, we discarded 50 of the 230 long-form recordings
+that had WERs>60%. This brought the total %WER down
+to 36.75 and the audio kept % down to 23.20%; this is not
+ideal, but still equates to over 15 hours of aligned utterances.
+We expect that manually splitting the long-form audio and tran-
+scriptions into more manageable chunks would have resulted in
+substantially more data being retained.
+3.3. Compute-Efficient ASR vs. SOTA Models
+Given our existing short-form resources, and our newly aligned
+utterances, we now build ASR for each language. In order to
+evaluate our ASR systems, it was necessary to produce test
+sets. For the in-domain tests, we selected a random subset of
+our newly aligned utterances and assigned them totest-id(in-
+domain). For a more reliable comparison to other models, we
+also created OOD test setstest-oodconsisting of transcribed
+recordings in each language sourced from web data. The cri-
+teria for selecting these aimed to ensure a lack of overlap with
+our current pool of resources in terms of speakers, topics, and
+acoustic conditions. Once collected, we used Label Studio [43]
+to manually cut the recordings into timestamped audio intervals
+3378
+Table 2:ASR results for Cornish (cor), Manx (glv), Hawaiian (haw), Jejueo (jje), and Mohawk (moh). %WER for models and %OOV
+rates for word lists shown on in-domain (test-id) and out-of-domain (test-ood) test sets. Multilingual baselines (OmniASR, MMS,
+Whisper) compared against our HMM-based systems and a fine-tuned Whisper model.
+Lang. Words Test OOV (%) SOTA Multilingual Models Ours
+Train External Train External OmniASR MMS Whisper GMM +LM DNN +LM Whisper-FT
+cor 247K 2.2M id 7.20 0.75 77.40 93.77 89.60 20.90 5.41 16.732.399.55
+ood 18.70 5.85 115.17 96.90 104.50 96.90 96.10 92.48 89.9774.23
+glv 121K 5.8M id 3.90 1.34 83.26 97.58 103.40 36.60 33.38 31.1627.6030.39
+ood 13.00 1.44 56.57 97.93 99.00 53.10 32.06 47.4824.5042.28
+haw 139K 43.6M id 0.90 0.90 66.10 85.89 83.30 32.50 31.9530.7432.28 39.41
+ood 8.10 2.56 36.56 71.12 67.40 26.10 19.19 23.3314.5619.47
+jje 24K 1.1M id 32.10 24.92 91.36 93.82 85.50 94.40 93.56 90.41 89.5786.87
+ood 52.30 38.32 100.00 94.29 71.00 101.90 99.07 99.07 97.2068.22
+moh 15K 636K id 28.30 24.77 134.98 134.30 149.70 76.90 70.02 74.4969.27156.65
+ood 45.70 43.81 161.64 158.47 141.60 86.00 83.37 83.37 83.7168.04
+Table 3:Dataset statistics for each language. Splits: short-form
+training (train-sh), aligned utterances (train-ut), in-domain test
+(test-id), and out-of-domain test (test-ood). Values: total dura-
+tion in hours (dur.) and segment count (#seg.).
+Lang. Train Test Total
+sh. ut. id. ood.
+cor dur. 0.14 38.73 0.28 0.09 39.24
+#seg. 433 16550 131 37 17151
+glv dur. 1.70 11.96 1.01 0.15 14.82
+#seg. 3215 8882 1139 134 13370
+haw dur. 0.26 13.86 0.78 0.13 15.03
+#seg. 702 8815 516 64 10097
+jje dur. 0.11 3.31 0.19 0.02 3.63
+#seg. 266 2164 126 38 2594
+moh dur. 2.67 2.08 0.11 0.25 5.11
+#seg. 1956 1512 92 130 3690
+with matching transcriptions. Our final endangered language
+dataset is summarised by table 3.
+For training, we combine thetrain-shandtrain-utsets. For
+our base multilingual models, we use the HuggingFace infer-
+ence pipelines for Omnilingual ASR (LLM 7B) [7], MMS (1B-
+all) [8], and Whisper (large-v3) [9] to decode our test sets.
+To explore a fine-tuning approach, we also fine-tune Whisper
+(large-v3) using the SpeechBrain toolkit [44], applying LoRA
+for 1 epoch on each language’s training set. For the HMM-
+based models, we reuse the standard LibriSpeech training script
+ending on the triphone GMM-HMM (LDA+MLLT+SAT). Ad-
+ditionally we include the training step that uses the GMM-
+HMM alignments to bootstrap a TDNN model trained with
+Lattice-Free Maximum Mutual Information (LF-MMI). As pre-
+viously, we build the word list and 4-gram LM from the train-
+ing text. The total words and out-of-vocabulary (OOV) rates for
+these are shown in table 2.
+The OOV rates for our word lists built from our training
+data are not ideal, with the worst being Jejueo (52.30%). To
+mitigate this, we collect external text data from various sources,
+including MAD-LAD-400 [45] for Manx, Cornish, and Hawai-
+ian, and language specific text corpora for all languages. We
+use the same text normalisation described in 3.2 and make a
+new word list for each language by extracting unique words
+that occur more than once in the data. We then make a final
+pass through the word list to cull obvious gibberish/malformed
+words. Table 2 shows an average improvement in %OOV of
+13.11 per language from this step. Jejueo and Mohawk bene-
+fitted the least due to the text scarcity. From here, we train a
+4-gram language model which we use for a second decode of
+the HMM-based systems.
+Our ASR results are summarised in table 2. Our most naive
+model (GMM) beats the best zero-shot multilingual model re-
+sults in all but one language (Jejueo). This highlights the po-
+tential gains from leveraging existing resources and is encour-
+aging to those with limited compute resources. The strongest
+system overall was the DNN-HMM model with an augmented
+LM, suggesting that language-specific models built with CPU
+are still preferable to end-to-end (E2E) models such as Whisper.
+The external LMs were key to this performance, accounting for
+an average WER reduction of 5.82% per language across the
+HMM-based systems. Where text was scarce, we found E2E
+fine-tuning to be superior, as demonstrated by our Whisper-FT
+model achieving the best performance on Jejueo and Mohawk
+(ood). Importantly, Jejueo and Mohawk remain extremely chal-
+lenging regardless of model class, highlighting the need for fur-
+ther research into endangered language ASR, particularly those
+with diverse typologies.
+4. Conclusion
+ASR support for endangered languages remains sparse, princi-
+pally due to a lack of utterance-level supervision. Addressing
+this technological gap, we have shown that ASR can be attained
+for endangered languages that have no utterance-level super-
+vised data by leveraging resources such as short- and long-form
+corpora. Our results highlight the flexibility of HMMs in inte-
+grating short- and long-form supervision and text information
+to deliver usable ASR (both HMM and E2E based) from un-
+conventional resources. Ultimately, this paper has shown that
+developing speech technology for low-resource and endangered
+languages does not require utterance-level corpora as a starting
+point. Collecting new and clean resources is an important task,
+but future work would do well to make sense of the data that al-
+ready exist and continue to be created. Doing so may mean the
+difference to the most urgent cases of language endangerment.
+3379
+5. Use of Generative AI Disclosure
+The authors used generative AI tools for editing and proofread-
+ing during the preparation of this manuscript, rather than writ-
+ing any major part of it. The authors take full responsibility for
+the integrity of this work.

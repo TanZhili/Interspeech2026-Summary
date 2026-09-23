@@ -1,0 +1,468 @@
+LightBeam: An Accurate and Memory-Efficient CTC Decoder for Speech
+Neuroprostheses
+Ebrahim Feghhi ID 1,2,∗,∗∗, Junlin Hu ID 2,∗, Nima Hadidi ID 1,2, Jonathan C. Kao ID 1,2,3
+1 Neuroscience Interdepartmental Program
+2 Department of Electrical & Computer Engineering
+3 Department of Computer Science
+University of California Los Angeles
+efeghhi@gmail.com
+Abstract
+A promising pathway for restoring communication in patients
+with dysarthria and anarthria is speech neuroprostheses, which
+directly decode speech from cortical neural activity. Two
+benchmarks, Brain-to-Text ’24 and ’25, released intracranial
+recordings from patients with dysarthria along with a baseline
+algorithm trained with Connectionist Temporal Classification
+(CTC). Despite significant innovation on these benchmarks, all
+leading published prior work relies on a WFST-based CTC de-
+coder that requires∼320 GB of RAM. These memory require-
+ments limit accessibility for both patients and researchers. Here,
+we proposeLightBeam, a non-WFST based CTC decoder that
+requires only∼10 GB of RAM and achieves state-of-the-art
+performance on both benchmarks.LightBeamachieves this by
+integrating an LLM into the beam-search process via delayed
+fusion, obviating the prior need for using a large N-gram LM.
+LightBeamis implemented in Python and is open-source.
+Index Terms: Brain-Computer Interface, Speech Neuropros-
+theses, CTC, Delayed Fusion
+1. Introduction
+Conditions such as amyotrophic lateral sclerosis (ALS), cere-
+bral palsy, or brainstem stroke can lead to dysarthria and
+anarthria. Dysarthria and anarthria are speech production disor-
+ders in which the neural activity generating speech plans in the
+motor cortex remains intact, yet the transmission of these mo-
+tor plans to the vocal tract or the vocal tract musculature itself
+is impaired [1]. These impairments manifest as slow or slurred
+speech in dysarthria, and a complete loss of the ability to speak
+in anarthria. Speech neuroprostheses offer a promising path to-
+ward restoring communication for patients with these disorders,
+bypassing the vocal tract by decoding speech directly from neu-
+ral activity [2, 3, 4, 5].
+Two benchmarks, Brain-to-Text ’24 (B2T ’24; [6]) and ’25
+(B2T ’25; [7]), have accelerated the development of speech neu-
+roprostheses. Each competition provided intracranial electrode
+recordings from the speech motor cortex of a distinct participant
+with ALS while they attempted to repeat text prompts. Along
+with the neural dataset, the organizers released a baseline algo-
+rithm consisting of two components. The first component, the
+CTC encoder, converts neural activity into phoneme-level logits
+using a Gated Recurrent Unit (GRU) architecture trained with
+CTC loss [8]. The second component, the CTC decoder, con-
+verts logits into words by running beam search on a weighted
+*These authors contributed equally.
+**indicates the corresponding author.
+finite-state transducer (WFST) graph integrated with a large 5-
+gram LM. Since LLMs cannot be represented as WFST graphs,
+an LLM (OPT 6.7B; [9]) rescores beams at the end of the trial.
+This CTC decoder requires∼320 GB of RAM.
+While significant progress has been made on these bench-
+marks, existing top-performing published algorithms rely on the
+memory-intensive baseline WFST-based CTC decoder [10, 11,
+12]. These memory requirements present a bottleneck for de-
+ployment on local, resource-constrained devices. Local deploy-
+ment is ideal as it preserves user privacy, minimizes transmis-
+sion latency, and maximizes accessibility for patients and the
+broader research community.
+In this study, we presentLightBeam, an accurate and
+memory-efficient CTC decoder for speech neuroprostheses.
+The core insight behindLightBeamis that rather than only using
+an LLM at the end of the beam search process, we integrate it
+within the beam search process (i.e. first-pass decoding) at fixed
+time intervals via delayed fusion [13]. By doing so, we reduce
+the computational burden of preserving likely beam hypothe-
+ses on the N-gram LM, and replace the large 5-gram LM with
+a relatively small 4-gram LM.LightBeamreduces memory re-
+quirements from∼320 GB to∼10 GB of RAM. Furthermore, it
+performs significantly better than the baseline WFST-based de-
+coder on both benchmarks when paired with either the baseline
+GRU or the time-masked Transformer encoder introduced by
+Feghhi et al. [11]. When applying generative error correction,
+LightBeamachieves state-of-the-art (SOTA) performance com-
+pared to published results by Zhang et al. [12] (that also use
+generative error correction) on both benchmarks. WhileLight-
+Beamrequires making more frequent calls to an LLM, real-time
+factor (RTF) values are well below 1, so it remains viable for
+clinical use. Furthermore,LightBeamis open-source and imple-
+mented in Python, making it easily modifiable and deployable
+in modern research environments [14].
+2. Related Works
+Prior work attempted to entirely bypass the WFST-based de-
+coder by projecting neural activity into the embedding space
+of an LLM, and fine-tuning the LLM to directly generate text
+[15, 12]. While this multi-modal LLM approach has been
+successful in automatic speech recognition (ASR) [10], it per-
+forms substantially worse than the WFST decoder in this con-
+text, likely due to small neural dataset sizes [12]. One reason
+researchers prioritized building multi-modal LLMs over inte-
+grating them into the beam-search process may be that the ma-
+jority of open-source CTC toolkits only support N-gram LM
+integration [16, 17, 18]. While the Flashlight decoder on Py-
+861
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2947
+Torch does support neural network integration, it is CPU-based
+and thus cannot support LLM inference [19]. Hori et al. [13]
+were the first to demonstrate that LLMs could be effectively
+used in first-pass decoding without additional projection layers;
+however, they released no open-source implementation. Fur-
+thermore, their results are shown in the context of ASR with
+encoders that output sub-word tokens and are already accurate
+without external LM integration. By contrast, CTC encoders for
+neural speech decoding typically output phonemes and heavily
+rely on external LM guidance due to small dataset sizes.
+3. Methods
+3.1. Dataset
+Our analyses utilize the neural datasets from the Brain-to-Text
+’24 (B2T ’24) and ’25 (B2T ’25) benchmarks [2, 4]. The B2T
+’24 dataset consists of 12,100 sentences recorded from par-
+ticipant T12 over 25 sessions spanning 4 months, using 128-
+electrode Utah arrays implanted in the ventral motor cortex.
+The B2T ’25 dataset includes 10,948 sentences from partici-
+pant T15 across 45 sessions over 20 months, recorded with 256
+electrodes in the ventral motor cortex. Across both datasets,
+neural features consist of thresholded spike counts and spiking-
+band power [20]. These signals were binned in 20 ms windows
+and z-scored within blocks. Additional details regarding these
+datasets, including train, val, and test split construction are in-
+cluded in Section A of our supplementary material [14] as well
+as the original studies.
+3.2. Encoder models
+We trained the baseline GRU encoders using the hyperparam-
+eters and codebases provided by the B2T ’24 and ’25 bench-
+mark organizers. The B2T ’24 GRU was bidirectional (non-
+streaming), while the B2T ’25 GRU was unidirectional. Addi-
+tionally, we evaluatedLightBeamusing the time-masked Trans-
+former, which outperforms the baseline GRU on B2T ’24 [11]
+and achieves state-of-the-art published results when combined
+with self-supervised pretraining [12]. For B2T ’24, we log-
+transformed the neural data following Feghhi et al. [11]; for
+B2T ’25, we utilized the z-scored data provided by the orga-
+nizers without further transformation. To address the challenge
+of the unbounded KV-cache in self-attention—which compli-
+cates clinical deployment—we trained a causal Transformer
+with limited left context (see Supplementary Section C). For
+all architectures, a final linear layer produced 41 token classes:
+39 phonemes, a CTC blank token, and a space token indicating
+word boundaries. All encoders were trained using CTC loss.
+3.3. WFST decoder
+We evaluatedLightBeamagainst the baseline WFST-based de-
+coder described by Willett et al. [2]. This approach represents
+the logit-to-token mapping (T), the phoneme-to-word mapping
+(lexicon,L), and the N-gram LM (grammar,G) as individual
+WFSTs, which are pre-compiled into a single, unified graph
+(T ◦L◦G). During inference, beam search is performed on
+this graph with a pruned 5-gram LM to generate a word lat-
+tice, which is then subsequently rescored using an un-pruned
+version of the same 5-gram LM. In a final rescoring stage, the
+top 100 candidate beams are extracted and scored using OPT
+6.7B [9]. These LLM scores are combined with the un-pruned
+5-gram LM scores and scaled CTC encoder log-probabilities to
+determine the final output. We used the exact decoding hyper-
+Algorithm 1:LightBeam
+Scaled log-probs∈R T×k
+D=α·Log Softmax(encoder logits);
+Beams=InitBeams(k,o,|V|);
+VecLex=InitVectorizedLexicon(k,|V|,L,T);
+Maintain state within word prefix for each beam,∈R k
+prefix state=VecLex.Init State();
+fort←0toT−1do
+Extendkbeams withD[t]to form current scores∈R k×|V|
+scores=Fan Out Beams(Beams.scores, D[t]);
+scores=Add Token Word Insertion Bonus(scores);
+Lexicon mask∈R k×|V| is true for valid extensions. Repeated and
+blank tokens are always valid.
+lex mask=VecLex.Get Mask(prefix state,
+Beams);
+scores[¬lex mask]=−∞;
+Apply top-k selection and threshold pruning.
+scores, indices=select top k(scores);
+scores[scores < max(scores) -θ]=−∞;
+Update beam states after pruning.
+Beams.update(scores, indices);
+Update prefix states for beams extending with non-blank,
+non-repeating tokens.
+prefix state=VecLex.Update(prefix state,
+Beams);
+Apply shallow fusion w/ N-gram LM, beam scores update in place.
+ApplyNGram(Beams, N-gram LM,λ); See Section 3.4.1
+Apply delayed fusion with LLM at specified intervals
+if(tmodllm rescore interval== 0)∧(t>0)then
+ApplyLLM(Beams, LLM); See Section 3.4.2
+ApplyFinalLLM(Beams, LLM);
+parameters specified by Willett et al. [2] and Card et al. [4] for
+the B2T ’24 and ’25 benchmarks, respectively (Supplementary
+Section D).
+3.4. LightBeam
+LightBeamis adapted from the GPU-acceleratedFlexCTCde-
+coder [18]. Its operational flow is detailed in Algorithm 1, with
+all variables for the algorithm defined in this section or Section
+3.3. Hyperparameter values as well as additional technical de-
+tails are specified in Supplementary Section E. First, the logits
+from the CTC encoder are transformed into a log-probability
+and multiplied by an acoustic scale. At each encoder framet,
+thekbeams are expanded by adding the scaled CTC encoder
+log-probabilities to generatek×|V|candidates. We apply a
+token extension bonusβto non-repeating phoneme tokens and
+a word insertion bonusγto space tokens. To enable GPU par-
+allelization across beams, we represent the lexicon as a state
+transition tableTrather than a trie. Each row inTrepresents
+a valid word prefix state, and entryT i,j stores the resulting pre-
+fix state when observing tokenjat prefix statei, with a desig-
+nated “sink state” for out-of-vocabulary transitions. Candidates
+are pruned if they violate lexical constraints (i.e. enter the sink
+state) or fall below a thresholdθfrom the score of the top beam.
+3.4.1. Shallow fusion and homophone trackng with N-gram LM
+Phoneme sequences can map onto multiple words, known as
+homophones. Selecting the most likely homophone fails to ac-
+count for future context; for instance, because “There” is more
+likely than its homophone “They’re”, the sentence “They’re
+happy.” is not possible to produce under a greedy approach. We
+862
+Table 1:Combined performance and computational efficiency on B2T ’24 and ’25 benchmark test sets when using the baseline GRU
+encoder. Peak RAM and VRAM are reported in GB. Processing speed is measured in RTF using an GeForce RTX 5090 GPU. Lower
+is better for all metrics. Mean±SEM acrossn= 10seeds. WFST-based (Orig.) is a single seed result provided by original authors,
+and re-implementation (re-impl) values are generated in this study. (∗ sig. better than Orig.,† sig. better than Re-impl.)
+Method B2T ’24 B2T ’25
+WER RAM VRAM RTF Pub. WER Priv. WER RAM VRAM RTF
+WFST-Based (Orig.) 9.76 - - - 6.67 7.00 - - -
+WFST-Based (Re-impl.) 9.71±0.08322.9 9.00.05 6.31±0.126.72±0.05317.8 18.10.01
+LightBeam (Ours) 9.37∗†±0.089.4 5.60.14 5.77∗†±0.126.47 ∗†±0.0511.6 5.80.06
+therefore implement a nested beam search such that each beam
+maintains its own topoorthographic (i.e., word-level) beams.
+Upon detecting a word boundary, theoorthographic beams are
+expanded with the candidate homophones, scored with the N-
+gram LM on CPU, followed by top-oselection. Orthographic
+beams whose scores are below a threshold,λ, from the top-
+scoring beam are further pruned. The current score for beami,
+Si, is updated as:
+Si←S i +ω·[logP ngram(onew)−logP ngram(oprev )](1)
+whereωis the LM weight,o prev is the previous most
+likely orthographic beam, ando new is the most likely ortho-
+graphic beam after integrating the incoming homophones. We
+use the 4.9 GB version of the 4-gram LM trained on 8.6 bil-
+lion words with a 100,000 word vocabulary provided by Imag-
+ineVille project [21].
+3.4.2. Delayed Fusion with LLM
+At fixed time intervals (1s and for B2T ’24,1.25s for B2T ’25),
+an LLM (Llama 3.2 1B Base; [22], denoted asN) rescores all
+(up tok×o) unique orthographic beams in batches using a GPU.
+We then replace the N-gram scores with the LLM scores:
+Si←S i +ϕ·logP LLM(o′
+new)−ω·logP ngram(onew)(2)
+whereϕis the LLM weight ando ′
+new is the LLM-preferred hy-
+pothesis. At the end of the trial, the score of each beam is up-
+dated with its most likely end-of-sentence punctuation accord-
+ing to the LLM. Prior to delayed fusion, Llama is fine-tuned
+on a next-word prediction task using the combined training and
+validation sentences across both datasets to adapt it to the par-
+ticipant’s text distribution (Supplementary Section F).
+3.5. Generative error correction
+Following prior work [23, 10, 11, 12], we apply generative error
+correction by producing 10 candidate sentences using 10 ran-
+dom seeds of the same encoder model, and fine-tuning an LLM
+to produce the ground-truth sentence given these 10 candidates.
+We follow the same procedure as Feghhi et al. [11], with Llama
+3.1 8B Instruct used for generative error correction. Refer to
+Supplementary Section G for more details.
+4. Results
+4.1. Evaluation using baseline GRU encoder
+We first utilized the baseline GRU encoder (Section 3.2) to eval-
+uate the WFST decoder (Section 3.3) andLightBeam(Section
+3.4). The GRU encoder serves as a rigorous test-bed, as the
+WFST decoder hyperparameters were previously tuned for its
+specific logit distribution. As shown in Table 1,LightBeamcon-
+sistently improves Word Error Rate (WER) across both bench-
+marks (notably, B2T ’25 reports both public and private WER).
+To rigorously assess these gains, we conducted a two-
+sided one-sample t-test comparingLightBeam’s performance
+across 10 encoder seeds against the official baseline (WFST-
+Based Orig.). All statistical tests in this study are two-sided.
+LightBeamachieved statistically significant improvements (p<
+0.05) on both datasets. Furthermore, we reproduced results us-
+ing the WFST decoder across the same 10 seeds; a paired t-
+test confirmed thatLightBeamsignificantly outperformed this
+re-implementation (WFST-Based Re-impl.,p<0.05).
+Regarding resource efficiency (Table 1),LightBeam
+achieved a dramatic reduction in peak RAM consumption from
+∼320 GB to∼10 GB, while reducing peak VRAM require-
+ments by 1.6×and 3.1×for the B2T ’24 and ’25 benchmarks,
+respectively. Finally, althoughLightBeam’s mean RTF is higher
+than the WFST baseline due to more frequent application of the
+LLM, the average RTF remains well below 1. Critically, the
+maximum RTF observed across all test trials remained strictly
+under 1 on a GeForce RTX 5090 GPU, ensuring suitability for
+real-time decoding (Supplementary Section H).
+4.2. Generalization to time-masked Transformer encoder
+To evaluate whetherLightBeamis effective with other en-
+coders, we evaluated its performance using a causal time-
+masked Transformer encoder with a bounded KV cache (Sec-
+tion 3.2). No additional hyperparameter tuning was done for the
+WFST decoder orLightBeamusing the Transformer encoder.
+As shown in Table 2,LightBeamalso consistently outperforms
+the WFST decoder when applied to the Transformer on both
+benchmarks (p <0.05; paired t-test acrossn= 10seeds).
+Furthermore, RTF values are lower for both decoders with the
+Transformer (Table 2).
+We next compared the performance of applying genera-
+tive error (GEC) correction with the time-masked Transformer
+Table 2:Word Error Rate (%) comparison on the B2T ’24
+(WER) and B2T ’25 (Pub. and Priv. WER) benchmarks when
+using the causal time-masked Transformer with bounded KV
+cache. Mean±SEM overn= 10seeds. ( † sig. better than
+WFST decoder).
+Method B2T ’24 B2T ’25
+WER RTF Pub. WER Priv. WER RTF
+WFST-Based 8.36±.120.02 4.95±.264.81±.130.01
+LightBeam 8.08†±.120.10 4.44†±.214.59 †±.140.05
+863
+B2T '24 B2T '25 Private B2T '25 Public
+2.0
+3.0
+4.0
+5.0
+6.0
+7.0Word Error Rate (WER) %
+* *
+*
+*
+WFST-Based - Causal
+WFST-Based - Noncausal
+LightBeam - Causal
+LightBeam - Noncausal
+Figure 1:LightBeam continues to match or outperform base-
+line WFST decoder across all benchmarks when both meth-
+ods are paired with generative error correction. Results are
+shown with time-masked Transformer. Asterisks indicate signif-
+icant improvement when performing paired t-test acrossn= 10
+seeds.
+when using either the WFST decoder orLightBeam(Section
+3.5). We used Llama 3.1 8B for GEC. We include GEC results
+with both a causal and non-causal time-masked Transformer,
+because Zhang et al. [12] achieved SOTA results (5.10%on
+B2T ’24,2.21%on B2T ’25 public) by pretraining a noncausal
+Transformer on 367 hours of intracranial data and using GPT
+3.5 or GPT 4 for GEC. For both versions of the Transformer,
+GEC withLightBeamperformed significantly better than with
+the WFST decoder on B2T ’24 and B2T ’25 public (p <0.05;
+paired t-test acrossn= 10seeds) and there was no signif-
+icant difference on B2T ’25 private (Figure 1). The mean
+WER across seeds with the noncausal Transformer was5.01%,
+2.36%, and2.08%on B2T ’24 and B2T ’25 private and pub-
+lic, respectively (Figure 1). These results are significantly bet-
+ter than those of Zhang et al. (p <0.05; one-sample t-test),
+establishing a new SOTA relative to published results. Notably,
+LightBeamdoes not rely on extensive pretraining or large close-
+sourced LLMs. Importantly,LightBeaminnovates on the de-
+coder while the performance gains from Zhang et al. stem from
+changes to the encoder, and so these research directions are or-
+thogonal and complementary.
+4.3. Ablations and hyperparameter sweeps
+To isolate the impact ofLightBeam’s core components, we con-
+ducted an ablation study on the B2T ’24 and ’25 validation sets
+using the baseline GRU (Table 3). First, we evaluated the ne-
+cessity of delayed fusion by reverting to a traditional pipeline
+where the LLM is applied only once at the end of the trial. Re-
+moving the continuous LLM rescoring—which occurs at 1 s
+and 1.2 s intervals for B2T ’24 and ’25—resulted in significant
+performance degradation across both datasets (Table 3), under-
+Table 3:Ablation study on B2T ’24 and B2T ’25 validation sets
+with baseline GRU. Values are Mean WER (%)±SEM (n= 10
+seeds).†denotes significant degradation relative to Full model.
+Configuration B2T ’24 WER B2T ’25 WER
+LightBeam (Full)14.17±0.086.36±0.05
+LLM end-of-trial only 17.17 †±0.058.31 †±0.07
+No NWP Fine-tuning 15.89 †±0.097.26 †±0.04
+No Phoneme Variants 14.05±0.076.36±0.05
+1 5 10 15 20
+13.9
+14.4
+14.9Word Error Rate (WER) %
+B2T '24
+1 5 10 15 20
+6.0
+6.5
+7.0
+B2T '25
+0.1
+0.4
+0.7
+0.0
+0.2
+0.4
+Real-Time Factor (RTF)
+LLM Rescore Interval (Encoder Frames)
+Figure 2:Impact of LLM rescore interval on validation WER
+and RTF across both datasets. An encoder frame is output ev-
+ery 100 ms in B2T ’24, and every 80 ms in B2T ’25. Shaded
+regions indicate SEM acrossn= 10seeds. LLM rescore inter-
+val was set to 10 and 15 throughout the study for B2T ’24 and
+’25, respectively.
+scoring the advantage of integrating the LLM directly into the
+first-pass beam search. Next, we ablated the LLM next-word
+prediction (NWP) fine-tuning; removing this adaptation also
+caused significant degradation, highlighting the importance of
+tailoring the LLM to the participant’s specific text distribution.
+Finally, we assessed whether permitting multiple phonetic pro-
+nunciations per word (Supplementary Section I) improved per-
+formance; we found that using only default pronunciations did
+not result in significant degradation. We further analyzed the
+impact of the LLM rescore interval (Figure 2); increasing the in-
+terval generally increased WER while decreasing RTF, demon-
+strating a tunable tradeoff between accuracy and latency.
+5. Discussion
+In this study, we presentLightBeam, a memory-efficient CTC
+decoder for speech neuroprostheses that establishes a new
+SOTA on the B2T ’24 and ’25 benchmarks with real-time de-
+coding speeds.LightBeamachieves these holistic gains by in-
+tegrating an LLM into first-pass decoding, reducing reliance
+on a large N-gram LM. We identify three primary limitations.
+First, whileLightBeamexhibits higher latency than the WFST
+baseline, its processing speed on remains within the constraints
+required for real-time decoding (RTF<1). Second, because
+LLM scores are integrated at fixed intervals, significant diver-
+gence between the LLM and N-gram LM scores may cause a
+degree of “jitter” in the decoded output. Third, the reliance on
+next-word prediction fine-tuning implies thatLightBeammay
+require an initial calibration phase to adapt to the idiosyncratic
+text distributions of new participants.
+Future research could explore several promising directions.
+First, it would be valuable to observe if continuous next-word
+prediction fine-tuning allowsLightBeamto adapt to a patient’s
+evolving linguistic nuances over long-term use. Second, given
+that LLMs excel at processing long-range dependencies,Light-
+Beammay provide even greater performance gains in long-
+context conversational trials. Finally, the modular nature of
+delayed fusion allows for the integration of other LLMs, po-
+tentially improving accuracy further as open-source models im-
+prove (we report limited results with Llama 3.2 3B Base in
+Supplementary Section J). By providing an open-source Python
+implementation, we hope to enable the research community to
+build uponLightBeamto make speech neuroprostheses more
+accessible and accurate for patients.
+864
+6. Acknowledgements
+This work was supported by the following awards. To : NSF
+CAREER 1943467, NIH DP2NS122037, NIH R01NS121097.
+To EF: NIH T32NS115753.
+7. Generative AI Use Disclosure
+We used Claude to assist with the implementation ofLightBeam
+and all AI-assisted edits were verified by the researchers. We
+used Gemini to assist with writing this manuscript to improve
+grammar and diction.
+8. Author Contributions
+E.F.: Conceptualized theLightBeamdecoder framework, de-
+veloped the core software implementation, and authored the ini-
+tial manuscript draft.J.H.: Implemented the Transformer train-
+ing pipeline with limited left-context constraints, helped author
+supplementary materials, generated the Figures, and provided
+revisions to the manuscript.N.H.: Contributed to the conceptu-
+alization of theLightBeamarchitecture and provided revisions
+to the manuscript.J.C.K.: Supervised the research, acquired
+the necessary funding, and provided revisions to the manuscript.
+9. References
+[1] A. B. Silva, K. T. Littlejohn, J. R. Liu, D. A. Moses, and
+E. F. Chang, “The speech neuroprosthesis,”Nat. Rev. Neurosci.,
+vol. 25, no. 7, pp. 473–492, Jul. 2024.
+[2] F. R. Willett, E. M. Kunz, C.

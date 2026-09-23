@@ -1,0 +1,382 @@
+Improving Stable Speech Synthesis Post-Training with ChatScorer and
+Margin-Based Preference Construction
+Shihao Niu1, Jianguo Wei1, Wenhuan Lu1, Xianghu Yue1,∗∗, Wei Li2, Ming Zhou2, Ming Cai2, Luo Si2
+1 College of Intelligence and Computing, Tianjin University, Tianjin, China
+2 Banma Network Technology Co., Ltd., China
+yuexianghu@tju.edu.cn
+Abstract
+Existing post-training methods for codec-based text-to-speech
+(TTS) often rely on multiple automatic metrics, such as char-
+acter or word error rate (CER/WER) for content consistency,
+speaker similarity (SIM) for speaker preservation, and their
+weighted combinations as reward signals. However, directly
+fusing heterogeneous metrics into a single scalar reward can
+yield weakly separated candidate scores, leading to ambigu-
+ous supervision. In this paper, we propose a new post-
+training framework for stable speech synthesis, which intro-
+duces ChatScorer as an auxiliary reward model and combines it
+with margin-based preference construction. We instantiate the
+proposed framework using different post-training methods, and
+experiments on codec-based TTS show that it reduces undesir-
+able outputs and improves generation stability, while maintain-
+ing competitive intelligibility and speaker similarity.
+Index Terms: text-to-speech, reinforcement learning, prefer-
+ence optimization, speech style
+1. Introduction
+Recent progress in large language models (LLMs) has driven
+the development of neural codec language models for text-to-
+speech (TTS)[1]. With strong in-context generation capabili-
+ties, codec-based TTS systems [2, 3, 4] have substantially im-
+proved synthesis quality and generalization.
+To better align synthesized speech with human preferences,
+recent TTS studies have begun to adopt preference optimiza-
+tion and reinforcement learning from human or proxy feed-
+back (RLHF) [5, 6]. In the DPO line, NaturalSpeech 3 [7]
+incorporates RLHF to improve controllability, Emo-DPO [8]
+applies direct preference optimization to emotional speech syn-
+thesis, and Fine-grained Preference Optimization (FPO) [9] fur-
+ther improves robustness by focusing on local segmental er-
+rors. More recently, GRPO-based approaches have also been
+explored for TTS. Prior work applies GRPO to LLM-based TTS
+using ASR-derived rewards [10], extends it to flow-matching
+TTS with WER and speaker-similarity rewards [11], and studies
+multi-reward GRPO for improving prosodic stability in single-
+codebook TTS LLMs [12].
+Despite these advances, existing methods [13, 14, 15] still
+mainly rely on automatic metrics and their weighted combina-
+tions as optimization signals. Such signals are often insufficient
+to reliably suppress clearly machine-like candidates, and, when
+multiple rewards are merged into a single scalar, the resulting
+candidate scores can be only weakly separated, leading to am-
+biguous supervision during preference optimization.
+**indicates the corresponding author.
+To address these limitations, we focus on improving the
+learnability of preference signals for TTS post-training and in-
+troduce a framework that combinesChatScorer, a specially
+trained auxiliary reward model, with margin-based preference
+construction.ChatScoreris designed to identify clearly unde-
+sirable, overly machine-like conversational outputs, while the
+construction strategy converts sampled candidates into prefer-
+ence subsets with clearer quality gaps for subsequent optimiza-
+tion. The contributions of this work are three-fold:
+• We identify a practical challenge in TTS post-training: di-
+rectly aggregating different automatic metrics into a single
+scalar reward may yield poorly separated candidates, thereby
+introducing ambiguous supervision.
+• We propose a new post-training framework that integrates a
+new reward model with a carefully designed data construc-
+tion strategy to get clearer supervision for better preference
+optimization.
+• We further introduce stability-oriented evaluation metrics, in-
+cludinggroup-level failure rateandChatScore-based bad
+rate, together with conventional quality measures, to system-
+atically assess different post-training methods under the pro-
+posed framework.
+2. Methodology
+2.1. Overall Framework
+Given a text promptY, the autoregressive codec-based TTS
+modelπ θ generatesKcandidate utterances{X i}K
+i=1 by sam-
+pling with different random seeds, as illustrated in Fig. 1. Each
+candidate is evaluated by multiple automatic metrics. We use
+CER to measure intelligibility, SIM to assess speaker preserva-
+tion, and the proposed ChatScorer to provide an auxiliary sig-
+nal for clearly undesirable outputs. These metrics are combined
+into a composite score
+Si =w cerϕcer(Xi)+w simϕsim(Xi)+w chatϕchat(Xi),(1)
+whereϕ cer,ϕ sim, andϕ chat denote normalized metric scores,
+andw cer,w sim, andw chat are nonnegative weights.
+Rather than serving as a direct optimization target, the fused
+scalar score is only used to rank sampled candidates and support
+subsequent data construction. Sorting candidates bySi yields a
+permutationπover{1,...,K},
+Sπ(1)≥S π(2)≥···≥S π(K).(2)
+Based on this ranking, a margin-based construction strategy re-
+tains only candidate groups with sufficiently clear quality gaps
+and converts them into preference training data. If the sampled
+candidates of a prompt do not satisfy the margin-based filter-
+ing criteria, that prompt is discarded from the procedure. In
+3585
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1881
+Figure 1:Overall framework for stable speech synthesis post-training. Here,∆denotes the score difference between two candidates,
+while the selected best and worst candidates are further required to satisfy predefined validity conditions.
+this way, the overall framework turns noisy multi-metric can-
+didate scoring into more learnable supervision for subsequent
+post-training.
+2.2. ChatScorer for Undesirable Candidate Detection
+ChatScorer is introduced as an auxiliary scoring model to com-
+plement CER and SIM during preference construction. Its role
+is to better identify clearly undesirable candidates, especially
+overly machine-like outputs that may not be sufficiently penal-
+ized by conventional automatic metrics. As shown in Fig. 2, we
+use a frozen WavLM encoder [16] followed by a lightweight
+Transformer to extract an utterance-level embeddingh. The
+Gaussian score parameters are predicted by
+[µ,logσ 2] = MLP(h),(3)
+whereµis the predicted score andσ 2 reflects uncertainty.
+The model is trained with a Gaussian negative log-
+likelihood,
+LNLL = (s−µ) 2
+2σ2 + 1
+2 logσ 2,(4)
+wheresdenotes the target score. To reduce speaker leakage,
+we further attach an auxiliary speaker classifier with a Gradient
+Reversal Layer (GRL) [17]. Formally,ˆyspk =C spk(GRL(h)),
+and the corresponding adversarial loss is defined asL adv =
+CE(ˆyspk,y spk).
+The final training objective is
+Ltotal =L NLL +λ advLadv.(5)
+2.3. Margin-Based Preference Construction
+Not all sampled candidates are equally useful for preference op-
+timization. When the quality differences among candidates are
+too small, the resulting supervision can be weak or even mis-
+leading. We therefore retain only candidate groups with suffi-
+ciently clear quality gaps, so that the constructed data are more
+learnable.
+Figure 2:Architecture of ChatScorer with a score head and a
+GRL-based speaker classification branch for mitigating speaker
+leakage.
+For each prompt, we generate candidate utterances and rank
+them by the fused score defined in Sec. 2.1. Based on the result-
+ing ranked list, we define the top-3 and bottom-3 regions as the
+three candidates with the highest and lowest fused scores, re-
+spectively. Preference data are constructed under strict margin-
+based constraints. The best candidateX + is selected from
+the top-3 region and must satisfy a set of positive quality con-
+ditions, namely CER(X +)≤τ +
+cer, SIM(X +)≥τ +
+sim, and
+ChatScore(X+)≥τ +
+chat. The worst candidateX − is selected
+from the bottom-3 region and must satisfy at least two negative
+conditions among CER(X−)≥τ −
+cer, SIM(X−)≤τ −
+sim, and
+3586
+ChatScore(X−)≤τ −
+chat. In this way, the retained positive and
+negative samples are forced to remain clearly distinguishable in
+quality.
+Additional intermediate candidates are then selected from
+the remaining ranked list, subject to a minimum fused-score gap
+δ= S(X +)−S(X −)
+RankSize ,(6)
+whereRankSizedenotes the size of the constructed RankList,
+so that samples within the same constructed group remain suffi-
+ciently separated. If no candidate group satisfies the above con-
+straints, the entire prompt is skipped. In our experiments, this
+filtering discards roughly 40% of prompts for DPO and 60–80%
+for RankDPO, resulting in a substantially smaller amount of us-
+able supervision; however, the retained groups exhibit clearer
+quality gaps and are thus more learnable for preference opti-
+mization.
+Under this unified construction rule, each valid prompt can
+yield a preferred–rejected pair for DPO or a ranked subset of
+three or five samples, referred to as Rank3DPO and Rank5DPO,
+respectively. We set(τ +
+cer,τ +
+sim,τ +
+chat) = (0,0.8,0.7)and
+(τ−
+cer,τ−
+sim,τ−
+chat) = (0.15,0.7,0.67).
+2.4. Preference Optimization with Ranked Supervision
+The margin-based construction in Sec. 2.3 can yield ranked sub-
+sets containing multiple informative candidates for the same
+prompt. Compared with pairwise DPO, which uses only one
+preferred–rejected pair, ranked supervision [18, 19, 20] can bet-
+ter exploit the retained data in our setting, where the available
+post-training samples exhibit clearer quality gaps.
+For a ranked subsetS, we define the relative policy score of
+candidateXi conditioned on promptYas
+si = logπθ(Xi|Y)−logπ ref(Xi|Y),(7)
+whereπ ref is a frozen reference model. Based on the ranking in
+S, we derive a set of valid preference pairsΩand optimize
+Lrank =− 1
+|Ω|
+X
+(i,j)∈Ω
+wij·logσ(β·y ij·(si−sj)),(8)
+wherey ij ∈ {+1,−1}denotes the preference polarity,βis
+an inverse temperature, andw ij assigns larger weights to pairs
+with clearer quality differences.
+This objective allows post-training to make fuller use of the
+ranked preference relations induced by the constructed subset,
+rather than relying on a single pair only.
+3. Experiments
+3.1. Experimental Setup
+3.1.1. Dataset and Baseline
+We adopt CosyV oice2-0.5B [21] as the base model. A super-
+vised fine-tuning (SFT) model is trained with 5 hours of real
+recordings for each target speaker and used only for candi-
+date generation, while all preference-based post-training is per-
+formed on the original base model.
+To better reflect realistic conversational usage, we build a
+long-form chat-style text set covering diverse everyday scenar-
+ios. The prompts are generated with GPT-5 and manually fil-
+tered, with relatively long utterances and language styles closer
+to real human chatting. The dataset contains 2,000 training
+prompts and 500 test prompts. Each prompt is used to gen-
+erate 15 candidate utterances with different random seeds for
+preference construction.
+3.1.2. ChatScorer Training and Validation
+ChatScorer is trained on conversational recordings and diverse
+synthetic speech with human quality annotations, and is further
+refined on manually annotated utterances. Rather than serving
+as a general MOS predictor [13, 22], its purpose is to identify
+candidates that are less suitable for realistic chat-style synthesis,
+especially outputs that sound overly machine-like or otherwise
+undesirable.
+To validate ChatScorer as a reward signal, we compare it
+with DNSMOS and UTMOSv2 using human A/B preference
+judgments. “Human preference” indicates which utterance lis-
+teners would prefer as a realistic chat-style TTS output when
+comparing two candidates generated from the same prompt.
+We collect ratings for 200 synthesized utterances from four
+annotators and derive about 1,000 pairwise comparisons. A
+comparison is considered consistent if an automatic metric and
+the annotators prefer the same utterance. As shown in Fig. 3,
+ChatScorer achieves markedly higher agreement than MOS-
+based baselines, suggesting it better detects undesirable conver-
+sational candidates.
+Figure 3:Agreement with human preference rankings for
+ChatScorer, DNSMOS, and UTMOSv2. Agreement denotes the
+proportion of pairwise comparisons that are consistent with hu-
+man judgments.
+3.1.3. Reinforcement Learning Setup
+We compare three preference-based post-training strategies:
+DPO, RankDPO, and GRPO. To ensure a fair comparison un-
+der the same data budget, all methods are trained on the same
+2,000 prompts described in Sec. 3.1.1. Two reward configura-
+tions are explored throughout the experiments: (i) CER+SIM
+and (ii) CER+SIM+ChatScore.
+For DPO and RankDPO, the sampled candidate sets are
+converted into preference data according to the construction
+rules in Sec. 2.3. For GRPO, the model is optimized online
+on the same training prompts using scalar rewards formed by
+weighted fusion of the same automatic metrics.
+Optimization is performed with AdamW [23] using a learn-
+ing rate of1×10 −5. Dynamic batching is adopted, with each
+batch containing 1,000 speech frames depending on sequence
+length. Training is conducted on two NVIDIA A800 GPUs.
+3587
+Table 1:Comparison of post-training methods on intelligibility, speaker consistency, and stability-oriented metrics. SIM is computed
+as the cosine similarity between WavLM embeddings of the generated utterance and target-speaker reference embedding.
+Model CER (%)↓CER=0↑FR@CER<0.05↓SIM↑FR@SIM>0.75↓BadRate (%)↓
+SFT 1.53 0.54 0.38 0.81 0.42 12.66
+DPO 1.28 0.59 0.22 0.81 0.14 3.35
+GRPO 1.46 0.44 0.27 0.80 0.22 10.83
+Rank3DPO1.17 0.62 0.17 0.82 0.10 2.44
+3.2. Results
+3.2.1. Evaluation Metrics
+We evaluate intelligibility with CER and speaker consistency
+with SIM. Inspired by pass@K, we further introduce failure-
+oriented metrics to assess whether a TTS model can reliably
+produce acceptable outputs across multiple candidates. For
+each prompt withKgenerations, the group-level failure rate
+(FR) is defined as
+FR@τ= 1
+N
+NX
+i=1
+1
+
+∃k:m ik fails thresholdτ
+
+,(9)
+wherem ik denotes the evaluation metric of candidatekunder
+prompti. For CER, the criterion is CER<0.05, and for SIM it
+is SIM>0.75.
+Given ChatScore valuesCik, the utterance-level bad rate is
+defined as
+BadRate@τC = 1
+NK
+X
+i,k
+1[Cik <τ C].(10)
+A sample is regarded as bad if its ChatScore falls below the
+preference thresholdτC, indicating that it is not sufficiently ac-
+ceptable as a realistic chat-style TTS output.
+3.2.2. Main Results
+Table 1 reports the main comparison results of different post-
+training methods. Both DPO and Rank3DPO reduce CER rela-
+tive to the SFT baseline, while SIM remains largely unchanged
+across methods. This is expected, since post-training mainly
+updates the autoregressive LLM rather than the flow decoder,
+and thus has limited effect on speaker similarity. More impor-
+tantly, the proposed framework improves generation stability.
+The group-level SIM failure rate drops from 0.42 for SFT to
+0.14 for DPO and further to 0.10 for Rank3DPO. In addition,
+Rank3DPO also achieves the lowest BadRate, indicating that
+it more effectively suppresses clearly undesirable, machine-like
+outputs.
+Although GRPO also reduces failure rates compared with
+SFT, its overall performance remains less competitive in our
+current setting, with CER still worse than DPO and Rank3DPO.
+This is reasonable, since GRPO performs online updates on the
+same 2,000 training prompts using fused scalar rewards over all
+sampled candidates, without the explicit margin-based filtering
+that selectively retains supervision with clearer quality separa-
+tion.
+3.2.3. Ablation Study
+We further analyze the effects of the data construction strat-
+egy and the auxiliary ChatScore reward. As shown in Ta-
+ble 2, margin-based construction consistently outperforms di-
+Table 2:Ablation study on data construction strategy and the
+auxiliary ChatScorer reward. -w and -m denote direct fused-
+score selection and the proposed margin-based construction,
+respectively.
+Setting CER(%)↓BadRate (%)↓MOS↑
+Effect of data construction strategy
+DPO-w 1.31 6.28 –
+DPO-m 1.21 3.35 4.28±0.05
+Rank3DPO-w 1.19 7.31 –
+Rank3DPO-m1.17 2.44 4.42±0.05
+Effect of ChatScore reward
+DPO 1.21 10.26 4.11±0.07
++ChatScore1.28 3.35 4.28±0.05
+GRPO 1.46 11.70 3.91±0.05
++ChatScore1.46 10.47 4.05±0.06
+Rank3DPO1.0912.69 4.23±0.05
++ChatScore1.172.44 4.42±0.05
+rect fused-score selection for both DPO and Rank3DPO, yield-
+ing lower CER and better perceptual quality. Adding ChatScore
+as an auxiliary reward causes only minor CER changes, but
+consistently improves perceptual quality and substantially re-
+duces BadRate for all three post-training methods, indicating
+that ChatScore provides a useful complementary signal for sup-
+pressing undesirable conversational outputs that are not suffi-
+ciently captured by CER and SIM alone. Here, MOS is obtained
+from blind listening tests in which 10 listeners rate 50 synthe-
+sized utterances per model on a 1–5 scale, and the reported re-
+sults include 95% confidence intervals. The rating reflects the
+overall perceptual quality of synthesized speech, including nat-
+uralness, perceived speaker consistency, and prosodic appropri-
+ateness. Audio samples for each method are available on the
+demo page1.
+4. Conclusion
+This paper presents a new preference-based post-training
+framework for codec-based TTS, in which ChatScorer is in-
+troduced as an auxiliary reward to better identify undesirable
+machine-like outputs, and a rank-aware data selection strategy
+is designed to construct more learnable preference pairs and
+ranked subsets for post-training. Experimental results show that
+the proposed framework improves generation stability, reduces
+undesirable outputs, and maintains competitive intelligibility
+and speaker similarity. A current limitation is that the GRPO
+experiments in this work are conducted on a relatively limited
+data scale. Future work will extend the study to larger-scale
+online multi-reward optimization with GRPO and more diverse
+multilingual settings.
+1https://hajararabiu869.github.io/demo/
+3588
+5. Generative AI Use Disclosure
+GPT-5 was used to generate candidate long-form chat-style text
+prompts for dataset construction. All generated prompts were
+manually reviewed and filtered by the authors before use. Gen-
+erative AI tools were also used to assist with language polishing.
+The authors take full responsibility for the content, methodol-
+ogy, experiments, and conclusions presented in this paper.

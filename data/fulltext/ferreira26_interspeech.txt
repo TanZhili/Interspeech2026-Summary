@@ -1,0 +1,401 @@
+CAL-MOS: Bridging Layers with Adapters for Robust MOS Prediction
+Across Speech Foundation Models
+Alef Iury Ferreira1,2,∗∗, Pedro Lustosa Rege Botelho1, Fernanda Silva1,3, Daniel Casanova1,4, Rafael
+Faustino1,3, Frederico Oliveira1,2, Arlindo Galv˜ao Filho1,2, Anderson da Silva Soares1,2
+1 AKCIT, Brazil
+2 Federal University of Goi´as (UFG), Brazil
+3 Federal University of Rio Grande do Norte (UFRN), Brazil
+4 Federal University of Technology (UTFPR), Brazil
+alef iury c.c@discente.ufg.br
+Abstract
+Speech Quality Assessment (SQA) is essential for modern
+speech technologies, and recent non-intrusive SQA predictors
+increasingly rely on Speech Foundation Models (SFMs). How-
+ever, because SFMs expose representations from many lay-
+ers, it remains unclear which depths are most informative for
+MOS prediction and how multi-layer information should be
+combined reliably across backbones and datasets. We bench-
+mark ten SFMs on four MOS datasets under three regimes: full
+fine-tuning, last-layer probing with a frozen encoder, and naive
+cross-layer weighted aggregation. We find that the best layer
+is strongly backbone- and dataset-dependent, and that naive
+weighted fusion can be unstable across settings. We further
+evaluate a layer-calibrated aggregation variant that applies per-
+layer adapters before pooling, which improves the robustness of
+multi-layer fusion and narrows the gap to full fine-tuning while
+keeping the backbone frozen.
+Index Terms: Speech Quality Assessment, Self-Supervised
+Learning, Speech Foundation Models
+1. Introduction
+Recent progress in speech synthesis, enhancement, and related
+speech generation technologies has increased the need for reli-
+able quality evaluation methods [1, 2]. Although objective met-
+rics are efficient, they often fail to reflect the nuances of human
+perception [1, 3, 4]. As a result, subjective Mean Opinion Score
+(MOS) listening tests remain the standard protocol for quality
+assessment [5]. However, MOS testing is notoriously expen-
+sive, time-consuming, and difficult to scale. It is also affected
+by annotator variability and other sources of bias, especially for
+high-quality modern systems [1, 6, 2]. These limitations mo-
+tivate automatic, non-intrusive MOS prediction as a practical
+alternative.
+Much of the recent progress in non-intrusive MOS pre-
+diction has been driven by large pre-trained speech encoders,
+or Speech Foundation Models (SFMs). Prior work has either
+fine-tuned the full encoder with a regression head, achieving
+strong performance at a higher computational cost [7, 8, 9], or
+trained lightweight predictors on frozen SFM representations
+for greater efficiency [10]. Additional studies have combined
+SFM embeddings with complementary acoustic features to im-
+prove robustness [11]. Together, these results establish SFMs as
+strong backbones for MOS prediction, but leave open the ques-
+tion of how best to exploit their internal representations.
+**indicates the corresponding author.
+This problem arises because different layers capture fun-
+damentally different types of information. Earlier and in-
+termediate layers often retain stronger acoustic and phonetic
+cues, whereas deeper layers are increasingly shaped by the
+pre-training objective [12, 13]. For MOS prediction, where
+cues such as noise, distortion, articulation, and prosody are all
+relevant, this distinction is especially important [14]. Recent
+studies have indeed shown that early-to-mid layers can outper-
+form the final layer for MOS prediction across several back-
+bones [15, 16].
+Motivated by this, we revisit MOS prediction from SFMs
+as a practical problem of layer utilization. We benchmark ten
+SFMs on four MOS datasets under a unified protocol, compar-
+ing last-layer probing, best-layer selection, naive cross-layer
+weighted aggregation, and full fine-tuning. We further eval-
+uate a layer-calibrated aggregation variant based on per-layer
+adapters, inspired by prior work in speaker verification [17, 18],
+to study whether calibrating layer outputs before fusion im-
+proves the robustness of MOS prediction.
+Our contributions are threefold: (1) an empirical study of
+layer utilization for MOS prediction across diverse speech foun-
+dation models, datasets, and training regimes, offering practical
+guidance on when to use the last layer, an intermediate layer,
+cross-layer aggregation, or full fine-tuning; (2) showing that
+the most informative depth is strongly backbone- and dataset-
+dependent, and that naive weighted-sum fusion is not a reliable
+general solution across backbones and datasets; and (3) show-
+ing that applying prior layer calibration before aggregation pro-
+vides a stronger and more robust frozen-backbone alternative
+than naive weighted aggregation, often narrowing the gap to full
+fine-tuning.
+2. Related Works
+SQA has shifted from traditional signal-based methods to
+data-driven deep learning systems. While early models like
+MOSNet [4] marked significant progress, the current paradigm
+is dominated by SFMs models. Fine-tuning self-supervised
+models such as wav2vec 2.0 [19] was shown to surpass earlier
+approaches for MOS prediction [19, 7], and subsequent stud-
+ies confirmed the effectiveness of other large speech encoders,
+including HuBERT [8] and supervised models like Whisper-
+based [20] systems [10, 11]. Stronger systems such as UT-
+MOS [9] further improved performance through more elaborate
+training pipelines, while MOSA-Net+ [11] combined Whisper
+embeddings with spectral features to improve robustness.
+A related line of work has examined which internal rep-
+174
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2960
+resentations of pre-trained speech models are most useful for
+perceptual prediction. Layer-wise studies in speech repre-
+sentation learning show that intermediate layers often retain
+stronger acoustic and phonetic information, whereas deeper lay-
+ers become increasingly specialized to the pre-training objec-
+tive [12, 13, 14]. In MOS prediction, recent studies by Liang et
+al. [15] and Cooper et al. [16] similarly found that early-to-mid
+layers can outperform the final layer across several backbones
+and evaluation settings.
+Our work builds most directly on this line of research, but
+moves beyond single-layer selection to study how multiple lay-
+ers can be used robustly across backbones and datasets. This
+connects to prior cross-layer aggregation work in other speech
+tasks, particularly speaker verification, where learnable layer
+weighting, multi-scale aggregation, and per-layer adapters have
+been used to better align intermediate representations before fu-
+sion [17, 18]. Motivated by these ideas, we compare last-layer
+probing, best-layer selection, naive weighted aggregation, and
+full fine-tuning under a unified MOS benchmark and further ex-
+amine whether per-layer calibration can make cross-layer fu-
+sion more reliable for MOS prediction.
+3. Methods
+We study non-intrusive MOS prediction using SFMs under a
+unified framework designed to isolate the effect of layer utiliza-
+tion. Given an input utterance, an SFM produces hidden repre-
+sentations at multiple depths. Our central question is how these
+layer-wise representations should be used for MOS prediction.
+We evaluate a diverse set of publicly available SFMs:
+wav2vec 2.0 Large [19], XLS-R [21] 300M and 1B, MMS [22]
+300M and 1B, Wav2BERT 2.0 [23], WavLM Large [24], Hu-
+BERT Large [8], data2vec Large [25], and Whisper Large-
+v3 [20]. These models differ in training objective, supervision,
+scale, and pre-training data, making them suitable for studying
+whether layer-selection trends generalize across backbones.
+Our first strategy isLast Layer(LL), where only the final
+hidden representation of the frozen backbone is used, serving
+as a standard feature-extraction baseline. Our second strategy
+isBest Layer(BL), which uses a single frozen intermediate
+layer selected from layer-wise analysis, testing whether careful
+layer selection alone is sufficient. Our third strategy isWeighted
+Sum(WS), where all layer representations are combined via
+learnable scalar weights normalized during training like done
+by [26], providing a simple form of cross-layer aggregation that
+assumes representations from different depths are already com-
+patible enough to be fused directly.
+We also evaluateFull Fine-Tuning(FT), where the entire
+SFM and regression head are optimized jointly, serving as a
+strong baseline. In addition, motivated by the instability ob-
+served in naive cross-layer fusion, we introduceAdapter +
+Mean(A+M), a layer-calibrated aggregation strategy. Here,
+each layer is first passed through an independent adapter con-
+sisting of a linear projection, layer normalization, ReLU activa-
+tion, and a second linear layer. The adapted sequences are then
+concatenated across layers and mean-pooled to form a fixed-
+dimensional utterance representation, allowing each layer to be
+transformed into a more task-aligned space before aggregation
+without requiring full backbone adaptation.
+After layer selection or aggregation, masked mean pool-
+ing over time produces an utterance-level embedding, which
+is passed to a Multi-Layer Perceptron (MLP) regression head
+consisting of a linear projection, a ReLU activation, and a final
+linear output layer; predictions are clipped to the[1,5]interval
+BRSpeech
+BVCC
+SingMOS
+TMHINT-QI
+Average
+0 1 2 3 4 5 6 7 8 9   10 11  12  13 14  15 16  17 18  19 20  21  22 23  24
+Layer
+HuBERT-Large
+BRSpeech
+BVCC
+SingMOS
+TMHINT-QI
+Average
+Wav2BERT 2.0
+0 1 2 3 4 5 6 7 8 9   10 11  12  13 14  15 16  17 18  19 20  21  22 23  24
+BRSpeech
+BVCC
+SingMOS
+TMHINT-QI
+Average
+XLS-R-300M
+0 1 2 3 4 5 6 7 8 9   10 11  12  13 14  15 16  17 18  19 20  21  22 23  24
+BRSpeech
+BVCC
+SingMOS
+TMHINT-QI
+Average
+MMS-300M
+0 1 2 3 4 5 6 7 8 9   10 11  12  13 14  15 16  17 18  19 20  21  22 23  24
+BRSpeech
+BVCC
+SingMOS
+TMHINT-QI
+Average
+WavLM
+0 1 2 3 4 5 6 7 8 9   10 11  12  13 14  15 16  17 18  19 20  21  22 23  24
+0.00
+0.25 
+0.50 
+0.75 
+1.00
+0.00
+0.25 
+0.50 
+0.75 
+1.00
+0.00
+0.25 
+0.50 
+0.75 
+1.00
+0.00
+0.25 
+0.50 
+0.75 
+1.00
+0.00
+0.25 
+0.50 
+0.75 
+1.00
+Figure 1:Layer-wise MOS prediction performance for five se-
+lected speech foundation models, reported as normalized SRCC
+across BRSpeech, BVCC, SingMOS, TMHINT-QI, and the aver-
+age across datasets. Columns denote encoder layers and rows
+denote datasets. Markers indicate the top three layers in each
+row: best (⋆), second-best (♦), and third-best (▲). The results
+show substantial variation across backbones and datasets, with
+strong layers often appearing in the early-to-mid portion of the
+network rather than consistently at the final layer.
+to match the MOS scale. All models are trained by minimizing
+Mean Squared Error (MSE) between predicted and reference
+MOS values, with a batch size of 64 and the AdamW optimizer
+(β1 = 0.9,β 2 = 0.98,ϵ= 1×10 −8), a weight decay of
+1×10 −6, and norm-based gradient clipping (maximum thresh-
+old of 10). A cosine learning rate scheduler with a 500-step
+linear warm-up adjusts learning rates between1×10 −5 and
+5×10 −5.
+We evaluate on four MOS datasets: BVCC [8], BRSpeech-
+MOS [10], SingMOS [27], and TMHINT-QI [28]. These
+datasets cover different languages, speech generation condi-
+tions, and rating scenarios. We report utterance-level and
+system-level results using MSE (Mean Square Error) and Spear-
+man Rank Correlation Coefficient (SRCC). To compare models
+under a consistent budget, we first run a 20-epoch screening
+stage across all candidate backbones and training regimes to
+identify strong models and characterize broad trends. We then
+perform detailed layer-wise analysis on the most competitive
+backbones and extend training to 100 epochs for the final com-
+parison.
+4. Results and Discussion
+Table 1 first provides a 20-epoch screening across ten SFMs
+and three training regimes. A clear pattern is that perfor-
+mance depends strongly on both the backbone and the layer-
+175
+Table 1:Results of the 20-epoch screening stage, comparing model families using utterance-level and system-level MSE and SRCC
+on BRSpeech (BRS), BVCC (BVC), SingMOS (SM), and TMHINT-QI (TMH).Boldindicates the best result within each model family,
+while blue and gray cell backgrounds denote the overall best and second-best entries, respectively. Avg. Utt. and Avg. Sys. report
+averages across the four datasets at the utterance and system levels. LL = Last Layer, WS = Weighted Sum, and FT = Fine-Tuning.
+BRS BVC SM TMH A vg.
+Method Utt. Sys. Utt. Sys. Utt. Sys. Utt. Sys. Utt. Sys.
+MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC
+w2v2-L LL 0.990 0.369 0.354 0.714 0.775 0.489 0.589 0.661 0.578 0.114 0.183 0.403 0.607 0.581 0.134 0.718 0.738 0.388 0.315 0.624
+w2v2-L WS 0.790 0.5920.072 0.943 0.228 0.856 0.134 0.898 0.516 0.381 0.152 0.562 0.378 0.743 0.040 0.935 0.478 0.643 0.099 0.835
+w2v2-L FT0.783 0.6650.101 0.943 0.190 0.881 0.100 0.924 0.395 0.591 0.040 0.876 1.558 0.395 0.636 0.208 0.732 0.633 0.219 0.738
+XLSR-300M LL 1.007 0.454 0.287 0.657 0.536 0.661 0.399 0.718 0.546 0.208 0.183 0.152 0.477 0.686 0.100 0.834 0.641 0.502 0.242 0.590
+XLSR-300M WS 0.965 0.579 0.262 0.886 0.228 0.858 0.124 0.914 0.569 0.407 0.166 0.655 0.356 0.7520.030 0.940 0.529 0.649 0.146 0.849
+XLSR-300M FT0.731 0.693 0.055 0.943 0.170 0.894 0.096 0.935 0.395 0.585 0.053 0.819 0.350 0.7620.041 0.924 0.411 0.733 0.061 0.905
+XLSR-1B LL 0.973 0.513 0.258 0.886 0.295 0.822 0.163 0.873 0.421 0.532 0.104 0.752 0.375 0.752 0.048 0.930 0.516 0.655 0.143 0.860
+XLSR-1B WS 0.819 0.604 0.201 0.886 0.226 0.865 0.136 0.918 0.420 0.528 0.097 0.699 0.378 0.759 0.0610.939 0.461 0.689 0.124 0.861
+XLSR-1B FT0.744 0.668 0.044 0.943 0.178 0.892 0.099 0.937 0.404 0.587 0.081 0.782 0.352 0.768 0.0370.936 0.419 0.729 0.065 0.899
+MMS-300M LL 1.201 0.523 0.405 0.886 0.538 0.760 0.373 0.780 0.580 0.386 0.203 0.635 0.419 0.727 0.073 0.861 0.684 0.599 0.264 0.790
+MMS-300M WS 0.845 0.554 0.189 0.886 0.214 0.864 0.096 0.921 0.448 0.4910.0750.721 0.3450.7650.027 0.946 0.463 0.6690.0970.869
+MMS-300M FT 0.685 0.689 0.026 0.943 0.172 0.894 0.085 0.940 0.416 0.6060.0940.811 0.510 0.7730.193 0.935 0.446 0.7410.1000.907
+MMS-1B LL 1.069 0.477 0.361 0.886 0.308 0.809 0.203 0.863 0.480 0.454 0.141 0.575 0.373 0.753 0.034 0.943 0.557 0.623 0.185 0.817
+MMS-1B WS 0.788 0.614 0.120 0.886 0.237 0.862 0.137 0.923 0.4030.5650.0700.820 0.349 0.761 0.027 0.950 0.4440.7010.0890.895
+MMS-1B FT0.758 0.678 0.111 0.943 0.170 0.893 0.076 0.942 0.4800.5880.1620.828 0.439 0.757 0.124 0.934 0.4620.7290.1180.912
+w2v-BERT LL 1.430 −0.045 0.618 −0.029 0.486 0.705 0.332 0.795 0.718 −0.086 0.254 −0.126 0.469 0.706 0.082 0.890 0.776 0.320 0.322 0.383
+w2v-BERT WS 0.6940.653 0.025 0.943 0.231 0.858 0.138 0.905 0.410 0.528 0.085 0.752 0.348 0.767 0.028 0.955 0.4210.702 0.069 0.889
+w2v-BERT FT 0.7030.682 0.011 1.000 0.199 0.886 0.115 0.928 0.386 0.604 0.054 0.826 0.446 0.760 0.059 0.939 0.4330.733 0.060 0.923
+WavLM-L LL 0.793 0.6060.1330.886 0.273 0.824 0.165 0.879 0.516 0.396 0.165 0.595 0.375 0.753 0.041 0.929 0.489 0.645 0.126 0.822
+WavLM-L WS 1.333 0.524 0.531 0.886 0.308 0.819 0.139 0.887 1.040 0.317 0.388 0.622 0.446 0.706 0.047 0.917 0.782 0.591 0.276 0.828
+WavLM-L FT0.746 0.7030.153 0.943 0.198 0.878 0.105 0.931 0.363 0.622 0.063 0.823 0.351 0.767 0.039 0.936 0.414 0.742 0.090 0.908
+HuBERT-L LL 0.790 0.621 0.0930.886 0.319 0.803 0.178 0.880 0.474 0.4390.1260.614 0.391 0.735 0.045 0.922 0.493 0.649 0.111 0.826
+HuBERT-L WS 1.536 0.439 0.781 0.771 0.347 0.791 0.195 0.865 1.073 0.286 0.382 0.460 0.427 0.7030.0420.918 0.846 0.555 0.350 0.754
+HuBERT-L FT0.749 0.664 0.0520.829 0.230 0.886 0.160 0.933 0.438 0.6230.1290.808 0.376 0.7500.0460.928 0.448 0.731 0.097 0.875
+d2v-L LL 1.082 0.463 0.397 0.829 0.795 0.292 0.576 0.451 0.536 0.271 0.162 0.292 0.694 0.532 0.195 0.571 0.777 0.390 0.333 0.536
+d2v-L WS 0.968 0.507 0.283 0.886 0.498 0.727 0.368 0.804 0.493 0.401 0.152 0.552 0.4500.6970.0680.895 0.602 0.583 0.218 0.784
+d2v-L FT0.907 0.614 0.036 0.943 0.222 0.863 0.106 0.922 0.448 0.557 0.059 0.837 0.4920.7530.1160.950 0.517 0.697 0.079 0.913
+Whisper-Lv3 LL0.7840.6250.0300.886 0.261 0.836 0.146 0.889 0.425 0.544 0.099 0.767 0.344 0.768 0.023 0.954 0.4540.6930.0750.874
+Whisper-Lv3 WS 1.011 0.513 0.272 0.829 0.351 0.787 0.228 0.849 0.479 0.437 0.143 0.550 0.381 0.745 0.037 0.937 0.555 0.621 0.170 0.791
+Whisper-Lv3 FT 0.8090.6400.041 0.943 0.201 0.885 0.133 0.930 0.378 0.604 0.061 0.794 0.494 0.757 0.156 0.927 0.4700.7220.0980.898
+Table 2:Results of the 100-epoch main comparison on the five selected model families, evaluated with utterance-level and system-level
+MSE and SRCC on BRSpeech (BRS), BVCC (BVC), SingMOS (SM), and TMHINT-QI (TMH).Boldindicates the best result within each
+model family, while blue and gray cell backgrounds denote the overall best and second-best results, respectively. Avg. Utt. and Avg.
+Sys. report averages across the four datasets at the utterance and system levels. LL = Last Layer, BL = Best Layer, WS = Weighted
+Sum, FT = Fine-Tuning, and A+M = Adapters + Mean.
+BRS BVC SM TMH A vg.
+Method Utt. Sys. Utt. Sys. Utt. Sys. Utt. Sys. Utt. Sys.
+MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC MSE SRCC
+WavLM-L LL 0.703 0.6860.057 0.943 0.242 0.849 0.129 0.910 0.357 0.608 0.056 0.835 0.3470.7640.026 0.946 0.412 0.727 0.067 0.908
+WavLM-L BL 0.703 0.6860.057 0.943 0.234 0.865 0.140 0.914 0.357 0.608 0.056 0.835 0.3470.7640.026 0.946 0.410 0.731 0.070 0.909
+WavLM-L WS 0.868 0.625 0.077 0.943 0.270 0.845 0.140 0.908 0.446 0.553 0.048 0.847 0.407 0.730 0.042 0.922 0.498 0.688 0.077 0.905
+WavLM-L FT 0.720 0.689 0.067 0.943 0.188 0.885 0.098 0.930 0.376 0.602 0.050 0.849 0.3840.7720.082 0.943 0.417 0.737 0.074 0.916
+WavLM-L A+M 0.691 0.6980.072 0.943 0.189 0.883 0.103 0.925 0.342 0.636 0.041 0.864 0.3470.772 0.046 0.934 0.392 0.747 0.065 0.917
+MMS-300M LL 0.759 0.621 0.078 0.886 0.248 0.839 0.142 0.884 0.423 0.510 0.094 0.649 0.345 0.764 0.026 0.948 0.444 0.684 0.085 0.842
+MMS-300M BL 0.9960.6840.3740.943 0.211 0.878 0.137 0.914 0.3800.6110.050 0.841 0.345 0.764 0.029 0.945 0.483 0.734 0.1480.911
+MMS-300M WS0.7500.6550.0440.829 0.207 0.876 0.128 0.924 0.407 0.574 0.074 0.780 0.359 0.757 0.042 0.925 0.4310.7160.0720.865
+MMS-300M FT 0.821 0.652 0.1020.943 0.169 0.894 0.072 0.944 0.428 0.554 0.096 0.749 0.339 0.775 0.025 0.954 0.439 0.719 0.074 0.897
+MMS-300M A+M 0.805 0.679 0.1240.943 0.251 0.888 0.202 0.930 0.4860.6110.156 0.787 0.401 0.771 0.084 0.952 0.4860.7370.142 0.903
+XLSR-300M LL 0.793 0.612 0.098 0.886 0.281 0.818 0.174 0.872 0.433 0.508 0.113 0.669 0.367 0.747 0.032 0.949 0.469 0.671 0.104 0.844
+XLSR-300M BL 0.7340.687 0.0390.943 0.198 0.875 0.105 0.916 0.371 0.630 0.060 0.864 0.364 0.754 0.030 0.948 0.417 0.737 0.058 0.918
+XLSR-300M WS0.7220.674 0.075 0.943 0.202 0.876 0.104 0.923 0.385 0.607 0.058 0.815 0.360 0.760 0.043 0.948 0.417 0.729 0.070 0.907
+XLSR-300M FT 0.735 0.678 0.055 1.000 0.173 0.892 0.082 0.940 0.384 0.594 0.054 0.799 0.337 0.770 0.023 0.953 0.4070.733 0.053 0.923
+XLSR-300M A+M 0.771 0.686 0.148 0.943 0.172 0.8930.090 0.933 0.352 0.631 0.0460.826 0.337 0.7720.028 0.950 0.4080.7450.078 0.913
+Wav2BERT LL 0.752 0.638 0.162 0.771 0.302 0.801 0.155 0.883 0.445 0.449 0.117 0.659 0.366 0.752 0.029 0.954 0.466 0.660 0.116 0.817
+Wav2BERT BL 0.6790.6850.0420.943 0.200 0.880 0.127 0.927 0.355 0.612 0.046 0.867 0.346 0.762 0.029 0.944 0.395 0.735 0.061 0.920
+Wav2BERT WS 0.699 0.686 0.062 0.943 0.198 0.878 0.106 0.929 0.347 0.625 0.044 0.847 0.341 0.7690.026 0.956 0.396 0.739 0.059 0.919
+Wav2BERT FT 0.827 0.674 0.151 1.000 0.188 0.886 0.109 0.928 0.440 0.545 0.073 0.791 0.375 0.757 0.047 0.905 0.458 0.716 0.095 0.906
+Wav2BERT A+M 0.699 0.6910.050 0.943 0.178 0.890 0.092 0.934 0.341 0.644 0.039 0.902 0.335 0.7730.026 0.949 0.388 0.749 0.052 0.932
+HuBERT-L LL0.6910.685 0.032 0.943 0.254 0.841 0.123 0.912 0.3770.587 0.073 0.787 0.367 0.748 0.0350.940 0.422 0.715 0.066 0.895
+HuBERT-L BL0.6910.685 0.032 0.943 0.216 0.872 0.149 0.896 0.3770.587 0.073 0.787 0.367 0.748 0.0350.940 0.4130.723 0.072 0.891
+HuBERT-L WS 0.806 0.657 0.028 1.000 0.259 0.855 0.151 0.918 0.467 0.5190.0510.844 0.407 0.7260.0320.938 0.485 0.689 0.065 0.925
+HuBERT-L FT 0.746 0.677 0.052 0.943 0.191 0.8880.101 0.942 0.382 0.605 0.061 0.811 0.385 0.754 0.065 0.921 0.426 0.731 0.070 0.904
+HuBERT-L A+M 0.6920.6900.030 0.943 0.209 0.8780.1000.920 0.3940.6230.0710.856 0.360 0.7600.047 0.931 0.4140.738 0.0620.913
+176
+0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+Layer
+0.00
+0.02
+0.04
+0.06
+0.08Importance Weight Global Mean
+WavLM
+MMS-300M
+XLS-R-300M
+Wav2BERT 2.0
+HuBERT-Large
+Figure 2:Mean normalized layer-importance curves for five
+SFMs. Colored lines denote model-specific averages, the black
+line shows the global mean, and the gray band indicates vari-
+ability across models.
+utilization strategy. FT is a strong baseline overall, but frozen-
+backbone approaches remain competitive when layers are used
+appropriately. At the same time, the screening results already
+show that naive WS is not uniformly reliable: it is competitive
+for some backbones, such as XLSR-300M, MMS-300M, and
+Wav2BERT, but clearly degrades for others, notably WavLM-L,
+HuBERT-L, and Whisper-Lv3. This is an important early find-
+ing: simply using and aggregating more layers does not guaran-
+tee better MOS prediction.
+The screening stage was also used to select the backbones
+for the subsequent layer-wise study and the 100-epoch compar-
+ison in Table 2. We retained WavLM-L, HuBERT-L, XLSR-
+300M, MMS-300M, and Wav2BERT because they were the
+strongest model families overall in terms of average SRCC in
+the 20-epoch screening. We also preferred the 300M multi-
+lingual variants over the corresponding 1B models because the
+larger models did not show a sufficiently clear SRCC advantage
+to justify the substantially higher cost of exhaustive per-layer
+analysis and longer training.
+The layer-wise heatmaps in Fig. 1 and the mean importance
+curves in Fig. 2 help explain these trends. Across models, the
+strongest layers are often found in the early-to-mid portion of
+the encoder rather than consistently at the final layer. The global
+mean importance curve shows the same tendency. However, the
+figures also make clear that there is no universal best depth:
+the strongest layer varies across backbones and datasets, and
+some models exhibit broad high-performing regions while oth-
+ers show sharper peaks and valleys. This explains both why LL
+can be suboptimal and why WS can be unstable: the most use-
+ful information is distributed differently across depth and is not
+necessarily aligned well enough for direct fusion.
+The 100-epoch results confirm that better layer selection of-
+ten matters more than simply defaulting to the final layer. The
+clearest gains from BL over LL appear for XLSR-300M and
+Wav2BERT. For XLSR-300M, the average utterance-level MSE
+decreases from 0.469 to 0.417 and the average system-level
+MSE from 0.104 to 0.058. For Wav2BERT, the corresponding
+improvements are from 0.466 to 0.395 and from 0.116 to 0.061.
+These results reinforce the main conclusion of the layer-wise
+analysis: the final layer is often not the strongest default repre-
+sentation for MOS prediction. For WavLM-L and HuBERT-L,
+however, BL brings smaller gains, indicating that the useful-
+ness of intermediate layers is backbone-dependent rather than
+universal.
+A second key finding is that naive cross-layer aggregation is
+not a reliable substitute for careful layer selection. WS remains
+competitive for Wav2BERT and reasonably strong for MMS-
+300M and XLSR-300M, but it is clearly weaker for WavLM-
+L and HuBERT-L. In these cases, directly combining hidden
+states from different depths with scalar weights appears too re-
+strictive. The issue is not only which layers are useful, but also
+whether their representations are compatible enough to be fused
+without adaptation.
+This is where A+M strategy becomes most useful. Across
+the final comparison, 

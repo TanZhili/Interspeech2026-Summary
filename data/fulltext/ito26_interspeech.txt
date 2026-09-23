@@ -1,0 +1,533 @@
+Unified Prosody Restoration Using Diffusion Models
+for Controllable Text-to-Speech Synthesis
+Yuki Ito ID 1,∗∗, Junki Ohmura ID 1, Hayato Futami ID 1, Toshiyuki Sekiya ID 1, Toshiyuki Kumakura ID 1
+1 Sony Group Corporation, Japan
+{yuki.g.ito, junki.ohmura, hayato.futami, toshiyuki.sekiya, toshiyuki.kumakura}@sony.com
+Abstract
+Controllable text-to-speech systems that use explicit prosodic
+features enable fine-grained control, which is particularly use-
+ful for emotional speech synthesis. However, specifying frame-
+level details often imposes a heavy burden on users. To allevi-
+ate this burden, we formulateprosody restorationas a unified
+problem of recovering frame-level prosody from simplified and
+easy-to-specify prosodic inputs. By expanding two prior tasks
+with three novel ones, we address a total of five tasks. Together,
+they support practical user workflows by enabling restoration
+from prosody that is partial, coarse, or both. We also pro-
+pose two diffusion-based prosody restorers: a supervised model
+trained to reverse simulated degradations, and an unsupervised
+model leveraging samplers for linear inverse problems. Ex-
+periments across all five tasks show that our methods restore
+prosody more accurately than non-diffusion baselines, preserv-
+ing linguistically valid prosodic structures.
+Index Terms: prosody restoration, text-to-speech, diffusion
+model, inverse problem
+1. Introduction
+Controllable text-to-speech (TTS) models [1–3] conditioned
+on explicit prosodic features including pitch, voiced/unvoiced
+(V/UV) flags, and energy are particularly effective for expres-
+sive speech synthesis. However, these systems often require
+frame-level prosody. This requirement burdens users, as it is
+difficult to specify prosody that achieves a desired style while
+preserving linguistically valid patterns. This burden is amplified
+in pitch-accent languages such as Japanese, where pitch patterns
+that violate accentual regularities not only degrade naturalness
+but can also reduce intelligibility [4–6]. To alleviate this bur-
+den, recent works predict prosody from simplified representa-
+tions such as partial prosody [7] or smoothed prosody [8]. Al-
+though these approaches improve controllability, they focus on
+specific use cases, highlighting the need for a unified framework
+capable of handling diverse input patterns. Additionally, their
+prediction targets are prosody averaged over phonemes, sacri-
+ficing granular detail by discarding variation within phonemes.
+In parallel, stochastic modeling of prosody using deep gen-
+erative models has been widely explored. Several works [3, 9–
+14] have sought to model pitch, energy, V/UV flags, or du-
+ration by utilizing normalizing flows [15], diffusion models
+(DMs) [16], and flow matching models [17, 18]. Also, DMs
+have proven effective for restoration across various domains.
+In addition to supervised models specializing in specific tasks
+such as time series imputation [19] and audio upsampling [20],
+general linear inverse problem solvers for pretrained DMs, in-
+cluding denoising diffusion restoration models (DDRMs) [21]
+and GibbsDDRM [22] have shown strong performance.
+**indicates the corresponding author.
+(a)Ground Truth
+ (b)Inpainting (Inp) [7]
+(c)Refinement from smoothed
+prosody (Ref-S) [8]
+(d)‡ Refinement from piecewise-
+averaged prosody (Ref-A)
+(e) ‡ Inpainting and refinement
+from masked and smoothed
+prosody (InpRef-S)
+(f) ‡ Inpainting and refinement
+from masked and piecewise-
+averaged prosody (InpRef-A)
+Figure 1:Degraded pitch and corresponding degradation ma-
+trices for each prosody restoration task, with dotted lines indi-
+cating ground truth.‡: novel tasks introduced in this work.
+We formulateprosody restorationas a unified problem
+of recovering frame-level prosody from simplified and easy-
+to-specify representations, which we calldegradedprosody.
+Beyond tasks explored in prior work [7, 8], namely restora-
+tion from partial or smoothed prosody, we explore three novel
+tasks: restoration from 1) piecewise-averaged prosody, 2) par-
+tially missing smoothed prosody, and 3) partially missing aver-
+aged prosody. Solving these tasks strongly supports practical
+workflows; the first task enables users to specify low-temporal-
+resolution prosody, while the latter two allow users to spec-
+ify prosody partially and coarsely. Motivated by successes in
+restoration using DMs and stochastic prosody modeling, we
+propose two diffusion-based prosody restorers (DPRs) as uni-
+fied solvers for all five tasks: a supervised DPR trained to re-
+verse simulated degradations, and an unsupervised DPR trained
+as a standard conditional DM on clean prosody, handling degra-
+dations only at inference via samplers for linear inverse prob-
+lems [21, 22]. Our main contributions are as follows:
+• We formulateprosody restorationas a unified problem utiliz-
+ing the framework of linear inverse problems.
+• Beyond the two previously explored tasks, we introduce three
+novel restoration tasks, which support practical workflows.
+• We propose two DPRs, operating in supervised and unsuper-
+vised settings, as unified solvers for these tasks.
+• Experimental results on two emotional corpora across all five
+tasks demonstrate that our DPRs effectively restore severely
+degraded prosody, preserving linguistically valid structures.
+2. Problem Statement
+LetF∈R 3×lutt denote the prosody of anl utt-frame utterance,
+comprising pitch, V/UV flag, and energy. We consider degraded
+prosodyF (deg)∈R 3×lutt defined by a degradation tensorH∈
+R3×lutt×lutt and observation noiseZas
+F (deg) =H⊛F+Z,(1)
+3983
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2942
+Waveform 
+Degradation 
+Information Prosody
+Restorer
+(PR)
+Degraded
+Prosody
+Restored
+Prosody
+Backbone
+TTS model 
+Duration
+Speaker ID
+T ext 
+Duration
+Predictor
+Vocoder 
+Decoder
+LR 
+Style ID
+T ext Encoder 
+Emb
+Emb
+Emb
+Pitch
+V/UV
+Energy
+Context
+Encoder
+Score
+Estimator
+T ext, 
+Duration,
+Speaker ID,
+Style ID
+0 0 02 2 2
+0 0 0 1 1 1
+0 0 02 2 2
+Degraded
+Prosody
+Degradation
+ID 
+NoisyProsodyTime 
+ScoreUpdate
+Emb
+Score
+Context
+Encoder
+Score
+Estimator
+T ext, 
+Duration,
+Speaker ID,
+Style ID
+Degraded
+Prosody
+NoisyProsody
+Time 
+Score
+PredictedClean Prosody
+Update      in
+Spectral Space
+Update      via
+Langevin Dynamics
+Degradation
+T ensor 
+Degradation
+T ensor 
+Common
+DDRM only
+GibbsDDRM only Duration
+Speaker ID
+T ext 
+LR 
+Style ID
+T ext Encoder 
+Emb
+Emb
+Context Feature
+(a)Overall system(b)Diffusion-based PR (supervised)(c)Diffusion-based PR (unsupervised)(d)Context encoder
+Figure 2:Inference pipeline of the proposed system.LR: length regulator in [1],Emb: embedding operation.
+where the symbol⊛denotes channel-wise matrix multiplica-
+tion. We denote thei-th slice ofHasH i , which is a degrada-
+tion matrix for thei-th prosody feature. We formulate prosody
+restoration as a problem of estimatingFfromF (deg) given con-
+ditioning features, which we will explain in Sect. 3. We address
+five tasks illustrated in Fig. 1 (b)–(f), defined by the structure of
+Hi. These five tasks are detailed as follows.
+Inpainting (Inp), explored in [7], is the task to restore
+masked prosody.H (inp)
+i is a binary diagonal matrix:1for ob-
+served and0for masked frames. We consider block-wise mask-
+ing parameterized by block sizel blk and mask ratior. Solving
+this task enables selective editing, allowing users to mask and
+regenerate specific segments while retaining satisfactory ones.
+Refinement (Ref) is the task to restore fine-grained prosody
+from a coarser representation. We address two variants: Ref
+from smoothed prosody (Ref-S), explored in [8], and Ref from
+piecewise-averaged prosody (Ref-A). For Ref-S, we employ
+Gaussian smoothing, defining the degradation matrixH (ref-s)
+i as
+a Toeplitz matrix with a Gaussian kernel of widthσ G. For Ref-
+A, the degradation matrixH (ref-a)
+i is defined as a block-diagonal
+matrix parameterized by window sizes{l win,j}j satisfyingP
+jlwin,j=lutt, where thej-thl win,j×lwin,j block consists of el-
+ements1/l win,j. Solving Ref-A enables segment-level control,
+allowing users to specify low-resolution prosody that is piece-
+wise constant over phonemes, words, or arbitrary segments. 1
+For both Ref-S and Ref-A, we setH (ref-s)
+2 =H (ref-a)
+2 =O, i.e.,
+V/UV flags are treated as unobserved, as specifying smoothed
+or averaged values for V/UV flags is impractical.
+Inpainting and Refinement (InpRef) combines Inp and Ref
+to restore prosody from partial and coarse inputs. We denote
+the tasks combining Inp with Ref-S and Ref-A asInpRef-S
+andInpRef-A, respectively. The degradation is modeled as
+H (inpref-u)
+i =H (inp)
+i H (ref-u)
+i (u∈{s,a}). For V/UV flags, only
+masking is applied:H (inpref-u)
+2 =H (inp)
+2 . Solving InpRef allows
+users to provide low-resolution or smoothed prosody only for
+target segments and leave the remainder unspecified.
+3. Proposed Method
+Fig. 2 (a) illustrates the overall system, coupling the proposed
+prosody restorer (PR) with a prosody-controllable backbone
+TTS model. The PR predicts the restored prosody ˆFfrom
+text, speaker and style IDs, duration, the degraded inputF (deg),
+and variant-specific degradation information. Subsequently, the
+TTS model generates waveforms conditioned on the predicted
+ˆF. We propose supervised and unsupervised diffusion-based
+PRs (DPRs), detailed in Sect. 3.2 and 3.3, respectively. Both
+1In Ref-A, the control granularity can be chosen at inference time,
+unlike models with predefined unit-level controls whose granularity is
+fixed by the training-time configuration [23].
+DPRs share a unified architecture described in Sect. 3.1 and are
+trained as continuous-time score-based DMs [16]. Since the PR
+is trained independently, it can be flexibly integrated with any
+prosody-controllable backbone TTS; our specific implementa-
+tion is detailed in Sect. 4.1.
+3.1. Architecture of DPR
+The DPR consists of a context encoder (CE) and a score esti-
+mator (SE). As illustrated in Fig. 2 (d), the CE transforms text,
+speaker and style IDs, and duration into frame-level context fea-
+turesC (cxt) of lengthl utt, utilizing a Transformer-based text en-
+coder [24]. As shown in Fig. 2 (b) and (c), the SE takes time
+t∈[0,1], noisy prosodyF t, and conditioning features includ-
+ingC (cxt) to estimate the conditional score ofF t. The com-
+position of the conditioning features varies between supervised
+and unsupervised DPRs. For the SE, we adopt a 1D U-Net [25],
+which is suited for our configuration where prosody and auxil-
+iary information are concatenated along the channel dimension.
+3.2. Supervised Approach
+In this approach, the model is trained to restore prosody from
+simulated degradations. At each training step, a task is sampled
+from the set{Inp, Ref-S, Ref-A, InpRef-S, InpRef-A}. Then,
+based on the selected task, degradation parameters are deter-
+mined. Specifically, for Inp, InpRef-S, and InpRef-A, we sam-
+ple a masking block sizel blk and a mask ratior. Similarly,
+for Ref-S and InpRef-S, we sample a Gaussian kernel width
+σG, whereas for Ref-A and InpRef-A, we select a mean win-
+dow size ¯lwin to generate{l win,j}j. Simultaneously, we com-
+pute a degradation embeddingC (deg). This embedding is de-
+rived from a frame-level degradation ID tensor indicating the
+degradation state for each prosodic feature per frame, taking
+values in{0,1,2,3} 3×lutt. Here, the IDs0to3correspond
+to masking, no degradation, smoothing, and averaging, respec-
+tively. GivenF (deg),C (cxt), andC (deg), which compose the
+conditioning features, the SE estimates the conditional score
+∇p(Ft|F (deg),C (cxt),C (deg)). During inference, we employ
+an ordinary differential equation solver.
+3.3. Unsupervised Approach
+As covering all degradation patterns via supervised training is
+intractable, we further propose an unsupervised approach for
+DPR. In this setting, we train the SE to estimate the context-
+conditional score∇p(F t|C (cxt)). For inference, we employ
+two samplers designed for linear inverse problems. The choice
+of sampler depends on whether the task is non-blind or blind.
+For non-blind tasks whereHis known, namely Inp, Ref-
+A, and InpRef-A, we utilize the DDRM sampler [21]. At each
+timestept, the clean prosodyF θ,t is predicted via Tweedie’s
+formula using the estimated score and the current noisy state
+Ft. Subsequently,F t is updated in a spectral space defined by
+3984
+the singular value decomposition ofH i. The update is mainly
+based onF (deg) for elements with large singular values, where
+the observation is reliable. For elements with small singular
+values, it instead relies on the estimated priorFθ,t.
+For blind tasks whereHis unknown, namely Ref-S and
+InpRef-S, DDRM is inapplicable. We thus employ GibbsD-
+DRM [22], which alternately updates the restoration results and
+the degradation parametersφof the degradation tensorH φ.
+The parametersφare sampled via Langevin dynamics [26] as
+φ←φ+ ξ
+2∇φ (Lfid +λ priLpri) +
+p
+ξϵ,(2)
+whereL fid,L pri,ξ, andϵdenote the observation fidelity term,
+the prior term scaled byλ pri, the step size, and the standard
+Gaussian noise, respectively. In our implementation, we define
+φ={φ i}i∈{1,3} as a set of smoothing kernels for thei-th
+prosody feature 2 . The observation fidelityL fid is given by
+Lfid =− 1
+2σ2
+obs
+F (deg)−H φ ⊛Fθ,t
+
+2
+F
+,(3)
+whereσ obs is the standard deviation of observation noise and
+∥·∥F denotes the Frobenius norm. To induce kernel smoothness,
+we define the prior term asL pri =− P
+i∈{1,3}∥Dφi∥2
+2, where
+Dis a first-order difference matrix. To accelerate convergence,
+it is beneficial to initialize the degradation parameters with a
+reasonable estimateφ (init) [22]. We obtainφ (init) by executing
+parallel DDRM runs across candidate kernels{φ (k)}N
+k=1 and
+selecting the one that minimizes the observation error:
+φ(init) = arg min
+φ(k)
+F (deg)−H φ(k) ⊛ ˆF (k)
+
+2
+F
+,(4)
+where ˆF (k) is the prosody restored usingφ (k).
+4. Experimental Evaluation
+4.1. Experimental Setup
+Dataset:We conducted experiments using two Japanese
+emotional speech corpora: the in-house (IH) and JVNV
+datasets [27]. The IH dataset contains 31 hours of speech from
+four professional speakers, two males and two females, cover-
+ing four styles:neutral,happy,angry, andsad. We reserved
+eight utterances per speaker-style pair for validation and test-
+ing, yielding 20,210 training, 128 validation, and 128 test ut-
+terances. For the JVNV dataset, we extracted only verbal seg-
+ments, assigning 1,423, 96, and 96 utterances to training, vali-
+dation, and testing. We used internally annotated phoneme and
+accent (PA) symbols as text inputs, where the accent symbols
+indicate accent phrase boundaries and accent nuclei [28].
+From 22.05 kHz waveforms, we computed 80-dimensional
+log-mel spectrograms with a 256-sample hop as the acoustic
+model target and vocoder input, and used the same frame rate
+for all prosodic features. We obtained pitch and V/UV flags via
+pYIN [29]. Pitch was log-normalized and linearly interpolated
+in unvoiced regions. Energy was computed as the root mean
+square of the log-mel spectrogram across frequency bins, fol-
+lowed by normalization andµ-law companding withµ=2 14−1.
+Baseline PRs:We prepared two baseline PRs,DetandCV AE,
+based on a deterministic Transformer and a conditional varia-
+tional autoencoder [30], respectively.Detis an extension of
+the sketch-to-contour predictor in [8]. It first extracts condition-
+ing features following Sect. 3.2, except thatF (deg) is linearly
+quantized and embedded. A Transformer decoder then converts
+these features into the prosody estimates.CV AEextends Det by
+2Although we use the termblindbecauseHis unknown, our pa-
+rameterization ofφassumes that the degradation is representable by
+smoothing kernels; thus, this setting is more precisely semi-blind.
+incorporating a Transformer encoder for stochastic latent mod-
+eling. Specifically, the encoder maps the conditioning features
+to the mean and log-variance of a latent distribution, from which
+a sampled sequence is concatenated with context features and
+decoded. Note that we adopt a CV AE baseline following [7],
+but utilize local latents of lengthl utt instead of global ones. We
+initially considered MICV AE [7] as a baseline for Inp, but ex-
+cluded it because our preliminary experiments indicated that it
+failed to preserve the providedF (deg) in observed regions.3
+DPRs:We evaluated three variants of the proposed method.
+Diff-Sis the supervised DPR described in Sect. 3.2.Diff-U-NB
+andDiff-U-Bcorrespond to the unsupervised DPR introduced
+in Sect. 3.3. They share identical parameters but employ distinct
+samplers: Diff-U-NB utilizes DDRM for non-blind restoration,
+and Diff-U-B leverages GibbsDDRM for blind restoration. As
+an oracle for blind tasks, we also evaluated Diff-U-NB, which
+inherently assumes access to the ground-truth degradation.
+PR Configurations:Using the simulated degradations in
+Sect. 3.2, we trained Det and CV AE with objectivesL rec and
+Lrec+λKLLKL, respectively.L rec=∥F− ˆF∥ 2
+F/lutt is the recon-
+struction loss.L KL is the Kullback–Leibler divergence of the la-
+tent distribution from the Gaussian prior, scaled byλ KL=10−3.
+For all DPRs, we employed a linear log-signal-to-noise-
+ratio (SNR) schedule [31] where the log SNR decreases from
+12to−12. The number of diffusion steps was set to64. For
+Diff-S, we employed the Euler solver with a noise scale of0.5.
+For Diff-U-NB, we set(η,η b,σ obs) = (0.5,1.0,0.0). For Diff-
+U-B, these were set to(1.0,0.5,0.01)withξ= 10 −8 and
+λpri = 104. We initialized a kernel of size127using Gaussian
+candidates withσ G∈{2,4,...,12}. The number of alternat-
+ing steps, denoted asMt in [22], was set to3fort<0.2and0
+otherwise, with each step executing200Langevin iterations.
+For the simulated degradation described in Sect. 3.2, degra-
+dation parameters were uniformly sampled from the follow-
+ing ranges:r∈[0,1],l blk ∈[2,50],σ G ∈[1,12], and
+¯lwin ∈[3,20]. We trained all PRs on a single NVIDIA RTX
+A6000 GPU using Adam [32] with a learning rate of10−4 and a
+batch size of16. We trained baseline PRs and DPRs for10 6 and
+2×10 6 iterations, respectively. Ground-truth durations were
+used for all PRs during training and evaluation.
+Backbone TTS model:The TTS backbone comprises a
+FastSpeech2 (FS2)-based acoustic model [2] and a HiFi-GAN
+vocoder [33]. We modified the original FS2 by incorporating
+the V/UV flag as an additional variance, adding speaker and
+style IDs as global conditions, and replacing the Transformer
+decoder with a conditional flow matching decoder [25].
+Evaluation Tasks:We conducted a comprehensive evalua-
+tion of all PRs across the five tasks defined in Sect. 2, spanning
+a wide range of degradation parameters. For Inp, InpRef-S,
+and InpRef-A, masked blocks were randomly selected to sat-
+isfyr. For Ref-A and InpRef-A, we used a constant window
+sizel win,j =l win. The specific parameters were set as follows:
+• Inp:r∈{0.05,0.1,...,1},l blk = lutt
+20
+• Ref-S:σ G∈{1,2,...,12}, Ref-A:l win∈{4,6,...,20}
+• InpRef-S:r∈{0.25,0.5,0.75},l blk = lutt
+20 ,σ G∈{4,8,12}
+• InpRef-A:r∈{0.25,0.5,0.75},l blk =l win∈{8,14,20}
+Evaluation Criteria:To evaluate prosody restoration ac-
+curacy, we computed the following metrics between the re-
+stored prosody and the ground-truth prosody extracted from the
+3A possible reason is that the global latent variable induced by the
+encoder architecture lacks the capacity to retain frame-level prosody,
+while the original model was designed for phoneme-level features.
+3985
+Table 1:Objective results on the IH dataset.†: proposed meth-
+ods.∗: Diff-U-NB exploiting full degradation knowledge (or-
+acle). GT prosody: synthesized with ground-truth prosody ex-
+tracted from recordings. GT audio: ground-truth recordings.
+Method
+Log F0 V/UV Energy ER
+MCD↓
+Speech
+BERT
+Score↑RMSE↓1-WD↓F1↑RMSE↓1-WD↓PA↓P↓
+(cents) (10−2) (10 −2) (10−3) (%) (%)
+InpRef-S
+Det 228.2 1.38 .930 4.51 5.05 5.44 2.81 4.18 .857
+CV AE 225.1 2.84 .931 4.61 6.74 5.61 2.72 4.09 .863
+Diff-S† 181.7 2.30 .929 3.67 3.35 4.382.46 3.96 .874
+Diff-U-B† 162.1 1.12 .932 3.60 3.13 3.58 2.533.78 .877
+Diff-U-NB∗ 136.2 0.95 .935 3.14 1.35 4.25 2.46 3.57 .879
+InpRef-A
+Det 216.61.18.931 4.57 4.73 5.51 2.79 4.21 .857
+CV AE 223.1 3.25 .933 4.57 5.48 5.39 2.59 4.13 .862
+Diff-S† 184.2 1.59 .928 4.01 3.194.06 2.38 4.01.873
+Diff-U-NB† 185.6 1.59.936 4.00 2.70 4.06 2.33 3.97 .870
+Inp
+Det 290.92.28.928 5.03 6.85 4.40 2.62 4.40 .855
+CV AE 278.0 4.92 .930 4.93 5.49 4.83 2.49 4.31 .861
+Diff-S† 253.94.09 .9294.686.113.46 2.20 4.24.871
+Diff-U-NB† 269.2 3.38.934 4.935.48 4.13 2.574.23 .867
+Ref-S
+Det 108.3 1.05 .937 3.51 5.56 5.08 2.70 3.87 .864
+CV AE 136.6 3.07 .940 3.85 4.25 5.22 2.59 3.81 .870
+Diff-S† 55.0 0.52 .946 1.91 2.75 4.52 2.36 3.43.885
+Diff-U-B† 70.3 0.68 .932 2.82 3.994.02 2.25 3.35 .884
+Diff-U-NB∗ 35.6 0.65 .933 1.64 0.46 4.48 2.49 3.19 .887
+Ref-A
+Det 107.2 0.80 .935 3.72 4.48 5.83 2.98 3.83 .861
+CV AE 136.9 3.27 .939 3.95 4.02 5.34 2.62 3.80 .869
+Diff-S† 65.3 0.45 .941 2.55 1.574.23 2.42 3.43.883
+Diff-U-NB† 69.2 0.71 .933 2.820.99 4.26 2.623.41 .880
+GT prosody — — — — — 3.90 2.29 2.84 .912
+GT audio — — — — — 3.51 1.79 — —
+recordings: root mean square error (RMSE) and 1-Wasserstein
+distance (1-WD) for pitch and energy, and F1 scores for V/UV
+flags. Only on the IH dataset, we synthesized speech using the
+backbone TTS model conditioned on the restored prosody. The
+synthesized speech was used for acoustic objective evaluations,
+accent error quantification, and subjective listening tests. For
+the acoustic evaluation, we calculated mel-cepstral distortion
+(MCD) [34] and SpeechBERTScore [35] against the ground-
+truth recordings. To quantify accent errors, we predicted PA
+symbols from the synthesized audio using an internal estimator
+comprising a pre-trained HuBERT-large 4 [36] and Conformer
+blocks [37] trained via connectionist temporal classification
+loss [38]. We calculated error rates for the predicted PA sym-
+bols and phonemes, denoted as PA-ER and P-ER, respectively.
+For subjective evaluation, six professional Japanese anno-
+tators evaluated a 32-utterance subset of the IH test set un-
+der two conditions: InpRef-S with(r,σ G) = (0.5,12)and
+InpRef-A with(r,l win) = (0.5,20). Inspired by [39], we rated
+prosodic naturalness on a deduction-based scale, calculated as
+max(5−2nmajor−nminor,1), wheren major andn minor denote the
+numbers of major and minor prosodic errors, respectively.
+4.2. Results and Discussion
+Table 1 summarizes the objective results on the IH dataset, av-
+eraged across various task-specific degradation conditions. We
+can see that the proposed DPRs consistently outperformed the
+baselines across most evaluation metrics. In particular, although
+P-ER was comparable among all methods, the baselines exhib-
+ited significantly higher PA-ER. These results suggest that the
+baselines often struggled to preserve accent-related prosodic
+structures, whereas the proposed DPRs more faithfully recov-
+ered prosody consistent with the linguistic context, likely due
+to a strong conditional generative prior. Moreover, the unsuper-
+vised DPR achieved performance comparable to the supervised
+4https://huggingface.co/yky-h/japanese-hubert-large
+Table 2:Objective results on the JVNV dataset.†: proposed
+methods.∗: Diff-U-NB exploiting full degradation knowledge
+(oracle). P: log F0 RMSE (cents). E: Energy RMSE (×10−2).
+Method
+InpRef-S InpRef-A Inp Ref-S Ref-A
+P E P E P E P E P E
+Det 283.2 6.91 259.3 6.89 361.9 8.05 132.8 5.42 130.1 5.53
+CV AE 275.8 6.73 254.6 6.64 357.9 7.69 170.3 5.90 168.8 5.97
+Diff-S† 241.1 5.99 201.2 6.27 343.0 7.8964.9 3.16 77.84.11
+Diff-U-B† 176.5 5.86— — — — 88.6 4.20 — —
+Diff-U-NB†/∗ 146.1∗ 5.04∗ 176.2 5.98 281.2 7.6038.2 ∗ 2.60∗ 76.2 4.40
+Table 3:Prosodic naturalness with 95 % confidence intervals.
+GT prosody: synthesized with ground-truth prosody.
+Method InpRef-S InpRef-A
+(r,σ G) = (0.5,12) (r,l win) = (0.5,20)
+Det 3.48±0.20 3.49±0.20
+CV AE 3.36±0.17 3.55±0.19
+Diff-S (proposed) 4.21±0.15 4.22±0.13
+Diff-U-B (proposed)4.74±0.08 —
+Diff-U-NB (proposed) —4.35±0.12
+GT prosody 4.86±0.06
+5.5 6.0 6.5

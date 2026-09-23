@@ -1,0 +1,418 @@
+AuscuTSLM: Patient-Level Multimodal Question Answering from Multi-Site
+Auscultation Recordings
+Fan Wu ID 1,∗∗, Tsai-Ning Wang ID 2, Nicolas Zumarraga1, Ning Wang1, Markus Kreft ID 1, Kevin
+O’Sullivan ID 1, Paula Manso Zorrilla, Elgar Fleisch ID 1,3, Oliver Aalami ID 4, Paul Schmiedmayer ID
+4, Robert Jakob ID 1,∗, Patrick Langer ID 1,4,∗
+1 ETH Zurich, Switzerland
+2 Eindhoven University of Technology, Netherlands
+3 University of St. Gallen, Switzerland
+4 Stanford University, USA
+fanwu@ethz.ch, t.n.wang@tue.nl, nzumarraga@student.ethz.ch, ning.wang@mtec.ethz.ch,
+mkreft@ethz.ch, kosullivan@ethz.ch, paulamanso21@gmail.com, efleisch@ethz.ch,
+aalami@stanford.edu, schmiedmayer@stanford.edu, jakobr@ethz.ch, planger@stanford.edu
+Abstract
+Auscultation is a vital diagnostic tool, yet its utility is often lim-
+ited by subjective interpretation. While general-purpose Audio-
+Language Models (ALMs) excel in general domains, they strug-
+gle with the nuances of physiological signals. We propose
+a framework that aligns multi-site auscultation recordings di-
+rectly with a frozen Large Language Model (LLM) embed-
+ding space via gated cross-attention. By leveraging the LLM’s
+latent world knowledge, our approach moves beyond isolated
+classification toward holistic, patient-level assessment. On the
+CaReSound benchmark, our model achieves a state-of-the-art
+0.865 F1-macro and 0.952 BERTScore. We demonstrate that
+lightweight, domain-specific encoders rival large-scale ALMs
+and that multi-site aggregation provides spatial redundancy
+that mitigates temporal truncation. This alignment of medical
+acoustics with text foundations offers a scalable path for bridg-
+ing signal processing and clinical assessment.
+Index Terms: audio-language models, multimodal, question
+answering, auscultation, physiological audio, respiratory sound,
+heart sound, audio understanding, clinical assessment
+1. Introduction
+Auscultation remains a clinical cornerstone for monitoring heart
+and lung function [1], yet its diagnostic utility is limited by sub-
+jective interpretation and inter-observer variability [2]. While
+machine learning (ML) methods enable automated detection of
+pathologies from auscultation signals, most approaches frame
+the task as classification, reducing complex physiological sig-
+nals to discrete labels [3, 4]. Such formulations offer limited
+flexibility for clinical use. Question answering (QA) provides
+an alternative paradigm by allowing models to respond to nat-
+ural language queries about medical data [5]. In auscultation
+analysis, QA allows clinicians to ask targeted questions about
+patient recordings. Recent ALMs extend LLM-based QA to
+acoustic inputs by conditioning language generation on audio
+representations [6].
+However, applying ALMs to auscultation QA presents sev-
+eral challenges. First, general ALMs are optimized for speech
+or environmental audio, struggling with subtle, noise-obscured
+*These authors contributed equally.
+**indicates the corresponding author.
+pathological patterns in medical auscultation (e.g., murmurs or
+crackles) [7, 8]. Second, while medical auscultation signals are
+temporally structured and relatively long (e.g., up to 30 s), cur-
+rent approaches rely on short-window segmentation [9]. This
+fragmentation may lose the “rhythmic context” of full respira-
+tory or cardiac cycles. Third, auscultation requires integrating
+evidence across multiple anatomical sites. Although datasets
+such as PhysioNet provide multi-site recordings, many methods
+still operate on single recordings and ignore cross-site relation-
+ships [10].
+To address these challenges, we proposeAuscuTSLM 1, a
+patient-level multimodal clinical QA framework that bridges
+physiological audio signals and multimodal generative model-
+ing for holistic auscultation analysis. Inspired by Flamingo’s
+gated cross-attention [11], our architecture leverages the LLM’s
+latent world knowledge by integrating multi-site recordings (up
+to 30 s) as a native modality to produce grounded free-text
+answers. On the CaReSound benchmark, AuscuTSLM es-
+tablishes a new state-of-the-art, achieving a 42.6% Contains-
+Match (+7.75 points) and 0.865 F1-macro (+1.9 points) over
+the CaReAQA baseline, with a 0.952 BERTScore. In addition,
+we demonstrate that lightweight, domain-specific encoders us-
+ing raw-waveform tokenization can rival large-scale pretrained
+ALMs and show that multi-instance aggregation provides spa-
+tial redundancy that improves robustness to signal truncation.
+2. Related Work
+2.1. From Acoustic Classification to Medical QA
+Traditional analysis of medical acoustics primarily relies on su-
+pervised classification for heart and lung sounds [12]. However,
+these classifiers are task-specific and lack natural language flex-
+ibility [13]. Similarly, general ALMs (e.g., Audio Flamingo [6],
+Qwen-Audio [14]) target speech or environmental audio rather
+than physiological signals. In the medical domain, while med-
+ical visual QA is well-established for imaging [15], physiolog-
+ical audio remains underrepresented. Domain-specific efforts
+like RespLLM focus on respiratory classification [16], while
+OPERA learns robust respiratory encoders, it does not pro-
+vide a generative framework for open-ended clinical QA [17].
+CaReAQA represents an initial step toward audio-grounded
+1https://github.com/Fan-loewe/AuscuTSLM
+5526
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2037
+open-ended QA [18]; however, it relies on segmented, single-
+instance recordings, which may disrupt global temporal patterns
+and fail to capture the multi-site nature of clinical auscultation.
+2.2. Audio Representation
+To process continuous auscultation signals with Transformer-
+based models, audio needs to be converted into discrete repre-
+sentations, typically via temporal patching [19] or embeddings
+from self-supervised models like Wav2Vec 2.0 [20]. How-
+ever, these encoders often become computationally prohibitive
+when processing the long-duration recordings required to pre-
+serve physiological context. While hierarchical architectures
+like Megabyte utilize chunking to mitigate this [21], they are
+primarily optimized for linguistic data and often fail to exploit
+the quasi-periodic, non-linguistic structures inherent in physio-
+logical signals.
+Clinical auscultation is inherently a multi-instance process,
+requiring clinicians to integrate acoustic evidence across mul-
+tiple anatomical sites (e.g., aortic, pulmonic) rather than inter-
+preting isolated clips. This workflow aligns with MIL, where a
+patient is treated as a “bag” of recordings informed by localized
+“instances” of pathology [22].
+To bridge long-context modeling with multi-site fusion, we
+use Perceiver Resamplers [11] to compress long, multi-instance
+sequences into fixed latent vectors. This mitigates token bottle-
+necks and bypasses standard Transformer memory constraints
+while preserving fine-grained local features and global tempo-
+ral patterns.
+3. Methods
+3.1. Dataset
+We useCaReSound, a benchmark for medical QA on cardiac
+and respiratory auscultation audio [18], built from several pub-
+lic datasets including ICBHI [23], KAUH [24], CirCor [25],
+SPRSound [26], and ZCHSound [27]. Textual metadata and an-
+notations are transformed into open-ended diagnostic dialogues
+using GPT-4o, simulating clinical scenarios where physicians
+analyze patient recordings and provide diagnostic feedback.
+These dialogues comprise two formats: binary QA handles con-
+strained classification (e.g., “normal vs abnormal”), while open-
+ended QA requires generative clinical descriptions (e.g., Q:
+“Where was the normal respiratory sound heard?” A: “Poste-
+rior right lower”). Audio recordings and QA pairs are linked by
+patient ID, enablingpatient-level assessment. Datasets are cat-
+egorized by structure:Single-instance (SIL)datasets (KAUH,
+ZCHSound) contain one recording per patient, whereasMIL
+datasets (ICBHI, CirCor, SPRSound) include recordings from
+multiple anatomical locations. Location metadata from file
+names is used as contextual input (e.g., CirCor provides aor-
+tic, pulmonary, tricuspid, and mitral valve recordings per pa-
+tient). Thus, patient-level prediction requires aggregating infor-
+mation across recordings. Table 1 summarizes the SIL and MIL
+datasets.
+Table 1:Auscultation dataset statistics
+Dataset Patients Audios Audios/pt QAs QA/pt
+CirCor 942 3,163 3.4 3,284 3.5
+ICBHI 126 920 7.3 20,728 164
+SPRSound 292 2,683 9.2 5,029 17.2
+KAUH 336 336 1.0 1,009 3.0
+ZCHSound 1,259 1,259 1.0 2,527 2.0
+Total 2,951 8,361 — 32,577 -
+3.2. Audio Pre-processing
+The source datasets contain recordings with heterogeneous
+sampling rates (4–44.1 kHz). To ensure consistency, all audio
+is resampled to 16 kHz and converted to mono via channel av-
+eraging. Audio clips are truncated to a maximum duration of
+30 s (480,000 samples), with shorter signals zero-padded to this
+length. Waveforms are normalized to zero mean and unit vari-
+ance. Finally, to ensure compatibility with the encoder’s patch-
+based architecture, signals are padded to the nearest multiple of
+the patch size (640 samples, 40 ms). While zero-padding in-
+troduces non-informative regions, the subsequent Perceiver Re-
+sampler compresses these representations into fixed latent to-
+kens, mitigating the impact of the padding.
+3.3. Multimodal Architecture
+Based on our OpenTSLM-Flamingo architecture [28], we con-
+vert auscultation recordings into temporal token sequences, ag-
+gregate them into a patient-level latent representation, and inject
+this representation into a frozen LLM via gated cross-attention,
+as shown in Figure 1.
+3.3.1. Audio Representation & Encoder
+Each recordingx∈R L is converted into a sequence of acoustic
+tokense n via one of two alternative tokenizers. TheRawAu-
+dioTokenizersegments the waveform into non-overlapping
+40 ms patches, projected via 1-D convolution:
+en =Conv1D
+ 
+xnP:(n+1)P ;W patch
+
++p n (1)
+whereW patch is the kernel andp n is a learnable positional em-
+bedding. This transformation allows the model to process aus-
+cultation signals as sequential tokens, analogous to words in
+a sentence. Alternatively, theMelSpectrogramTokenizerpro-
+cesses a log-mel spectrogram ˜Sthrough a 2-D CNN with
+frequency-wise pooling:
+en =AvgPool freq
+ 
+CNN2D(˜S)
+
+n +p n (2)
+Optionally, pretrained encoders (i.e., Wav2Vec2, Whis-
+per [29], CLAP [30]) can replace the tokenizers. Regardless of
+the encoder choice, the resulting token sequences are projected
+into a sharedD proj-dimensional space via a LayerNorm-GELU
+Multi-Layer Perceptron (MLP) to ensure a uniform latent rep-
+resentation for downstream conditioning:
+ˆen =GELU
+
+LayerNorm(en)Wproj +b proj
+
+(3)
+3.3.2. Perceiver Resampler & Multi-Instance Learning
+For a patient withMrecordings, tokens are zero-padded to a
+uniform lengthN max and flattened into a multi-instance matrix
+X∈R (M·N max)×D. To obtain a fixed-length patient-level rep-
+resentation, we employ aPerceiver ResamplerwhereKlearn-
+able latent queriesZ∈R K×D attend jointly across all temporal
+and clip dimensions:
+Z′ =softmax
+ ZWQ(XWK )⊤
+√Dk
+
+XWV (4)
+Instead of averaging or concatenating recordings, this cross-
+attention mechanism acts as an adaptive pooling operator, en-
+abling the model to capturecross-site interactions(e.g., A V–
+MV co-variation) while producing a fixed-size latent represen-
+tationZ′ regardless of the encoder choice.
+5527
+Patient-Level Inputs
+ID: 3 | Question
+“What is the diagnosis based on the auscultation results?’’
+Audio Encoder (AE) Perceiver Resampler (PR)ID: 3 | L oc a tion
+🔥A1: Anterior Left (AL) 
+A2: Anterior Right (AR) EmbeddingsLightweight Tokenizer
+raw
+Multi-Head  Cross Attention (8x)
+melID: 3 | Clips: N
+or
+Concat
+A1 Pre-trained Encoder
+wav2vec
+whisper
+CLAPup to 30 seconds
+MLP
+MLP Projector
+AN
+Pre-trained Large Language Model (LLM)
+Input Embedding
+🔥Fixed latents
+Cross-Attention Dense
+1st GATED
+1st LLM block
+n-th LLM block
+Frozen Trainable
+Answer
+Cross-Attention Dense
+n-th GATED
+Figure 1:AuscuTSLM: Architecture for patient-level multimodal clinical QA
+3.3.3. Gated Cross-Attention & Multi-Modal Fusion
+Our model fuses textual and acoustic information through gated
+cross-attention. For each recording, site metadata (e.g., “A V”)
+is tokenized using the LLM tokenizer, while the audio wave-
+form is processed through a separate audio encoder. The wave-
+form is then encoded and compressed into Perceiver latents
+Z′ [28]. Upon encountering the<audio>token, the gated
+cross-attention layers allow the LLM representations to attend
+to the audio latents. At layerℓ, the LLM representationsH (ℓ)
+act as queries, while the audio latentsZ ′ provide the keys and
+values:
+H(ℓ+1) =H (ℓ) + tanh(αℓ)CrossAttn(H(ℓ),Z′)(5)
+where the learnable gatetanh(α ℓ)controls how much acoustic
+information is injected into the language model. This design
+preserves pretrained linguistic knowledge while grounding the
+generated answer in the auscultation signal.
+4. Experiments
+Our experiments are designed to identify the optimal configu-
+ration for grounding a LLM in multi-site physiological audio.
+We first establish a baseline for patient-level QA, then system-
+atically evaluate the two primary factors governing clinical as-
+sessment: the acoustic representation (how the model encodes
+audio) and temporal context (the duration of the input signal).
+4.1. Patient-Level Question Answering
+Our primary study focuses on open-ended and binary clinical
+QA and we evaluate our framework on the CaReSound dataset.
+We use patient-disjoint splits stratified by source dataset to
+prevent data leakage, resulting in 2,064 / 440 / 447 patients
+(22,882 / 3,199 / 6,496 QA pairs) for training, validation and
+testing. Our framework utilizes theRawAudioTokenizerinte-
+grated with a frozen Meta-LLaMA-3.2-1B backbone via train-
+able gated cross-attention adapters, with approximately 1.4B
+parameters. Experiments were conducted on NVIDIA RTX
+PRO 6000 Blackwell GPUs (97,887 MiB VRAM). Models are
+trained with AdamW optimizer with an effective batch size of
+16 and component-specific learning rates (5×10−6 for encoders
+and1.5×10 −5 for adapters). To mitigate dataset imbalance,
+we employ balanced sampling. At the end, we evaluate per-
+formance on the held-out test set. Open-ended QA is measured
+using Contains-Match Accuracy, ROUGE-L F1, METEOR, and
+BERTScore F1 to capture both lexical and semantic similarity,
+while binary questions are assessed via Accuracy, F1, Sensitiv-
+ity, and Specificity. More details are provided in the supplemen-
+tary material.
+4.2. Audio Representation & Audio Encoders
+To determine the most effective bridge between raw auscul-
+tation and LLM embeddings, we compare five encoder vari-
+ants: two lightweight, scratch-trained front-ends (RawAu-
+dio, Mel-Spectrogram) and three large-scale pretrained mod-
+els (Wav2Vec2, Whisper, CLAP). This comparison quanti-
+fies whether specialized physiological tokenization can rival or
+outperform generic, high-capacity audio encoders for clinical
+tasks. Training a full model requires approximately 4 h for
+lightweight tokenizers and 8 h for pretrained encoders, while
+inference requires around 8 h.
+4.3. Temporal Context Modeling
+Auscultation requires capturing transient pathological sounds,
+such as murmurs or crackles, which may be missed in short
+clips. We assess the impact of temporal context by reducing the
+maximum audio duration (from 30 s to 20 s and 10 s) using the
+RawAudioTokenizer. This study identifies the point of dimin-
+ishing returns for sequence length and determines the minimum
+duration required for reliable patient-level inference.
+5. Results
+5.1. Patient-Level Question Answering
+Table 2 (top) compares our framework against zero-shot
+foundational ALMs (Audio-Flamingo3, Qwen2-Audio, and
+Qwen2.5-Omni) and fine-tuned baseline (CaReAQA). Our 1.4B
+model consistently outperforms foundational ALMs pretrained
+on large amounts of audio data, highlighting the need for
+domain-specific fine-tuning. Notably, our framework improves
+upon fine-tuned CaReAQA across all metrics, particularly in
+generative grounding: we achieve a Contains-Match Accuracy
+of 42.6% (+7.75 points; 22%), ROUGE-L of 0.673 (+0.061;
+10%), and METEOR of 0.643 (+0.133; 26%), and BERTScore
+of 0.952. In contrast, binary classification improvements are
+more moderate, increasing F1-macro from 0.846 to 0.865 (+1.9
+points). The substantial gains in open-ended metrics indicate
+significantly better textual alignment and answer grounding.
+5528
+Table 2:Performance comparison across state-of-the-art ALMs, different audio encoders and different temporal context lengths
+Approach Yes/No Acc (%) Yes/No F1 Contains-Match (%) ROUGE-L METEOR BERTScore
+Model
+Audio-Flamingo3 (8B) 85.00 0.545 5.51 0.2883 0.2842 0.8851
+Qwen2-Audio (7B) 17.83 0.171 4.33 0.2951 0.3592 0.8996
+Qwen2.5-Omni (0.5B) 84.62 0.523 6.74 0.1351 0.2276 0.8648
+CaReAQA (3B) 93.12 0.846 34.85 0.6117 0.5107 0.9423
+AuscuTSLM (Ours)(1.4B)93.50 0.865 42.60 0.6732 0.6432 0.9519
+Encoder
+Raw93.50 0.864842.600.67320.64320.9519
+Mel93.500.8632 42.69 0.6687 0.6359 0.9507
+CLAP 93.44 0.863043.130.67260.64530.9513
+Whisper93.500.8646 42.47 0.6673 0.6396 0.9509
+Wav2Vec 93.21 0.8564 42.38 0.6643 0.6349 0.9503
+Context
+30s93.5 0.865 42.6 0.673 0.643 0.952
+20s 92.0 0.826 41.3 0.655 0.623 0.948
+10s 91.1 0.804 39.5 0.639 0.607 0.946
+5.2. Audio Encoder Evaluation
+As shown in Table 2 (middle), the model demonstrates high ro-
+bustness to the choice of audio representation, though subtle
+performance trade-offs emerge. TheRawAudioTokenizer(raw
+waveform) achieves the highest F1-macro (0.865), ROUGE-L
+(0.673), and BERTScore (0.952), validating that lightweight,
+scratch-trained front-ends can provide superior semantic align-
+ment for physiological audio. While CLAP embeddings yield
+marginal gains in Contains-Match (43.1%) and METEOR
+(0.645), suggests slightly better content coverage, large-scale
+encoders like Wav2Vec2 slightly underperform across both bi-
+nary and generative tasks. These findings confirm that raw
+waveform tokens offer an efficient and effective representation
+for clinical QA, rivaling high-capacity, general-purpose audio
+encoders.
+5.3. Temporal Context Evaluation
+As shown in Table 2 (bottom), performance consistently de-
+clines as context is reduced. The 30 s configuration achieves the
+highest overall scores, including a 42.6% Contains-Match and
+0.865 F1-macro. In contrast, 10 s segments incur substantial
+reductions, particularly in binary metrics (up to 10% decline).
+A granular analysis (Supplementary Table) reveals that
+the necessity of temporal context is dataset-dependent. In
+MIL datasets (CirCor, ICBHI, SPRSound), the model leverages
+patient-level aggregation across multiple sites to partially com-
+pensate for shorter clips; for example, SPRSound accuracy re-
+mains above 90% despite truncation. However, for SIL datasets
+(KAUH, ZCHSound), full-length audio is critical. In KAUH,
+ROUGE-L drops sharply from 0.845 to 0.542 when truncated
+to 10 s, and ZCHSound F1-macro falls from 0.980 to 0.864.
+These results confirm that while multi-site aggregation provides
+robustness, full temporal context is essential to maintain high
+semantic and classification accuracy in single-recording scenar-
+ios.
+6. Discussion
+Our framework demonstrates a strong ability to translate acous-
+tic signals into grounded textual explanations. Qualitative anal-
+ysis reveals high BERTScore values even with concise predic-
+tions, indicating that the model captures core semantic content
+without strictly mimicking expert-annotated lengths. Our re-
+sults further show that lightweight, domain-specific encoders,
+specifically those utilizing raw waveform tokenization, suffice
+for high-quality clinical QA, suggesting that large-scale pre-
+trained encoders are not strictly necessary for medical auscul-
+tation. A key insight is the interplay between temporal context
+and aggregation: in multi-site datasets, the model leverages spa-
+tial redundancy across anatomical locations to maintain robust-
+ness against temporal truncation.
+However, the “black-box” nature of deep learning requires
+rigorous validation to avoid the false hope of ungrounded ex-
+plainability. Our model addresses this by aligning free-text
+answers with signal-level evidence, though future work must
+focus on mitigating dataset bias and ensuring interpretability
+across diverse clinical settings. Ultimately, these findings sug-
+gest that audio-grounded language models can bridge the gap
+between signal processing and clinical interpretation, offering
+promising applications for telemedicine screening and diagnos-
+tic standardization in resource-limited environments.
+5529
+7. Generative AI Use Disclosure
+In accordance with the ISCA policy on generative AI, the au-
+thors disclose that generative AI tools were utilized solely to
+edit and polish the manuscript. The authors remain fully re-
+sponsible and accountable for the entire content of this work
+and certify that the AI tool was not used to produce a signifi-
+cant part of the manuscript.

@@ -1,0 +1,498 @@
+Beyond Acoustic Sparsity and Linguistic Bias: A Prompt-Free Paradigm for
+Mispronunciation Detection and Diagnosis
+Haopeng Geng ID 1, Longfei Yang ID 1, Xi Chen ID 1, Haitong Sun ID 1, Daisuke Saito ID 1, Nobuaki
+Minematsu ID 1
+1 Graduate School of Engineering, The University of Tokyo, Japan
+kevingenghaopeng, chenxi, longfei, sunhaitong, dsk saito, mine@gavo.u-tokyo.ac.jp
+Abstract
+Mispronunciation Detection and Diagnosis (MDD) requires
+modeling fine-grained acoustic deviations. However, current
+ASR-derived MDD systems often face inherent limitations. In
+particular, CTC-based models favor sequence-level alignments
+that neglect transient mispronunciation cues, while explicit
+canonical priors bias predictions toward intended targets. To
+address these bottlenecks, we propose a prompt-free framework
+decoupling acoustic fidelity from canonical guidance. First, we
+introduce CROTTC, an acoustic model enforcing monotonic,
+frame-level alignment to accurately capture pronunciation de-
+viations. Second, we implicitly inject mispronunciation infor-
+mation via the IF strategy under the knowledge transfer prin-
+ciple. Experiments show CROTTC-IF achieves a 71.77% F1-
+score on L2-ARCTIC and 71.70% F1-score on the Iqra’Eval2
+leaderboard. With empirical analysis, we demonstrate that de-
+coupling acoustics from explicit priors provides highly robust
+MDD1.
+Index Terms: Mispronunciation detection and diagnosis Opti-
+mal transport, Consistency Regularization, Knowledge Trans-
+fer, Large Language Model.
+1. Introduction
+Mispronunciation Detection and Diagnosis (MDD) plays an in-
+dispensable role across a spectrum of applications, ranging from
+general Computer-Aided Pronunciation Training (CAPT) for
+L2 learners to religious domains such as Qur’anic recitation, as
+highlighted by the Iqra’Eval Challenges [1, 2]. The core chal-
+lenge of MDD lies in acoustic fidelity: transcribing speech ex-
+actly as realized to pinpoint deviations from canonical norms.
+Historically, MDD was formulated as a downstream applica-
+tion of Automatic Speech Recognition (ASR). Conventional
+systems typically used ASR features to generate Goodness-of-
+Pronunciation (GOP) scores [3] or relied on Extended Recogni-
+tion Networks (ERNs) to catch predefined error patterns [4, 5].
+In this classical paradigm, MDD was essentially an ASR by-
+product.
+With the rapid advancement of end-to-end (E2E) architec-
+tures and self-supervised learning (SSL) speech representations,
+the paradigm has shifted. MDD is now a standalone task, di-
+rectly optimized for fine-grained phoneme diagnosis. However,
+despite this structural independence, MDD research inevitably
+remains under the heavy methodological shadow of ASR. While
+general ASR focuses on deducing semantic intent of a speaker
+despite acoustic imperfections, MDD demands objective, fine-
+grained acoustic fidelity. By uncritically adopting ASR’s acous-
+1Source code is available at:https://github.com/
+Secondtonumb/IF-MDD
+tic and linguistic optimization strategies, we believe that current
+MDD studies frequently fall into two fatal traps.
+The first is theAcoustic Trap, driven by the direct adoption
+of Connectionist Temporal Classification (CTC) [6]. As a de
+facto standard for E2E ASR, CTC usually serves as an acoustic
+model (AM) by maximizing the marginal probability of all valid
+alignment paths, forcing the model to prioritize global sequence
+correctness. However, when ported to the MDD task, this global
+optimization actively smooths over the subtle, transient acoustic
+variations (e.g., co-articulation, brief onset substitutions). In
+doing so, CTC might erase the exact phonetic evidence that is
+critical for mispronunciation diagnosis.
+The second is theLinguistic Trap, driven by the reliance on
+explicit canonical prompts or strong language model (LM) post-
+processing. In typical ASR systems such as CTC/AED [7] or
+RNN-T [8], LMs are powerful components to correct acoustic
+errors. By adjusting the AM/LM weight, ASR models can shift
+their preference to favor either acoustic or linguistic features. In
+MDD, however, when models are guided by canonical priors,
+they naturally exhibit an over-correction tendency. Instead of
+objectively diagnosing the actual phonetic deviations from the
+acoustic signal, the system defaults to the linguistically most
+likely sequence, which is almost always the canonical text.
+To break free from ASR’s legacy and overcome these
+bottlenecks, we proposeCROTTC-IF, a unified, canonical
+prompt-free paradigm, designed exclusively for the standalone
+MDD task. Our main contributions are summarized as follows:
+•Frame-wise Acoustic Modeling (CROTTC):We intro-
+duceConsistency-RegularizedOptimalTemporalTransport
+Classification. Unlike standard CTC, this acoustic model en-
+forces strict monotonic, frame-wise alignments, effectively
+mitigating inherent sparsity and delayed emission issues to
+preserve fine-grained, transient mispronunciation cues.
+•Knowledge Transfer via Indirect Fusion (IF):Grounded in
+the Learning Using Privileged Information (LUPI) paradigm,
+we introduceIndirectFusion stragety to implicitly integrate
+linguistic priors. By treating canonical texts and mispronun-
+ciation patterns as privileged data during training, IF provides
+soft linguistic guidance to the language model, preventing the
+override of faithful acoustic evidence during inference.
+•Comprehensive Analysis of Canonical Bias:With del-
+icately designed Multi-modality Large Language Models
+(LLMs) and various prompt templates, we quantitatively in-
+vestigate the impact of explicit canonical prior in MDD. Our
+findings demonstrated that over-reliance on canonical priors
+can degrade detection sensitivity, highlighting the necessity
+of balancing linguistic context with acoustic fidelity.
+•State-of-the-Art Performance:Operating entirely without
+auxiliary data or explicit canonical prompts, the CROTTC-IF
+2282
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-711
+framework achieves highly competitive results. It demon-
+strates strong generalization across diverse benchmarks,
+ranging from general L2 English corpora (L2-ARCTIC, ERJ,
+speechocean762) to the specialized Arabic Qur’anic recita-
+tion task (Iqra’Eval2).
+2. Related Works
+Currently, modern MDD approaches broadly fall into two cate-
+gories: dictation-style and text-prompting style.
+2.1. Dictation-Style MDD and the Acoustic Trap
+Dictation-style methods aim to recognize the uttered phoneme
+sequence exclusively from acoustic-related features. For exam-
+ple, Leung et al. introduced a CTC framework and demon-
+strated the feasibility of capturing L2 phoneme information
+from acoustic features alone [9]. More recent studies have lever-
+aged self-supervised learning (SSL) speech representations,
+such as wav2vec 2.0 [10], HuBERT [11, 12] and WavLM [13],
+which provide robust phonemic context features. For in-
+stance, [14] employed a fine-tuned wav2vec 2.0 model with
+a CTC decoder, achieving promising diagnostic accuracy. To
+strengthen free phoneme recognition, researchers have also
+incorporated semi-supervised pseudo-labeling [15], dual-path
+SSL for predicting manner-of-articulation [16], and acoustic-
+to-articulatory inversion leveraging electromagnetic articulog-
+raphy (EMA) data [17].
+This dictation-style MDD also dominated the recent
+Iqra’Eval 2025 challenge [1]. For instance,Hafs2V ec[18] uti-
+lized extensive professional reciter data, whileMetapseud[19]
+applied curriculum learning and beam-search decoding. De-
+spite these feature and data enhancements, the fundamental re-
+liance on CTC decoders introduces a potential vulnerability: the
+Acoustic Trap2.
+Conversely, frame-wise alignment methods have demon-
+strated greater potential for MDD. For example, Feng et al.
+pioneered the use of attention-based sequence labeling to map
+individual acoustic frames directly to phone labels [20]. Simi-
+larly, Lin et al. modeled MDD as a sequence labeling task via
+a joint-alignment mechanism [21]. More recently, Tu et al. in-
+troduced a retrieval-based framework for frame-wise classifica-
+tion, achieving competitive performance without task-specific
+training [22]. These advancements indicate that leveraging
+dense, frame-wise representationsprovides superior perfor-
+mance, outperforming sparse features for robust MDD.
+2.2. Text-Prompting MDD and the Linguistic Trap
+In reading-aloud scenarios, canonical phoneme sequences are
+inherently available. Consequently, integrating this prior
+knowledge into MDD models has become another standard
+practice. For instance, Ye et al. proposed an approach to
+leverage acoustic, phonetic and linguistic embeddings for MDD
+[23]. Peng et al. employed a gating mechanism and contrastive
+loss to dynamically regulate canonical embeddings [24]. Zheng
+et al. utilized coupled-cross attention for explicit acoustic-
+canonical fusion [25]. Similarly, Yan et al. injected implicit
+linguistic priors using phoneme lookup tables and graph net-
+works to model frequent mispronunciation patterns [26, 27].
+Entering the era of Large Language Models (LLMs), re-
+cent studies have shifted toward leveraging massive linguis-
+tic priors for posterior correction in MDD. Current methods
+2Further detailed in Sec. 3.1
+range from adapting LLM-based ASR architectures [28] to fine-
+tuning native SpeechLM [29]. For instance, Wu et al. adapted
+LLMs for MDD by coupling a pretrained acoustic front-end
+with a trainable projector and LLM backbone [30]. Other re-
+searchers adapted multi-modality LLM to embed canonical se-
+quences and predefined error patterns directly into the latent
+space [31, 32]. Beyond simple transcription, LLM reasoning
+is also deployed to generate educational feedback, offering nu-
+anced diagnostics alongside canonical norms [33, 34].
+Despite reported successes, the practical superiority of text-
+prompted and LLM-assisted methods remains debatable. Many
+systems are evaluated on private datasets, precluding repro-
+ducible comparisons. And on open benchmarks, they frequently
+underperform compared to conventional models that rely solely
+on acoustic modeling.
+Beyond evaluation discrepancies, we believe that some of
+these canonical-dependent methods inherently fall into theLin-
+guistic Trapdue to a shared flaw:canonical information leak-
+age. Whether by explicitly including canonical information
+as part of the input, or by using a strong language model as
+the model’s prior knowledge, these approaches can all be cat-
+egorized as suffering from canonical information leakage. Al-
+though many models carefully design their canonical informa-
+tion usage, canonical information can easily override the sub-
+tle acoustic information. Consequently, the model becomes
+overly tolerant of errors, masking critical acoustic deviations
+and sacrificing diagnostic objectivity. Furthermore, requiring
+explicit canonical texts during inference renders these methods
+entirely impractical for spontaneous speech or shadowing sce-
+narios [35–37], restricting the real-world applicability of MDD.
+3. Consistency Regularization on Optimal
+Temporal Transport Classification
+In this section, we analyze the inherent limitations of CTC and
+introduce the architecture of our proposed frame-wise dense
+acoustic model:CROTTC. Our approach, as illustrated in the
+left panel of Figure 1, is built upon two core pillars: Consistency
+Regularization(CR)and Optimal Temporal Transport Classifi-
+cation(OTTC).
+3.1. Limitations of Connectionist Temporal Classification
+Connectionist Temporal Classification (CTC) [6] has es-
+tablished itself as a fundamental criterion for sequence-to-
+sequence modeling, particularly in the ASR domain. By in-
+troducing a blank token and optimizing the marginal proba-
+bility over all valid alignments, CTC enables end-to-end train-
+ing without requiring explicit frame-level annotations for target
+units (e.g., phonemes or subwords). Consequently, the model
+tends to produce a highly sparse posterior distribution, concen-
+trating probability mass on a few highly discriminative frames
+[38]. Moreover, these non-blank emission peaks are frequently
+delayed, shifting towards the tail end of their corresponding
+acoustic segments—a phenomenon widely recognized as CTC’s
+delayed behavior [39, 40].
+This sparsity and delayed behavior pose a significant chal-
+lenge for precise segment detection tasks. In practice, a mis-
+pronounced phoneme in MDD does not necessarily manifest
+as a complete substitution starting from the very first frame;
+rather, it often involves co-articulation errors or a partial blend
+of canonical and abnormal acoustic traits. To illustrate, con-
+sider a speaker attempting to produce the diphthong/aI/(as in
+“buy”) but erroneously substituting the initial vowel element to
+2283
+Figure 1:Overview of the CROTTC-IF architecture. From left to right, it comprises the CROTTC AM (blue), the lightweight IF-MDD
+LM (orange), and the detailed IF components.
+produce/OI/(as in “boy”). Acoustically, both diphthongs share
+an identical trailing off-glide (/I/). Driven by CTC’s inherent
+delayed emission tendency, the model will typically align the
+probability peak for the target label (/aI/) exclusively with this
+shared off-glide. Consequently, the preceding frames contain-
+ing the crucial evidence of the mispronunciation (/O/) can be
+masked by blank tokens and entirely ignored. While this highly
+discriminative frame selection is beneficial for standard ASR,
+it discards the fine-grained acoustic cues that are essential for
+sensitive diagnostic tasks like MDD.
+3.2. Optimal Temporal Transport Classification
+To address the inherent shortcomings of CTC, we leverage Op-
+timal Temporal Transport Classification (OTTC) [41], a differ-
+entiable framework rooted in one-dimensional optimal transport
+that enables dense, frame-level alignments.
+3.2.1. Sequence Alignment via Optimal Transport
+LetX={x i}n
+i=1 denote the acoustic frame sequence and
+Y={y j}m
+j=1 the perceived phoneme sequence. We define
+that the alignment betweenXandYcan be solved with an
+optimal transport planγ∈R n×m
++ , which serves as a mono-
+tonic mapping governing the frame-to-label correspondence. In
+optimal transport theory,γis parameterized by two discrete
+distributions: the frame weightsα∈∆ n derived fromX,
+and the label weightsβ∈∆ m associated withY, where
+∆k ={v∈R k
++| Pk
+i=1vi = 1}is the probability simplex.
+Here, the frame weightsαcan be predicted from the input via a
+neural networkW:
+α[X,W] = softmax(W(x 1),...,W(x n))⊤,(1)
+andβis typically fixed as a uniform distribution to evenly as-
+sign each target token’s contribution. Subsequently, the align-
+ment planγ(α,β)is computed as the solution to the 1D optimal
+transport problem:
+γ(α,β) = arg min
+γ∈Γα,β
+nX
+i=1
+mX
+j=1
+γi,j∥i−j∥ 2
+2,(2)
+whereΓ α,β =
+
+γ∈R n×m
++ |γ1 m =α, γ⊤1n =β
+	
+denotes
+the set of valid couplings preserving the marginal distributions.
+Based on theSequence Optimal Transport Distance (SOTD)
+framework [41], which defines a pseudo-metric over sequence
+space, we derive the OTTC loss as the expected transport cost
+under the cross-entropy metric:
+Figure 2:Comparison between CTC and OTTC, whereϕis the
+blank token andγ(α,β)is the optimal transport plan.
+LOTTC =−
+nX
+i=1
+mX
+j=1
+γi,j(α,β)·logp(y j|x i),(3)
+wherep(y j |x i)is the posterior probability. Sinceαis pa-
+rameterized via a neural networkW(Eq. 1) andβis fixed, the
+model parameters can be optimized in an end-to-end manner by
+minimizingL OTTC.
+Comparison to CTC.Fig. 2 illustrates the fundamental dis-
+tinction in alignment strategies. Specifically, CTC maximizes
+the marginal probability overallvalid monotonic paths:
+LCTC =−log
+X
+π∈B−1(Y)
+nY
+i=1
+p(πi|x i),(4)
+whereB−1(Y)denotes the set of all paths collapsed toY. In
+contrast, OTTC maximizes the probability of asingleoptimal
+monotonic pathγ(α,β)via Eq. (2) and (3). This formulation
+yields dense, frame-level alignments without blank-token domi-
+nance, asγexplicitly models the frame-to-label correspondence
+rather than marginalizing over sparse paths.
+3.3. Consistency Regularization
+While OTTC captures fine-grained mispronunciation cues,
+acoustic models can be over-sensitive to local variations, lead-
+ing to spurious insertions. To mitigate this, we also introduce
+Consistency Regularization (CR)into our training pipeline [42].
+Specifically, as shown in Fig 1, for each input utteranceX,
+we generate two augmented viewsX a andX b using stochas-
+tic perturbations 3. LetZ a andZ b denote the posterior prob-
+ability distributions output by the model for each view, where
+3See Sec. 6.2 for spectrogram augmentation details.
+2284
+Z(i)∈∆ k represents the probability vector at framei(equiva-
+lent top(y|x i)in Eq. 3). The consistency regularization loss
+is defined as the symmetric Kullback-Leibler (KL) divergence
+between these distributions:
+LCR = 1
+2n
+nX
+i=1
+
+KL
+
+Z(i)
+a ||Z(i)
+b
+
++ KL
+
+Z(i)
+b ||Z(i)
+a
+
+,(5)
+wherenis the number of frames. By minimizing the distribu-
+tion distance and maximizing the mutual information between
+the two branches, CR enables each branch to receive supervi-
+sion from the other, which encourages the shared encoder to
+perform self-distillation on frame-level posterior distributions.
+Additionally, relatively long-term time masking implicitly en-
+couragesmasked language modeling-like behavior: the model
+learns to reconstruct occluded acoustic frames by leveraging
+contextual information from unmasked regions. Together, these
+mechanisms stabilize frame-level predictions and reduce sensi-
+tivity to local acoustic noise. Consequently, the training criteria
+for CROTTC is defined as:
+LAM =L CR +η(L OTTC(Za,Y) +L OTTC(Zb,Y)),(6)
+where hyperparameterηis set to 1.0.
+4. Indirect Fusion of Mispronunciation
+Information via Knowledge Transfer
+In this section, we detail our Indirect Fusion (IF) strategy for in-
+corporating mispronunciation information into LM, namedIF-
+MDD. As illustrated in the middle and right panels of Fig. 1,
+IF-MDD treats canonical phonemes and mispronunciation cues
+as privileged information available exclusively during the train-
+ing phase. These cues are leveraged to guide the model’s latent
+representations via backpropagation.
+4.1. Learning using Privilege Information
+Learning using Privileged Information (LUPI) is a training
+paradigm that fundamentally operates as a knowledge transfer
+mechanism, leveraging additional information available exclu-
+sively during the training phase to implicitly guide the model
+[43, 44]. While this paradigm has already been successfully
+applied to various speech-related tasks [45–47], its most com-
+pelling advantage lies in its effectiveness when training data is
+limited or labels are scarce [48–50]. Given the inherent data
+scarcity of expert-annotated MDD corpora, adopting the LUPI
+framework is a natural and highly principled choice.
+4.2. Indirect Fusion of Mispronunciation Information via
+Knowledge Transfer
+As illustrated in Fig. 1, IF-MDD consists of two main com-
+ponents: 1) an encoder–decoder backbone; 2) an auxiliary
+mispronunciation-aware teacher network.
+4.2.1. Encoder-decoder backbone
+We employ an encoder–decoder architecture serving as the
+primary backbone of IF-MDD. Let the input waveform be
+X={x i}n
+i=1 and the perceived phoneme sequence beY per =
+{yper
+j }m
+j=1, wherenandmdenote the lengths of the speech sig-
+nal and phoneme sequence, respectively. The backbone is for-
+mulated as:
+henc =Enc(RoPE(X)),(7)
+hper =RoPE(Y per),(8)
+hdec =Dec(h per,h enc),(9)
+Figure 3:Illustration of LLM-based MDD, with alternative
+prompts.
+where Enc(·)and Dec(·)represent the encoder (AM) and de-
+coder (LM), respectively. Rotary position embeddings RoPE(·)
+are applied to bothh enc∈R n×D andh dec∈R m×D to enhance
+positional modeling [51].
+4.2.2. Auxiliary mispronunciation-detection teacher network
+To explicitly model the mispronunciation information indicated
+by the misalignment between acoustic and canonical features,
+we introduce an auxiliary teacher network. This module lever-
+ages the canonical phoneme sequenceY can ={y can
+j }m
+j=1 and
+the corresponding phoneme-level ground-truth error sequence
+E={e j}m
+j=1 as privileged information. It consists of two se-
+quential stages: feature fusion and comprehensive error detec-
+tion.
+First, two parallel fusion networks (FuN) are employed to
+model multi-aspect feature interactions:
+hcan =RoPE(Y can),(10)
+henc
+mis =FuN enc(hcan,DS(h enc)),(11)
+hdec
+mis =FuN dec(hcan,h dec),(12)
+hmis =Concat(h enc
+mis,h dec
+mis),(13)
+where FuN(·)is composed of a transformer decoder structure
+andh mis ∈R m×D denotes the fused representation. In both
+branches, FuN(·)usesh can as the query andh enc orh dec as
+the memory. Notably, a downsampler DS(·)is applied within
+FuNenc(·)to improve alignment.
+Subsequently, our teacher network employs a dual-path
+detection sub-network to provide a comprehensive diagnosis.
+Specifically, we apply a shared CNN trunk on the fused repre-
+sentationh mis, followed by two task-specific projection heads:
+u=CNN(h mis),(14)
+ˆEmis =σ(CNN bin(u)),(15)
+ˆEcls =Softmax(Linear cls(u)),(16)
+where ˆEmis and ˆEcls are the predicted counterparts for the posi-
+tion and classification facets ofE, respectively. Here, ˆEmis∈
+[0,1]m indicates the probability of mispronunciation, while ˆEcls
+denotes the distribution over{correct,substitution,deletion,in-
+sertion}.
+Crucially, this architectural design naturally facilitates
+knowledge transfer. Since the auxiliary mispronunciation heads
+are relatively lightweight and receive direct supervision fromE,
+they converge significantly faster than the primary sequence-
+to-sequence backbone. During training, this fast-converging
+teacher provides a strong, discriminative gradient signal that
+backpropagates through the fusion networks into bothh enc and
+hdec. Consequently, the diagnostic features from the teacher
+2285
+network act as a catalyst, helping the deeper backbone to con-
+verge effectively and internalize the mispronunciation-aware
+representations required for prompt-free inference.
+4.3. Inference and Training Criteria
+During inference, the auxiliary teacher is discarded. A scorer
+searches for the optimal hypothesis ˆYby maximizing the inter-
+polated log-probabilities between the AM and LM:
+ˆY= arg max
+Y
+
+λlogP AM(Y|henc)
++ (1−λ) logP LM(Y|henc)
+	
+,
+(17)
+whereλ∈[0,1]is a AM decoding weight. Here,P AM repre-
+sents the acoustic probability predicted by the CROTTC branch,
+andP LM is the contextual probability evaluated autoregressively
+by Dec(·). The IF-MDD model is optimized via a multi-task
+objective:
+Ltotal =ω 1LAM + (1−ω 1)LLM +ω 2(Lpos +L type) +ω 3Lga,
+(18)
+whereL ga is the guided-attention loss [52] ensuring monotonic
+fusion in FuN. Hyperparametersω 1,ω 2,ω 3 are set to 0.3, 1.0,
+and 10.0, respectively.
+5. Leveraging LLMs to Investigate
+Canonical Information Effect on MDD
+To empirically investigate the impact of explicit canonical in-
+formation and strong linguistic priors, this section introduces an
+LLM-based architecture, denoted asLLM-MDD. As illustrated
+in Fig. 3, we replace the conventional lightweight LM with an
+open-source LLM, which serves as a high-capacity linguistic
+processor for the acoustic embeddings. We adopt an LLM for
+this canonical information analysis for two primary reasons.
+First, LLMs inherently possess massive language modeling ca-
+pabilities; therefore, leveraging an LLM to replace a lightweight
+LM itself represents a significant amplification of linguistic pri-
+ors. Second, multimodal LLMs natively support the direct in-
+tegration of text (canonical prompts) and speech (acoustic em-
+beddings). This allows us to isolate and strictly verify the exact
+impact of various canonical injection strategies, while entirely
+bypassing complex and task-specific fusion mechanisms.
+5.1. LLM-MDD Framework
+Inspired by the SLAM-LLM architecture [28], our LLM-MDD
+system formulates the MDD task as mapping acoustic features
+and canonical cues to a perceived phoneme sequence. The ar-
+chitecture comprises three primary components: a pretrained
+AM, a trainable projector, and a backbone LLM.
+During trai

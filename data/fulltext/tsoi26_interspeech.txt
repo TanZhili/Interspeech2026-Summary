@@ -1,0 +1,496 @@
+Next-Turn: Duration-Aware Streaming Endpoint Detection via
+Time-to-Next-Speech-Onset Prediction
+Tristan Tsoi1, Jiajun Deng1,∗∗, Yingke Zhu1, Huu Quyen Dang2, Tianxiang Cao1, Nikita Kuzmin3,
+Tao Zhong1,2, Simon Lui1
+1 Central Media Technology Institute, Huawei 2 The Chinese University of Hong Kong
+3 Nanyang Technological University
+tsoi.tik.nang1@huawei.com, jjdeng321@gmail.com
+Abstract
+Endpoint detection (EPD) is essential for natural turn-taking in
+streaming speech systems. However, reliably determining the
+endpoint of an utterance is challenging because speakers often
+pause mid-utterance due to hesitations and disfluencies. Seman-
+tic EPD has emerged as a promising direction to address this is-
+sue but is hindered by ambiguous supervision and strict stream-
+ing constraints. We propose Next-Turn which uses the time-
+to-next-speech-onset as the training objective, where targets are
+derived directly from speech timestamps and require no man-
+ual additional annotation. Experiments show that the proposed
+method outperforms conventional acoustic and recent seman-
+tic EPD baselines, achieving a 25.9% absolute improvement in
+endpoint accuracy within 320 ms over the strongest baseline. In
+addition, joint training with the duration-aware objective com-
+plements standard binary EPD, with gains that increase mono-
+tonically with increasing pauses.
+Index Terms: endpoint detection, turn-taking, duration predic-
+tion, multi-task learning, speech foundation models
+1. Introduction
+The growing demand for highly interactive speech interfaces
+has driven widespread adoption of streaming speech models,
+particularly for full-duplex conversation [1, 2, 3] and real-time
+speech translation [4, 5]. In these settings, the ability to deter-
+mine when a user has finished a meaningful speech unit is crit-
+ical for both perceived responsiveness and downstream model
+performance. Endpoint detection (EPD), also referred to as end-
+of-utterance or end-of-turn detection, therefore remains a fun-
+damental component of streaming speech processing pipelines.
+Conventional EPD methods primarily rely on acoustic cues,
+typically implemented via neural voice activity detection (V AD)
+[6, 7, 8] or statistical models [9, 10] that predict speech/non-
+speech boundaries. Although effective in detecting silence and
+coarse activity changes, such approaches often conflate acous-
+tic completion with semantic completion. In natural speech,
+pauses frequently occur mid-thought due to hesitations, disflu-
+encies, or planning, and thus silence alone is an unreliable in-
+dicator of end-of-utterance [11]. Consequently, acoustic-only
+endpoint decision may trigger prematurely, truncating a speaker
+before the intended message is complete, or trigger too late, in-
+troducing unnecessary tail latency [12, 13]. These limitations
+are particularly harmful in full-duplex spoken interaction and
+real-time speech translation.
+To mitigate this mismatch, a line of work incorporates lin-
+guistic or semantic evidence by leveraging automatic speech
+**indicates the corresponding author.
+recognition (ASR) hypotheses and performing text-based end-
+point prediction from transcripts [2, 14, 15, 16]. Although ASR-
+conditioned methods provide richer semantic cues, they also
+make endpoint decisions sensitive to ASR errors and instability
+and couple both runtime cost and decision latency to the cascade
+pipeline [17]. Motivated by these constraints, recent work has
+explored audio-only semantic EPD models that learn represen-
+tations from the waveform which capture not only speech pres-
+ence but also cues of semantic completion, thereby retaining
+the low-overhead, plug-and-play properties of V AD-like com-
+ponents while improving semantic awareness [1, 17, 18, 19].
+Efforts to develop a single, unified semantic EPD model
+for real-time speech applications face two fundamental chal-
+lenges: (i) the lack of reliable supervision for semantic comple-
+tion, and (ii) the inherent tension between semantic modeling
+and streaming constraints. First, semantic endpoints are sub-
+stantially more ambiguous than speech/non-speech boundaries.
+Whereas speech activity can be annotated with relatively clear
+acoustic criteria, “completion” depends on discourse context
+and speaker behavior: hesitations, disfluencies, mid-utterance
+pauses, and backchannels can all produce silence patterns that
+resemble true endpoints [11, 20, 21]. This makes it difficult
+to obtain consistent semantic endpoint labels and can lead to
+noisy training targets that hinder generalization. Second, se-
+mantic EPD must operate under low-latency requirements with
+limited right context for practical streaming applications. Ac-
+curately detecting semantic completion typically benefits from
+longer-range context and higher-level linguistic information,
+yet streaming EPD must make timely decisions and remain ro-
+bust when partial evidence later changes (e.g., the speaker con-
+tinues after a short pause). Designing a model that is both se-
+mantically informed and stable in real time therefore remains
+non-trivial.
+To this end, this paper proposes Next-Turn, a duration-
+aware streaming EPD framework that addresses both supervi-
+sion ambiguity and real-time semantic reasoning. Motivated by
+evidence that listeners continuously project the timing of up-
+coming turn boundaries [22, 23], we present a duration-aware
+training objective that uses the time-to-next-speech-onset as the
+supervision target, which serves as a proxy for the semantic end-
+point. The model predicts, at each audio frame, the remaining
+time until the next speech onset, yielding a continuous confi-
+dence measure of endpoint likelihood. The targets are derived
+directly from speech timestamps and require no additional man-
+ual annotation. Additionally, to ensure streaming-compatible
+semantic modeling, we apply random audio cut-off training to
+the pretrained semantic audio encoder, randomly truncating fu-
+ture context so the model learns to predict completion cues with
+limited look-ahead. The main contributions are summarized as
+1277
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1053
+follows:
+1)This paper presents a unified semantic EPD framework
+that is streaming, low-latency, and effective. It enables online
+chunk-level endpoint decisions with limited look-ahead and low
+computational overhead, making it suitable for real-time de-
+ployment.
+2)Experiments demonstrate that the proposed method con-
+sistently outperforms conventional acoustic EPD and recent
+state-of-the-art semantic EPD baselines in both endpoint accu-
+racy and detection latency, achieving a 25.9% absolute improve-
+ment in endpoint accuracy within 320 ms over the strongest
+baseline. Furthermore, joint training with the duration-aware
+objective complements standard EPD, with gains that increase
+monotonically with increasing pauses.
+2. Binary Endpoint Detection
+We first describe the binary semantic EPD, which serves both
+as a baseline and as the foundation for the duration-aware ex-
+tension in Section 3.
+2.1. Binary Formulation
+Binary EPD aims to determine whether an utterance has reached
+endpoint by timet. Lett end denote the time when the speech
+ends. We define the binary targety(t)as:
+y(t) =
+(
+0, t<t end;
+1, t≥t end. (1)
+wherey(t) = 1indicates EP andy(t) = 0indicates non-EP.
+The model is optimized with cross-entropy loss at a single deci-
+sion time for each utterance. During inference, the model out-
+puts a scalar endpoint scores bin(t)∈[0,1].
+2.2. Model Architecture
+Fig. 2 illustrates the overall architecture of our system. We use
+the Whisper [24] encoder as the audio encoder and fine-tune it
+with Low-Rank Adaptation (LoRA) [25] for parameter-efficient
+adaptation. The encoder outputs a sequence of frame-level hid-
+den states which we apply mean pooling over the temporal di-
+mension to obtain a single utterance-level representation. A
+binary classification head (Fig. 2a), implemented as a linear
+projectionLinear(H,2)with softmax, maps this pooled rep-
+resentation to EP/non-EP probability, whereHis the encoder
+hidden-state dimension.
+3. Duration-Aware Endpoint Detection
+We propose a semantic EPD framework based on time-to-next-
+onset prediction, which provides graded temporal supervision.
+The duration prediction objective can be used either as an alter-
+native to the binary formulation or jointly with it during train-
+ing. All duration-aware variants use the same architecture as
+the binary baseline and differ only in the prediction head(s).
+3.1. Duration Formulation
+Fig. 1 illustrates the duration targetτ(t)across three regions:
+a) in speech segment, b) in mid-utterance pause, and c) in post-
+utterance silence. At timet, we defineτ(t)as the remaining
+time until the next speech onset:
+τ(t) =
+
+
+
+0, tis in a speech segment;
+tonset−t, tis in a mid-utterance pause;
+τmax, tis in post-utterance silence.
+(2)
+= 0a) In speech segment
+b) In mid-utterance pause
+c) In post-utterance silence
+(no silence)
+=
+= 
+Figure 1:Illustration of the duration targetτ(t)across three
+regions: a) during speech,τ(t) = 0; b) during mid-utterance
+pause,τ(t)is the silence until the next speech onset; and c)
+after the utterance ends,τ(t)is set toτ max.
+wheret onset denotes the start time of the next speech segment
+andτ max is a constant assigned to post-utterance, since the true
+duration until the next turn is unknown within a single utterance.
+3.2. Duration Prediction Head
+We implement the duration head in two modes (Fig. 2b): 1) re-
+gression (REG) directly regressesτ(t)with mean-squared-error
+loss; 2) classification (CLS) which discretizesτ(t)intoKdura-
+tion classes. The duration head is a two-layer MLP with hidden
+sizeH/2, ReLU [26] activation, and dropout [27], outputting
+either a scalar (REG) orKlogits (CLS), which are normalized
+with softmax to obtain the class prediction.
+During inference, the model predicts a duration valueˆτ(t).
+This prediction is converted into an endpoint scores dur(t)by
+normalizing withτ max and clipping to[0,1], i.e.,s dur(t) =
+min(ˆτ(t)/τmax,1). For the REG variant,ˆτ(t)corresponds to
+the regressed duration value, while for the CLS variant,ˆτ(t)is
+set to the upper boundary of the predicted duration class.
+3.3. Multi-Task Learning
+The binary objective provides only coarse supervision, while
+duration prediction supplies a fine-grained temporal signal that
+complements the binary task. We therefore adopt a multi-task
+setup that jointly trains binary endpoint classification and dura-
+tion prediction with a shared encoder (Fig. 2c). Both heads are
+optimized using the combined objectiveL=L bin +L dur.
+3.4. Score Fusion
+Since the jointly trained binary and duration heads capture com-
+plementary views of endpoint likelihood, we optionally com-
+bine the two scores from the joint-training system via weighted
+averaging to obtain a fused endpoint score¯s(t):
+¯s(t) =wsbin(t) + (1−w)s dur(t),(3)
+wherew∈[0,1](withw=1andw=0recovering binary-only
+and duration-only inference, respectively).
+1278
+Audio 
+Encoder
+🔥
+LoRA
+Output
+Module
+0
+non-EP
+EP
+Binary 
+Classifier
+Crop
+Duration
+Predictor
+Binary 
+Classifier
+a) Single: Binary Only c) Joint: Binary + Duration
+Endpoint 
+prediction for 
+time   
+b) Single: Duration Only
+Incoming chunk
+Duration 
+Predictor
+non-EP
+EP
+0
+1-
+Training Inference
+Figure 2:Overview of the proposed Next-Turn framework. a)
+Single-task with a binary head. b) Single-task with a duration
+head. c) Joint with a shared encoder and task-specific heads.
+At inference, the system can use the binary score, the duration-
+derived score, or a fusion of both (Sec. 3.4).
+4. Experiments
+4.1. Dataset
+We train on an in-house corpus of 1,177 hours of Chi-
+nese speech (1,097,898 utterances), spanning conversational,
+command-style, and question–answer scenarios, at 16 kHz. The
+training set shows a long-tailed distribution over pause counts.
+For evaluation, we hold out 1,185 utterances disjoint from the
+training data and manually label their endpoints. The evalua-
+tion set is deliberately balanced across pause counts, with 22%,
+18%, 17%, 19%, and 24% of utterances containing zero, one,
+two, three, and four or more pauses, respectively. Because an-
+notation is manual, the evaluation set is necessarily modest in
+size, and absolute results may be sensitive to sampling.
+4.2. Experimental Setup
+Experimental Setting:All models use the Whisper-large-v3
+[24] encoder unless otherwise stated. LoRA matrices with rank
+r=8, scaling factorα=32, and dropoutp=0.05are inserted
+into the query, key, and value projections of every encoder
+block. Models are optimized with AdamW (β1=0.9,β 2=0.98,
+weight decay0.1) using a learning rate of1×10 −4, batch size
+of 32 across 8 GPUs with 4-step gradient accumulation, bf16
+mixed precision, and gradient clipping at 1.0. For the duration
+formulation, we setτ max = 2.0 s. In the CLS variant,τ(t)
+is discretized intoK=7classes corresponding to an in-speech
+bin, and silence-duration bins[0,60),[60,120),[120,480),
+[480,640),[640,800), and[800,∞)ms. The bins are cho-
+sen so that each contains approximately the same number of
+training pause samples. Dropout in the duration head is set to
+0.1. We validate every 500 steps and apply early stopping with
+patience 5, for up to 50,000 steps or 10 epochs, whichever is
+reached first.
+Evaluation Pipeline:We evaluate all systems in a stream-
+ing setting with non-overlapping 160 ms chunks. To reduce
+jitter, we smooth scores over neighboring chunks using an
+exponential-decay weighted average overPpast andFfuture
+chunks:
+¯s(t) =
+Pt+F
+j=t−P γ|j−t|s(j)
+Pt+F
+j=t−P γ|j−t|
+,(4)
+whereγ= 0.5. Unless stated otherwise, we useP= 1and
+F= 0. During evaluation, a decision thresholdθis applied to
+convert endpoint scores into binary outcomes.
+Data Processing:We first segment each recording into se-
+mantically complete utterances using TEN Turn Detection [28]
+on the corpus’s reference transcripts. To then obtain speech
+and silence regions for constructingτ(t), we derive phoneme-
+level timestamps via forced alignment using a Kaldi [29] model
+trained on the same training data, and produce segment bound-
+aries using a 150 ms silence threshold. During training, each
+sample begins at the utterance onset and is truncated at a point
+drawn uniformly from one of three regions (Fig. 1): a) in a
+speech segment, b) in a mid-utterance pause, or c) in a post-
+utterance silence, ensuring exposure to all three conditions in
+Eq. 2. Pause-region truncations are oversampled to mitigate the
+imbalance between speech-active and pause frames.
+4.3. Evaluation Metrics
+We use two complementary metrics. For each utterancei∈
+{1,...,N}, lett ∗
+end,i denote the ground-truth endpoint of
+speech, and let ˆti denote the time when the system first triggers
+an endpoint decision. Here,Nis the total number of evaluated
+utterances, andδis the tolerated latency window (ms).
+Early Interruption (EI)is the percentage of utterances where
+the endpoint prediction occurs strictly beforet∗
+end:
+EI =|{i: ˆti <t *
+end,i}|
+N .(5)
+Accuracy (ACCδ)is the percentage of utterances where the
+first EP prediction occurs withinδaftert ∗
+end:
+ACCδ =|{i:t *
+end,i≤ ˆti≤t *
+end,i +δ}|
+N .(6)
+We reportACCatδ∈{160,320,480,640}ms and optimize
+forACC 320, as 320 ms is a standard low-latency target for se-
+mantic EPD [15, 19].EIis independent ofδand reported once.
+4.4. Results
+Both the thresholdθ∈ {0.80,0.85,0.90,0.95}and fusion
+weightw∈ {0.0,0.1,...,1.0}are jointly selected by grid
+search on the validation set to maximizeACC 320. We then
+report test-set results using this selected configuration.
+Table 1:EPD performance for single-task and joint-training
+system. Best results per block are shown inbold; overall best
+system are highlighted .
+ID Architecture Training w EI↓ ACCδ↑
+160 320 480 640
+1 Binary Single – 9.6 78.8 83.9 84.6 84.8
+2 Duration (REG) Single – 8.1 79.9 86.4 87.3 87.6
+3 Duration (CLS) Single – 33.3 63.2 66.3 66.5 66.6
+4 Bin. + Dur. (REG) Joint 0.3 7.7 80.385.9 86.6 86.7
+5 Bin. + Dur. (CLS) Joint 1.0 5.0 79.6 86.7 88.1 88.4
+Main Results:Table 1 summarizes the performance of the
+single-task and joint-training systems. Single REG (ID 2) out-
+performs the binary baseline (ID 1), achieving lowerEI(8.1%
+vs. 9.6%) and higherACC δ at allδ, indicating that continuous
+duration prediction provides a stronger endpoint signal. Sin-
+gle CLS alone (ID 3) underperforms Single REG. Joint train-
+ing with the duration prediction objective (ID 4–5) consistently
+1279
+improves over the binary baseline. Joint REG (ID 4) main-
+tains similar performance to Single REG while improving over
+the binary baseline in bothEI(7.7% vs. 9.6%) andACC δ at
+allδ. Joint CLS (ID 5) yields the best overall performance
+(EI = 5.0%,ACC 320 = 86.7%. Notably, grid search selects
+w= 1(binary-only inference), suggesting that the primary ben-
+efit of Joint CLS comes from the auxiliary supervision.
+No Pause 1 Pause 2 Pauses 3 Pauses 4+ Pauses
+0
+2
+4
+6
+8
+ACC320
++5.1
++0.6 +0.7
++4.7
++3.8
++5.1
++0.0
++1.4
++5.9
++7.6Joint CLS w/ binary inference
+Single REG
+Binary
+Figure 3:Absolute improvement inACC 320 over the binary
+baseline for Single REG and Joint CLS with binary inference,
+broken down by mid-utterance pause count.
+Pause-Count Analysis:Fig. 3 shows the absoluteACC 320
+gain (over the binary baseline) as a function of pause count
+for the best single-task system (Single REG) and the best joint-
+training system (Joint CLS with binary inference), as identified
+in Table 1. The duration-aware systems outperform the binary
+baseline in every pause count, with gains of +5.1% inACC 320
+for both systems in the no-pause subset. The gains increase
+monotonically with more pauses. Single REG improves by
++0.6, +0.7, +4.7, and +3.8ACC 320 points from 1 to 4+ pauses,
+while Joint CLS with binary inference achieves larger gains at
+higher pause counts: +0.0, +1.4, +5.9, and +7.6 points. The
+widening gap with more pauses suggests that duration supervi-
+sion is particularly beneficial in pause-heavy scenarios.
+Table 2:Comparison with acoustic VAD baselines and existing
+semantic EPD systems under the same streaming protocol in
+terms of model size, per-chunk latency, and EPD performance.
+ID Model Param. Lat.↓ EI↓ ACCδ↑
+(M) (ms) 320 640
+Acoustic VAD (Silero)[30]
+1 threshold = 320 ms 0.5 3 60.0 33.9 39.7
+2 threshold = 480 ms 0.5 3 45.7 10.4 52.5
+3 threshold = 640 ms 0.5 3 27.0 5.0 61.6
+Semantic EPD
+4 Smart Turn v2 [31] 95 29 59.6 32.5 35.2
+5 Smart Turn v3.2 [31] 8 21 64.5 30.5 35.4
+6 Easy Turn [18] 850 263 31.1 60.8 67.8
+Next-Turn (Proposed)
+7 Whisper-large [24] 640 152 5.0 86.7 88.4
+8 Whisper-small [24] 89 52 10.7 81.1 83.5
+9 Whisper-tiny [24] 8 23 12.3 73.2 78.2
+Comparison with SOTA Systems:Table 2 compares our mod-
+els with open-source models under the same streaming proto-
+col. The baselines are evaluated as released, without retraining
+on our corpus or objective, so the comparison reflects realis-
+tic end-to-end streaming behavior at deployment rather than a
+controlled matched-training setting. Acoustic V AD baselines
+with fixed silence thresholds illustrate theEI–ACC δ trade-off:
+increasing the threshold reducesEIfrom 60.0% (320 ms) to
+27.0% (640 ms), but degradesACC 320 from 33.9% to 5.0%.
+Semantic EPD baselines (Smart Turn v2/v3.2 and Easy Turn)
+only process the accumulated speech after a certain silence in-
+terval is detected. We use a 160 ms V AD silence threshold
+for segmentation, which introduces a minimum pre-invocation
+latency that is included in our evaluation. Despite explic-
+itly modeling turn detection, Smart Turn v2 and v3.2 perform
+worse than the acoustic baselines, withEI = 59.6%and
+64.5%, respectively. Easy Turn improves toEI = 31.1%with
+ACC320 = 60.8%, but at the cost of 850 M parameters and
+263 ms per-chunk latency. Our Whisper-large system achieves
+the best overall performance (EI = 5.0%,ACC 320 = 86.7%).
+Smaller backbones trained with the same procedure remain
+strong: Whisper-small (89 M, 52 ms) attainsEI = 10.7%
+andACC 320 = 81.1%, and Whisper-tiny (8 M, 23 ms) attains
+EI = 12.3%andACC 320 = 73.2%. Notably, our Whisper-
+tiny variant matches Smart Turn v3.2 in backbone and parame-
+ter count (8 M) while reducingEIby 52.2 absolute points, high-
+lighting the impact of our duration-aware training.
+0 1 2 3
+Future Context (chunks)
+0123
+Past Context (chunks)
+9.6 5.1 5.3 6.6
+5.0 2.7 1.4 1.2
+3.3 1.5 0.9 0.6
+2.3 1.0 0.6 0.4
+Early Interruption (EI)
+2
+4
+6
+8
+0 1 2 3
+Future Context (chunks)
+0123
+Past Context (chunks)
+483.7 399.4 503.0 637.9
+370.8 473.2 599.2 742.2
+439.4 512.2 642.8 788.8
+486.2 600.3 723.6 855.8
+Response Latency (RL)
+400
+500
+600
+700
+800
+Figure 4:Early interruption (EI, left) and response latency
+(RL, ms, right) of the overall best-performing system as a func-
+tion of past (P) and future (F) context chunks.
+Context Window Analysis:We investigate the tradeoff be-
+tween early interruption and response latency when including
+past (P) and future (F) context chunks in score post-processing.
+Incorporating future context can reduceEIbut adds a look-
+ahead ofℓ=F×160ms. Here, we define response latency
+RLas the average ˆt−t ∗
+end. Fig. 4 showsEIandRLas func-
+tions ofPandFfor the overall best-performing system (Joint
+CLS with binary inference). IncreasingPsubstantially reduces
+interruptions (atF= 0,EIdrops from 9.6% atP= 0to 2.3%
+atP= 3), but can increaseRLdue to temporally smoothed
+decisions; the lowestRLatF= 0occurs atP= 1(370.8 ms).
+Adding future context yields a clear accuracy–latency trade-off:
+for example, atP= 1,EIdecreases from 5.0% to 1.2% asFin-
+creases from 0 to 3, whileRLrises from 370.8 ms to 742.2 ms.
+5. Conclusion
+We presented Next-Turn, a duration-aware streaming EPD
+framework that predicts the time-to-next-speech-onset as a
+supervision signal derived directly from speech timestamps.
+Experiments show that the proposed approach outperforms
+conventional acoustic and recent semantic EPD baselines,
+achieving a 25.9% absolute improvement inACC 320 over
+the strongest baseline. Furthermore, Joint training with the
+duration-aware objective complements standard binary EPD.
+Smaller Whisper backbones maintain competitive performance
+with low latency, supporting low-resource deployment. Future
+work will extend the framework to multi-turn conversational
+settings and validate across corpora and languages.
+1280
+6. Use of Generative AI Disclosure
+Generative AI tools were used for minor editing and language
+improvement. All AI-assisted content was reviewed and edited
+by the authors.

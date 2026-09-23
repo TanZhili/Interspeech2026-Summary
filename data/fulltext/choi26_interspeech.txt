@@ -1,0 +1,433 @@
+Systematic PTQ Study of Integer and Floating-Point Formats
+for On-Device Whisper ASR
+Woosuk Choi ID 1,2, Dohyeon Lee ID 2, Taehyung Kim ID 2, Hyukjun Lee ID 2,∗∗
+1 LG Electronics, South Korea 2 Sogang University, South Korea
+woosuk2.choi@lge.com, ld1157@sogang.ac.kr, kondelas@sogang.ac.kr, hyukjunl@sogang.ac.kr
+Abstract
+Whisper and similar encoder–decoder ASR models are in-
+creasingly deployed on mobile and edge devices, yet it
+remains unclear how quantization format choices affect
+their accuracy in practice. We systematically evaluate
+post-training quantization (PTQ) for Whisper (tiny.en,
+base.en) across 80+ configurations covering INT8/4/3 and
+FP8/FP4/NVFP4/MXFP4. Our main finding is that activation
+bit-width matters far more than weight format: dropping acti-
+vations from 16-bit to 8-bit costs 1–3% absolute WER, while
+INT16 and FP16 activations are indistinguishable in accuracy.
+Among 4-bit formats, NVFP4 W4A16 comes within 0.07% of
+full-precision at6.4×compression, whereas MXFP4 fails un-
+der standard PTQ and needs additional fixes. FP activation
+paths are also the better hardware choice, since FP multipli-
+ers are more area-efficient than INT at the same bit-width. We
+close with a Pareto analysis and six practical guidelines for for-
+mat selection across memory budgets from 20 to 80 MB.
+Index Terms: automatic speech recognition, post-training
+quantization, Whisper, NVFP4, MXFP4, FP8, NPU, model
+compression
+1. Introduction
+Transformer-based ASR models such as Whisper [1] have be-
+come dominant for speech recognition, yet deploying them on
+mobile phones, hearing aids, and edge devices remains chal-
+lenging due to their memory footprint—39M to 1.5B parame-
+ters depending on variant. Post-training quantization (PTQ) is
+the most practical compression technique, and recent work has
+pushed weight precision to 4-bit using GPTQ [2], AWQ [3], and
+SmoothQuant [4], with floating-point formats NVFP4 [5] and
+MXFP4 [6] extending these gains further. However, all prior
+work targets decoder-only LLMs; Whisper’s encoder–decoder
+architecture presents distinct challenges including stronger ac-
+tivation outliers [7, 8] and mel-spectrogram inputs, making it
+unclear whether the W4A16 paradigm transfers to encoder–
+decoder ASR.
+Two quantization design questions for on-device ASR re-
+main open. First,does activation precision matter?ASR-
+specific work has explored lower activation precision [9]
+without isolating its effect on Whisper. Second,is inte-
+ger or floating-point activation preferable?Most mobile
+NPUs—including the Arm Ethos-U85 [10] and Qualcomm
+Hexagon [11]—rely on INT8 or INT16, yet [12] shows FP mul-
+tipliers occupy1.4×–2.4×lesschip area than INT at the same
+bit-width (Figure 1), suggesting FP may be preferable.
+**indicates the corresponding author.
+We answer both questions through the first systematic PTQ
+study of Whisper across 80+ configurations, with the following
+contributions. First, we jointly sweep weight format, activation
+format, and quantization granularity across integer (INT8/4/3)
+and floating-point (FP8/4/NVFP4/MXFP4) regimes. Second,
+we find thatactivation bit-width is the dominant accuracy fac-
+tor: reducing activations from 16-bit to 8-bit costs 1–3% abso-
+lute WER, while INT16 and FP16 are interchangeable. Third,
+NVFP4 W4A16 achieves near-lossless compression (0.07%
+WER gap at6.4×size reduction), and combined with the area
+advantage of FP multipliers [12], this supports FP activation
+datapaths for efficient on-device ASR. Fourth, fine-group quan-
+tization introduces a dual-precision arithmetic requirement that
+NPU designers should account for. Finally, we provide a Pareto
+analysis and six deployment guidelines spanning memory bud-
+gets from 20 to 80 MB.
+2. Background and Related Work
+2.1. Post-training quantization
+PTQ [13, 14] converts pre-trained weights and activations
+to lower-bit representations without retraining. Weight-only
+(W4A16) and weight-and-activation (W4A8, W8A8) modes
+trade off storage, bandwidth, and compute precision. Scaling
+granularity—per-tensor, per-channel, or per-group (Gelements
+per scale)—balances quantization error against scale overhead.
+Large-magnitudeoutlier featuresin transformer activations [15]
+dominate per-tensor scales and reduce effective precision.
+2.2. Quantization formats
+2.2.1. Integer formats (INT8, INT4, INT3)
+Symmetric weight quantization uses scales= max(|x|)/q max
+withˆx=s·clip(round(x/s), q min, qmax). Asymmetric
+activation quantization adds a zero-pointzto handle non-
+zero-centered post-GeLU distributions. INT8 is hardware-
+accelerated on most NPUs/GPUs; INT4/3 provide higher com-
+pression at the cost of reduced dynamic range.
+2.2.2. FP8 format (E4M3)
+FP8-E4M3 [16] (1 sign, 4 exponent, 3 mantissa bits) encodes
+values as(−1) s·2e−bias·(1 +m/2 M ), maximum magnitude
+448. Its non-uniform grid concentrates representable values
+near zero while covering large-magnitude outliers—a key ad-
+vantage over INT8 for heavy-tailed transformer weights.
+2.2.3. FP4, NVFP4, and MXFP4
+FP4 (E2M1)usesM=±{0,0.5,1,1.5,2,3,4,6}(16 val-
+ues), which is insufficient alone; block-wise scaling is required.
+1734
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-698
+Figure 1:Multiplier area (45 nm CMOS, log scale) for INT
+vs. FP at matched bit-widths [12]. FP is consistently smaller:
+1.40×at 16-bit,2.43×at 8-bit, and1.84×at 4-bit.
+NVFP4[5] applies two-level scaling: a global FP32 tensor
+scales T and per-block FP8-E4M3 scaless B,j , givingˆxj,k =
+sT·sB,j·vj,k. FP8-E4M3 block scales provide≈7distinct
+levels per octave, enabling fine-grained dynamic range adapta-
+tion.MXFP4[6] uses single-stage E8M0 (power-of-two) block
+scaless B,j = 2 ej , wheree j = round(log 2(ablock
+max,j/Fmax)).
+Only 1 distinct scale level per octave simplifies hardware but
+limits representational accuracy for ASR weight distributions,
+as we analyze in Section 4.4.2.
+2.3. Outlier mitigation schemes
+We adopt SmoothQuant as the sole PTQ preprocessing method
+because it operates jointly on weights and activations and is
+format-agnostic, making it applicable across all integer and
+floating-point configurations in our study. Weight-only methods
+such as AWQ [3] and GPTQ [2] are orthogonal to our activation
+precision sweep and are left for future work.
+2.4. Comparison with prior work
+Table 1 positions our work against the most closely related stud-
+ies along four axes: (i) weight precision formats evaluated,
+(ii) activation precision formats evaluated, (iii) NVFP4/MXFP4
+ultra-low-precision FP4 formats included, and (iv) encoder–
+decoder ASR as the target model.
+Table 1:Comparison with related PTQ studies. “Weight Prec. ”
+and “Act. Prec. ” list the numeric formats evaluated for weights
+and activations, respectively. “NV/MX” = NVFP4 or MXFP4
+evaluated.
+Study Model Weight Prec. Act. Prec. NV/MX
+Dettmers [15] LLM INT8 INT8 –
+Yao [17] LLM INT4 INT8 –
+Xiao [4] LLM INT8 INT8 –
+GPTQ [2] LLM INT4 FP16 –
+AWQ [3] LLM INT4 FP16 –
+Micikevicius [16] LLM/CNN FP8 FP8 –
+Egiazarian [18] LLM MXFP4 FP16 MX
+Abecassis [5] LLM NVFP4 FP16 NV
+Feng [9] Whisper INT3–8 INT3–8 –
+Andreyev [19] Whisper INT4–8 FP16 –
+Ours Whisper INT3–8, INT4/8/16, NV+MX
+FP4/8 FP8/16
+NVFP4/MXFP4
+LLM quantization methods.LLM.int8() [15], Zero-
+Quant [17], GPTQ [2], and AWQ [3] have converged on
+W4A16 as the dominant LLM deployment paradigm. However,
+all were validated on decoder-only LLMs; whether this transfers
+to encoder–decoder ASR remains an open question we address.
+FP formats.Micikevicius et al. [16] demonstrated FP8-
+E4M3 superiority over INT8 for transformer outliers. Rouhani
+et al. [6] standardized MXFP4; Abecassis et al. [5] introduced
+NVFP4 with FP8-E4M3 block scales; Egiazarian et al. [18]
+showed that MXFP4 PTQ requires algorithmic correction. All
+evaluations target decoder-only LLMs; none apply FP formats
+to encoder–decoder ASR.
+ASR-specific quantization.Feng et al. [9] benchmarked
+eight integer PTQ methods on Whisper across seven datasets
+with activation precision varied, but excluded all FP formats.
+Andreyev et al. [19] compared INT4/5/8 without granularity or
+activation sweeps. Wagner et al. [7] and An et al. [8] character-
+ized outliers in speech encoder-decoders and LLMs—patterns
+we confirm in Whisper. As Table 1 shows, no prior work jointly
+covers both NVFP4/MXFP4 weight formats and a full activa-
+tion precision sweep on encoder–decoder ASR.
+3. Methodology
+3.1. Models and quantization targets
+We evaluate Whispertiny.en(39M parameters, 4+4 lay-
+ers, 384-dim, 6 heads) andbase.en(74M parameters, 6+6
+layers, 512-dim, 8 heads). Quantization targets all linear lay-
+ers:q/k/v/out projin encoder self-attention, decoder self-
+attention, and decoder cross-attention, plusfc1/fc2in every
+FFN block. Q, K, V projection outputs are additionally quan-
+tized to simulate low-precision KV-cache. We apply FakeQuant
+PTQ [20, 21]—injecting clipping and rounding error into the
+forward pass while keeping arithmetic in FP32—for hardware-
+agnostic comparison.
+3.2. Dataset and evaluation
+We use LibriSpeech [22]: 400 calibration samples from
+the training splits (to avoid test-set leakage) and all sam-
+ples fromtest-cleanandtest-otherfor evaluation.We
+report results ontest-cleanand presenttest-other
+in a separate section. WER uses standard text normaliza-
+tion. All runs use deterministic beam decoding (beam size 3,
+do sample=False); WER differences are attributable solely
+to quantization. Hardware: NVIDIA RTX 3080/4090, PyTorch
+2.4.1.
+3.3. Model size estimation
+Quantized size for the linear layers is estimated analytically:
+Size [bytes] = 1
+8
+X
+ℓ
+ 
+#Wℓbw + #Sℓbs
+
+,(1)
+where#W ℓ is the number of weights,b w is the weight bit-
+width,#S ℓ is the number of scale factors, andb s is the scale
+bit-width for layerℓ: FP16 for INT/FP4 group scales, FP8 for
+NVFP4 block scales, FP32 for per-channel INT8/FP8 scales.
+SmoothQuant does not change model size since per-channel
+vectors are absorbed into weight matrices before storage.
+4. Results
+4.1. 8-bit integer/floating-point quantization
+Table 2 reveals thatSmoothQuant is effective at 8-bit: with-
+out it, FP8 degrades markedly fortiny.en(6.39% vs. FP32
+1735
+5.88%), worse than INT8 (6.07%). With SmoothQuant, both
+formats recover strongly—INT8 S surpasses the FP32 baseline
+forbase.en(4.64% vs. 4.81%).
+Table 2:WER (%) of 8-bit quantization schemes. INT8 and
+FP8 use the W8A8 format with 8-bit integer and floating-point
+activations, respectively. S = SmoothQuant.
+Model FP32 FP16 INT8 INT8 S FP8 FP8 S
+tiny.en5.88 5.88 6.07 5.95 6.39 6.06
+base.en4.81 4.81 4.764.645.01 4.84
+Table 3:Model size (MB) at full and 8-bit precision.
+Model FP32 FP16 INT8 FP8
+tiny.en145.7 72.9 36.6 36.6
+base.en282.4 141.2 70.8 70.8
+4.2. 4-bit integer quantization (INT4)
+Table 4 shows thatactivation bit-width is the dominant fac-
+tor: W4A16 consistently outperforms W4A8 and W4A4 across
+all group sizes. Crucially,INT16 and FP16 activation paths
+yield nearly identical WER, indicating that maintaining 16-
+bit activation precision matters far more than whether the ac-
+tivation datatype is integer or floating-point. Forbase.en,
+W4A16+SQ achieves 4.89% atG=8, within 0.08% of FP32.
+This is hardware-friendly: INT16 and FP16 activation data-
+paths produce equivalent ASR accuracy, giving NPU design-
+ers format flexibility. Finer group sizes yield diminishing re-
+turns (G=64→32gains<0.4%while adding∼2MB), making
+coarser groups preferable under tight memory budgets.
+Table 4:INT4 per-group WER (%) by group size and activa-
+tion format. FP8a/FP16a = FP8/FP16-precision activations.
+SQ = SmoothQuant.
+Model ConfigurationG=8G=16G=32G=64
+tiny.en
+W4A4 7.37 7.71 8.41 9.45
+W4A4+SQ 8.21 8.75 8.57 9.58
+W4A8 6.52 6.81 7.66 7.57
+W4A8+SQ 6.48 6.70 7.08 8.02
+W4A8+FP8a 6.40 6.69 7.67 8.14
+W4A8+FP8a+SQ 6.36 6.61 7.05 8.50
+W4A16 6.36 7.01 7.50 7.45
+W4A16+SQ 6.23 6.65 6.87 8.32
+W4A16+FP16a 6.36 6.99 7.51 7.44
+W4A16+FP16a+SQ 6.23 6.65 6.88 8.32
+base.en
+W4A4 5.71 6.38 6.72 7.19
+W4A4+SQ 5.84 6.69 5.94 5.87
+W4A8 4.99 5.08 4.97 5.09
+W4A8+SQ 4.93 5.06 5.03 5.05
+W4A8+FP8a 5.04 5.18 5.16 5.21
+W4A8+FP8a+SQ 5.02 6.11 5.13 5.20
+W4A16 4.99 5.04 5.06 5.53
+W4A16+SQ 4.89 5.47 5.02 5.04
+W4A16+FP16a 4.99 5.03 4.97 5.17
+W4A16+FP16a+SQ 4.91 5.12 5.02 5.04
+4.3. 3-bit integer quantization (INT3)
+Table 5 shows that INT3 PTQ is at the viability limit. W3A3
+collapses catastrophically (WER>300%) for both models.
+tiny.enfails to reach acceptable WER in any configuration.
+base.enachieves competitive accuracy (W3A8+SQ: 5.34%
+atG=4), but the required fine granularity inflates model size
+beyond INT4 alternatives, offering no memory benefit. INT3
+requires QAT to be practical.
+Table 5:INT3 per-group WER (%) by group size and activa-
+tion format. SQ = SmoothQuant. W3A3 rows omitted (WER
+>100%).
+Model Config.G=4G=8G=16
+tiny.en
+W3A8 8.95 10.40 19.06
+W3A8+SQ 8.39 12.26 20.48
+W3A8+FP8a 7.93 9.79 15.83
+W3A8+FP8a+SQ 8.21 13.28 21.91
+W3A16-int 7.68 10.15 17.03
+W3A16-int+SQ 8.22 11.84 20.83
+W3A16+FP16a 7.67 10.17 17.06
+W3A16+FP16a+SQ 8.22 11.82 20.87
+base.en
+W3A8 5.04 5.99 6.47
+W3A8+SQ 5.34 6.15 6.44
+W3A8+FP8a 5.38 7.67 12.77
+W3A8+FP8a+SQ 5.43 5.78 8.59
+W3A16-int 4.98 5.76 6.52
+W3A16-int+SQ 5.08 5.59 6.73
+W3A16+FP16a 5.02 6.33 6.64
+W3A16+FP16a+SQ 5.41 5.66 6.95
+4.4. 4-bit floating-point quantization (FP4, NVFP4, and
+MXFP4)
+4.4.1. FP4 and NVFP4
+Table 6 shows that NVFP4 achieves the best 4-bit result:
+base.enW4A16 atG=16reaches 4.88%—within 0.07% of
+FP32 at6.4×compression. WER degrades with coarser groups
+(G=64: 5.11%). SmoothQuant benefits under NVFP4 are in-
+consistent.
+Table 6:FP4 and NVFP4 per-group WER (%) by group size. All
+activations use floating-point precision. SQ = SmoothQuant.
+Model Config.G=8G=16G=32G=64G=128
+FP4 (single FP16 block scale)
+tiny.enW4A8 6.28 6.51 7.19 7.80 8.31
+tiny.enW4A8+SQ 6.37 6.31 6.83 7.28 7.54
+base.enW4A8 5.14 5.08 5.32 6.19 5.40
+base.enW4A8+SQ 5.21 5.12 5.77 5.37 5.83
+NVFP4 (FP32 tensor scale + FP8-E4M3 block scales)
+tiny.enW4A4 6.77 7.62 9.30 11.71 16.86
+tiny.enW4A4+SQ 7.46 7.56 9.05 9.40 16.46
+tiny.enW4A8 6.32 6.69 6.68 6.99 7.48
+tiny.enW4A8+SQ 6.84 6.50 6.84 7.18 7.68
+tiny.enW4A16 6.22 6.36 6.53 7.31 7.29
+tiny.enW4A16+SQ 6.78 6.40 6.80 6.58 7.32
+base.enW4A4 5.72 5.57 5.83 13.62 21.04
+base.enW4A4+SQ 5.23 6.10 9.30 9.53 11.06
+base.enW4A8 5.04 5.17 5.19 5.30 5.33
+base.enW4A8+SQ 5.09 5.11 5.09 5.22 5.24
+base.enW4A16 4.95 4.88 4.97 5.11 5.12
+base.enW4A16+SQ 5.10 5.03 4.98 5.13 5.09
+4.4.2. MXFP4: accuracy degradation under standard PTQ
+MXFP4 shows substantial accuracy degradation under standard
+PTQ on Whisper: WER reaches 38%–94% fortiny.enand
+12%–24% forbase.en(Table 7), consistent with prior reports
+that MXFP4 requires algorithmic correction [18].
+MXFP4 uses E8M0 block scales, which can only represent
+powers of two (1, 2, 4, 8, ...) with no values in between. If a
+weight’s true scale falls between two powers of two, the clos-
+1736
+Table 7:MXFP4 WER (%) under W4A8 with E8M0 block
+scales. Activations use floating-point precision.
+Model Config.G=16G=32
+tiny.en W4A8 94.19 78.78
+W4A8+SQ 52.25 38.32
+base.en W4A8 24.21 12.71
+W4A8+SQ 18.45 14.07
+est available value can be off by up to 1.41×. NVFP4, by con-
+trast, uses FP8 scales that fit roughly 7 distinct values into the
+same range, so the approximation is much tighter. This coarse-
+ness hurts Whisper in particular because its weight distributions
+tend to concentrate in the gaps between consecutive powers of
+two—exactly where E8M0 is least accurate. As a result, logit
+perturbations accumulate across decoding steps, and algorith-
+mic correction beyond standard PTQ is needed for reliable ASR
+deployment [18].
+4.5. Generalization to noisy speech (test-other)
+Results ontest-other—where FP32 baselines are2.2×–
+2.5×higher than ontest-clean—confirm the main find-
+ings with two nuances.Format rankings are preserved: 8-
+bit formats remain near-lossless (base.en: 10.57–10.82%),
+and NVFP4 W4A16 stays competitive (base.en: 11.19%;
+tiny.en: 15.02%).Quantization gaps are compressed:
+the activation precision advantage narrows to∼0.1pp on
+test-otherversus 1–3% ontest-clean, because the
+already-high baseline WER absorbs much of the quantization
+error—makingtest-cleanthe more informative benchmark
+for format comparisons. MXFP4 remains severely degraded
+(base.en: 38–60%;tiny.en: 86–269%), confirming that
+E8M0 scale coarseness is the root cause rather than any dataset-
+specific effect.
+4.6. Pareto analysis and model size trade-offs
+Figure 2 plots model-size vs. WER and per-model Pareto
+frontiers. At 8-bit, INT8/FP8 cluster at low WER; at 4-bit,
+the same bit-width yields dramatically different WER depend-
+ing on format, granularity, and activation precision. NVFP4
+W4A16 dominates the 4-bit frontier for both models (Table 8);
+base.endominatestiny.enabove∼36MB.
+Figure 2:Model size vs. WER (WER≤20%). Triangles:
+tiny.en; circles:base.en. Dashed: Pareto frontier.
+Table 8:Pareto-optimal and representative configurations.
+g/b = group or block size;†= SmoothQuant applied.
+Model Configuration Size (MB) WER (%)
+tiny.enNVFP4 W4A16, b128 18.78 7.29
+tiny.enNVFP4 † W4A16, b64 19.35 6.58
+tiny.enNVFP4 W4A16, b32 20.49 6.53
+tiny.enFP4 † W4A8, g16 22.77 6.31
+tiny.enNVFP4 W4A16, b8 27.326.22
+base.enNVFP4 † W4A16, b128 36.40 5.09
+base.enINT4 † W4A16, g64 37.50 5.04
+base.enINT4 W4A16, g32 39.71 4.97
+base.enNVFP4 W4A16, b32 39.71 4.97
+base.enNVFP4 W4A16, b16 44.124.88
+5. Guidelines for Edge ASR Deployment
+Our results yield six practical guidelines for deploying Whisper
+on edge devices and informing mobile NPU design.
+(1) Choose FP over INT for activation datapaths.INT16
+and FP16 activations produce virtually identical WER (Table 4),
+yet FP multipliers are1.4×–2.4×smaller than INT at the same
+bit-width [12]. FP datapaths therefore deliver more compute per
+mm2 at no accuracy cost.
+(2) Activation bit-width is your most important knob.
+Dropping activations from 16-bit to 8-bit costs 1–3% absolute
+WER, while finer weight group sizes add memory with little
+accuracy gain. If you can only optimize one thing, keep activa-
+tions at 16-bit.
+(3) Block scale quality matters as much as bit-width for
+4-bit formats.MXFP4’s power-of-two block scales require al-
+gorithmic correction on top of standard PTQ [18]. NVFP4’s
+finer FP8 block scales avoid this entirely, reaching 4.88% WER
+onbase.enwith no extra steps.
+(4) Fine group sizes require dual-precision hardware
+support.AtG≤16, each matrix multiply requires a per-group
+floating-point rescaling after the low-precision accumulation.
+NPUs need to support FP scaling computation alongside the
+MAC computation.
+(5) For Whisper, memory is dominated by weights, not
+KV cache.Whisper’s fixed 30-second window keeps the KV
+cache below 5% of total memory, so weight quantization is
+the primary lever for reducing footprint—unlike autoregressive
+LLMs.
+(6) When in doubt, quantize the larger model.Above
+roughly 36 MB, quantizedbase.en(44.1 MB, 4.88% WER)
+consistently outperformstiny.en(27.3 MB, 6.22%). A 40–
+50 MB budget suffices for near-lossless accuracy.
+6. Conclusion
+We presented the first systematic PTQ study of Whisper across
+integer and floating-point formats, and our results challenge two
+widely held assumptions in on-device ASR design. First, ac-
+tivation bit-width—not weight precision—is the dominant ac-
+curacy factor: W4A16 outperforms W4A8 by 1–3% absolute
+WER, showing that keeping activations at 16-bit matters more
+than refining weight quantization. Second, INT16 and FP16
+activations yield equivalent accuracy, and since FP multipliers
+are1.4×–2.4×more area-efficient than INT [12], FP activation
+paths are the better choice for efficient NPU design. Among 4-
+bit formats, NVFP4 W4A16 reaches within 0.07% of FP32 at
+6.4×compression. Future work covers larger Whisper variants,
+QAT for INT3, and real-device latency measurements.
+1737
+7. Generative AI Use Disclosure
+We used a generative AI tool (ChatGPT, OpenAI) solely to
+assist with English proofreading and language polishing (e.g.,
+grammar). The tool was not used to generate scientific con-
+tent or conclusions. All authors reviewed and edited the AI-
+suggested changes, and take full responsibility for the content
+and its submission.

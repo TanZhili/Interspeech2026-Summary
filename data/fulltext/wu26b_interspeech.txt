@@ -1,0 +1,445 @@
+Towards Dys-XAI: Influence-Based Explanations for
+Dysarthria Severity Assessment
+Xiaoliang Wu1, Qiyang Sun2, Yupei Li2, Erfan Loweimi3, Jennifer Williams1, Zhengjun Yue4
+1 University of Southampton, United Kingdom
+2 Imperial College London, United Kingdom
+3 University of Edinburgh, United Kingdom
+4 King’s College London, United Kingdom
+xiaoliang.wu@soton.ac.uk, zhengjun.1.yue@kcl.ac.uk
+Abstract
+Dysarthria severity assessment is essential for therapy plan-
+ning and longitudinal monitoring, yet manual perceptual rat-
+ing is time-consuming and variable across clinicians. Although
+deep learning models achieve strong performance, their black-
+box nature limits clinical adoption. Existing speech explain-
+ability methods typically provide acoustic feature importance
+scores that are difficult for end-users to interpret. We propose
+an influence-based, instance-level explainability framework that
+explains each decision through supportive and competing train-
+ing samples. Using gradient-based influence approximations,
+we compute per-utterance influence scores to identify support-
+ive and competing training samples for each prediction. Con-
+trolled deletion experiments (5–20%) validate the explanations,
+showing that removing highly influential samples systemati-
+cally shifts predictions. This approach provides auditable ex-
+planations by linking decisions to perceptible reference cases.
+Index Terms: Dysarthric speech, Severity Assessment, Ex-
+plainable AI (XAI)
+1. Introduction
+Dysarthria severity assessment aims to quantify the degree of
+speech motor impairment in individuals, playing a critical role
+in clinical therapy planning, rehabilitation monitoring, and lon-
+gitudinal disease tracking [1, 2]. In current clinical practice,
+severity is commonly judged via auditory–perceptual rating
+protocols, which are time-consuming and subject to inter-rater
+variability [3, 4]. Automatic severity assessment, therefore, of-
+fers the prospect of fast, standardised, and repeatable ratings,
+reducing clinician workload and enabling more frequent mon-
+itoring. Recent deep learning-based methods [5, 6, 7, 8] have
+achieved performance comparable to expert ratings on multi-
+ple public dysarthric speech datasets [9, 10, 11], demonstrating
+their potential for clinical decision support.
+However, assessment performance alone is insufficient for
+real-world deployment. Model explainability, i.e., the ability to
+explain“why a particular severity level was assigned”, is cru-
+cial for clinical adoption and user trust [12, 13]. In practice,
+both clinicians and patients are often hesitant to act on black-
+box models that lack transparent, clinically meaningful justifi-
+cation, especially when outputs may influence therapy planning
+and prognostic discussions [14]. Explainability in this setting
+is therefore not only a tool for researchers to inspect model be-
+havior, but also provides evidence that is understandable and
+reviewable by end users (clinicians and, where appropriate, pa-
+tients), supporting verification and communication.
+Current explainability research in speech mostly employs
+post-hoc feature attribution [15, 16], including time–frequency
+saliency approaches (e.g., Shapley Additive Explanations
+(SHAP) [17, 18, 19], Local Interpretable Model-agnostic Ex-
+planations(LIME) [20, 21, 22], attention-based visualisation
+[23, 24]), feature-importance analyses over predefined acoustic
+feature sets such as OpenSMILE descriptors [25], and model
+layer behaviour [26]. These methods typically produce visual
+or numerical importance representations, e.g., heatmaps over
+spectrograms or ranked feature-importance scores, that indicate
+which regions or descriptors contributed most to a model’s out-
+put for a given utterance. While informative about local model
+sensitivity, their practical interpretive value in clinical sever-
+ity assessment is often limited. First, these explanations are
+local and utterance-level. Severity labels are inherently ordi-
+nal: adjacent categories (e.g., mild vs. moderate) reflect in-
+cremental differences along an impairment continuum rather
+than sharply separable nominal classes. A clinically useful ex-
+planation should therefore expose relational evidence—how an
+utterance compares to neighbouring severity levels—which is
+not directly conveyed by within-utterance saliency or descriptor
+rankings. Second, clinicians often reason in perceptual con-
+structs, e.g., consonant precision, vowel centralisation, abnor-
+mal prosody, slow rate, or breathiness [27], making it non-trivial
+to translate spectrogram heatmaps or numerical importance of
+engineered descriptors into clinically meaningful justifications.
+In this work, we shift the explanation perspective from
+acoustic features to case-based training instances. Instead of
+asking “Which time–frequency regions or acoustic features were
+important?”, we ask: “Which training samples exert positive in-
+fluence on this prediction, and which exert opposing influence?”
+This case-based view makes the ordinal structure explicit, be-
+cause influence can be inspected and aggregated by severity
+label, rather than only by internal feature contributions. Im-
+portantly, because training instances are audio recordings, the
+explanations can be directly presented as perceptible reference
+examples, and aligning naturally with how clinicians justify
+judgements through comparison with prototypical examples.
+In this paper, to operationalise this perspective, we con-
+struct a structured influence-based explainability framework
+built on gradient-based approximation of training-sample in-
+fluence [28]. We innovate the influence methods in previous
+work [29, 28] to obtain a per-test-utterance influence score over
+the entire training set, and perform structured aggregation and
+analysis at two complementary levels: (i)class-levelaggrega-
+tion groups influence scores by severity label to quantify sup-
+portive vs. competing contributions across the ordinal scale,
+and (ii)model-levelaggregation aggregates influence patterns
+across test cases to characterize the model’s global reliance on
+6053
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-538
+different severity levels.Finally, we evaluate the explanatory va-
+lidity withcontrolled deletion experiments: By selectively re-
+moving highly influential (or strongly opposing) training cases
+and measuring the systematic changes in model outputs, we test
+whether the proposed influence-based explanations correspond
+to causal, prediction-relevant evidence rather than correlational
+artifacts.
+2. Methodology
+2.1. Task formulation
+We follow the severity annotation provided in TORGO [9]
+and formulate dysarthria severity assessment as a 4-class or-
+dinal classification task. Given an utterancex, the label is
+y∈ {0,1,2,3}, corresponding to{typical, mild, moderate,
+and severe}dysarthria (with moderate-to-severe merged into
+severe). The training set isD train ={(x i,yi)}N
+i=1, whereirep-
+resent the index of the sample. The model being explained (a
+4-class classifier in our case)fθ is trained by minimising cross-
+entropy loss:
+L(θ) = 1
+N
+NX
+i=1
+ℓ(fθ(xi),yi),(1)
+whereℓ(·,·)denotes per-sample loss.
+Our goal is to explain a prediction on test sample(x t,yt)
+by quantifying which training samples support it, which oppose
+it and how such influence distributes across severity levels.
+2.2. Instance-level influence computation
+To quantify how an individual training sample affects model
+prediction on a test sample, we adopt a gradient-based influ-
+ence estimation method [28]. This method measures influence
+by tracking gradient alignment throughout the training trajec-
+tory. Given checkpoints{θ 1,...,θ M}saved during training,
+the influence of training samplex i on model’s prediction on
+test samplex t throughout training is defined as the cumulative
+gradient inner product over checkpoints: In our experiments, we
+save one checkpoint after each training epoch, givingM= 30
+checkpoints for each fold.
+Ii→t =
+MX
+m=1
+∇θℓ(fθm(xt),yt)⊤∇θℓ(fθm(xi),yi).(2)
+At each checkpointm, the gradient inner product measures
+directional alignment:
+•Positive inner product: gradients point in similar directions.
+Training onxi would reduce loss onxt at this point—xi pro-
+vides supportive influence.
+•Negative inner product: gradients point in opposite direc-
+tions. Training onx i would increase loss onx t—xi exerts
+counteracting influence.
+For each test samplex t, computingI t =
+[I1→t,I 2→t,...,I N→t]yields an influence ranking over
+the training set, enabling us to identify the most supportive and
+most counteracting training samples for that specific test case.
+2.3. Class-level influence aggregation
+Instance-level influences identify specific training utterances
+that affected each prediction. To reveal systematic patterns, we
+aggregate by the test samples’ true severity labels.
+For each severity levelc∈{0,1,2,3}, we collect all test
+samples with true labelc:
+Tc ={x t∈D test :y t =c}.(3)
+For each training samplexi, we compute itsaverage influ-
+enceacross all test samples inT c:
+I (c)
+i = 1
+|Tc|
+X
+xt∈Tc
+Ii→t.(4)
+This produces aclass-aggregated influence vectorI (c) =
+[I (c)
+1 ,I (c)
+2 ,...,I (c)
+N ], where each entry measures the average
+influence of training samplexi on test samples at severity level
+c. Averaging accounts for varying test set sizes across severity
+levels, making influence scores comparable. Training samples
+can be ranked byI (c)
+i to identify the most influential cases for
+each severity group. Samples with high positiveI (c)
+i provided
+strong support for predictions at levelc, while those with large
+negativeI (c)
+i opposed such predictions.
+To analyse cross-level influence patterns, we further de-
+compose by training labels. For each pair of severity levels
+(c,c′), we compute theaverage influencefrom training sam-
+ples labeledc′ on test samples labeledc:
+Sc←c′ = 1
+|{i:y i =c′}|
+X
+i:yi=c′
+I (c)
+i .(5)
+The matrixS= [S c←c′]c,c′∈{0,1,2,3} forms a4×4class-
+level influence matrix, where entryS c←c′ represents the aver-
+age per-sample influence from training levelc ′ to test levelc.
+Normalizing by the number of training samples at levelc ′ en-
+sures thatS c←c′ values are comparable across severity levels,
+regardless of class imbalance in either the training or test sets.
+2.4. Model-level influence analysis
+To quantify the model’s sensitivity to ordinal structure, we ag-
+gregate influence by ordinal distanced=|c−c ′|:
+Ordinal sensitivity assessment.The class-level influence
+matrixScaptures how training samples from each severity level
+contribute to predictions on each test severity group. Severity
+labels are ordered: adjacent levels (e.g., mild vs. moderate) rep-
+resent incremental distinctions, while distant levels (e.g., typi-
+cal vs. severe) represent coarse contrasts. A model that respects
+this ordinal structure should rely more heavily on nearby train-
+ing samples than distant ones.
+We defineordinal distancebetween training label
+c′ and test labelcasd(c ′,c) =|c ′ −c|. For
+each distanced∈ {0,1,2,3}, we compute the aver-
+age matrix entry at that distance. For example, ¯S(0)
+averages the diagonal entries{S 0←0,S 1←1,S 2←2,S 3←3}
+(same-level support), while ¯S(1)averages adjacent entries
+{S0←1,S 1←0,S 1←2,S 2←1,S 2←3,S 3←2}(adjacent-level sup-
+port). Formally:
+¯S(d) = 1
+|{(c,c′) :|c−c ′|=d}|
+X
+c,c′:|c−c′|=d
+Sc←c′.(6)
+If the model exhibits ordinal sensitivity, ¯S(d)should de-
+crease monotonically: the samples at the same level (d= 0)
+provide the strongest support, adjacent samples (d= 1) moder-
+ate support, and distant samples (d≥2) weak or negative sup-
+port. Deviations reveal how the model encodes severity struc-
+ture: if ¯S(2)> ¯S(1), the model relies on extreme contrasts
+6054
+rather than fine-grained distinctions; if ¯S(d)is flat, this suggests
+that the model treats severity as nominal rather than ordinal.
+3. Experiments
+Figure 1:Validation from controlled deletion strategies indicate
+performance changes across severity levels.•: high influence
+removal.■: low influence removal.▲: random removal.
+We conduct experiments on the TORGO [9], a widely used
+English dysarthric dataset, which contains approximately 21
+hours of recordings from 15 speakers. TORGO includes 8
+speakers with dysarthria (7.3 hours) and 7 typical speakers (13.7
+hours). The speech material comprises both isolated words and
+sentences. Severity labels are provided at the speaker level. In
+total, TORGO contains 17,587 utterances.
+We use stratifiedK-fold cross-validation [30, 31] with
+group-wise splitting by speaker. Stratification is performed with
+respect to the speaker-level severity labels to keep class propor-
+tions as balanced as possible across folds. In each run, one fold
+is used for testing, and the remaining folds are used for training
+and validation.
+For the base classifier model, we extract 80-dimensional fil-
+terbank (FBank) features and train a linear classifier with a sin-
+gle fully connected layer followed by a softmax. Each classifier
+was trained for 40 epochs per fold using the AdamW optimizer
+[32] with a learning rate of 3e-4 and a batch size of 32. For the
+controlled deletion experiments, we use the same model archi-
+tecture and training protocol on the modified training sets.
+4. Results and discussion
+We present the outcome of evaluating our explanation frame-
+work quantitatively and qualitatively. Our results summarise the
+faithfulness of our proposed influence scores via a set of con-
+trolled deletion experiments. Finally, we present our analysis of
+cross-severity influence patterns and qualitative case studies.
+4.1. Validation of influence-based framework
+A critical component of our evaluation is to first validate
+whether computed influence scores meaningfully capture train-
+ing sample importance. This is important because influence-
+based explanations are only useful if high-influence samples
+genuinely drive predictions. We employ controlled deletion ex-
+periments to test this directly. For each test levelc, we rank
+training samples by their class-aggregated influenceI(c)
+i (Eq. 4)
+and remove samples under three strategies. Results shown in
+Figure 1 indicate that the three strategies produce clearly diver-
+gent trajectories, confirming that influence scores are capturing
+systematic differences in sample importance.
+Figure 2:Class-level influence matrixS. Rows = test labels,
+columns = training labels. Red (dark) positive (supporting pre-
+dictions). Blue (light) negative (opposing predictions).
+Strategy: Random.This strategy removesk%samples
+uniformly at random, serving as the baseline control.Random
+removal shows minimal change. The delta values across all
+levels (|∆|<2%), confirm that observed effects stem from
+influence-guided selection, not dataset size reduction.
+Strategy: High Influence.Removing the top-k%sam-
+ples with highestI (c)
+i can indicate whether influence scores
+are valid, because performance on test levelcshould degrade
+more than the random baseline.High influence removal de-
+grades performance substantially.Class-2 (Moderate) drops
+from 36.8% to 0.3% at 20% removal (∆ =−36.5points),
+and Class-3 (Severe) falls from 72.3% to 43.1% (∆ =−29.2
+points). Even Class-0 (Typical), with 93.7% baseline accuracy,
+loses 13.7 points. Class-1 (Mild) collapses from 5.5% to near-
+zero (0.3%). Consistent degradation across severity levels vali-
+dates that influence ranking identifies critical training samples.
+Strategy: Low Influence.After removing the bottom-k%
+samples with lowestI (c)
+i , this is expected to outperform the
+baseline by eliminating noisy or mislabeled samples. We retrain
+the model on each reduced training set and evaluate classifica-
+tion accuracy on test samples at severity levelcfor removal per-
+centagesk∈{0,5,10,15,20}.Low influence removal im-
+proves performance.Class-2 increases from 36.8% to 47.0%
+(+10.2 points), Class-3 from 72.3% to 81.1% (+8.8 points), and
+Class-1 more than triples from 5.5% to 17.6% (+12.1 points).
+These gains indicate that low-influence samples include noise
+or mislabeled cases that degrade model quality. The largest im-
+provements occur for the lowest-baseline classes (Class-1 and
+Class-2), suggesting influence-based filtering is most valuable
+for ambiguous severity levels.
+These results validate our framework. High-influence re-
+moval degrades performance, confirming critical samples are
+identified. Low-influence removal improves performance, con-
+firming noisy samples are detected. After validating that in-
+fluence scores reliably capture training sampleimportance, we
+can now examine how their influence distributesacross severity
+levels, addressed in the following section.
+4.2. Cross-severity influence patterns
+4.2.1. Class-level influence matrix
+In Figure 2, we visualize the class-level influence matrixS
+(Eq.5). EntrySc←c′ represents the average influence from train-
+6055
+Figure 3:Ordinal sensitivity analysis. Average influence ¯S(d)
+decreases monotonically with ordinal distanced.
+ing samples at severity levelc′ on test samples at levelc. From
+this4×4matrix visualisation, clear structural patterns are re-
+vealed. The matrix shows block-diagonal structure. Diago-
+nal entries dominate their rows, with mild-to-mild (S 1←1 =
+22915) and moderate-to-moderate (S 2←2 = 21570) showing
+the strongest influence. The structure confirms that predic-
+tions rely primarily on same-level training evidence. Typical-to-
+typical influence (S 0←0 = 1831) is comparatively lower, and
+this is because typical samples are prototypical and require less
+discriminative evidence to establish their category.
+Beyond the diagonal, the structure reveals a critical find-
+ing. Typical test samples receive positive influence only from
+typical training samples and all dysarthric levels exert nega-
+tive influence. The strongest opposition comes from mild sam-
+ples (S 0←1 =−4261). This pattern is reasonable because
+mild dysarthria marks the boundary between typical and atypi-
+cal speech, providing discriminative anchors that prevent false-
+typical predictions.
+Within dysarthric levels, the pattern inverts. Mild, moder-
+ate, and severe test samples draw positive influence from each
+other’s training samples. Moderate, for instance, receive sup-
+port from mild (S 2←1 = 5400) and severe (S 2←3 = 2031)
+samples beyond moderate samples themselves. This mutual
+support indicates that the model recognises shared acoustic fea-
+tures across dysarthric speech, regardless of severity.
+The matrix thus encodes a two-tier structure: a binary dis-
+tinction separating typical from dysarthric speech, layered with
+ordinal grading among dysarthric severities. Typical stands iso-
+lated; dysarthric levels form a cluster with internal gradation.
+4.2.2. Model-level ordinal sensitivity
+To quantify the model’s sensitivity to ordinal structure, we ag-
+gregate influence by ordinal distanced=|c−c ′|(Eq.6). Fig-
+ure 3 shows the average influence ¯S(d)for each distance level.
+We observe a monotonic decay: ¯S(0) = 13427, ¯S(1) =
+1028, ¯S(2) =−642, ¯S(3) =−2561. Same-level support
+(d= 0) is 13×larger than adjacent-level influence (d= 1),
+and influence becomes negative ford>= 2. This graded transi-
+tion from supportive to opposing influence as distance increases
+is consistent with an ordinal-sensitive model rather than nomi-
+nal categories: neighbouring severities provide supportive evi-
+dence, whereas distant severities exert counteracting influence.
+4.3. Case study: instance-based vs. feature attribution
+We qualitatively compare our proposed instance-based ex-
+planations with feature-attribution explanations for a severe
+dysarthria case in TORGO in Figure 4. As presented in Fig-
+ure 4(a), SHAP [33] produces importance score over 88 OpenS-
+(a)SHAP Feature Importance
+(b)Influence-Based Explana-
+tion
+Figure 4:Comparison of explanations generated by SHAP (left)
+and the proposed influence-based method (right) for a severe
+dysarthria case.
+MILE acoustic descriptors (e.g.,equivalentSoundLevel dBp,
+mfcc4 sma3 amean). While these outputs are acoustically de-
+tailed, the descriptor names and scores are difficult to interpret
+in clinical terms (e.g., for assessment) and not directly support
+perceptual verification of whether the model’s decision aligns
+with dysarthria markers used by clinicians.
+In contrast, Figure 4(b) shows that our instance-based ex-
+planations method returns ranked training utterances with sup-
+portive and opposing influence (and the scores) for the same test
+case. Because the explanations are audio recordings, clinicians
+can verify their decisions through direct perceptual comparison
+between the supportive/competing samples with the reference
+cases and can inspect whether competing evidence arises from
+adjacent severity levels. Audio examples are provided on the
+demo page for perceptual test:https://sites.google.
+com/view/infx-dys-samples.
+When extracting the top-5 most influential training utter-
+ances for multiple severe test cases, we observed that many
+test cases shared nearly identical top-ranked influential train-
+ing examples. Manual inspection revealed that several of these
+high-influence training files were silent recordings (no word-
+s/sentences spoken). Notably, silence removal had already been
+applied during preprocessing, making it surprising that such
+near-silent segments still emerged among the most influential
+samples. These files appear to originate from severe speakers,
+meaning the model may learn a spurious association between
+near-silence and the severe label. Importantly, the influence
+ranking surfaced these issues directly, highlighting the frame-
+work’s practical utility for dataset auditing and its faithfulness
+in identifying training evidence that truly drives predictions—
+not only interpretable but alsooperationally useful.
+5. Conclusion
+We proposed an influence-based instance-level explainability
+framework for dysarthria severity assessment that explains each
+prediction through training utterances that provide supporting
+and opposing evidence/influence, enabling perceptual verifica-
+tion via reference audio examples. Through controlled dele-
+tion experiments, we validated that estimated influence scores
+identify genuine prediction-relevant training samples: remov-
+ing high-influence training samples consistently degrades per-
+formance, whereas removing low-influence samples can im-
+prove it. Empirical cross-severity analysis further reveals the
+model encodes severity as an ordered continuum with ordinal
+sensitivity reflected in influence decaying systematically with
+increasing label distance. Future work will extend this frame-
+work to larger and more diverse clinical populations and inves-
+tigate robustness and cross-condition generalization under vary-
+ing recording conditions and label granularities.
+6056
+6. Acknowledgements
+This work was supported by the Engineering and Physical Sci-
+ences Research Council (EPSRC) through the National Edge
+AI Hub for Real Data: Edge Intelligence for Cyberdisturbances
+and Data Quality (EP/Y028813/1) and Responsible AI UK
+(EP/Y009800/1).
+7. Generative AI Tools Disclosure
+Generative artificial intelligence tools were used solely to assist
+with language editing and clarity of presentation. All research
+ideas, methodology, experiments, and interpretations were con-
+ceived and carried out by the authors, who take full responsibil-
+ity for the originality, validity, and integrity of the work.

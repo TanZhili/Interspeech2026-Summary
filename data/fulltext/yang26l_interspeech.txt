@@ -1,0 +1,475 @@
+CraftTTS: Fine-Grained Prosody Control for Text-to-Speech
+Wenbing Yang1, Qihang Lu1, Bingsong Bai1, Zihan Sun2, Yueran Hou2, Peilei Jia2, Yingming Gao1,
+Ya Li1,∗∗, Jun Gao2,∗∗
+1 Beijing University of Posts and Telecommunications, Beijing, China
+2 Hello Group Inc., Beijing, China
+wbyang@bupt.edu.cn, yli01@bupt.edu.cn, gaojun55@gmail.com
+Abstract
+While zero-shot text-to-speech models perform well in global
+voice cloning, they struggle with fine-grained prosodic con-
+trol, as strict word-level intensity and tempo manipulation can
+disrupt acoustic priors and introduce artifacts. We propose
+CraftTTS1, a three-stage framework enabling stable word-level
+control without sacrificing fluency. First, a compute-driven
+zero-shot pipeline automatically constructs large-scale prefer-
+ence pairs without manual annotation. Second, joint supervised
+fine-tuning and direct preference optimization improve sensitiv-
+ity to local prosodic tags. Third, group relative policy optimiza-
+tion with a multi-dimensional prosodic reward balances local
+controllability and global naturalness by regulating intelligibil-
+ity, intensity contrast, and rhythm. Experiments demonstrate
+that CraftTTS achieves state-of-the-art fine-grained expressive-
+ness while preserving zero-shot generation capability.
+Index Terms: text-to-speech, fine-grained prosody control,
+preference optimization, reinforcement learning
+1. Introduction
+Humans convey semantic nuance through prosody by modu-
+lating intensity and speaking rate, forming temporally local-
+ized linguistic structures known as speech cadence. Modeling
+these fine-grained variations is essential for natural, expressive,
+and context-aware speech synthesis. While early research fo-
+cused on phoneme- or word-level acoustic modeling [1, 2, 3],
+the advent of large language models (LLMs) [4] has propelled
+modern Text-to-Speech (TTS) models into unified generative
+frameworks capable of high-fidelity synthesis and zero-shot
+voice cloning with strong contextual understanding. To reg-
+ulate speaking style, contemporary methods primarily rely on
+reference-based transfer [5, 6], structured prosody tags [7, 8, 9],
+natural language instructions [10, 11, 12], or explicit word-level
+acoustic planning [13, 14, 15].
+Despite their impressive global generation capabilities, cur-
+rent systems struggle with stable, fine-grained prosodic control.
+Enforcing strict word-level instructions often introduces acous-
+tic artifacts, unnatural pauses, or global emotional leakage, dis-
+rupting overall fluency. This limitation stems from two core
+challenges: first, a severe scarcity of precisely aligned expres-
+sive speech data without human annotation; second, an inher-
+ent conflict within autoregressive LLMs, where aggressive lo-
+calized acoustic conditioning disrupts the global acoustic prior.
+These unresolved challenges motivate a critical question:Can
+we systematically align modern LLM-based TTS systems to
+**indicates the corresponding author.
+1Audio samples are available athttps://ywbn.github.io/
+CraftTTS/.
+follow fine-grained prosodic instructions without sacrificing
+global generalization and synthesis stability?
+To answer this, motivated by the potential of structured
+prosody tags, we proposeCraftTTS, a data-efficient three-
+stage alignment framework for stable word-level prosody con-
+trol, resolving the conflict between strict local instructions and
+global naturalness. In Stage 1, we adopt a compute-driven zero-
+shot synthesis strategy to construct high-quality preference data
+without manual annotation. An external teacher model (In-
+dextts2 [5]) is guided via multi-round reasoning to produce tag-
+consistent speech. Multiple candidates are generated and fil-
+tered using a “best-of-N” strategy to select the optimal sample,
+improving tag adherence and acoustic quality while avoiding
+self-sampling bias. These optimal samples serve as positive an-
+chors for constructing contrastive preference pairs. In Stage 2,
+we adapt the target backbone (CosyV oice 2 [7]) via a joint Su-
+pervised Fine-Tuning (SFT) and Direct Preference Optimiza-
+tion (DPO) [16, 17] strategy, anchoring the model’s sensitivity
+to local intensity and tempo tags. Finally, in Stage 3, to resolve
+the fundamental trade-off between strict local control and global
+naturalness, we introduce Group Relative Policy Optimization
+(GRPO) [18] governed by a multi-dimensional prosodic reward
+system. Rather than rigidly forcing acoustic parameters, our
+decoupled rewards are grounded in universal speech dynamics:
+preserving general intelligibility, anchoring global emotion to
+amplify local intensity contrasts (strong/weak), and contin-
+uously regularizing rhythm to prevent tempo over-optimization.
+This design prevents extreme acoustic distortion and ensures
+stable alignment.
+Experimental results demonstrate that our approach funda-
+mentally breaks the performance bottleneck of localized con-
+trol. Our main contributions are summarized as follows:
+•Zero-shot Data Pipeline:We propose a scalable, compute-
+driven synthesis pipeline that leverages LLMs and a separate
+robust TTS teacher to automatically construct large-scale,
+high-quality prosody preference pairs. This completely elim-
+inates the need for human annotation while preventing self-
+generation degradation.
+•Unified Audio Alignment Paradigm:We introduce a sys-
+tematic adaptation of the LLM alignment pipeline (SFT→
+DPO→GRPO) specifically designed for discrete audio to-
+kens, establishing precise local controllability without de-
+stroying the pre-trained autoregressive prior.
+•Multi-Dimensional Prosody Rewards:We design a uni-
+versally applicable, decoupled reward mechanism targeting
+intelligibility, intensity, and tempo. Extensive experiments
+show that CraftTTS achieves state-of-the-art perceptual nat-
+uralness and fine-grained expressiveness while preserving the
+robust zero-shot voice cloning capabilities of the backbone.
+117
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2018
+Text-to-Semantic
+Style Prompt Speaker Prompt
+Semantic-to-Mel 
++BigVGANv2 positive samplesegment n
+…
+segment 0
+sample 0
+…
+…
+…
+…
+…
+…
+…
+sample 1
+… …
+… …
+DPO 
+LossSFT Loss
+positive sample negative sample
+Prediction阿尔瓦雷斯依言行事。
+TTS LLM
+Reference
+<strong>阿尔瓦雷斯</strong>
+依言行事。
+deepseek v3
+Segmentation
+Text Tokens
+Semantic token tail of last round
+Text Tokens
+Semantic/Speech Tokens
+…
+Best-of-N 
+Selection
+y1 y2 yG
+…
+ASR 
+Reward
+Emotion 
+Reward
+Length 
+Penalty
+A1 A2 AG
+…
+E1 E2 EG
+…
+L1 L2 LG
+…
+Stage 1
+Stage 3
+Reward Scores
+Training
+Stage 2
+prosodic speech
+…
+Figure 1:Overview of the proposed three-stage framework for achieving fine-grained word-level prosodic controllability.
+2. Methodology
+2.1. Overview
+As shown in Fig. 1, we propose a three-stage framework for
+fine-grained word-level prosody control in zero-shot TTS. We
+first construct preference data via multi-round sampling, then
+establish basic tag controllability through SFT and DPO. Fi-
+nally, we apply GRPO with multi-dimensional prosodic rewards
+to improve robustness and suppress acoustic artifacts.
+2.2. Stage 1: Fine-Grained Preference Data Construction
+Modern speech synthesis increasingly adopts LLM-based archi-
+tectures that model text and acoustic tokens in a unified discrete
+space, where prosodic control tags are essential for eliciting
+latent acoustic behaviors. Shifting from heuristic acoustic ex-
+traction to semantics-driven alignment, we leverage the contex-
+tual reasoning ability of LLMs to infer semantic emphasis and
+rhythm from linguistic context, enabling the assignment of fine-
+grained span-level prosodic tags. Combined with autoregressive
+multi-round inference and tag-conditioned multi-sampling from
+pre-trained TTS backbones, this pipeline automatically builds a
+high-quality preference dataset, alleviating the scarcity of word-
+level prosody supervision without human annotation.
+1) LLM-driven Word-level Prosody Annotation.We first
+leverage the natural language understanding and contextual
+reasoning capabilities of DeepSeek-V3 [19] to analyze large-
+scale plain text corpora. The model is prompted to perform
+prosodic analysis from the perspective of a language expert, in-
+serting context-aware prosodic annotations. Specifically, four
+tags are introduced at the word or phrase level:strongand
+weakfor local intensity, andfastandslowfor speak-
+ing rate control. For example, annotated segments appear as
+<strong>words</strong>. These tags serve as explicit
+fine-grained control instructions for downstream synthesis.
+2) Multi-round Autoregressive Inference.We adopt a multi-
+round inference paradigm for fine-grained prosodic control.
+Exploiting the reference sensitivity of Indextts2 [5], tagged
+segments (strong,weak) are guided by randomly sampled
+target-specific style prompts. Rather than concatenating inde-
+pendently stylized chunks, each segment is anchored to its pre-
+ceding acoustic context by prepending the terminal acoustic to-
+kens of the previous segment as an autoregressive prefix. This
+token-level overlapping continuation forms an acoustic bridge
+that propagates pitch and energy across control boundaries,
+eliminating discontinuities while preserving global speech con-
+tinuity under localized expressive constraints.
+3) Tag-conditioned Multi-sampling Selection.We introduce a
+dual-purpose multi-sampling mechanism that stabilizes speaker
+identity and enables zero-shot speaking rate control under tag
+conditioning.
+•Timbre Preservation:To prevent speaker drift caused by al-
+ternatingstrongandweakprompts, multiple candidates
+are generated and the one with the highest cosine similarity
+to the reference speaker embedding is selected, preserving
+vocal identity under localized emphasis shifts.
+•Speaking rate Control:Exploiting the stochasticity of autore-
+gressive decoding, acoustic token length is used as a proxy
+for speaking rate. The shortest candidate is selected forfast
+tags and the longest forslowtags, achieving word-level
+speed control without external duration modeling.
+4) Preference Pair Construction.For DPO training, we
+construct contrastive pairs(y w,yl), where the multi-round
+prosody-controlled audio serves as the preferred sample and the
+corresponding baseline synthesis without prosodic tags serves
+as the rejected sample.
+118
+2.3. Stage 2: Fine-Grained Prosody Alignment
+Since standard SFT does not penalize control failures, we for-
+mulate word-level prosody control as a preference-optimization
+problem and train CosyV oice 2 with joint SFT+DPO. This con-
+trastive approach natively penalizes prosodic entanglement and
+tag-ignoring behaviors, enforcing precise boundary and seman-
+tic alignment without external reward models.
+1) SFT Training.We first fine-tune the model on the tag-
+conditioned winning samples (yw) constructed in Stage 1 to es-
+tablish a basic mapping between control tags and local acoustic
+realization. SFT minimizes the negative log-likelihood:
+LSFT(θ) =−E (x,yw )∼D[logπθ(yw|x)],(1)
+which encourages stable tag-conditioned synthesis and consis-
+tent speaker realization.
+2) DPO Training.To align the model with fine-grained
+prosodic instructions, we adopt DPO to maximize the prefer-
+ence margin between tag-consistent samples (yw) and baseline
+samples (yl):
+LDPO =−E
+
+logσ
+ 
+rθ(x,yw)−r θ(x,yl)
+
+,(2)
+wherer θ denotes the implicit reward defined as theβ-scaled
+log-likelihood ratio between the active policyπθ and the frozen
+referenceπ ref. This objective promotes stricter prosodic adher-
+ence without introducing an explicit reward model.
+3) Joint Training Objective.The final objective combines both
+losses:
+Ltotal =L SFT +λL DPO,(3)
+whereλbalances generation stability and preference-driven
+controllability.
+2.4. Stage 3: Synthesis Stability and Prosody Enhancement
+Although DPO improves local tag adherence, overly aggressive
+fine-grained conditioning may disturb the global acoustic prior
+of the autoregressive LLM, resulting in prosodic exaggeration
+and temporal instability in long-form generation. To reconcile
+strict local controllability with utterance-level naturalness, we
+introduce GRPO for discrete audio generation.
+1) Policy Formulation.The SFT+DPO model is treated as the
+active policyπθ. The state consists of the input text and previ-
+ously generated acoustic tokens, and the action corresponds to
+the next-token distribution.
+2) Multi-Dimensional Prosody Reward Design.Instead of
+binding rewards directly to specific tags, we ground optimiza-
+tion in three universal dimensions of human prosody: intelli-
+gibility, intensity, and tempo. The resulting composite reward
+decouples these factors to ensure balanced optimization.
+•Pause-Aware ASR Reward.To prevent linguistic degradation
+during RL exploration, we incorporate an ASR-based reward.
+Standard ASR metrics ignore punctuation and thus fail to re-
+flect boundary realization. We therefore map all punctuation
+in the ground truthy gt and Whisper [20] outputs to a unified
+boundary token ”|”. The reward is defined as:
+RASR = exp
+ 
+−γ·CER(Whisper(y),y gt)
+
+,(4)
+whereγ >0controls scaling. This formulation jointly pre-
+serves textual alignment and prosodic phrasing.
+•Decoupled Emotion Reward.To enhance perceptual contrast
+for fine-grained intensity control (e.g.,strongandweak),
+we suppress the excessive global emotional bias commonly
+observed in zero-shot synthesis, where strong reference emo-
+tion may overshadow local prosodic variations. We therefore
+anchor the generated speech toward a neutral emotional base-
+line while partially retaining the reference emotion. This de-
+coupled design preserves global emotional consistency while
+leaving capacity for localized intensity variations. Formally,
+the reward is defined as:
+Remo = 2
+
+pgen(neutral)+λ·1 e∗̸=neutral·p gen(e∗)
+
+−1,(5)
+wherep gen(e)denotes the emotion posterior,e ∗ the domi-
+nant reference emotion, and1e∗̸=neutral activates the reference
+emotion term only for non-neutral prompts.
+•Tempo Regularization.To enforce speaking rate control with-
+out rigid duration constraints, we introduce a directional ob-
+jective aligning generated durationT y with a text-derived
+base durationT base:
+RLen =d tag
+ Ty
+Tbase
+−1
+
+,(6)
+whereT base accounts for character length and a natural silence
+budget. The direction factord tag ∈{1,−1,0}is activated
+only for tempo tags (fast/slow), indicating acceleration or
+deceleration, and set to0otherwise. The reward is smoothly
+scaled (e.g., viatanh) to avoid over-optimization.
+3) GRPO Optimization.For each input, we sampleGcandi-
+date outputs and compute a composite reward:
+Ri =w ASRR(i)
+ASR +w emoR(i)
+emo +w LenR(i)
+Len,(7)
+where the weights balance intelligibility, intensity and tempo.
+Advantages are computed via group-wise Z-score normaliza-
+tion within each sample group, eliminating the need for a value
+network. The policy is optimized using the clipped GRPO ob-
+jective with a token-level KL penalty to constrain deviation
+from the frozen reference policy, ensuring alignment while pre-
+serving sensitivity to fine-grained prosodic instructions.
+3. Experiments
+3.1. Experimental Setup
+Data.All datasets used in this work are Chinese. Texts for data
+construction are drawn from subsets of AISHELL-3 [21] and
+THCHS-30 [22]. To guide prosodic realization in Indextts2, we
+build a style prompt pool from StoryTTS [23], selecting utter-
+ances with emphatic (strong) and attenuated (weak) prosody.
+Speaker identity prompts are sourced from an internal speech
+dataset. Following the Stage 1 pipeline, we generate 9,330 ut-
+terances for Stage 2 training, and sample an additional 3,224
+text prompts for Stage 3. For evaluation, we use the Chinese
+subset of InstructTTSEval [24], where texts are annotated with
+the same LLM-based tagging pipeline as in training. Speaker
+references are drawn from seed-tts-eval [25].
+Training Details.All experiments were conducted on a single
+node with 8 NVIDIA A100 GPUs. In Stage 2, joint SFT-DPO
+fine-tuning was trained for 13 epochs using Adam with a learn-
+ing rate of1×10−5. The DPO scaling factor was set toβ= 0.1,
+and gradient clipping (max norm 5.0) was applied. In Stage 3,
+we optimize the policy using GRPO with a clipped objective.
+For each input,G= 8candidates were sampled with tempera-
+ture 1.0. The policy was optimized with Adam at a learning rate
+119
+Table 1:Objective and subjective evaluation results of different models. Subjective results evaluated by 14 listeners.Note:Bold
+indicates the best result, underline indicates the second-best result.
+Method CER (↓) Sim. (↑) SMOS (↑) NMOS (↑) STMOS (↑) SPMOS (↑)
+Baseline (CosyV oice 2)6.36% 0.69993.61±0.14 3.67±0.14 3.18±0.19 3.09±0.16
++ SFT 7.34% 0.68413.62±0.17 3.57±0.143.43±0.223.15±0.17
++ Stage 2 (SFT+DPO) 7.38% 0.6873 3.64±0.15 3.57±0.15 3.30±0.19 3.22±0.18
+CraftTTS (full model)7.01% 0.68203.73±0.15 3.87±0.133.41±0.21 3.35±0.21
+of1×10 −6 under the clipped GRPO objective (ϵ= 0.2) with
+a token-level KL penalty coefficientβ= 0.01. In practice, the
+three rewards were weighted as0.6,0.15, and0.25forR ASR,
+Remo, andR Len, respectively. The ASR reward usesγ= 3.0
+for pause-aware alignment, while the emotion reward adopts
+λ= 0.6to balance global affect and local intensity contrast.
+3.2. Evaluation Metrics
+Objective Metrics.Linguistic fidelity is evaluated by CER
+using the whisper-large-v3 model [20], and speaker similar-
+ity (Sim.) with a pre-trained speaker verification model [26].
+Prosody controllability is assessed via acoustic statistics, in-
+cluding pitch standard deviation, pitch range, mean intensity,
+intensity range, and characters per second (CPS). Pitch and in-
+tensity reflect F0 and loudness variability, while CPS measures
+speaking rate as the number of characters divided by the non-
+silent duration after removing long silences via energy-based
+voice activity detection.
+Subjective Metrics.We conduct four 5-point MOS evalua-
+tions: SMOS (speaker similarity), NMOS (prosodic natural-
+ness), STMOS (stress matching forstrong/weak), and SP-
+MOS (speed matching forfast/slow). Mean scores with
+95% confidence intervals are reported.
+3.3. Experimental Design
+Stage-wise Performance Evaluation.We progressively eval-
+uate the original CosyV oice 2 backbone, +SFT, +SFT+DPO,
+and the full CraftTTS model on the same multi-speaker test
+set. Objective metrics are computed on all 200 utterances. For
+subjective evaluation, 5 samples are randomly selected for each
+prosodic control tag.
+Controlled Tag Sensitivity Analysis.To evaluate the expres-
+siveness and stability of control tags, we construct 120 se-
+mantically tagged short utterances (30 samples per control tag,
+3 speakers). Short texts help reduce accumulated inference
+variability. Each text is synthesized with and without tags,
+and acoustic deviations are computed to quantify tag-induced
+changes in intensity and speaking rate. This paired comparison
+isolates the causal effect of tags, ensuring that measured acous-
+tic shifts arise from explicit instructions rather than phonetic
+variation or global prosodic drift.
+3.4. Experimental Result
+Baseline Comparison.As shown in Table 1, CraftTTS
+achieves the best perceptual performance. Compared with
+CosyV oice 2, it markedly improves NMOS and SPMOS, indi-
+cating more accurate tempo realization and improved prosodic
+naturalness under fine-grained control. Although CER and
+speaker similarity are slightly lower than the baseline, this in-
+tentionally reflects our pause-aware ASR reward, which explic-
+Table 2:Tag-induced acoustic deviations (∆) relative to the
+neutral baseline.P,I, and CPS denote pitch, intensity, and
+characters per second.
+Tag∆P std ∆Prng ∆Imean ∆Irng ∆CPS
+strong+6.48 +13.37 -4.78 +11.67 -0.26
+weak-5.85 -2.98 -0.51 +5.24 +0.29
+fast+3.73 +12.61 -3.94 +15.12 +0.54
+slow+1.68 +18.67 -3.86 +12.42 -0.39
+itly penalizes unnatural pauses rather than merely optimizing
+character-level accuracy. Nevertheless, CraftTTS attains the
+highest SMOS and perceptual scores, demonstrating improved
+prosodic coherence without meaningful loss of intelligibility.
+Stage-wise Analysis.SFT establishes basic tag–acoustic align-
+ment and yields the strongest stress matching, but reduces nat-
+uralness due to rigid behavioral imitation. Stage 2 improves
+prosodic discriminability through preference learning, yet sta-
+bility remains limited. Stage 3 serves as the decisive turn-
+ing point: by introducing a multi-dimensional prosody reward,
+it suppresses acoustic artifacts and stabilizes generation under
+strong local constraints, yielding recovery in CER and con-
+sistent peak performance across SMOS, NMOS, and SPMOS.
+These results show that progressive optimization effectively
+balances fine-grained controllability and overall speech quality.
+Control Analysis.To isolate tag effects, we synthesize iden-
+tical texts with and without tags and compute acoustic devia-
+tions. As shown in Table 2,strongincreases pitch variabil-
+ity and range while reducing CPS, consistent with the stress-
+lengthening effect. In contrast,weakcompresses pitch dy-
+namics and slightly increases CPS, reflecting de-emphasized
+speech. For tempo control,fastyields the largest CPS in-
+crease andslowthe largest decrease, validating the directional
+duration objective. Importantly, tempo adjustments are accom-
+panied by coordinated pitch and intensity changes rather than
+simple duration scaling, indicating coherent prosodic modula-
+tion under explicit control.
+4. Conclusion
+We propose a three-stage training framework for stable word-
+level prosody control in large generative TTS models, inte-
+grating automatic preference data construction, preference op-
+timization, and reinforcement learning. The method enhances
+prosodic naturalness, transition smoothness, and tempo control-
+lability while preserving intelligibility and speaker consistency.
+Experimental and acoustic analyses demonstrate improved syn-
+thesis stability and fine-grained cadence control. Future work
+will investigate richer prosodic attributes and more scalable
+training strategies for controllable speech generation.
+120
+5. Acknowledgments
+The work was supported by the National Key R&D Program of
+China (No. 2024YFB2808802), the National Natural Science
+Foundation of China (NSFC) (No. 62271083), the Key Project
+of the National Language Commission (No. ZDI145-81), and
+partly supported by the Major Program of the National Social
+Science Fund of China (13&ZD189).
+6. Generative AI Use Disclosure
+During the preparation of this work, the authors used sev-
+eral generative AI language models (ChatGPT, DeepSeek, and
+Gemini) for the following supportive purposes:
+Code debugging and optimization. The tools assisted with
+environment configuration, dependency issues, runtime debug-
+ging, and multi-GPU inference acceleration.
+Manuscript editing. The tools were used to improve the
+fluency, clarity, and readability of the English writing.

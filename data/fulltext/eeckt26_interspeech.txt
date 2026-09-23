@@ -1,0 +1,443 @@
+Parameter-Efficient Continual Learning for Automatic Speech Recognition
+Steven Vander Eeckt ID 1,∗∗, Hugo Van hamme ID 1
+1 Department Electrical Engineering ESAT-PSI, KU Leuven, Leuven, Belgium
+steven.vandereeckt@esat.kuleuven.be, hugo.vanhamme@esat.kuleuven.be
+Abstract
+Speech foundation models enable strong general-purpose ASR
+and are attractive for downstream adaptation. However, their
+size and the catastrophic forgetting induced by sequential
+fine-tuning demand parameter-efficient and regularized train-
+ing methods, motivating parameter-efficient continual learning
+(PECL). While PECL has been widely studied in NLP and vi-
+sion, it has received less attention in ASR. In this paper, we
+propose a simple yet effective PECL method based on recent
+advances in parameter-efficient fine-tuning for ASR. We par-
+tition pretrained weight matrices into head and tail subspaces
+according to singular values and restrict adaptation to approxi-
+mate rotations within the low-energy tail subspace, preserving
+dominant components and reducing forgetting. For subsequent
+tasks, rotations are combined via weight averaging to further
+improve retention. Experiments on two benchmarks demon-
+strate reduced forgetting and superior overall performance com-
+pared to recent PECL baselines.
+Index Terms: automatic speech recognition, parameter-
+efficient continual learning, foundation models
+1. Introduction
+Automatic Speech Recognition (ASR) has undergone remark-
+able progress over the past decade. More recently, speech
+foundation models trained on massive and multilingual datasets
+have emerged as powerful general-purpose models [1,2]. These
+models capture general speech knowledge, making them attrac-
+tive for adaptation to specific downstream tasks.
+Adapting such large-scale models, however, presents two
+fundamental challenges. First, their size–often above hundreds
+of millions of parameters–makes full fine-tuning computation-
+ally expensive. Parameter-efficient fine-tuning (PEFT) methods
+address this issue by updating only a small subset of parame-
+ters while keeping the rest of the model frozen. Second, na¨ıvely
+fine-tuning a model on new tasks leads to catastrophic forget-
+ting (CF) [3], where performance on previously learned tasks
+deteriorates, which Continual learning (CL) aims to mitigate.
+Speech foundation models must thus be adapted efficiently,
+and this adaptation must not lead to forgetting of previous tasks.
+This setting naturally gives rise toparameter-efficient continual
+learning(PECL) [4], where the goal is to sequentially adapt a
+large pretrained ASR model to (multiple) downstream tasks un-
+der strict parameter constraints, while preserving performance
+on earlier tasks without access to their training data.
+In other domains, PECL has received considerable atten-
+tion in recent years, particularly in Natural Language Process-
+ing (NLP) for adapting Large Language Models [4–9] and in
+**indicates the corresponding author.
+image classification [10–15]. Many of these approaches build
+upon low-rank adaptation (LoRA) [16], for example by con-
+straining its update subspace [7, 11, 14], averaging task-specific
+adapters [9, 10], or modifying its initialization [5, 6].
+In ASR, however, PECL has been studied only to a limited
+extent. [17] adapts Whisper [1] using orthogonal LoRA [18]
+and AdaLoRA [19] to reduce forgetting and allocate parameters
+across layers, while [20] applies weight averaging [21] to LoRA
+modules. Both approaches, however, do not explicitly address
+forgetting with respect to the initial pretrained model. Task-
+specific adapter [22] approaches have also been explored [23],
+but require task identity at inference time. More broadly, con-
+tinual learning in ASR has primarily focused on storing past
+data [24–26] or regularizing the training [21, 27–29], without
+explicitly considering parameter-efficiency constraints.
+Recently, [30] introduced structured Singular Value De-
+composition (SSVD) as a PEFT method for ASR. SSVD de-
+composes weight matrices via SVD and adapts the topksin-
+gular directions through a learned rescaling and approximate
+rotation, showing strong performance for PEFT in ASR.
+Building on SSVD, we propose a simple yet effective PECL
+method for ASR. In contrast to SSVD, we retain only the ro-
+tation component and partition each pretrained weight matrix
+into aheadandtailaccording to decreasing singular values.
+Adaptation is restricted to the low-energytailsubspace, leav-
+ing the dominant singular directions untouched and thereby re-
+ducing interference with previously learned tasks. For subse-
+quent tasks, we combine rotations via weight averaging to fur-
+ther mitigate forgetting. We evaluate the proposed method on
+two benchmarks and compare against a broad range of PECL
+approaches. Our results demonstrate consistently reduced for-
+getting and improved overall performance.
+Our contributions are threefold: (i) we provide the most ex-
+tensive empirical study of PECL for ASR to date, implement-
+ing and evaluating recent PECL methods originally proposed
+for NLP and vision; (ii) we introduce a novel PECL method
+tailored to ASR that achieves stronger retention and superior
+performance compared to these baselines; (iii) we present an
+ablation study that identifies the key components underlying the
+effectiveness of our method.
+2. Problem Formulation
+Let an initial model with parametersθ 0 ∈R N be trained on
+an initial set of tasksT 0, whose data(X,y)∈ D 0, with
+X∈R F×d s the input utterance (consisting ofFframes of
+dimensiond s) andy∈R w the corresponding set ofwground
+truth tokens, is no longer available. In parameter-efficient con-
+tinual learning (PECL), this model is sequentially adapted to a
+stream of new tasksT 1,...,T t, with each taskT i consisting of
+6604
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3169
+Figure 1:Overview of CSSVD for a single linear layer (bias
+omitted) when learning taskT i+1. Right: (1) current weights
+Wi are decomposed via SVD into head and tail subspaces; (2)
+an approximate rotation matrixG i+1 is introduced within the
+tail and optimized on the new task to obtain ˜Wi+1; (3)W i and
+˜Wi+1 are merged through averaging to produceW i+1. Left:
+schematic view of the decomposition for an inputx∈R din and
+outputh∈R dout, with onlyG i+1 in the tail trainable.
+labeled data(X,y)∈D i. To learn taskT i fromD i, the pa-
+rametersθ i−1 are updated toθ i in a parameter-efficient manner,
+while retaining performance on previous tasks{T j}0≤j≤i−1.
+The objective of PECL is twofold: (i) effective adaptation
+to new taskT i under strict parameter-efficiency constraints, and
+(ii) preservation of performance on all previously learned tasks
+T0,...,T i−1 without access to their (full) data. We restrict
+adaptation to the weight matrices of linear layers, keeping all
+other parameters, including the output layers, frozen. Task iden-
+tity is assumed unavailable at inference time.
+3. Our Method: Continual SSVD
+3.1. Learning the first task
+LetW∈R dout×din be the weight matrix of a linear layer of the
+initial modelθ 0 whose output ish=Wxfor an inputx∈
+Rdin (we omit the biasb∈R dout for simplicity). Its singular
+value decomposition (SVD) is given as:
+W=UΣV ⊤ (1)
+withU∈R dout×d andV∈R din×d, the left and right singular
+vectors, resp., andΣ∈R d×d a diagonal matrix with the singu-
+lar values sorted in decreasing order, withd= min(d in,d out).
+To adaptWin a parameter-efficient manner to new tasks,
+SSVD (structured SVD) [30] proposes to introduce and learn a
+rotation matrixG∈R k×k and rescaling∆Σ∈R k for the top
+ksingular directions (associated with highest singular values)
+fromUΣV ⊤, withk=pdwithp∈(0,1)a hyper-parameter.
+In theapproximate orthogonal constraintversion, they define
+G:=I−2KwithIthek×kidentity matrix andK∈
+Rk×k a skew symmetric but otherwise unconstrained matrix.
+The rescaling and rotation thus require learningkandk(k−
+1)/2parameters, resp., totalingk+k(k−1)/2parameters.
+While SSVD adapts thekdirections associated with largest
+singular values, we operate on theksmallest singular directions
+to reduce interference between new taskT 1 and initial tasksT 0.
+Referring to the topd−kdirections (associated with largest
+singular values) as thehead, and to the bottomkdirections as
+thetail, we can write the decomposition ofWas follows:
+W=U H ΣHV⊤
+H +U T ΣTV⊤
+T =W 0 +U T ΣTU⊤
+T (2)
+To obtainW 1, the weight matrix adapted to taskT 1, we apply
+SSVD within thetailby introducing an approximate rotation
+matrixG 1. Since we adopt the approximate orthogonality con-
+straint of SSVD,G 1 is not strictly constrained to be orthogo-
+nal and can implicitly capture both rotation and rescaling. We
+therefore omit the explicit rescaling term∆Σ 1 and introduce
+onlyG 1. The adapted weight matrix is then given by:
+W1 =W 0 +U T ΣTG1V⊤
+T (3)
+whereG 1 =I−2K 1 with initiallyK 1 ≈0, and only the
+underlined part is trained. Since the update is restricted to the
+tail subspace while the head remains fixed, interference with
+initial tasksT 0 is reduced.
+3.2. Learning additional tasks
+To learn a new taskT 2, we start from the same decomposition.
+Assuming the training ofG 1 during the first task has not altered
+the division betweenheadandtail, the decomposition can be
+written as follows:
+˜W2 =W 0 +U T ΣTG2 ˜V⊤
+T (4)
+Since ˜VT =V TG⊤
+1 , the formulation for ˜W2 becomes:
+˜W2 =W 0 +U T ΣTG2G1V⊤
+T (5)
+IntroducingG 2 may induce forgetting of taskT 1. To mitigate
+this, we mergeG 1 andG 2G1 via averaging, a strategy previ-
+ously shown effective for continual learning in ASR [21]. The
+resulting weight matrixW 2 is given by:
+W2 =W 0 +U T ΣT ((1−α)G 1 +αG 2G1)V ⊤
+T (6)
+with0≤α≤1. Note that this solutionW 2 corresponds to
+computing a convex combination of the taskT 1 solutionW 1
+and the taskT 2 solution ˜W2:
+W2 = (1−α)W 1 +α ˜W2 (7)
+3.3. Practical Implementation
+The formulation in Eq. (6) assumes that the partition intohead
+andtailremains fixed across tasks. In practice, however, after
+completing taskT i we only store the resulting weight matrix
+Wi. Before learning a new taskT i+1, we recompute its SVD
+and define a new head and tail by selecting again thed−k
+largest andksmallest singular directions, respectively. The
+adaptation forT i+1 is then restricted to the new tail:
+˜Wi+1 =U H,iΣH,iV⊤
+H,i
+| {z }
+W0,i
++UT ,iΣT ,iGi+1V⊤
+T ,i (8)
+This re-computation ofheadandtailallows singular direc-
+tions whose importance has increased during tasks{T j}j<i to
+move from the tail to the head. Highly important directions thus
+become protected from further modification, while adaptation
+capacity remains concentrated in the low-energy subspace.
+When no singular value crossings occur between head and
+tail, the above formulation reduces to thefixedcase from Sec.
+3.2 up to a change of basis within the tail subspace. However,
+as the partition may change, Eq. (6) does not generally apply.
+Therefore, in practice we compute the merged solution directly
+via Eq. (7), usingα= 1/(i+ 1)following [21].
+Figure 1 summarizes Continual SSVD (CSSVD).
+6605
+Table 1:Results of the experiments. Tasks are learned from left to right; WERs are measured after learning all tasks. Params
+indicates number of trainable parameters. Best result per column by PECL methods is inbold. Negative BWT indicates forgetting.
+Experiment 1 Experiment 2
+WER↓per task Average WER↓per task Average
+Method Params ENG DEU ESP NL VL WER↓BWT↑ENG DEU ESP VL DVL WER↓BWT↑
+Initial model – 13.4 11.3 11.3 45.7 37.9 22.48 – 13.4 11.3 11.3 37.9 86.0 31.98 –
+Full Fine-Tuning 244.8M 24.3 57.3 21.7 27.7 13.6 28.94 -18.2 45.9 91.5 43.4 34.2 29.7 48.95 -41.0
+Separate Model 244.8M 13.4 11.3 11.3 22.4 13.6 14.38 0.0 13.4 11.3 11.3 15.2 29.7 16.17 0.0
+LoRA 9.3M 41.8 88.4 44.5 28.9 14.7 43.66 -35.7 90.5 100.0 98.0 53.529.974.70 -72.5
+LoRA + FTA 9.3M 16.4 20.6 15.1 27.2 19.0 19.64 -3.6 17.3 22.0 16.320.357.1 26.58 -4.8
+SSVD 9.0M 40.8 85.3 43.1 37.4 15.9 44.49 -36.4 97.6 100.0 93.7 49.9 32.7 74.76 -71.7
+MiLoRA 9.3M 47.4 91.7 48.5 30.214.146.39 -39.6 — — — — — — —
+OPLoRA 9.3M 33.8 81.6 36.3 30.2 15.7 39.53 -30.3 — — — — — — —
+BiLoRA 9.3M 19.4 34.7 17.8 30.0 16.0 23.58 -9.7 33.5 71.1 34.6 36.2 35.9 42.25 -30.4
+EWC-LoRA 9.3M 23.9 60.5 23.925.817.0 30.21 -18.6 30.7 72.9 30.0 23.2 43.7 40.06 -26.1
+CSSVD 8.9M14.9 14.4 13.428.6 20.418.33 a -1.9 15.3 14.9 13.221.5 59.224.82 a -2.2
+a Significantly outperforms all PECL baselines and Full Fine-Tuning.
+4. Experiments
+Experiments are done in ESPnet2 [31]. More detailed informa-
+tion and code are available at our Github repository 1.
+Model.We use Open Whisper-style Speech Model (OWSM)
+v3.2 small [2], comprising nine E-Branchformer [32] encoder
+and nine Transformer decoder layers. A CTC branch is used
+only during training. The model has a vocabulary of50,000
+output tokens and contains 366.7M parameters in total. It was
+pretrained on 180k hours of multilingual speech from 151 lan-
+guages. During adaptation, we update only the weight matrices
+of the linear layers (excluding output layers). For all these lin-
+ear layers,d= min(d out,d in) = 768. Each method runs for 20
+epochs using Adam [33], with the learning rate selected based
+on the validation set of the new task on the first adaptation.
+Data.We conduct two experiments. In both, English (ENG),
+German (DEU), and Spanish (ESP) from Common V oice [34]
+serve as initial tasksT 0, as they are included in OWSM v3.2’s
+pretraining corpus [2]. In Experiment 1, following [26], we
+use Corpus Gesproken Nederlands (CGN) [35], split into Dutch
+from the Netherlands (NL) and Belgium (VL), yielding tasks
+T1 andT 2, respectively. CGN covers diverse speech styles, in-
+cluding interviews, lectures, and broadcast recordings. In Ex-
+periment 2, VL serves asT 1, andT 2 comprises strongly dialec-
+tal Flemish speech from the corpus of Southern Dutch Dialects
+(GCND) [36], referred to as DVL.
+Baselines. We compare against the following methods and de-
+scribe how each adapts linear layerW∈R dout×din to taskT i+1:
+(a) LoRA [16]: LoRA learns a low-rank adaptation of the form
+Wi+1 =W i +B i+1Ai+1, whereB i+1 ∈R dout×r and
+Ai+1∈R r×din, withra rank hyper-parameter. LoRA does
+not incorporate any explicit mechanism to mitigate CF.
+(b) LoRA + FTA: We combine LoRA with Fine-Tuning with
+Averaging (FTA) [21]. After learning the low-rank update
+Bi+1Ai+1, the weights are updated asW i+1 =W i +
+ηBi+1Ai+1, withη= 1/(i+ 2). This setting is related to
+[20]; however, we additionally include the pretrained model
+in the averaging, as excluding it would cause forgetting ofT0.
+(c) SSVD [30]: The structured SVD method from Sec. 3.1.
+1https://github.com/StevenVdEeckt/pecl-for-asr
+(d) MiLoRA [6]: A LoRA variant in whichB i+1 andA i+1 are
+initialized using thersingular directions associated with the
+rsmallest singular values ofW i.
+(e) OPLoRA [7]: Based on the topk OP singular directions of
+Wi (associated with largest singular values), OPLoRA de-
+fines projection matricesP L∈R dout×dout andP R∈R din×din
+so thatW i+1 =W i+P LBi+1Ai+1PR. The update is con-
+strained to lie in the orthogonal complement of the topk OP
+singular subspace ofW i. Following [7], we setk OP = 126.
+(f) BiLoRA [11]: BiLoRA employs a bilinear update in fixed or-
+thogonal bases, i.e.,W i+1 =W i +F outBi+1F H
+in , where
+Fout andF in are fixed 1D discrete Fourier transform matri-
+ces. While the original formulation assumesW∈R d×d,
+we useF out∈C dout×dout andF in∈C din×din, so thatB i+1∈
+Cdout×din. Task separation is achieved by enforcing sparsity in
+Bi+1 (containingk B nonzero elements), with different tasks
+activating (approximately) non-overlapping coefficients.
+(g) EWC-LoRA [15]: EWC-LoRA combines LoRA with Elastic
+Weight Consolidation (EWC) [37]. Importance weights are
+computed from the diagonal of the Fisher information matrix
+onT 0’s data atW i, and used to regularize the low-rank up-
+dateB i+1Ai+1. This requires access to pretraining data; we
+assume that only ENG data is available for computing impor-
+tance weights, which are later accumulated across tasks. We
+use the regularization weightλ EWC reported in [25].
+MiLoRA, OPLoRA, BiLoRA, and EWC-LoRA originate from
+domains outside ASR and, to our knowledge, have not yet been
+evaluated on ASR. Each PECL method trains approx. 9.0M
+parameters, corresponding tor= 20for LoRA-based methods
+andp= 0.40for (C)SSVD. We additionally report Full Fine-
+Tuning (FFT, applied to the same layers as PECL methods) and
+Separate Model (which uses task-specific modelθ i from FFT
+to decodeT i, assuming access to a task oracle) as references.
+Metrics.We report word error rate (WER, in%) for each task
+using the final model.Average WER, our main metric, de-
+notes the mean WER over all learned tasks. Backward Trans-
+fer (BWT) measures forgetting by comparing the final WER of
+each task to its WER immediately after training; it is defined
+as the average WER decrease on previous tasks, where negative
+values indicate forgetting. Statistical significance in Average
+6606
+WER is assessed using the Wilcoxon signed-rank test on per-
+utterance error counts [38] at the 0.1% level.
+5. Results
+Table 1 shows the results of both experiments.
+5.1. Experiment 1
+CSSVD achieves the lowest Average WER among all meth-
+ods. While LoRA, SSVD, OPLoRA, and MiLoRA successfully
+learn the new tasks, they suffer from catastrophic forgetting,
+with the WER on previous tasks increasing by more than 30
+points—exceeding FFT. For LoRA and SSVD, this behavior is
+expected, as neither method incorporates a mechanism to miti-
+gate CF. MiLoRA shows that initialization alone is insufficient
+to preserve prior knowledge. OPLoRA reduces LoRA’s forget-
+ting by 15%, but forgets more from NL (T1) when learning VL
+(T2), suggesting competition outside the protected top-kOP sub-
+space. Increasingk OP further mitigates forgetting (Sec. 5.3).
+EWC-LoRA reduces LoRA’s forgetting by48%. Although
+initial importance weights are computed only on ENG, forget-
+ting on ESP is reduced to a similar extent, indicating that EWC
+generalizes beyond the task used to estimate the Fisher informa-
+tion. Moreover, importance weights accumulated on NL (T 1)
+help balance NL and VL when learning VL (T2). Stronger reg-
+ularization may further mitigate forgetting, though at the cost of
+slower adaptation to new tasks, consistent with prior reports of
+mixed results for EWC-based CL in ASR [24, 25, 39].
+Among the baselines, LoRA + FTA and BiLoRA perform
+best, reducing LoRA’s forgetting by 90% and 73%, respectively.
+BiLoRA achieves better performance on new tasks, whereas
+LoRA + FTA retains prior knowledge substantially better.
+CSSVD, however, further improves upon both methods, re-
+ducing their Average WER by 7-22%. Compared to SSVD,
+CSSVD reduces forgetting by 95% while maintaining effec-
+tive adaptation to new tasks. Relative to LoRA + FTA, it re-
+duces forgetting by an additional 45%, while incurring only a
+marginal increase in WER on the new tasks.
+5.2. Experiment 2
+Exp. 2 confirms these findings but is more challenging, as DVL
+proves particularly difficult for OWSM. Adapting to DVL (T 2)
+induces substantially more forgetting than in Exp. 1: LoRA
+and SSVD almost entirely forget ENG, DEU, and ESP (T 0).
+CSSVD again achieves the best performance, reducing LoRA’s
+forgetting by 97% and LoRA + FTA’s by more than 50%, the
+latter remaining the strongest baseline. However, in reducing
+forgetting, CSSVD—as well as LoRA + FTA—does not reach
+the low DVL (T 2) WER of LoRA or SSVD. Consequently,
+approximating the Separate Model, which retrains all param-
+eters and avoids forgetting, is harder than in Exp. 1. Neverthe-
+less, CSSVD comes closest, improving the best baseline by 7%.
+BiLoRA exhibits substantially more forgetting than in Exp. 1,
+while EWC-LoRA again balances VL (T 1) and DVL (T 2) rea-
+sonably well but suffers from catastrophic forgetting ofT0, with
+similar degradation for ENG and ESP despite only ENG being
+used to estimate the initial importance weights.
+5.3. Ablation Study
+Table 2 presents an ablation, providing following observations:
+• Row 2 shows that keeping the initial head–tail separation and
+using Eq. (6) instead of Eq. (7) yields nearly identical perfor-
+Table 2:Ablation study (on Exp. 1) of the proposed method.
+Rows marked with ”→” denote alternative variants.
+Model Average
+WER↓BWT↑
+1. CSSVD 18.33 -1.9
+2.→Keep initial head-tail separation 18.40 b -1.9
+3.→Do not average, i.e. skip Eq. (7) 19.16 a -3.3
+4.→Train rotation + rescaling 18.27 b -1.8
+5. SSVD + FTA 19.22 a -2.7
+6. OPLoRA [k OP = 461] 31.61 a -20.2
+a Significant deterioration with respect to the reference method.
+b No significant difference with respect to the reference method.
+mance, with the latter offering a simpler implementation.
+• Row 3 demonstrates that skipping the averaging step substan-
+tially increases forgetting and Average WER. Nevertheless,
+this variant would still outperform all baselines in Table 1,
+indicating that restricting adaptation to the bottomksingular
+directions is already highly beneficial.
+• Comparing Row 3 to SSVD in Table 1 further highlights that
+adapting the lowest-ksingular directions, rather than the top-
+kas in SSVD, forms the most critical component of CSSVD.
+• Row 4 evaluates the effect of reintroducing explicit rescaling.
+The impact is negligible, confirming that the approximate ro-
+tation alone suffices.
+• Row 5 shows that combining SSVD with FTA significantly
+reduces forgetting compared to SSVD, but it still lags behind
+CSSVD and exhibits roughly 50% higher forgetting, illustrat-
+ing that averaging alone does not suffice.
+• Row 6 increasesk OP in OPLoRA so that its update spans
+a subspace comparable to CSSVD. While this improves
+OPLoRA’s performance, it remains inferior to CSSVD. This
+suggests that CSSVD’s gains stem not only from restricting
+adaptation to the tail subspace, but also from the specific form
+of transformation permitted within that subspace.
+6. Conclusion
+We study parameter-efficient continual learning for ASR, a set-
+ting that has received considerable attention in NLP and vision
+but remains underexplored in ASR. Building on SSVD, a re-
+cent PEFT method for ASR, we propose CSSVD, a PECL ap-
+proach that decomposes linear weight matrices into head and
+tail subspaces based on singular values and learns an approx-
+imate rotation within the tail. Leaving the dominant singular
+directions unchanged, CSSVD reduces interference with previ-
+ously learned tasks. For subsequent tasks, we further mitigate
+interference within the shared tail subspace through weight av-
+eraging. Across two benchmarks, CSSVD achieves the best
+performance and consistently reduces forgetting compared to
+recent PECL methods from NLP and vision adapted to ASR.
+An ablation study confirms that its effectiveness stems from the
+combination of (i) restricting adaptation to the tail subspace, (ii)
+using approximate rotations as the adaptation mechanism, and
+(iii) applying averaging across tasks.
+Currently, our method treats all layers uniformly. A promis-
+ing direction for future work is to allocate adaptation capacity
+more selectively, prioritizing layers with high relevance for the
+new task and low interference with previous tasks.
+6607
+7. Acknowledgments
+Research supported by Research Foundation Flanders (FWO)
+under grant S004923N of the SBO programme.
+8. Generative AI Use Disclosure
+Generative AI tools were used to assist with minor language
+editing and phrasing improvements. All scientific content, ex-
+periments, and conclusions were developed by the authors, who
+take full responsibility for the manuscript.
+9. References
+[1] A. Radfordet al., “Robust speech recognition via large-
+scale weak supervision,” 2022. [Online]. Available: https:
+//arxiv.org/abs/2212.04356
+[2] Y . Penget al., “Owsm v3.1: Better and faster open whisper-style
+speech models based on e-branchformer,” inInterspeech, 2024,
+pp. 352–356.
+[3] M. McCloskeyet al., “Catastrophic interference in connectionist
+networks: The sequential learning problem,” ser. Psychology of
+Learning and Motivation, 1989, vol. 24, pp. 109–165.
+[4] W. Zhao

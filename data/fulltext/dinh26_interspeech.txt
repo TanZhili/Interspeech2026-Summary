@@ -1,0 +1,513 @@
+Improving Audio Codec-based Speech Separation By Stacking Residual Vector
+Quantization Layers
+Nhu Minh Phuong Dinh ID , Roland Hartanto ID , Koichi Shinoda ID
+Institute of Science Tokyo, Japan
+phuong@ks.c.titech.ac.jp, roland@ks.c.titech.ac.jp, shinoda@c.titech.ac.jp
+Abstract
+Speech separation models trained on raw waveforms achieve
+high performance but come with substantial computational
+costs. Neural Audio Codecs (NACs) offer an efficient alterna-
+tive by operating in compressed latent spaces. However, the ex-
+isting codec-based method aggregates per-layer Residual Vec-
+tor Quantization (RVQ) vectors into a single vector, collapsing
+the coarse-to-fine acoustic hierarchy. We propose RVQ-Grid
+to explicitly preserve this hierarchy by stacking per-layer RVQ
+vectors into a 3D grid and processing it using dual-axis recur-
+rent blocks. On WSJ0-2Mix, RVQ-Grid achieves a +3.6 dB
+SI-SDRi improvement over the prior codec-based method. Our
+evaluation on the Automatic Speech Recognition task shows
+that RVQ-Grid achieves an 8.6% WER, demonstrating compa-
+rable performance to the SepFormer baseline under the same
+codec condition. During inference, RVQ-Grid achieves a 6x
+reduction in MACs compared to SepFormer.
+Index Terms: speech separation, residual vector quantization,
+neural audio codec, computational efficiency
+1. Introduction
+Speech separation, often referred to as the cocktail party prob-
+lem [1, 2], is the task of isolating individual speakers from
+overlapping voice mixtures. Modern speech separation meth-
+ods [3, 4, 5, 6] are trained on raw waveforms to optimize
+the Scale-Invariant Signal-to-Distortion Ratio (SI-SDR) [7].
+Although these models achieve impressive performance, they
+come with substantial computational costs because operat-
+ing directly on raw audio at a high sample rate results in
+long sequence lengths. While efficient separation architectures
+have been proposed through lightweight designs, asymmetric
+encoder-decoder structures, and efficient sequence modeling
+[8, 9, 10], practical deployment scenarios such as transmitting
+audio through a codec or running on resource-limited devices
+motivate performing separation directly in compressed repre-
+sentations.
+Neural Audio Codecs (NACs) have emerged as a promis-
+ing method for such compressed-domain speech separation ap-
+proaches [11, 12]. NACs commonly use an encoder-decoder
+architecture with a Residual Vector Quantization (RVQ) com-
+ponent, which converts continuous representations into discrete
+codes using multiple codebook layers arranged in a residual
+manner [13, 14, 15]. This architecture captures acoustic infor-
+mation in a coarse-to-fine hierarchy and provides high temporal
+compression, enabling separation models to process shorter se-
+quences at lower computational cost.
+Building on these codec architectures, Codecformer [11]
+was the first to apply speech separation in the codec latent
+space. It adopts the SepFormer [4] architecture but operates
+in the neural audio codec domain rather than on waveform rep-
+resentations. When the RVQ setting is enabled, Codecformer
+aggregates all RVQ layers into a single embedding to process in
+the separator, which eliminates the per-layer structure of RVQ.
+Prior works in audio codec design and codec-based audio gen-
+eration [16, 17, 18] suggest that explicitly modeling RVQ layer
+structure can improve the output quality. Different RVQ lay-
+ers provide complementary cues, such as coarse acoustic infor-
+mation in early layers and fine details in later layers [13, 19].
+Consequently, modeling cross-layer interactions may enable the
+codec-based speech separation model to leverage information
+across the full RVQ hierarchy.
+In this paper, we propose RVQ-Grid, a codec-based speech
+separation model that treats per-layer RVQ vectors as a struc-
+tured representation. Unlike prior work that collapses all RVQ
+layers into a single embedding, RVQ-Grid preserves the hier-
+archical structure of RVQ by processing each layer explicitly.
+Specifically, we stack per-layer quantized vectors into a 3D grid,
+where the three dimensions correspond to the number of code-
+book layers, the embedding dimension and the temporal frames.
+This grid is then processed by dual-axis recurrent blocks that al-
+ternately model cross-layer dependencies and temporal context.
+We evaluate RVQ-Grid on the standard WSJ0-2Mix [20] bench-
+mark and show that it outperforms Codecformer in speech sep-
+aration performance. Furthermore, since NACs are optimized
+for perceptual reconstruction quality rather than exact sample-
+level waveform matching [14, 15], standard metrics such as
+SI-SDR/SDR do not fully reflect the actual quality of codec-
+reconstructed audio. We perform further benchmarks using
+perceptual metrics and downstream tasks such as Automatic
+Speech Recognition (ASR). Our results demonstrate that RVQ-
+Grid achieves highly competitive Word Error Rate (WER) com-
+pared to SepFormer [4].
+2. Preliminaries
+2.1. Mask-based Speech Separation
+Given a mixturex∈R Tw containingSoverlapping speak-
+ers, the goal of speech separation is to estimate the individ-
+ual source signals{s 1,s 2,...,s S}. Modern waveform-based
+methods [3, 4, 6] follow an encoder-mask estimator-decoder
+pipeline. The encoder transforms the mixture into a latent rep-
+resentationE, then the mask estimator produces per-speaker
+masksM s, and the masked representations ˆEs =E⊙M s are
+decoded to produce the separated waveformsˆss. These models
+are trained using the SI-SDR [7] loss with Permutation Invariant
+Training (PIT) [21], where:
+SI-SDR(s,ˆs) = 10 log10
+∥αs∥2
+∥αs−ˆs∥2 , whereα= ˆsTs
+∥s∥2 . (1)
+7153
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2296
+Codec Encoder
+Quantizer
+RVQ-Grid
+Stacking
+Codec Decoder
+Conv2D
+BiLSTMN
+BiLSTMT
+Residual + Norm
+Each Block
+Conv2D
+Activation
+C
+N
+T
+Codebook Sum
+...
+Quantizer
+Frame 1
+N
+D
+T
+a) b) c)
+Mixture Encoded feature
+...
+Frame 2
+...
+Frame T
+......
+blocks
+Mask Head
+Figure 1:The proposed RVQ-Grid architecture. (a) The overall pipeline using a frozen codec. (b) The stacking mechanism converting
+Nper-layer RVQ vectors into a 3D grid. (c) The internal dual-axis recurrent block processing the 3D grid representation.
+2.2. Residual Vector Quantization (RVQ)
+Neural audio codecs compress audio into compact latent rep-
+resentations using an encoder-quantizer-decoder architecture.
+The encoder produces a continuous latentz∈R D×T , where
+Dis the embedding dimension andTis the number of frames
+after the codec’s temporal downsampling.
+The Residual Vector Quantization (RVQ) module quantizes
+zthroughNcodebook layers. For each framet, the first layer
+Q1 quantizes the encoder output to produceZ 1,t∈R D. Each
+subsequent layerQ i quantizes the residual errorr i−1,t∈R D
+to produceZ i,t, withr i,t =r i−1,t−Z i,t andr 0,t =z t. The
+standard reconstruction sums all layer outputs:
+ˆzt =
+NX
+i=1
+Zi,t (2)
+which is then reconstructed to audio by the decoder of the codec
+DECcodec:
+ˆx= DECcodec(ˆz)∈R Tw . (3)
+2.3. Codec-based separation: Codecformer
+Codecformer [11] extends the mask-based separation frame-
+work to the NACs domain. It applies the encoder-mask
+estimator-decoder pipeline in the codec’s latent space: encodes
+the mixture via the codec encoder, applies a separator to esti-
+mateˆzs, and decodes to waveformsˆss = DEC codec(ˆzs). Be-
+cause the codec provides high temporal compression, Codec-
+former processes much shorter sequences than waveform-based
+methods, achieving significant computational savings.
+However, in realistic edge-cloud deployments, codec la-
+tents must be quantized via RVQ for transmission. In the RVQ-
+enabled setting, Codecformer applies (2) to sum all layer out-
+puts intoˆzbefore passing it to the separator, thereby discarding
+the per-layer structure. The authors report that enabling RVQ
+degrades the performance by 2-3 dB on SI-SDR metric.
+3. Methodology
+3.1. RVQ Vector Stacking
+Our work addresses the Codecformer’s limitation by explicitly
+modeling per-layer RVQ vectors to exploit their hierarchy. In-
+stead of summing RVQ layer outputs as in (2), we propose to
+stack them into a 3D grid representationZ grid∈R N×D×T :
+Zgrid(i,d,t) =Z i(d,t). (4)
+This preserves the hierarchical structure of RVQ layers, en-
+abling explicit layer-wise modeling.
+3.2. RVQ-Grid Separator
+As illustrated in Figure 1, our proposed system consists of a
+frozen pre-trained codec and a trainable separator. The mixture
+is encoded and quantized through the frozen codec, then the
+per-layer RVQ outputs are stacked to formZ grid.
+The stacked representation is first projected from dimension
+Dto hidden dimensionCvia a learnable Conv2D layer, pro-
+ducingH 0∈R N×C×T . The projected features are then pro-
+cessed byLdual-axis recurrent blocks, which are inspired by
+alternating-axis processing in dual-path models [3], but applied
+to codebook and temporal dimensions. Each block consists of
+two sequential paths:
+1.Cross-layer path:A BiLSTM is applied along theNaxis to
+model dependencies across RVQ layers, producingH cross∈
+RN×C×T .
+2.Temporal path:A BiLSTM is applied along theTaxis to
+capture the temporal context, producingH temp∈R N×C×T
+fromH cross.
+Finally, each block includes residual connections and layer
+normalization:
+Hl =LayerNorm(H l−1 +H temp). (5)
+3.3. Masking and Reconstruction
+AfterLblocks, a mask head projects the hidden features from
+CtoS×Ddimensions followed by a nonlinear activation,
+7154
+which producesSspeaker masksM s∈R N×D×T . Following
+Codecformer [11], which found that matching the separator’s
+activation function to the codec’s internal activation is impor-
+tant for the overall performance, we use an activation function
+that aligns with the underlying codec. The masks are applied
+element-wise to obtain the separated representation for each
+speakers:
+ˆZgrid,s =Z grid⊙M s . (6)
+To reconstruct waveforms, we sum over the codebook di-
+mension and decode using the codec’s decoder:
+ˆzs =
+NX
+i=1
+ˆZgrid,s,i,
+ˆss = DEC codec(ˆzs).
+(7)
+4. Experimental Setups
+4.1. Datasets
+We use the common WSJ0-2Mix [20] dataset for all of the train-
+ing and evaluation. It contains mixtures of two speakers de-
+rived from the WSJ0 corpus [22], with 20000 training mixtures
+(30h), 5000 validation mixtures (10h) and 3000 test mixtures
+(5h). Both mixtures and ground truth are sampled at 8kHz. We
+resample audio to match the codec’s native sample rate during
+encoding, and resample outputs back to 8 kHz for evaluation to
+ensure fair comparison across all methods.
+4.2. Models and Baselines
+We implement two RVQ-Grid variants using different codecs:
+•RVQ-Grid (DAC):Uses DAC [15] codec withN= 12
+codebook layers andD= 1024. We use the same DAC vari-
+ant as Codecformer for a fair comparison. The separator has
+L= 6blocks with hidden dimensionC= 512and LSTM
+hidden size of 512. Following DAC’s internal activation, we
+use Snake activation in the mask head.
+•RVQ-Grid (EnCodec):Uses EnCodec [14] codec withN=
+32andD= 128. The separator hasL= 16blocks with hid-
+den dimensionC= 128and LSTM hidden size of 128. Fol-
+lowing EnCodec’s internal activation, we use ELU activation
+in the mask head.
+Following the evaluation setup of Codecformer, we compare
+against the following baselines:
+•Codecformer:The first audio codec-based speech separa-
+tion model. We use the RVQ-enabled setting provided in their
+official codebase.
+•SepFormer:A widely adopted waveform-based model that
+uses a transformer-based architecture. It serves as a strong
+reference for both separation quality and computational com-
+plexity.
+•SepFormer (Codec):To evaluate robustness to codec distor-
+tion, we pass the mixture audio through the codec and feed
+the reconstructed output to SepFormer. We use the original
+pretrained SepFormer without retraining in order to simulate
+a deployment scenario where a pre-deployed model encoun-
+ters compressed input.
+4.3. Training Details
+All models are trained using the negative SI-SDR loss with PIT.
+We use the AdamW optimizer with weight decay of 0.01 and an
+Table 1:Comparison of speech separation performance be-
+tween RVQ-Grid and the baselines. Separation metrics in [dB].
+Method (Codec) Params [M] GMACs SI-SDRi SDRi
+SepFormer [4] 25.7 77.3 22.4 22.6
+SepFormer (DAC) 25.7 77.3−20.7−0.2
+SepFormer (EnCodec) 25.7 77.3 7.7 9.2
+Codecformer (DAC) [11] 17.61.55.0 6.2
+RVQ-Grid (DAC) 58.3 6.6 8.1 9.3
+RVQ-Grid (EnCodec) 9.6 11.6 8.6 10.7
+Table 2:Perceptual quality and downstream usability compari-
+son on WSJ0-2Mix.
+Method (Codec) PESQ STOI WER%
+Ground Truth – – 5.5
+SepFormer 4.0 0.98 6.0
+SepFormer (DAC) 2.7 0.90 10.2
+SepFormer (EnCodec) 2.9 0.93 8.9
+Codecformer (DAC) 2.1 0.83 30.5
+RVQ-Grid (DAC) 2.6 0.89 15.8
+RVQ-Grid (EnCodec) 3.0 0.91 8.6
+initial learning rate of1.5×10 −4. The learning rate is halved
+when validation loss plateaus for 5 consecutive epochs. Our
+models are trained for 200 epochs with batch size of 4. We
+utilize SpeechBrain [23] framework for our implementation.
+4.4. Evaluation Metrics
+We evaluate the speech separation quality using SI-SDR im-
+provement (SI-SDRi) and SDR improvement (SDRi), both
+measured in dB. We also report the number of multiply-
+accumulate operations (MACs) of the separator computed on
+audio segments at 8 kHz using pytorch-OpCounter1. Since neu-
+ral audio codecs are optimized for perceptual quality, we ad-
+ditionally measure wideband Perceptual Evaluation of Speech
+Quality (PESQ) [24] and Short-Time Objective Intelligibility
+(STOI) [25]. PESQ and STOI are widely used in speech syn-
+thesis and speech enhancement to assess perceived audio qual-
+ity and intelligibility. PESQ scores range from−0.5 to 4.5 and
+STOI ranges from 0 to 1. Finally, for downstream ASR evalua-
+tion, we compute WER using Whisper large-v3-turbo [26].
+5. Results
+5.1. Comparison with baseline models
+Table 1 shows the speech separation performance on the WSJ0-
+2Mix test set. SepFormer achieves the highest SI-SDRi since it
+operates directly on waveforms without compression loss. Pass-
+ing the mixture through a codec before separation severely de-
+grades SepFormer, with EnCodec passthrough dropping to 7.7
+dB. Similar to [11], the DAC passthrough yields negative SI-
+SDRi, which the authors attribute to scaling mismatches and
+frame delays introduced by DAC at the waveform level. Since
+RVQ-Grid operates directly in the codec latent space, it avoids
+these waveform-level distortions. Among codec-based meth-
+ods, both RVQ-Grid variants outperform Codecformer which
+1https://github.com/Lyken17/pytorch-OpCounter
+7155
+5 10 15 20 30 40 50 60
+Audio Length (s)
+0
+5000
+10000
+15000
+20000
+25000
+30000
+35000
+40000GPU Memory Usage (MB)
+Sepformer
+Codecformer
+RVQ-Grid DAC
+RVQ-Grid EnCodec
+Figure 2:GPU memory usage during inference with different
+input audio length. Benchmark conducted on a single NVIDIA
+A100 (40GB) without any audio chunking.
+demonstrates the benefit of modeling the RVQ hierarchy. Al-
+though processing all RVQ layers increases computation over
+Codecformer, it remains a 6x reduction in MACs compared to
+SepFormer.
+5.2. Perceptual Quality for Downstream Tasks
+Although codec-based methods show lower SI-SDR due to
+lossy reconstruction, we observe that the separated audio retains
+high perceptual fidelity. To demonstrate this, Table 2 reports
+PESQ, STOI and WER between our proposed method and base-
+lines. RVQ-Grid achieves perceptual scores close to SepFormer
+with codec passthrough while delivering competitive WER,
+indicating that the separated audio is both natural-sounding
+and usable for downstream speech recognition. Compared
+to Codecformer, it shows substantial improvements across all
+three metrics. For qualitative inspection, we provide audio sam-
+ples on our project page2.
+5.3. Ablation 1: Computational Efficiency
+Figure 2 shows GPU memory consumption during inference
+without any audio chunking techniques. SepFormer’s mem-
+ory usage grows quadratically with sequence length due to self-
+attention operations, exceeding the memory limit at around 15-
+second audio and making long audio processing impractical. In
+contrast, codec-based methods consume much lower memory
+because neural audio codecs greatly reduce the sequence length
+the separator must process.
+This compression also enables training on longer audio se-
+quences within the same memory budget. To evaluate this,
+we create longer mixtures by concatenating utterances from the
+WSJ0 corpus and generating new mixtures following the WSJ0-
+2Mix procedure. Using the RVQ-Grid EnCodec variant, we
+observe that training with 10-second audio improves SI-SDRi
+from 8.6 dB to 8.9 dB, and training with 20-second audio fur-
+ther improves it to 9.0 dB.
+5.4. Ablation 2: Impact of RVQ Depth
+Since RVQ-Grid explicitly models per-layer codebook repre-
+sentations, we investigate how the number of RVQ layers influ-
+ences separation performance. We use the RVQ-Grid EnCodec
+variant for this ablation and modify only the number of RVQ
+layersNwhile keeping all other parameters fixed. Table 3
+2https://phuongdnm.github.io/rvqgrid
+Table 3:Ablation study on the number of RVQ layers (N) on
+separation performance. Separation metrics in [dB].
+Number of layers (N) GMACs SI-SDRi SDRi
+4 1.5 4.4 6.5
+8 2.9 6.4 8.4
+16 5.8 7.8 9.8
+32 11.6 8.6 10.7
+Table 4:Ablation study on the effect of audio codec bitrate on
+separation performance. Separation metrics in [dB].
+Bitrate (kbps) GMACs SI-SDRi SDRi
+1.5 0.7 0.6 3.0
+3.0 1.5 3.3 5.5
+6.0 2.9 5.7 7.7
+12.0 5.8 7.5 9.4
+24.0 11.6 8.6 10.7
+shows howNaffects separation quality. We observe that sub-
+sequent layers yield smaller but consistent improvements, such
+as increasing from 8 to 16 layers adds 1.4 dB, and from 16 to
+32 layers adds 0.8 dB. With 8 or more layers, RVQ-Grid con-
+sistently surpasses Codecformer, confirming that preserving the
+per-layer hierarchy is more effective than collapsing RVQ lay-
+ers into a single embedding.
+5.5. Ablation 3: Effect of Audio Codec Bitrate
+In practical deployment, bandwidth constraints may require
+lower codec bitrates, so we examine how the codec’s target bi-
+trate affects RVQ-Grid separation quality. We use the RVQ-
+Grid EnCodec variant with bitrate configurations provided by
+the official EnCodec codebase. Table 4 shows that performance
+degrades gracefully as bitrate decreases: from 24 kbps to 12
+kbps, SI-SDRi drops by only 1.1 dB. Below 6 kbps, the codec
+reconstruction quality itself becomes the bottleneck, with 3.0
+kbps and 1.5 kbps achieving 3.3 dB and 0.6 dB respectively.
+6. Conclusion
+In this work, we introduced RVQ-Grid, a codec-based speech
+separation model that preserves the hierarchical structure of
+RVQ layers by stacking per-layer RVQ vectors into a 3D grid
+and processing them with dual-axis recurrent blocks. RVQ-Grid
+achieves a +3.6 dB SI-SDRi over the prior codec-based method
+and an 8.6% WER competitive with waveform-based baselines,
+while requiring 6x fewer MACs. Our ablation studies show
+that using more RVQ layers consistently improves the separa-
+tion quality and that performance degrades gracefully at lower
+bitrates.
+One limitation of our work is that RVQ-Grid uses frozen
+pre-trained codecs that are neither designed for separation nor
+trained on the target dataset, which may limit the achievable
+separation quality. Future work could explore designing au-
+dio codec architectures specifically optimized for speech sepa-
+ration. Additionally, extending RVQ-Grid to other downstream
+tasks such as continuous speech separation and speaker diariza-
+tion is a promising direction.
+7156
+7. Acknowledgments
+This work was supported by JSPS KAKENHI Grant Number
+JP23H00490.
+8. Use of Generative AI Disclosure
+We use Generative AI tools only for polishing the text and cor-
+recting grammar mistakes when revising this manuscript. The
+authors have reviewed the manuscript and take responsibility
+and accountability for its content.
+9. References
+[1] E. C. Cherry, “Some experiments on the recognition of speech,
+with one and with two ears,”The Journal of the Acoustical Society
+of America, vol. 25, no. 5, pp. 975–979, 1953.
+[2] A. S. Bregman,Auditory Scene Analysis: The Perceptual Organi-
+zation of Sound. The MIT Press, Sep. 1994.
+[3] Y . Luo, Z. Chen, and T. Yoshioka, “Dual-path RNN: Efficient long
+sequence modeling for time-domain single-channel speech sepa-
+ration,” inProc. IEEE Int. Conf. Acoust., Speech Signal Process.
+(ICASSP), 2020, pp. 46–50.
+[4] C. Subakan, M. Ravanelli, S. Cornell, M. Bronzi, and J. Zhong,
+“Attention is all you need in speech separation,” inProc. IEEE
+Int. Conf. Acoust., Speech Signal Process. (ICASSP), 2021, pp.
+21–25.
+[5] Y . Luo and N. Mesgarani, “TaSNet: Time-domain audio separa-
+tion network for real-time, single-channel speech separation,” in
+Proc. IEEE Int. Conf. Acoust., Speech Signal Process. (ICASSP),
+2018, pp. 696–700.
+[6] ——, “Conv-tasnet: Surpassing ideal time–frequency magnitude
+masking for speech separation,”IEEE/ACM transactions on au-
+dio, speech, and language processing, vol. 27, no. 8, pp. 1256–
+1266, 2019.
+[7] J. Le Roux, S. Wisdom, H. Erdogan, and J. R. Hershey, “SDR–
+half-baked or well done?” inProc. IEEE Int. Conf. Acoust.,
+Speech Signal Process. (ICASSP), 2019, pp. 626–630.
+[8] E. Tzinis, Z. Wang, and P. Smaragdis, “SuDoRM-RF: Effi-
+cient networks for universal audio source separation,” inProc.
+IEEE Int. Workshop on Machine Learning for Signal Processing
+(MLSP), 2020, pp. 1–6.
+[9] U.-H. Shin, S. Lee, T. Kim, and H.-M. Park, “Separate and Recon-
+struct: Asymmetric Encoder-Decoder for Speech Separation,” in
+Advances in Neural Information Processing Systems (NeurIPS),
+2024.
+[10] H. Wang, Y . Jiang, G. Qiao, P. Shi, and B. Tian, “FLASepformer:
+Efficient Speech Separation with Gated Focused Linear Attention
+Transformer,” inInterspeech 2025, 2025, pp. 1468–1472.
+[11] J. Q. Yip, S. Zhao, D. Ng, E. S. Chng, and B. Ma, “Towards audio
+codec-based speech separation,” inProc. Interspeech, 2024, pp.
+2190–2194.
+[12] J. Q. Yip, C. Y . Kwok, B. Ma, and E. S. Chng, “Speech separation
+using neural audio codecs with embedding loss,”arXiv preprint
+arXiv:2411.17998, 2024.
+[13] N. Zeghidour, A. Luebs, A. Omran, J. Skoglund, and
+M. Tagliasacchi, “Soundstream: An end-to-end neural audio
+codec,”IEEE/ACM Transactions on Audio, Speech, and Lan-
+guage Processing, vol. 30, pp. 495–507, 2021.
+[14] A. D ´efossez, J. Copet, G. Synnaeve, and Y . Adi, “High fidelity
+neural audio compression,”Transactions on Machine Learning
+Research, 2023.
+[15] R. Kumar, P. Seetharaman, A. Luebs, I. Kumar, and K. Kumar,
+“High-fidelity audio compression with improved RVQGAN,” in
+Advances in Neural Information Processing Systems, vol. 36,
+2023, pp. 27 980–27 993.
+[16] H. Siuzdak, F. Gr ¨otschla, and L. A. Lanzend ¨orfer, “Snac: Multi-
+scale neural audio codec,”arXiv preprint arXiv:2410.14411,
+2024.
+[17] C. Wang, S. Chen, Y . Wu, Z. Zhang, L. Zhou, S. Liu, Z. Chen,
+Y . Liu, H. Wang, J. Li, L. He, S. Zhao, and F. Wei, “Neural codec
+language models are zero-shot text to speech synthesizers,” 2023.
+[18] J. Copet, F. Kreuk, I. Gat, T. Remez, D. Kant, G. Synnaeve,
+Y . Adi, and A. D ´efossez, “Simple and controllable music gen-
+eration,” inAdvances in Neural Information Processing Systems,
+vol. 36, 2023, pp. 47 704–47 720.
+[19] Z. Zhang, L. Zhou, C. Wang, S. Chen, Y . Wu, S. Liu, Z. Chen,
+Y . Liu, H. Wang, J. Li, L. He, S. Zhao, and F. Wei, “Speak for-
+eign languages with your own voice: Cross-lingual neural codec
+language modeling,” 2023.
+[20] J. R. Hershey, Z. Chen, J. Le Roux, and S. Watanabe, “Deep clus-
+tering: Discriminative embeddings for segmentation and separa-
+tion,” inProc. IEEE Int. Conf. Acoust., Speech Signal Process.
+(ICASSP), 2016, pp. 31–35.
+[21] D. Yu, M. Kolbæk, Z. Tan, and J. Jensen, “Permutation invari-
+ant training of deep models for speaker-independent multi-talker
+speech separation,” inProc. IEEE Int. Conf. Acoust., Speech Sig-
+nal Process. (ICASSP), 2017, pp. 241–245.
+[22] J. Garofolo, D. Graff, D. Paul, and D. Pallett, “CSR-I (WSJ0)
+Complete,” Linguistic Data Consortium (LDC93S6A), 1993.
+[23] M. Ravanelli, T. Parcollet, A. Moumen, S. de Langen, C. Subakan,
+P. Pla

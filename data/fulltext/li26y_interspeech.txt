@@ -1,0 +1,475 @@
+KFC-KWS: Keyframe Fusion with CTC for User-Defined Keyword Spotting
+Jin Li1, Wenbin Jiang2,∗∗, Ji Hu1
+1 School of Electronics and Information Engineering, Hangzhou Dianzi University, Hangzhou, China
+2 School of Communication Engineering, Hangzhou Dianzi University, Hangzhou, China
+{jinli, wbjiang, huji}@hdu.edu.cn
+Abstract
+User-defined keyword spotting (KWS) enables personalized
+voice interaction by detecting user-specified keywords. A key
+challenge in this task is distinguishing target keywords from
+phonetically confusable alternatives. To address this challenge,
+we propose KFC-KWS, a multimodal framework that leverages
+connectionist temporal classification (CTC)-guided keyframe
+selection. Specifically, we exploit the peaky posterior distri-
+butions of CTC to identify high-confidence phoneme frames,
+enabling precise alignment across audio, phoneme, and text
+modalities. These keyframes are then fused with full-utterance
+representations through cross-attention to capture both local
+discriminative cues and global contextual information. On
+LibriPhrase, KFC-KWS achieves the best-balanced perfor-
+mance (98.73% AUC) and substantially outperforms advanced
+baselines on the challenging hard subset (97.65% AUC and
+7.75% EER), demonstrating its effectiveness in discriminating
+between highly confusable keywords.
+Index Terms: user-defined keyword spotting, CTC, multi-
+modal
+1. Introduction
+Keyword Spotting (KWS) aims to detect whether a keyword ap-
+pears in a speech segment and is essential for voice-interactive
+devices. Popular KWS methods train models on large collec-
+tions of predefined keyword samples, thus supporting only fixed
+vocabularies [1, 2, 3, 4]. To enable open-vocabulary detection,
+KWS systems adopt CTC [5] or transducer frameworks, decod-
+ing keywords through beam search. However, these approaches
+often rely on costly training pipelines and remain unsuitable for
+efficient on-device adaptation to new user-defined keywords.
+User-defined KWS (UD-KWS) addresses this limitation by
+allowing users to enroll keywords through text or audio [6, 7,
+8, 9, 10, 11, 12, 13]. Text-based enrollment typically extracts
+phoneme features and matches them with audio embeddings
+[14, 15, 16], providing stable performance but degrading under
+strong accents or noisy conditions. Audio-based enrollment,
+also known as query-by-example [17, 18, 19], better adapts to
+user-specific pronunciation and is commonly implemented us-
+ing metric or meta-learning frameworks [20, 21, 22].
+Recent studies further combine text and audio enrollment
+in multimodal frameworks to improve robustness. CLAD [23],
+MM-KWS [24], and PLCL [25] align semantic, phonetic, and
+acoustic representations and achieve nearly perfect accuracy
+on easy keywords. However, reducing false activations caused
+by phonetically confusable keywords remains a core challenge
+in practical deployment, especially when keywords differ by
+**indicates the corresponding author.
+only one or two phonemes. A key observation motivating our
+work is that such confusable pairs typically differ at only a
+few phoneme positions, while full-utterance matching methods
+treat all frames equally, diluting subtle but critical distinctions.
+Models trained with CTC exhibit a characteristic “peaky”
+behavior [26], concentrating posterior mass on a small number
+of phoneme-aligned frames. These high-confidence frames
+carry the most discriminative phonetic information and provide
+natural anchors for cross-modal alignment. Building on this
+insight, we propose KFC-KWS, a multimodal framework that
+integrates CTC-guided keyframe matching with full-utterance
+feature fusion, as illustrated in Fig. 1. Unlike prior methods that
+rely on uniform frame-level attention [24] or external phoneme
+memory banks [25], KFC-KWS directly leverages the CTC
+posterior as a zero-cost frame-importance indicator, enabling
+phoneme-aligned matching without additional modules. To
+further enhance robustness, we apply random modality masking
+during training as a lightweight regularization strategy.
+Our approach differs from recent UD-KWS methods in
+several aspects. CLAD [23] and MM-KWS [24] perform
+full-sequence matching across modalities, treating all frames
+equally regardless of phonetic salience. PLCL [25] intro-
+duces a phoneme memory bank to enhance phoneme-level
+representations but requires additional external components,
+while AdaKWS [27] employs adaptive fusion without explicit
+phoneme-level alignment. In contrast, KFC-KWS uses
+the CTC posterior directly as a frame selector and fuses
+keyframe-level and utterance-level representations, balancing
+fine-grained discrimination and global context.
+Overall, the contributions of this work are as follows:
+• We introduce a CTC-guided keyframe selection strategy that
+exploits peaky posterior distributions to extract phoneme-
+aligned keyframes, enabling fine-grained cross-modal
+matching among audio, phoneme, and text modalities.
+• On the LibriPhrase benchmark, KFC-KWS achieves the best
+balanced performance (98.73% AUC) and substantially im-
+proves performance on the challenging hard subset, demon-
+strating its effectiveness in detecting confusable keywords.
+2. Proposed Method
+2.1. Model architecture
+For enrollment audio and text, we extract initial embeddings
+using pre-trained encoders. The enrollment text is processed by
+both a G2P converter (for phoneme features) [28] and a text en-
+coder (for semantic features). The query and enrollment audio
+share the same encoder to ensure aligned feature spaces.
+Each modality-specific embedding is first passed through
+its corresponding projection layer, transforming it into a unified
+4592
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1586
+Query Audio
+Enrollment Text
+Enrollment Audio
+Pre-trained
+Phoneme Encoder
+Pre-trained
+Text Encoder
+Pre-trained
+Audio Encoder
+Pre-trained
+Audio Encoder
+CTC Selector
+CS
+CS
+CS
+GRU+FCGRU+FCGRU+FC
+FC 0 / 1
+FCFC
+0 / 1
+0 / 1
+0 / 1
+0 / 1
+User Input
+User Enrollment
+CS: Cosine Similarity CA: Cross-Attention : Concat Operator : Frozen Modules
+CA
+CA
+CA
+Audio
+Projection
+Audio
+Projection
+Text
+Projection
+Phone
+Projection
+SA
+SA
+SA
+SA: Self-Attention
+QbyKeyframe
+QbyOmni
+Projection
+Layers
+Figure 1:Overall architecture of the proposed method, KFC-KWS. The enrollment audio and text are converted into audio, text, and
+phoneme embeddings using different pre-trained encoders. The same pre-trained audio encoder processes the user input audio to
+obtain query audio embeddings. These query embeddings interact with each enrollment embedding through two branches, QbyOmni
+and QbyKeyframe, which are finally merged to output a confidence score.
+feature space. Specifically, all modality features are linearly
+projected to a shared dimension, followed by the addition of po-
+sitional encodings to preserve temporal structure and modality
+embeddings to indicate modality type. We denote the result-
+ing representations as follows: the query audio featureE q
+a, the
+enrolled audio featureE s
+a, the phoneme featureE s
+p, and the se-
+mantic featureE s
+t , all inR T×D , whereTdepends on the input
+sequence length andDis the unified feature dimension.
+The final embedding for each modality is obtained by sum-
+ming the projected feature with its corresponding positional and
+modality encodings. This shared representation format enables
+different modalities to follow the same processing pipeline, en-
+suring that features from heterogeneous sources are aligned in
+the same latent space and facilitating cross-modal matching.
+The above feature representations are then fed into two parallel
+branches: keyframe-based querying (QbyKeyframe) and com-
+plete feature-based querying (QbyOmni).
+QbyOmni.In this branch, the full query audio features
+are matched cross-modally with different enrolled modality
+features. Specifically, we first concatenateE q
+a with each ofE s
+a,
+Es
+p, andE s
+t along the temporal dimension, and apply a self-
+attention mechanism to obtain the enhanced representations
+Esm, defined as in Equation 1:
+Esm =Self-Attention(E q
+a⊕E s
+m), m∈{a,p,t},(1)
+Subsequently, a gated recurrent unit (GRU) followed by a fully
+connected (FC) layer is used to map the complete feature for
+each modality into a fixed-dimensional sequenceF c
+m∈R T×D ,
+as defined in Equation 2:
+F c
+m =FC(GRU(Esm)),(2)
+QbyKeyframe.CTC-Guided Keyframe Selection.As illus-
+trated in Fig. 2, given the audio embeddingE a∈R T×D (Eq
+a
+Figure 2:Illustration of the CTC Selector module. The mod-
+ule computes phoneme posterior probabilities to identify key
+timestamps based on probability peaks. It then extracts and ag-
+gregates features from the original audio embeddings within a
+local context window (2w+ 1) to generate compact, phoneme-
+aligned keyframe features.
+orE s
+a), we first apply alinear projectionfollowed by softmax
+to obtain frame-level phoneme posterior probabilities:
+P(l t|Ea) =Softmax(W c·E a +b c)∈R T×(|V|+1),(3)
+whereVis the phoneme vocabulary and the additional dimen-
+sion corresponds to the CTC blank token.
+We then identify keyframes by selecting non-blank peaks
+from the CTC posterior. Specifically, for each framet, we ob-
+tain the most likely tokenl∗
+t = arg maxlP(l t|Ea). A frame is
+selected as a keyframe if: (1)l ∗
+t ̸=blank, and (2)l ∗
+t has not
+4593
+been selected by a previous frame (i.e., we retain only the first
+occurrence of each unique predicted phoneme). Thisdistinct-
+tokenconstraint ensures that the selected keyframes cover di-
+verse phoneme positions rather than over-representing repeated
+predictions from CTC’s peaky behavior [26].
+To capture local acoustic context around each keyframe, we
+apply a symmetric context window of size2w+ 1centered at
+each selected frame positiont k, and compute the keyframe rep-
+resentation as the mean of features within the window:
+ˆetk = 1
+2w+ 1
+tk+wX
+j=tk−w
+ej,(4)
+wheree j denotes thej-th frame of the projected audio em-
+bedding. The resulting keyframe sequence ˆEa∈R Tp×D has
+lengthT p equal to the number of distinct predicted phonemes,
+which is naturally aligned with the phoneme embeddingE s
+p.
+We then compute cosine similarity matrices between ˆEq
+a
+and each of ˆEs
+a,E s
+p, andE s
+t , as shown in Equation 5:
+Mam = (ˆEq
+a)⊤Es
+m
+∥ˆEq
+a∥F·∥E sm∥F
+, m∈{a,p,t}(5)
+wherea,p, andtdenote the audio, phoneme, and text modali-
+ties, respectively.
+Each similarity matrixM am encodes the frame-level corre-
+spondence between keyframes and enrollment features. Rather
+than using keyframe features directly as cross-attention input,
+we feed the similarity matrix as queries to attend over the full-
+utterance representationF c
+m. This design choice is intentional:
+the similarity matrix captureswherekeyframes match across
+modalities, while the full-utterance vectorF c
+m encodeswhat
+global patterns exist. Cross-attention between these two com-
+plementary views produces keyframe representations that are
+both locally precise (from similarity matching) and globally
+contextualized (from full-utterance features):
+F k
+m =CrossAttn(Q=M am, K=V=F c
+m).(6)
+Finally,F k
+a ,F k
+p , andF k
+t are summed to produce the utterance-
+level posterior probability.
+2.2. Cross-Modal Regularization
+To enhance the robustness of multimodal fusion, we apply
+modality dropoutduring training: for each training sample, we
+independently zero out each enrollment modality embedding
+(audio, phoneme, or text) with probabilityp= 0.5. This
+differs fundamentally from temporal masking approaches such
+as SpecAugment [29], which mask time-frequency regions
+within a single modality. Our modality dropout operates at
+themodality level, forcing the model to make predictions even
+when an entire modality stream is absent, thereby encouraging
+each modality branch to develop independently informative
+representations rather than relying on a single dominant
+modality. This strategy is analogous to standard dropout [30]
+applied at the modality granularity rather than the neuron level.
+2.3. Learning Strategies
+Each training sample consists of a query audio segment and an
+enrollment pair (audio + text), where the ground-truth phoneme
+sequences required for CTC supervision (Eq. 9) are obtained
+via G2P [28]. At inference, only the enrollment text and query
+audio waveform are needed; the CTC module serves solely as a
+keyframe selector, requiring no query transcription.
+KFC-KWS is trained with a composite loss combin-
+ing four objectives. LetBCE(ℓ,y) =−[ylogσ(ℓ) +
+(1−y) log(1−σ(ℓ))]denote binary cross-entropy, whereσis
+the sigmoid function. Theutterance-level losssupervises the
+fused representation obtained by summingF k
+a ,F k
+p ,F k
+t and
+applying a linear projection to produce logitℓ u:
+Lu = BCE(ℓu,y u),(7)
+wherey u ∈ {0,1}is the ground-truth utterance label. The
+sequence-level lossesprovide frame-wise supervision at the
+phoneme and word levels. Frame-level logitsℓ m,t are extracted
+fromEsm via indexing and linear projection:
+Lm
+s = 1
+Nm
+X
+t
+maskm,t·BCE(ℓ m,t,y m,t)(8)
+where maskm,t identifies valid tokens (ignoring padding),N m
+is the count of valid elements, andm∈{p,t}. TheCTC loss
+supervises frame-level phoneme predictions for both query and
+enrolled audio:
+Lc = CTC(zq,p q) + CTC(zs,p s),(9)
+wherez q/s are linear projections of the audio features andp q/s
+the corresponding ground-truth phoneme sequences. The total
+training objective is:
+Ltotal =L u +L p
+s +L t
+s +λL c,(10)
+whereλbalances the CTC loss against the other terms.
+3. Experiments
+3.1. Datasets
+We evaluate KFC-KWS on LibriPhrase1, a benchmark derived
+from LibriSpeech [31] consisting of short phrases (1–4 words).
+The training set is extracted from the train-clean-100 and train-
+clean-360 subsets, while the evaluation set is sourced from the
+train-other-500 subset. Based on the phonetic similarity be-
+tween positive and negative pairs, the evaluation set is divided
+into LibriPhrase-Easy (LPE) and LibriPhrase-Hard (LPH). The
+LPH subset contains a large number of phonetically confusable
+keyword pairs, making it particularly challenging.
+3.2. Implementation Details
+For the pre-trained encoders, we use XLS-R (0.3B) [32] for au-
+dio encoding, G2P [28, 33] to convert text into 64-dimensional
+phoneme embeddings, and multilingual DistilBERT [34] for
+text encoding. The query and enrolled audio share the same
+XLS-R encoder with frozen weights. The context window
+sizewfor keyframe extraction is set to 2 (i.e., a window of
+5 frames). Projection layers map all modality features to a
+128-dimensional shared space. The QbyOmni module uses
+a 2-layer Transformer encoder with feed-forward dimension
+512. The GRU has a hidden size of 64. The CTC loss weight
+λ= 0.2and modality dropout ratep= 0.5. The total number
+of trainable parameters in KFC-KWS is approximately2.0 M
+(excluding frozen pre-trained encoders). All experiments are
+conducted on a single NVIDIA 4080 Super GPU with batch
+size 512 and Adam optimizer (lr = 0.001) for 50 epochs.
+1https://github.com/gusrud1103/LibriPhrase.
+git
+4594
+4. Results
+4.1. Overall Performance
+We report both subset-specific andbalancedmetrics (arithmetic
+mean of LPH and LPE, denoted “Bal.” in the tables), as practi-
+cal deployment involves both easy and hard keywords.
+4.1.1. Comparison with State-of-the-Art Methods
+As shown in Table 1, KFC-KWS achieves the highest balanced
+AUC (98.06%) among all methods, surpassing the runner-up
+HyperSpotter-c (97.98%) while using only2.0 Mtrainable
+parameters—2.75×fewer than HyperSpotter-c (5.5 M). On
+the challenging LPH subset, KFC-KWS attains the best AUC
+(96.54%) and EER (9.13%). Notably, it outperforms the strong
+multimodal baseline PLCL by 0.98% in AUC and 0.83%
+in EER, and surpasses HyperSpotter-c by 0.47% in AUC,
+demonstrating that CTC-guided keyframe selection effectively
+isolates the phoneme positions where confusable keywords dif-
+fer. Regarding the balanced EER, KFC-KWS (5.68%) remains
+competitive with the top-performing baselines DS-KWS-M1
+(5.27%) and PLCL (5.59%). The gap is primarily driven by
+the LPE trade-off (2.22% vs. 0.52% for DS-KWS-M1), where
+full-sequence models excel at easy samples, while our method
+prioritizes the discriminability of hard samples.
+Table 1:Performance on LibriPhrasewithout augmentation.
+Best inbold, second best underlined .Bal.= (LPH + LPE)/2.
+Method Params AUC (%)↑EER (%)↓Bal.
+LPH LPE LPH LPE AUC↑EER↓
+EMKWS [35] 3.7M 73.58 97.83 32.9 8.42 85.71 20.66
+iPhonMatchNet [33] 0.7M 88.23 99.59 19.70 2.40 93.91 11.05
+CED [10] 3.8M 89.20 99.94 18.40 0.80 94.57 9.60
+HyperSpotter-c(4) [36] 5.5M 96.07 99.89 10.45 1.08 97.98 5.77
+SLiCK [37] 0.6M 94.90 99.82 11.10 1.78 97.36 6.44
+MM-KWS [24] 3.9M 94.0299.9812.460.4197.00 6.44
+PLCL [25] 40.0M 95.56 99.95 9.96 1.21 97.76 5.59
+DS-KWS-M1 [38] 4.1M 95.7799.9810.02 0.52 97.885.27
+KFC-KWS2.0M96.5499.589.132.2298.065.68
+As shown in Table 2, when equipped with augmentation
+strategies (modality dropout for KFC-KWS), our method
+achieves the best balanced AUC across all configurations
+(98.73%). Specifically on LPH, it reaches 97.65% AUC and
+7.75% EER, outperforming the strongest augmented baseline
+PLCL† by margins of 1.06% and 0.72%, respectively. The
+balanced EER (4.85%) is highly competitive, approaching
+that of PLCL† (4.52%), confirming that KFC-KWS provides
+a robust solution for realistic deployment scenarios containing
+both easy and hard keywords.
+Table 2:Performance on LibriPhrasewith augmentation†. No-
+tations follow Table 1.
+Method† AUC (%)↑EER (%)↓Bal.∆Bal.
+LPH LPE LPH LPE AUC↑EER↓AUC EER
+CED† [10] 92.70 99.84 14.40 1.70 96.27 8.05 +1.70−1.55
+AdaKWS-Small† [27] 95.09 99.82 11.48 1.21 97.46 6.35 – –
+MM-KWS† [24] 96.25 99.95 9.30 0.68 98.10 4.99 +1.10−1.45
+PLCL† [25] 96.59 99.978.47 0.5798.28 4.52+0.52−1.07
+KFC-KWS† 97.6599.817.751.9498.734.85 +0.67−0.83
+†: modality dropout for KFC-KWS; method-specific strategies for others. “–”:
+not reported.∆Bal.: gain over Table 1.
+4.1.2. Effect of Augmentation & Trade-off Analysis
+The∆Bal. columns in Table 2 reveal that methods like
+CED and MM-KWS benefit significantly from augmentation
+(+1.70% and +1.10% AUC), indicating that data diversity
+helps mitigate their reliance on global context. KFC-KWS
+achieves a solid +0.67% gain from modality dropout alone,
+showing that the keyframe architecture is inherently robust but
+still responsive to regularization. Regarding the LPH–LPE
+trade-off, a consistent pattern emerges: our method sacrifices
+a small degree of performance on easy samples (LPE EER
+≈2%) to achieve substantial gains on hard samples (LPH
+EER≈7–9%). Since LPE samples are acoustically distinct,
+full-sequence methods achieve near-perfect metrics (EER<
+1%), whereas our sparse keyframe selection naturally discards
+some redundant cues beneficial for these easy cases. However,
+the superior balanced metrics confirm that the significant
+improvements on confusable keywords (LPH) far outweigh the
+marginal costs on easy ones.
+4.2. Ablation Studies
+Table 3 shows the contribution of each modality encoder.
+Removing the phoneme encoder causes the largest degradation
+(5.75% AUC drop on LPH), confirming that phoneme-level
+information is essential for the CTC-guided keyframe strategy.
+Removing the text encoder yields an interesting pattern: LPH
+performance degrades moderately while LPE improves to
+99.95% AUC, suggesting that text-level semantic features
+primarily benefit hard-case discrimination by providing ad-
+ditional word-level cues that complement acoustic similarity.
+Removing the audio encoder shows balanced degradation
+across both subsets, indicating that audio features contribute
+consistently to both matching scenarios.
+Table 3:Ablation studies of KFC-KWS. “w/o” denotes removal
+of the corresponding pre-trained encoder during enrollment.
+Best inbold, second best underlined .
+Method AUC (%)↑EER (%)↓Bal. (%)
+LPH LPE LPH LPE AUC↑EER↓
+KFC-KWS† 97.6599.81 7.751.94 98.73 4.85
+w/o audio 96.78 99.07 9.18 4.86 97.93 7.02
+w/o text 97.33 99.9518.900.7798.64 9.84
+w/o phoneme 91.90 97.52 18.32 8.88 94.71 13.60
+5. Conclusion
+We presented KFC-KWS, a multimodal framework for user-
+defined keyword spotting that leverages CTC-guided keyframe
+selection to achieve fine-grained phoneme-level cross-modal
+matching. By exploiting the peaky posterior distributions of
+CTC, our approach identifies the most phonetically salient
+frames and fuses them with full-utterance representations,
+enabling precise discrimination of phonetically confusable
+keywords. Experiments on LibriPhrase demonstrate that
+KFC-KWS achieves the best balanced performance across both
+hard and easy evaluation settings without requiring complex
+data augmentation or external resources. Future work will
+explore adaptive keyframe selection strategies and evaluation
+on noise-robust benchmarks for real-world deployment.
+4595
+6. Acknowledgments
+This work was supported in part by the Yangtze River Delta
+Science and Technology Innovation Community Joint Research
+Project 2024CSJGG1100 and in part by the Key R&D Program
+Project of Zhejiang Province (2025C01167). The authors would
+like to express their sincere gratitude toYu Xifrom Shanghai
+Jiao Tong University for his valuable guidance and constructive
+comments, which greatly benefited this research.
+7. Use of Generative AI Disclosure
+Generative AI tools were used for editing and polishing the
+manuscript text. All experimental results, method design, and
+scientific conclusions are the sole responsibility of the authors.

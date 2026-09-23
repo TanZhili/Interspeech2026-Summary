@@ -1,0 +1,490 @@
+SignMatch: Aligning Pose Latent Diffusion via Multi-dimensional Rewards for
+Sign Language Video Generation
+Rongjie Huang1, Weidong Chen1, Helen Meng 1, Xixin Wu1
+1 The Chinese University of Hong Kong
+zjurongjiehuang@gmail.com
+Abstract
+Sign language video generation (SLVG) aims to synthesize
+photo-realistic signing videos from spoken-language text while
+preserving signer identity and visual style, but remains chal-
+lenging due to weak alignment between text semantics and fine-
+grained spatio-temporal motion. We present SIGNMATCH, a
+unified framework that couples an LLM-empowered pose-latent
+diffusion planner with a motion-aware sign video diffusion ren-
+derer conditioned on predicted motion latents and a reference
+image. To better align motion planning with downstream ob-
+jectives, we apply Flow-GRPO post-training with semantic and
+visual rewards to optimize the pose-latent generator without up-
+dating the video renderer. Experiments on RWTH-2014T and
+How2Sign demonstrate consistent gains in translation-based se-
+mantic metrics and perceptual video quality, improving overall
+faithfulness and realism.
+Index Terms: Sign language video generation, preference
+alignment, multi-dimensional reward
+1. Introduction
+Sign language is the primary communication medium for many
+deaf and hard-of-hearing individuals, making automatic sign
+generation an important problem for accessibility, education,
+and inclusive human-computer interaction. Within computa-
+tional sign language research, early efforts have mainly fo-
+cused on continuous sign language recognition (CSLR) and
+sign language translation (SLT) [1, 2, 3, 4], while more re-
+cent work has moved toward sign language production (SLP)
+and sign language video generation (SLVG), aiming to syn-
+thesize realistic signing videos directly from spoken-language
+text [5, 6, 7, 8, 9]. Given a spoken-language sentence and a
+reference signer, SLVG seeks to generate a photo-realistic sign
+video that faithfully conveys linguistic meaning while preserv-
+ing signer identity and visual style. Such a capability has broad
+potential in assistive communication systems, educational con-
+tent creation, and scalable sign-language interfaces.
+Despite recent progress, SLVG remains highly challenging
+because the alignment between text and sign video is inherently
+weak in both space and time. Diffusion and flow-based genera-
+tive models have become increasingly powerful for controllable
+image and video synthesis [10, 11, 12], where reinforcement
+learning (RL) and preference optimization have recently shown
+strong promise in aligning generative models with downstream
+objectives beyond likelihood training, including semantic con-
+sistency and perceptual quality [13, 14, 15]. However, these
+advances have not yet been fully exploited in sign language
+generation. As a result, existing methods often struggle to si-
+multaneously achieve semantic fidelity and visual realism, i.e.,
+producing sign videos that are both linguistically correct and
+temporally coherent.
+In this work, we present SignMatch, a unified framework
+for sign language video generation with multi-dimensional RL
+post-training. SignMatch leverages (1) an LLM-empowered
+pose latent diffusion model that maps spoken-language text into
+motion-condition latents, and (2) a motion-aware sign video dif-
+fusion model that renders the sign video conditioned on the pre-
+dicted motion latents and a reference signer image.
+To align model behavior with user intent, SignMatch per-
+forms RL post-training with multi-dimensional reward feed-
+back, encouraging the system to improve both linguistic faith-
+fulness and visual quality. SignMatch applies preference opti-
+mization via Flow-GRPO, with multi-dimensional rewards that
+back-translation BLEU reward captures semantic fidelity, and
+SSIM reward encourages visual quality.
+We evaluate SignMatch on RWTH-2014T [3] and
+How2Sign [16], two representative public benchmarks span-
+ning German Sign Language and American Sign Language. Ex-
+perimental results demonstrate that SignMatch achieves state-
+of-the-art performance across semantic fidelity and video qual-
+ity. Our main contributions are summarized as follows:
+• We proposeSignMatch, a unified SLVG framework that
+combines an LLM-guided pose latent diffusion model with
+a motion-aware sign video diffusion renderer.
+• We introduce amulti-dimensional RL post-trainingstrat-
+egy for sign generation, applying GRPO to the pose latent
+generator with semantic and visual reward signals.
+• Experimental results on RWTH-2014T and How2Sign
+demonstrate that SignMatch achieves state-of-the-art perfor-
+mance in both semantic fidelity and video quality.
+2. Related Works
+Sign language generation has evolved from early Sign Lan-
+guage Production (SLP) systems [17, 18] alongside CSLR/SLT
+research [1, 2, 3, 4], to modern text-to-sign pipelines that trans-
+late spoken-language text into pose or skeleton sequences [5]
+and further synthesize photo-realistic signing videos via staged
+text-to-skeleton prediction and skeleton-to-video rendering [6,
+7]. In parallel, human video synthesis has progressed from con-
+ditional GAN-based translation [19, 20] and pose-guided an-
+imation [21, 22] to diffusion-driven frameworks that improve
+sample quality and controllability [10, 23, 24]. Additional re-
+lated work and discussion are provided in Appendix C.
+2072
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1546
+LLMLanguage 
+Text
+Flow-Matching
+Transformer
+Stage 1: Pose Latent Model
+Denoising U-Net
+Condition 
+Encoder
+Ref 
+Encoder
+Reference 
+Image
+Generated 
+Video
+Stage 2: Sign Video Generator
+Figure 1:SignMatch leverages 1) an LLM-empowered pose latent diffusion model that predicts the motion conditionCfrom text, and
+2) a motion-aware sign video diffusion model that renders appearance-consistent and temporally coherent signing conditioned on the
+reference signer imagex⋆.
+3. SignMatch
+3.1. Overview
+Given a reference signer imagex ⋆ and a spoken-language sen-
+tenceT, sign language video generation (SLVG) aims to gen-
+erate a photo-realistic sign videoXthat is semantically aligned
+with the input text while preserving signer identity and visual
+style, i.e., learningp θ(X|x ⋆,T). Because the alignment be-
+tween text tokens and video frames is highly underconstrained,
+existing SLVG approaches [8, 9, 25] typically adopt a staged
+decomposition with synchronized intermediate conditions (e.g.,
+pose, skeleton, or gloss-aligned motion), factorizing the prob-
+lem into text-to-condition translation and condition-to-video
+synthesis.
+Here, the intermediate conditionCprovides explicit spatio-
+temporal structure that bridges linguistic semantics and visual
+motion. In our framework, we instantiate this decomposition
+with (1) an LLM-empowered pose latent diffusion model that
+predicts the motion conditionCfrom text, and (2) a motion-
+aware sign video diffusion model that renders appearance-
+consistent and temporally coherent signing conditioned on the
+reference signer imagex⋆ and the predicted motion cues.
+3.2. Pose Latent Diffusion
+Given an input sentenceT, the pose latent diffusion model
+maps linguistic content to motion-condition latents through
+pθtran (C|T), whereCencodes the spatio-temporal signing
+structure. In particular,Ccaptures both body pose and hand
+motion, thereby modeling the core motion patterns required for
+semantically faithful sign production.
+Pre-trained language models are strong semantic reason-
+ers [26, 27, 28], with powerful in-context learning and under-
+standing capabilities that provide semantic guidance for gen-
+erative models. We therefore adopt a language model back-
+bone (e.g., T5-Large or Qwen3-8B) to perceive and reason
+over the input text, and use a flow-matching generative frame-
+work [29, 30] to model the latent distribution of motion condi-
+tions in a denoising-based latent space. The training objective
+defines forward and reverse transformations that continuously
+bridge noise and data, encouraging smooth (low-curvature)
+transport trajectories so that the path between the two distri-
+butions becomes approximately linear in the latent manifold.
+3.3. Motion-aware Sign Video Generation
+The sign video diffusion model generates the final sign video
+Xunder the guidance of the reference signer imagex ⋆ and the
+continuous motion-condition embeddingse 0:F−1 . The archi-
+tecture follows a reference-guided, condition-aware latent dif-
+fusion design [11, 31], with a denoising U-Net as the core gen-
+erator. It is conditioned by two complementary branches:
+•Condition branch.A condition encoder processes the con-
+tinuous motion-condition embeddings and injects multi-scale
+motion features into the denoising stream, providing explicit
+control over the spatio-temporal signing dynamics.
+•Reference branch.A reference encoder extracts signer-
+specific appearance features fromx ⋆ through a V AE, and
+passes the resulting self-attention features to corresponding
+U-Net blocks to preserve signer identity and visual style.
+4. Multi-dimensional RL for pose latent
+4.1. Overview
+Standard likelihood-based training can be misaligned with user-
+preferred objectives in SLVG. We therefore perform RL post-
+training with multi-dimensional reward feedback to jointly en-
+courage linguistic faithfulness and visual quality, i.e., generat-
+ing sign videos that match the input semantics while maintain-
+ing visual alignment. Importantly, we apply RL exclusively
+to the pose-latent diffusion planner via parameter-efficient
+LoRA [32] adapters and keep the video diffusion renderer
+frozen, since the intermediate motion latent spaceCis the key
+semantic interface between language understanding and video
+synthesis; aligningCdirectly improves motion plausibility and
+semantic correctness, which then propagates to better down-
+stream video quality through the frozen renderer (FVD↓3.4%,
+see Table 3).
+4.2. Multi-dimensional rewards.
+Given an input textT, we sample a group ofGcandidate motion
+latents{C i}G
+i=1∼π old(·|T)from the current latent policy.
+For each candidateCi, we compute areward vectordirectly on
+the pose latent representation:
+ri =
+
+rsem
+i , rvis
+i
+
+,
+rsem
+i =R BLEU(Ci,T), r vis
+i =R SSIM(Ci,C ∗
+i ),
+whereR BLEU measures semantic fidelity via pose-level back-
+translation BLEU, i.e., by translating the generated pose latent
+back to text through a lightweight pose-to-text model and com-
+paring the result with the source sentenceT, andR SSIM mea-
+sures structural similarity between the predicted pose sequence
+and the aligned ground-truth poseC ∗
+i . Computing rewards at
+the pose-latent level avoids renderingGfull videos per training
+step, enabling efficient RL optimization while the final video-
+level quality is ensured through the pretrained renderer.
+To make the two reward dimensions comparable and stable
+during optimization, we perform per-dimension group standard-
+ization:
+ˆr(k)
+i = r(k)
+i −mean({r (k)
+j }G
+j=1)
+std({r(k)
+j }G
+j=1) +δ
+, k∈{sem,vis},
+2073
+Language 
+Text
+Pose Latent Policy
+Sign Video 
+Generator
+Reference 
+Image
+Sign Video 
+Generator
+Sign Video 
+Generator
+Generated 
+Videos
+Multi-dimensional Reward
+Semantic Reward
+Visual Reward
+RBLEU(Xi,T)
+RSSIM
+Group Sampling
+Figure 2:To align model behavior with user intent, we perform RL with multi-dimensional reward feedback, encouraging the model to
+improve both semantic faithfulness and visual quality.
+and aggregate them into a scalar advantage:
+Ai =λ sem ˆrsem
+i +λ vis ˆrvis
+i ,
+s.t.λ sem,λ vis >0, λ sem +λ vis = 1,
+whereδis a small constant for numerical stability. Lets t,i =
+(zt,i,T,t)denote the latent state at denoising stept, and define
+the importance ratio as
+ρt,i = πθ(at,i|s t,i)
+πold(at,i|s t,i).
+Backpropagating through all denoising steps can be unstable
+and may lead to overfitting on a narrow set of trajectories [33,
+34]. Instead, we randomly sample a single steptfrom theT
+denoising steps to compute the policy gradient loss. The policy
+is then optimized by maximizing the GRPO clipped objective
+with a KL regularization term to prevent excessive policy drift,
+where{Ci}G
+i=1∼π old(·|T)anda t,i∼π old(·|s t,i):
+LGRPO(θ) =E[min (ρ t,iAi,clip(ρ t,i,1−ϵ,1+ϵ)A i)−βD KL (πθ∥π ref )].
+The KL coefficientβcontrols the trade-off between reward
+optimization and policy stability. We find thatβis critical
+for stable training in latent diffusion models: too smallβ
+(≤0.01) leads to catastrophic KL divergence and training col-
+lapse, while appropriateβ(0.04) maintains stable gradients
+throughout training (see Appendix for detailedβsweep anal-
+ysis).
+5. Training and Evaluation
+5.1. Dataset.
+We conduct experiments on two widely used public benchmarks
+that provide paired spoken-language sentences and signed con-
+tent: RWTH-2014T [3] offers German sign language videos
+aligned with German sentences and gloss annotations, but re-
+mains challenging due to its relatively low visual quality and
+limited capture conditions. How2Sign [16] supplies Ameri-
+can Sign Language recordings with richer timing information;
+leveraging the provided timestamps, prior work commonly seg-
+ments the raw recordings into sentence-level clips to increase
+the number of aligned training instances.
+5.2. Model Configurations
+For the pose latent generator, we adopt a pre-trained language
+model as the text backbone to process the spoken-language in-
+put and provide semantic conditioning for latent motion gen-
+eration. We experiment with both T5-Large (encoder-decoder,
+770M) and Qwen3-8B (decoder-only, 8B) as text encoders, and
+find T5-Large to perform better for this task (see ablation in Ta-
+ble 3), which we use as the default in our main experiments.
+To sample from the flow transformer, we use torchdiffeq [35]
+package to implement the ODE solvers with a step size of 0.04.
+For pose modeling, a standard preprocessing step is to extract
+2D keypoints using OpenPose [36] with hand keypoints further
+lifted to 3D using the skeletal model estimation model, ensuring
+a consistent evaluation interface across methods.
+We use 8 A100 GPUs for our main experiments until 200K
+optimization steps, following with RL post-training where we
+apply LoRA [32] with rank 64 to the linear layers of the Trans-
+former. During RL post-training, we sample a group ofG= 8
+candidate motion latents for each input sentence. We assign
+equal weights to the two reward dimensions, settingλsem = 0.5
+andλ vis = 0.5, so that semantic fidelity and visual quality are
+optimized in a balanced manner. The optimal RL checkpoint is
+selected at 4000 steps based on pose-level BLEU-4 on the full
+test set (see Appendix for KL coefficient analysis). To mitigate
+potential reward hacking from back-translation-based rewards,
+we use a back-translation evaluator from a separate training run
+as the reward model, which is different from the evaluator used
+for BLEU scores.
+For video generation, we follow SignViP [25] and adopt
+the denoising U-Net and a reference network initialized from
+Stable Diffusion v1.5, where the temporal attention is warm-
+started from AnimateDiff [37] to better capture motion dynam-
+ics across frames.
+5.3. Baseline Models.
+We compare against representative open-source baselines span-
+ning staged pose generation, GAN-based synthesis, and
+diffusion-based video generation.ProTran[5] is a pro-
+gressive transformer framework for text-to-pose sign genera-
+tion.MoMP[38] improves pose generation with a mixture-
+of-motion-primitives design.SignGAN[6] is a GAN-based
+method for skeleton-conditioned photo-realistic sign video syn-
+thesis.SignGen[8] is a diffusion-based sign video generator
+that improves visual fidelity and temporal consistency.Sign-
+ViP[25] is a recent strong baseline that adopts compressed
+multi-condition tokenization for high-quality sign video gener-
+ation.
+5.4. Evaluation.
+To assess whether generated signing preserves the meaning of
+the input sentence, we follow ProTran [5] and adopt a back-
+translation evaluation protocol: an SLT model [5] translates the
+generated sign video back into text, and we compare the re-
+covered text with the source sentence using BLEU [39] and
+ROUGE [40]. For ablation studies, we additionally train a
+pose-level back-translation model that operates directly on pre-
+dicted pose latents, enabling rapid evaluation during RL post-
+training without rendering videos (details in Appendix D). For
+video quality, we report Fr´echet Video Distance (FVD) to quan-
+tify distributional realism and temporal coherence of gener-
+ated videos. We additionally measure identity preservation us-
+ing an identity similarity (IDS) score computed from face em-
+beddings, ensuring consistent signer appearance across frames.
+When frame-level reference videos are available, we also re-
+2074
+Table 1:Comparison of back-translation semantic performance on RWTH-2014T and How2Sign.
+RWTH-2014T How2Sign
+Method BLEU-1 BLEU-2 BLEU-3 BLEU-4 ROUGE COMET BLEU-1 BLEU-2 BLEU-3 BLEU-4 ROUGE COMET
+ProTran 18.0 9.0 5.6 4.1 21.0 0.48 10.6 6.5 5.3 4.4 15.3 0.52
+MoMP 19.1 9.2 5.9 4.6 21.5 0.50 11.5 6.6 5.6 4.3 13.5 0.51
+SignGAN 20.4 9.9 6.7 5.2 19.2 0.49 12.7 5.6 3.2 3.0 11.8 0.51
+SignGen 22.6 11.5 9.8 7.6 19.7 0.49 11.3 8.2 4.9 3.4 9.5 0.46
+SignViP 25.4 14.3 10.7 7.9 25.4 0.54 17.2 8.4 5.1 4.5 16.5 0.54
+SignMatch 27.6 18.9 14.1 11.3 27.1 0.62 18.3 9.7 6.3 5.1 17.1 0.55
+Table 2:Comparison of video quality on RWTH-2014T and
+How2Sign.
+Method RWTH-2014T How2Sign
+FVD↓IDS↑SSIM↑ FVD↓IDS↑SSIM↑
+SignGAN 1212 0.49 0.62 2893 0.52 0.57
+SignGen 1566 0.54 0.59 3102 0.54 0.62
+SignViP 967 0.56 0.68 2103 0.59 0.63
+SignMatch 914 0.60 0.70 2009 0.61 0.65
+port SSIM [41] as a reconstruction-oriented measure of struc-
+tural similarity. All ablation metrics are computed on the full
+RWTH-2014T test set (642 samples).
+5.5. Main Results.
+Back-Translation Comparison.To quantitatively assess
+the semantic fidelity of generated sign language videos, we
+adopt video back-translation evaluation by translating gener-
+ated videos back into text and comparing the recovered text with
+the source sentence. As shown in Table 1, SignMatch consis-
+tently achieves the best performance across both datasets. On
+RWTH-2014T, SignMatch improves BLEU-4 from 7.9 to 11.3
+over the strongest baseline SignViP, with additional gains in
+ROUGE from 25.4 to 27.1 and COMET from 0.54 to 0.62. On
+How2Sign, SignMatch also improves BLEU-4 from 4.5 to 5.1,
+together with higher ROUGE from 16.5 to 17.1 and COMET
+from 0.54 to 0.55. These results demonstrate that SignMatch
+better preserves source semantics in the generated videos, sug-
+gesting that aligning the intermediate motion latent space ef-
+fectively improves semantic accuracy in the final rendered sign
+videos.
+Video Quality Comparison.We further compare the per-
+ceptual quality of generated sign videos using visual and tem-
+poral quality metrics. As shown in Table 2, SignMatch achieves
+the best results across all reported metrics on both datasets.
+Compared with the strongest baseline SignViP, SignMatch re-
+duces FVD from 967 to 914 on RWTH-2014T and from 2103
+to 2009 on How2Sign. It also improves IDS from 0.56 to
+0.60 and SSIM from 0.68 to 0.70 on RWTH-2014T, as well
+as IDS from 0.59 to 0.61 and SSIM from 0.63 to 0.65 on
+How2Sign. These consistent improvements indicate that Sign-
+Match produces more visually realistic and structurally faith-
+ful sign videos while better preserving signer identity. Over-
+all, the results validate the advantage of our two-stage design:
+the LLM-guided pose latent diffusion model provides semanti-
+cally meaningful and motion-plausible intermediate conditions,
+while the motion-aware sign video diffusion model faithfully
+renders them into high-quality signing videos.
+5.6. Ablation Studies
+Effect of multi-dimensional RL rewards.Table 3 shows that
+different rewards affect semantic fidelity and visual quality dif-
+Table 3:Ablation study of RL reward designs on RWTH-2014T.
+BLEU-4 is evaluated via pose-level back-translation; FVD is
+computed on rendered sign videos.
+Method BLEU-4↑FVD↓
+No RL 9.2 936
++ BLEU reward only 10.7 978
++ SSIM reward only 9.7901
++ Combined rewards 11.3914
+ferently. Compared with the no-RL baseline, theBLEU-only
+reward improves BLEU-4 from 9.2 to 10.7, but increases FVD
+from 936 to 978, suggesting degraded visual quality. TheSSIM-
+onlyreward reduces FVD to 901, but brings only a limited
+BLEU-4 gain from 9.2 to 9.7. In contrast, the combined reward
+achieves the best BLEU-4 of 11.3 while also improving FVD to
+914 over the no-RL baseline. These results indicate that seman-
+tic and visual rewards are complementary: BLEU encourages
+linguistic correctness, while SSIM regularizes visual realism,
+leading to a better overall trade-off for RL post-training.
+Effect of text encoder choice.We additionally compare
+text encoder backbones. Replacing T5-Large with Qwen3-8B
+results in a substantial drop from 14.26 to 11.04 in BLEU-4.
+Despite being a much larger model (8B vs. 770M parameters),
+Qwen’s decoder-only architecture is less suited for this pose
+latent generation task. T5’s encoder-decoder design naturally
+decomposes text understanding and motion latent prediction,
+providing stronger semantic conditioning for the flow-matching
+module.
+6. Conclusion
+We presented SignMatch, a unified diffusion-based framework
+for sign language video generation that improves both seman-
+tic fidelity and visual realism. SignMatch adopted a LLM-
+empowered pose latent diffusion model for text-to-motion
+translation and a motion-aware sign video diffusion renderer
+conditioned on a reference signer image. To align generation
+with downstream objectives beyond likelihood training, we fur-
+ther introduced multi-dimensional RL post-training for the pose
+latent generator using Flow-GRPO with semantic and visual re-
+ward feedback, improving the intermediate motion latent space
+while keeping the video renderer fixed. Experiments on RWTH-
+2014T and How2Sign demonstrate that SignMatch consistently
+outperforms strong prior methods in both semantic accuracy
+and video quality.
+2075
+7. Acknowledgement
+This study was supported in part by the Centre for Perceptual
+and Interactive Intelligence, a CUHK-led InnoCentre under the
+InnoHK initiative of the Innovation and Technology Commis-
+sion of the Hong Kong Special Administrative Region Govern-
+ment.
+8. Generative AI Use Disclosure
+Generative AI tools were used only for language editing and
+polishing of the manuscript.
+9. References
+[1] N. Cihan Camgoz, S. Hadfield, O. Koller, and R. Bowden, “Sub-
+unets: End-to-end hand shape and continuous sign language
+recognition,” inProceedings of the IEEE international conference
+on computer vision, 2017, pp. 3056–3065.
+[2] O. Koller, N. C. Camgoz, H. Ney, and R. Bowden, “Weakly super-
+vised learning with multi-stream cnn-lstm-hmms to discover se-
+quential parallelism in sign language videos,”IEEE transactions
+on pattern analysis and machine intelligence, vol. 42, no. 9, pp.
+2306–2320, 2019.
+[3] N. C. Camgoz, S. Hadfield, O. Koller, H. Ney, and R. Bowden,
+“Neural sign language translation,” inProceedings of the IEEE
+conference on computer vision and pattern recognition, 2018, pp.
+7784–7793.
+[4] S.-K. Ko, C. J. Kim, H. Jung, and C. Cho, “Neural sign lan-
+guage translation based on human keypoint estimation,”Applied
+sciences, vol. 9, no. 13, p. 2683, 2019.
+[5] B. Saunders, N. C. Camgoz, and R. Bowden, “Progressive trans-
+formers for end-to-end sign language production,” inEuropean
+Conference on Computer Vision. Springer, 2020, pp. 687–705.
+[6] ——, “Everybody sign now: Translating spoken language
+to photo realistic sign language video,”arXiv preprint
+arXiv:2011.09846, 2020.
+[7] ——, “Signing at scale: Learning to co-articulate signs for large-
+scale photo-realistic sign language production,” inProceedings
+of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2022, pp. 5141–5151.
+[8] F. Qi, Y . Duan, H. Zhang, and C. Xu, “Signgen: End-to-end
+sign language video generation with latent diffusion,” inEuropean
+Conference on Computer Vision. Springer, 2024, pp. 252–270.
+[9] S. Fa

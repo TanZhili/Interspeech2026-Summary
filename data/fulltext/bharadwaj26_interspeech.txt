@@ -1,0 +1,491 @@
+An Empirical Recipe for Universal Phone Recognition
+Shikhar Bharadwaj ID 1, Chin-Jou Li ID 1, Kwanghee Choi ID 2, Eunjung Yeo ID 2, William Chen ID 1,
+Shinji Watanabe ID 1, David R. Mortensen ID 1
+1 Carnegie Mellon University, USA 2 The University of Texas at Austin, USA
+{sbharad2,dmortens}@andrew.cmu.edu
+Abstract
+Phone recognition (PR) is a key enabler of multilingual and
+low-resource speech processing tasks, yet robust performance
+remains elusive. Highly performant English-focused models
+do not generalize across languages, while multilingual mod-
+els underutilize pretrained representations. It also remains un-
+clear how data scale, architecture, and training objective con-
+tribute to multilingual PR. We present PhoneticXEUS—trained
+on large-scale multilingual data and achieving state-of-the-art
+performance on both multilingual (17.7% PFER) and accented
+English speech (10.6% PFER). Through controlled ablations
+with evaluations across 100+ languages under a unified scheme,
+we empirically establish our training recipe and quantify the im-
+pact of SSL representations, data scale, and loss objectives. In
+addition, we analyze error patterns across language families, ac-
+cented speech, and articulatory features. All data and code are
+released openly.1
+Index Terms: speech recognition, phone recognition
+1. Introduction
+Phone Recognition (PR) enables important multilingual speech
+processing technologies, especially for zero text-resource lan-
+guages [1–3] via cross-lingual transfer [4–6]. PR is also heav-
+ily employed in atypical speech assessment [7, 8], computer-
+assisted language learning [9–11] and linguistic fieldwork [12–
+14]. For English PR, several systems have been developed since
+the 1950s [15, 16], with recent systems [17, 18] pushing perfor-
+mance by leveraging larger and better-quality datasets. How-
+ever, their generalization to multilingual settings is limited (Fig-
+ure 1). On the other hand, recent progress has led to a prolifer-
+ation of multilingual PR models and benchmarks [19–21], yet
+these models still leave performance potential on the table by
+not fully leveraging self-supervised learning (SSL) based repre-
+sentations and by only exploring a narrow selection of training
+objectives. Stated succinctly,while English PR models do not
+generalize well to diverse languages, recent multilingual PR
+research has scarcely explored the space of possible training
+methods.To address this gap, we conduct extensive empirical
+experiments and establish a training recipe for a PR system that
+attains state-of-the-art performance in both unseen multilingual
+settings and on accented English.
+While prior approaches to multilingual PR train on a lim-
+ited number of languages [25–28] or treated PR as a tool to
+explore unsupervised ASR (Wav2Vec2Phoneme) [24], recent
+methods [19,20] have shown that scaling to diverse datasets [29]
+automatically generated via Grapheme-to-Phoneme (G2P) can
+significantly improve multilingual performance, allowing appli-
+1https://github.com/changelinglab/PhoneticXeus.
+MultiIPA
+W2V2P-LV60POWSM-CTC
+W2V2P-XLSR53
+ZIPA-CTC
+ZIPA-CTC-NS
+PhoneticXEUS
+10
+11
+12
+13
+14
+15
+16PFER
+Accented English
+MultiIPA
+W2V2P-LV60POWSM-CTC
+W2V2P-XLSR53
+ZIPA-CTC
+ZIPA-CTC-NS
+PhoneticXEUS
+17
+18
+19
+20
+21
+22
+23
+ Multilingual
+Figure 1:PhoneticXEUS achieves SOTA performance on both
+accented English and multilingual speech. Details in Table 1.
+cations to real-world use cases [30]. However, more recent ap-
+proaches do not utilize the capabilities of pretrained representa-
+tions [31, 32].
+Furthermore, the architecture and training objectives of
+prior systems have been chosen based their specific goals: ZIPA
+[19] uses Zipformer [33] with CR-CTC [34] for training ef-
+ficiency, and POWSM [20] uses CTC-Attention joint training
+in an autoregressive setup [35] for multi-task learning. Conse-
+quently, it remains unclear to what extent data scale, model ar-
+chitecture, and training objective contribute to multilingual PR
+performance. To cover these gaps, we provide controlled abla-
+tions of different components under PRiSM’s [21] systematic
+evaluation scheme on human annotated datasets across more
+than 100 languages. From these explorations, we build Pho-
+neticXEUS, a PR model with SOTA performance and robust
+multilingual capabilities.
+Our experiments and analyses isolate the contribution of the
+various components of our recipe to performance on both seen
+and unseen languages. Further analyses explore the robustness
+of PhoneticXEUS to cross-lingual transfer and accent variation
+as well as its effectiveness in recognizing articulatory features
+[36]. Our contributions are as follows:
+• We present PhoneticXEUS, a state-of-the-art PR model,
+which excels at multilingual PR without degraded perfor-
+mance on accented English. To foster reproducibility, all the
+data and code for PhoneticXEUS are open source.
+• We provide detailed ablations to show the impact of each
+component of our training recipe toward final performance.
+• We perform analyses to quantify the impact of SSL on cross-
+lingual transfer, report error patterns, and profile performance
+across diverse accents and articulatory features.
+3382
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1462
+Table 1:PhoneticXEUS achieves SOTA performance on the PRiSM benchmark [21] across both accented English and multilingual
+settings. This table reports PFER (↓) scores. Gray denotes dataset included during training.∗ denotes uncertainty about training data.
+Accented English Datasets Multilingual Datasets
+ModelPR-tmt PR-arc PR-saa Avg.PR-drc PR-vox PR-tsm Avg.
+Large Audio Language Models
+Gemini 2.5 Flash∗ [22] 15.2 12.7 13.2 13.7 105.30 19.7 36.3 53.8
+Qwen3-Omni-Instruct∗ [23] 15.1 11.9 09.1 12.0 150.20 49.0 117.10 105.40
+English-centric PR Models
+KoelLabs-XLSR [18] 09.6 07.8 07.8 08.4 22.9 18.0 24.7 21.9
+HuPER-Recognizer [17] 08.3 12.5 11.6 10.8 32.0 26.5 29.8 28.2
+Multilingual PR Models
+W2V2P-LV60 [24] 13.2 10.9 09.4 11.2 17.8 15.7 24.9 19.5
+W2V2P-XLSR53 [24] 13.5 09.9 09.0 10.8 17.313.931.9 21.0
+MultiIPA [25] 16.3 15.5 13.8 15.2 18.3 15.2 30.5 21.3
+ZIPA-CTC [19]13.1 09.709.0 10.618.0 17.0 23.7 19.6
+ZIPA-CTC-NS [19]13.1 09.708.9 10.6 16.817.1 23.1 19.0
+POWSM [20] 13.7 11.3 27.6 17.5 17.1 17.1 22.0 18.7
+POWSM-CTC [21]13.110.3 10.0 11.1 18.1 15.3 32.2 21.9
+PhoneticXEUS (Ours) 13.3 09.9 08.5 10.6 16.8 14.4 21.9 17.7
+2. Experiments
+We organize our experiments around three research questions:
+•RQ1: Which CTC training objective best supports cross-
+lingual generalization in PR?
+•RQ2: Do SSL representations pretrained on massively mul-
+tilingual speech improve PR over training from scratch?
+•RQ3: How does the scale of multilingual training-data affect
+English versus multilingual performance?
+Combining the findings, we build PhoneticXEUS, a PR model
+based on XEUS [31]—a large-scale multilingual pretrained
+SSL model—finetuned with Self-Conditioned CTC [37] on
+IPAPack++ [19], a multilingual phonemic dataset containing
+17k hours of speech. We evaluate the model with PRiSM [21],
+a benchmark for PR systems, and report the results in Table 1.
+PhoneticXEUS reached SOTA in accented English and greatly
+improved performance in multilingual datasets. All results are
+reported in PFER (↓) unless otherwise noted.
+2.1. RQ1: On CTC and its variants
+Encoder-CTC structures are shown to be more stable for PR
+[21]. Although several variants of the CTC loss have been pro-
+posed in the ASR literature [35, 37–42], they have been largely
+unexplored for phone recognition. We evaluate five CTC-based
+loss functions, which we formally describe below.
+Notation.Letx∈R T be the input raw waveform of length
+T. A PR model mapsxto a reference phone sequencey=
+(y1,...,y N)of lengthN, where each phoney n ∈VandV
+denotes the set of IPA symbols.
+An encoderf θ with learnable parametersθandMlayers
+produces hidden representations
+Hm =f m
+θ (x) = (hm
+1 ,...,h m
+L )∈R L×D,
+for each layer indexm∈[1,M], whereLis the sequence
+length of the representations andDis the hidden dimension.
+Vanilla CTC [38].On top off θ, we attach a learnable linear
+projectionW M ∈R D×(|V|+1) with biasb M ∈R |V|+1, fol-
+lowed by softmax function, to produce frame-level posteriors:
+softmax(WM HM +bM) = (pM
+1 ,...,p M
+L )∈R L×(|V|+1).
+(1)
+We denoteϵas the blank symbol, and the posterior probability
+of a symbolv∈V∪{ϵ}at framelasp M
+l [v].
+The CTC loss marginalizes over all valid alignmentsπ∈
+Π(y), where each alignmentπ= (π 1,...,π L)is a sequence
+withπl∈V∪{ϵ}that collapses toyafter removing blank sym-
+bols and merging consecutive duplicates. The loss is defined as:
+LM
+CTC(y|x) =−log
+X
+π∈Π(y)
+LY
+l=1
+pM
+l [πl].(2)
+Intermediate CTC (InterCTC) [39–41].Auxiliary CTC
+losses are applied to a subset of intermediate encoder layers
+S ⊂ {1,...,M−1}. For each layers∈ S, a CTC loss is
+computed using the corresponding hidden representationsH s.
+The overall training objective is defined as
+Linter(y|x) =L M
+CTC(y|x) +λ· 1
+|S|
+X
+s∈S
+Ls
+CTC(y|x),(3)
+whereL s
+CTC denotes the CTC loss computed from the repre-
+sentations of layers, andλ∈Rcontrols the contribution of
+the auxiliary losses. The hyperparameterλ∈Ris tuned on
+the validation set. InterCTC regularizes intermediate represen-
+tations and alleviates gradient vanishing in deeper layers.
+Self-Conditioned CTC (SelfCTC) [37, 42].At each interme-
+diate layers∈S, the phone posteriorsp s
+l are projected through
+a learnable linear projection ˜Ws∈R D×(|V|+1) and added to
+the hidden representations:
+˜hs
+l =h s
+l + ˜Wsps
+l.(4)
+The training objective is identical to Equation (3). This condi-
+tioning enables deeper layers to refine predictions by leveraging
+phonetic context from earlier layer’s predictions.
+Hierarchical CTC [39, 43].The loss is the same as in Self-
+Conditioned CTC, except that intermediate CTC layers operate
+on orthographic transcripts using a character vocabulary.
+Joint CTC-Attention [35]. To the CTC loss we add a cross-
+entropy lossL CE from an autoregressive transformer decoder:
+LCE(y|x) =−
+NX
+n=1
+logP(y n|y<n;HM),(5)
+3383
+Table 2:Ablation Study: CTC Loss Variations, finetuning XEUS
+(unless specified ) on IPAPack++. Our training recipe is C3 .
+CTC Loss English Multiling.
+C1 Vanilla CTC [38] 10.5 18.8
+C2 InterCTC [40] 10.5 18.5
+C3 SelfCTC [37] 10.6 17.7
+C4 on MMS (1B) 10.7 19.7
+C5 on E-Branchformer (580M) 12.6 23.1
+C6 Hierarchical CTC [39] 10.5 18.9
+C7 CTC-Attention [35] 13.2 18.9
+C8 inference w/o decoder 10.8 21.1
+Table 3:Ablation Study: SSL Representations and Model Archi-
+tectures, using a subset of IPAPack++ with vanilla CTC loss.
+Backbone Param. English Multiling.
+S1 E-Branchformer [44] 380M 12.3 23.2
+S2 E-Branchformer [44] 580M 12.6 23.1
+S3 MMS [45] 300M 11.0 18.3
+S4 MMS [45] 1B 10.8 18.3
+S5 XEUS [31] 580M 10.6 19.6
+wherePis obtained by applying a learnable linear projection
+and softmax to the decoder output representations. The overall
+training objective combines CTC with CE:
+λLM
+CTC(y|x) + (1−λ)L CE(y|x),(6)
+whereλ∈[0,1]balances the two objectives. The CTC compo-
+nent provides alignment supervision while the attention decoder
+may further capture phonotactics.
+Results.In Table 2, all loss variants, except joint CTC-
+Attention (C7) produce similar English PFER (10.5 - 10.6), sug-
+gesting that most objectives do not affect performance on ac-
+cented English. However, multilingual PFER reveals meaning-
+ful differences: SelfCTC (C3) achieves 17.7, compared to 18.5
+for InterCTC (C2) and 18.8 for vanilla CTC (C1). The 1.1%
+gain from self-conditioning suggests that feeding soft phonetic
+posteriors back into deeper encoder layers helps the model gen-
+eralize across languages. Orthographic supervision at interme-
+diate layers using the Hierarchical CTC approach (C6) shows
+performance degradation on multilingual datasets. For joint
+CTC-Attention, when we run decoding with only the encoder
+(C8) we see that performance on English is restored, but that on
+multilingual datasets decrease. Based on these results, we adopt
+SelfCTC (C3) as the training objective in our recipe.
+2.2. RQ2: On SSL Representations
+Massively multilingual SSL encoders [31, 45] learn representa-
+tions that capture phonetic structure. Recent PR models [19,20]
+trained solely on G2P-transcribed speech might memorize stan-
+dard pronunciation, ungrounded in acoustics. We conjecture
+that SSL pretraining can ameliorate this issue, as they have
+been shown to encode phonological information [46, 47]. We
+train three configurations on a subset of IPAPack++: 1) E-
+Branchformer [44] (S1,S2) as baselines without pretraining. 2)
+MMS [45] (S3, S4), pretrained on 1k languages. 3) XEUS [31]
+(S5), an E-Branchformer speech encoder trained with HuBERT-
+style [48] masked prediction on 4k languages.
+In Table 3, MMS and XEUS both consistently show im-
+provements over similar sized baselines (S1, S2). We also ex-
+periment with MMS-1B on full IPAPack++ with SelfCTC (Ta-
+ble 2 - C4) but we find that the out-of-domain multilingual per-
+150k 300k 600k
+Multilingual Data (#utt)
+10
+11
+12
+13
+14
+15
+16PFER
+Accented English
+150k 300k 600k
+Multilingual Data (#utt)
+17
+18
+19
+20
+21
+22
+23
+ Multilingual
+Figure 2:Increased language diversity in fine-tuning data ben-
+efits PR performance on multilingual datasets (subsection 2.3).
+formance of MMS deteriorates (S4 vs. C4). However, XEUS
+achieves the best performance (C3) showing 2.0% improvement
+on English and 5.4% improvement on multilingual evaluations
+over the baseline trained from scratch (C5). Hence, we adopt
+XEUS as the backbone in our recipe. We further explore the
+effectiveness of SSL pretraining in Section 3.
+2.3. RQ3: On Multilingual Training
+Since G2P-generated labels are coarse and sometimes noisy,
+including phonemic contrasts from different languages might
+provide richer contrastive supervision across IPA inventory,
+and therefore average out bias from certain languages. Previ-
+ous studies have shown that large-scale multilingual G2P data
+boosts performance [19], yet we do not know if gain plateaus
+and whether it affects high resource language performance. We
+kept the number of English utterance the same (around 850k)
+and increase the number of utterance from other languages pro-
+portionally, from 150k to 300k to 600k. We trained Phonet-
+icXEUS with these data until convergence and evaluated the
+best checkpoint. Figure 2 shows that including more multilin-
+gual data improves performance in multilingual datasets with-
+out damaging English performance, demonstrating the impor-
+tance of dataset scale for multilingual PR. Thus, we include all
+the multilingual data in our final recipe.
+3. Analyses
+Cross-lingual transfer is critical for PR in under-resourced lan-
+guages. We analyze the role of SSL in cross-lingual transfer
+via comparison with E-Branchformer (C5) which differs only
+in initialization to our recipe (C3). Also, we aim to provide a
+deeper understanding of the model behavior and its limitations.
+3.1. Cross-lingual Performance and Failure Modes
+Figure 3 shows that the use of SSL features improves perfor-
+mance in 19 of the 21 language families inPR-vox[49] (cov-
+ering 95 languages). To estimate whether SSL representations
+allow the model to leverage training data more effectively, we
+conduct a rank correlation analysis between PFER scores per
+language and the language’s coverage in our training data. We
+estimate how well an unseen test language is represented in the
+PR training data by using similarity-weighted utterance counts.
+To measure similarity between languages, we use phonolog-
+ical language vectors [50]. PhoneticXEUS shows a consis-
+tent negative trend suggesting that better coverage is associated
+with lower error, reaching marginal significance (ρ=−0.25,
+p= 0.096), while E-Branchformer does not exhibit a meaning-
+ful relationship (ρ=−0.09,p= 0.571). This suggests that
+3384
+Basque
+Ijoid
+Austronesian
+T urkic
+Nuclear T orricelliIndo-European
+Afro-Asiatic
+Atlantic-Congo
+UralicSiouanDravidian
+Austroasiatic
+Athabaskan-Eyak-Tlingit
+Kru
+Sino-Tibetan
+Mande
+Nakh-Daghestanian
+Abkhaz-Adyge
+Salishan
+Kakua-NukakCentral Sudanic
+0
+10
+20
+30
+40PFER -13 -7 -7 -4
+-11
+-5 -5 -6
+-12
+-13
+-6
+-10
+-3
+-7
+-4
+-6
+-3
+-10 -3 +10
++6
+E-BranchFormer
+PhoneticXeus (Ours)
+Figure 3:Performance of PhoneticXEUS across language families in VoxAngeles. SSL improves cross-lingual transfer (subsection 3.1).
+Back
+Round
+High
+Low
+T ense
+Voicing
+Spread
+Glottis
+Constrained
+Glottis
+Continuant
+Lateral
+Nasal
+Strident
+Delayed
+Release Coronal
+Labial
+Anterior
+Distributed
+E-BranchFormer PhoneticXeus (Ours)
+10
+20
+30
+40 VowelPhonation
+Manner of
+Articulation
+Place of
+Articulation
+Figure 4:Performance across articulatory features (↓). Differ-
+ent features show different relative gains with SSL initialization.
+(subsection 3.2).
+SSL representations allow the model to better leverage phono-
+logical proximity to languages in paired training data for mak-
+ing predictions for unseen languages.
+To better understand the limitations of our model, we
+next examine errors qualitatively in the lowest-performing lan-
+guages. We sample 103 utterances from the three lowest-
+performing languages: Lendu (led, 44%), Wu Chinese (wuu,
+40%), and Kakua (cbv, 36%). For Lendu (23 utterances), ut-
+terances are monosyllabic words in a consonant-vowel pattern
+shorter than 1 second, and errors come from incorrect conso-
+nant (57%), failed prediction (26%), or mismatched annotation
+(17%). For Wu Chinese (40 utterances), the model either omit-
+ted glottal stops (40%), suffered from ambiguous annotations
+(18%), and did not predict (8%). For Kakua (40 utterances), we
+observed that all of the sampled utterances came from children
+or adult females and the errors stemmed from partial or approx-
+imate predictions. Our initial analysis suggests that low perfor-
+mance could be attributed to a lack of robustness to acoustic
+shifts, in addition to noisy annotations.
+3.2. Performance Breakdown across Articulatory Features
+We additionally compare the performance of PhoneticXEUS
+to E-Branchformer on articulatory features [36] ofPR-vox, by
+aligning the reference annotation with the model prediction, and
+report the proportion of errors for each feature (Figure 4). We
+find that errors vary widely across attributes ranging from 5% to
+40%, with SSL representations improving performance across
+all of them. However, features characterized by temporal acous-
+tic cues show the least benefit: Tenseness (of vowels) and de-
+layed release (of manner of articulation) show the lowestrela-
+tivedecrease in error rate at 14% and 6.5% respectively, com-
+pared to over 50% for features such as lateral and coronal. Both
+features rely on on temporally distributed acoustic cues than on
+localized spectral patterns. This analysis highlights weaknesses
+in current PR systems for capturing certain articulatory features,
+and future work can explore feature weighted losses to improve
+performance further.
+3.3. Performance on Accented English
+One concern with our training recipe is the use of G2P labels
+for training data, which are scalable but noisy: G2P-generated
+labels reflect canonical dictionary pronunciations, which may
+not capture the phonetic variation present in accented or non-
+native speech [19]. To assess whether SSL representations con-
+fer robustness to accent variation despite this limitation, we
+compare PhoneticXEUS and E-Branchformer onPR-saa[51],
+a dataset with the same sentences spoken in multiple English
+accents. PhoneticXEUS improves over E-Branchformer across
+187 of 192 accents (97%), with an overall PFER reduction from
+11.2% to 8.8% and gains as large as 6.3% for Lao-accented En-
+glish. This suggests that SSL pretraining provides robustness
+to accent variation that partially compensates for the canonical
+bias of G2P-based supervision. We leave a more principled ap-
+proach to handling this mismatch to future work.
+4. Conclusion
+We present PhoneticXEUS, a SOTA PR system along with sys-
+tematic ablation study that disentangles the effects of training
+data, initialization, and training objective. Analyses reveal the
+role of SSL in cross-lingual transfer, and variance in perfor-
+mance across articulatory attributes, along with the need to de-
+velop better quality evaluation sets.
+3385
+5. Generative AI Use Disclosure
+Generative AI tools were used to improve the clarity and gram-
+mar of the manuscript and to assist with portions of the code.
+All outputs were reviewed and validated by the authors.

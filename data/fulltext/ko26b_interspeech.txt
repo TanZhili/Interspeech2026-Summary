@@ -1,0 +1,529 @@
+SCOLoRA: Similarity Conditioned Signed Orthogonal LoRA
+for Continual Speaker Adaptation
+Ye-Eun Ko ID 1, Jae-Hong Lee ID 2, Dong-Hyun Kim ID 1, Jin-Seong Choi ID 1, Joon-Hyuk Chang ID 1,∗∗
+1 Department of Electronic Engineering, Hanyang University, Seoul, Republic of Korea
+2 Division of Language & AI, Hankuk University of Foreign Studies, Seoul, Republic of Korea
+yee772@hanyang.ac.kr, ljh93ljh@hufs.ac.kr, dlstjd1477@hanyang.ac.kr,
+choi687200@hanyang.ac.kr, jchang@hanyang.ac.kr
+Abstract
+Automatic speech recognition (ASR) is expected to handle
+speaker and environmental variability, yet deployed systems
+encounter continual distribution shifts as new speakers arrive.
+Continual speaker adaptation personalizes one model along a
+speaker stream without revisiting past data, but sequential up-
+dates can cause catastrophic forgetting. Low-rank adaptation
+(LoRA) offers a parameter efficient mechanism, and orthogonal
+low-rank adaptation (O-LoRA) reduces interference by separat-
+ing update subspaces. However, enforcing task agnostic separa-
+tion can suppress transfer among acoustically similar speakers.
+We introduce similarity conditioned signed orthogonal LoRA
+(SCOLoRA), which leverages speaker embedding similarity to
+dynamically balance subspace alignment and orthogonal sepa-
+ration via signed coefficients. Across ASR benchmarks, SCOL-
+oRA consistently improves new speaker adaptation and reduces
+forgetting over LoRA-based continual learning baselines.
+Index Terms: continual learning, speaker adaptation, low-rank
+adaptation, personalization
+1. Introduction
+Deep neural network (DNN) based automatic speech recogni-
+tion (ASR) has advanced rapidly, and neural acoustic models
+now form a core component of modern ASR systems [1]. Nev-
+ertheless, deployed systems encounter distribution shifts caused
+by speaker identity, channel characteristics, background noise,
+and speaking style. Among these factors, speaker variability re-
+mains a major source of acoustic mismatch, motivating speaker
+adaptation and personalization methods [2, 3]. Speaker adapta-
+tion reduces speaker dependent mismatch by updating or con-
+ditioning a model with limited speaker specific data [4].
+Classical adaptation approaches include maximum a pos-
+teriori estimation and maximum likelihood linear regression in
+hidden Markov model based ASR frameworks [2, 3]. In neural
+ASR, speaker adaptation has been studied through lightweight
+conditioning signals and parameter efficient mechanisms that
+modulate internal representations [5,6]. However, practical ser-
+vices increasingly operate in streaming settings, where speakers
+arrive sequentially and per speaker data are limited and time lo-
+cal. In such settings, retraining on all historical data is often
+infeasible due to storage, privacy, and computational cost, mo-
+tivating continual ASR [7–9]. A key challenge is catastrophic
+forgetting, where learning new speakers degrades performance
+on earlier ones [10–12]. In speaker streams, relatedness varies
+across speakers; thus, uniformly isolating speaker specific up-
+dates can block transfer among acoustically similar speakers,
+motivating similarity-aware control of sharing and separation.
+**indicates the corresponding author.
+Recent progress in parameter efficient fine-tuning (PEFT)
+offers a practical toolbox for personalization under resource
+constraints. Adapters, BitFit, and low-rank adaptation (LoRA)
+update only a small parameter set while largely freezing the
+backbone, enabling efficient deployment and storage of per-
+sonalized updates [13–15]. This paradigm also suits continual
+learning: a frozen backbone with lightweight task modules low-
+ers training and storage costs and is used in parameter efficient
+continual learning frameworks [16–18]. In ASR, LoRA has re-
+cently been explored for speaker personalization, highlighting
+its practical appeal for speaker specific adaptation [19]. How-
+ever, sequential low-rank updates can still suffer speaker inter-
+ference when fixed low-rank capacity must serve a long stream.
+A representative strategy for reducing interference in PEFT-
+based continual learning is to explicitly separate task specific
+update subspaces. Orthogonal low-rank adaptation (O-LoRA)
+extends this geometric principle to LoRA by encouraging or-
+thogonality between low-rank update subspaces across tasks
+[20]. While task agnostic orthogonality is effective for suppress-
+ing interference, it does not account for task relatedness. In con-
+tinual speaker adaptation, speaker similarity can be estimated
+using speaker embeddings [21, 22], and leveraging information
+from acoustically similar speakers has been shown to be ben-
+eficial for adaptation [23]. These observations suggest that a
+similarity-aware mechanism that modulates sharing versus sep-
+aration is a better fit for speaker streams than a uniform, task
+agnostic separation rule.
+We propose similarity conditioned signed orthogonal LoRA
+(SCOLoRA), a LoRA-based continual speaker adaptation
+method that conditions the degree and direction of subspace in-
+teraction on speaker similarity. SCOLoRA uses speaker embed-
+ding similarity to determine when low-rank updates should be
+encouraged to align and when they should be pushed toward
+stronger separation. Although multiple similarity back ends are
+possible, we adopt cosine similarity for its simplicity, robust-
+ness with length normalized embeddings, and low overhead in
+streaming settings [21, 22, 24]. In addition, SCOLoRA intro-
+duces lightweight learnable components that calibrate the simi-
+larity to coefficient mapping as the speaker stream evolves. The
+main contributions of this study are as follows:
+• Continual speaker adaptation is formulated as a practical
+rehearsal-free continual learning problem.
+• We introduce SCOLoRA, which conditions signed orthogo-
+nal constraints on speaker similarity to enable transfer across
+similar speakers while mitigating interference across dissim-
+ilar speakers.
+• We propose norm fixed LoRA bases with lightweight calibra-
+tion, addressing the limits of task agnostic subspace separa-
+tion in LoRA-based continual learning.
+6616
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3243
+Figure 1:Overview of SCOLoRA. At the speaker indext, we learn a new LoRA branch and compute speaker embedding cosine similar-
+itiesSi,t with previous speakers. A sigmoid-based prior and the routergθ mapSi,t to signed coefficientsλ(Si,t)that weight subspace
+regularization between the current basisA t and stored basesA i. The regularizer promotes alignment whenλ <0and enforces or-
+thogonal separation whenλ>0.
+2. Background
+2.1. Rehearsal-free continual speaker adaptation
+We study rehearsal-free continual speaker adaptation [9], where
+a single end-to-end ASR model is sequentially personalized to a
+speaker streamSpk 1,...,Spk T . At the indext∈{1,...,T},
+when the model observesSpkt, it receives only the speaker spe-
+cific adaptation set, denoted as follows:
+Dt ={(x t
+n,yt
+n)}Nt
+n=1,(1)
+wherext
+n andyt
+n are the speech input and transcript fromSpkt.
+In the rehearsal-free setting, the learner can accessD t only at
+the indextand cannot revisit any past data{D i}i<t. This con-
+straint can induce catastrophic forgetting, where performance
+on previously observed speakers degrades while adapting to the
+current speaker.
+2.2. LoRA and orthogonal subspace learning
+LoRA adapts a frozen weight matrixW ℓ∈R dout×din (at layer
+ℓ) using a low-rank update [15], defined as follows:
+∆Wℓ
+t =A ℓ
+tBℓ
+t,(2)
+whereA ℓ
+t∈R dout×r andB ℓ
+t∈R r×din with a rankr. We refer
+to the columns ofAℓ
+t as the update basis, and the induced update
+subspace is denoted as:
+Aℓ
+t = [aℓ,1
+t ,...,a ℓ,r
+t ], U ℓ
+t = span{aℓ,1
+t ,...,a ℓ,r
+t }.(3)
+Next, O-LoRA reduces interference by encouraging the current
+update subspace to be orthogonal to past subspaces [20]. For
+a past speakerSpk i (i < t), the overlap matrix is denoted as
+follows:
+Oℓ
+i,t = (Aℓ
+i)⊤Aℓ
+t,(4)
+and O-LoRA uses the entry-wise orthogonality loss, defined as
+follows:
+Lorth(Aℓ
+i,Aℓ
+t) =
+X
+j,k
+∥Oℓ
+i,t[j,k]∥ 2 =∥O ℓ
+i,t∥2
+F.(5)
+where∥·∥ F denotes the Frobenius norm. Minimizing this loss
+encouragesO ℓ
+i,t≈0, i.e., subspace separation betweenSpk t
+and past speakers.
+3. Method
+We introduce SCOLoRA, which addresses a key limitation of
+O-LoRA: it enforces orthogonality uniformly across speakers,
+which can block transfer when speakers are acoustically simi-
+lar. We therefore make speaker relatedness an explicit control
+signal by extracting speaker embeddingse t with a speaker en-
+coder and computing cosine similaritiesS i,t between the cur-
+rent speakerSpk t and past speakersSpk i. A similarity con-
+ditioned signed controller convertsS i,t intoλ(S i,t), which
+weights the subspace regularizer between the current LoRA ba-
+sisAt and past basesAi. A negative coefficient encourages sub-
+space alignment for similar speakers, whereas a positive coeffi-
+cient enforces orthogonal separation for dissimilar speakers.
+3.1. Continual adaptation with LoRA
+We apply LoRA to a set of layersLand maintain a sin-
+gle model by merging speaker specific low-rank updates into
+the backbone weights. LetW ℓ
+init denote the initial weights
+of layerℓ, andW ℓ
+t the merged weights after adapting to
+speakersSpk 1,...,Spk t. At the speaker stept, we freeze
+the current backbone{W ℓ
+init}ℓ∈L, attach a new LoRA branch
+{Aℓ
+t,Bℓ
+t}ℓ∈L, and optimize only these parameters on the adap-
+tation setDt. For an inputxto layerℓ, the forward transforma-
+tion during adaptation toSpkt is as follows:
+hℓ
+t =W ℓ
+initx+A ℓ
+tBℓ
+tx,∀ℓ∈L.(6)
+wherehℓ
+t is the layer-ℓhidden activation at stept. After training
+onDt, we merge the learned update to keep a single model for
+inference, as follows:
+Wℓ
+t :=W ℓ
+init +
+tX
+i=1
+Aℓ
+iBℓ
+i,∀ℓ∈L.(7)
+For regularization at future steps, we retain the learned bases
+{Aℓ
+i}i≤t,ℓ∈L as fixed references.
+6617
+3.2. Speaker similarity
+For each speakerSpk t, we extract a speaker embeddinge t∈
+Rm using an ECAPA-TDNN speaker encoder [22]. For any past
+speakerSpk i withi < t, we similarly obtaine i ∈R m. The
+cosine similarity betweenSpki andSpkt is defined as follows:
+Si,t = cos(ei,et) = e⊤
+i et
+∥ei∥2∥et∥2
+, S i,t∈[−1,1].(8)
+Here,cos(·,·)denotes cosine similarity and∥·∥ 2 denotes theℓ 2
+norm. We useS i,t as a proxy for speaker relatedness to deter-
+mine whether subspace interaction should encourage transfer or
+separation.
+3.3. Similarity conditioned signed controller
+SCOLoRA maps a similarity valueS∈[−1,1]to a signed
+coefficient using a sigmoid shaped prior, defined as follows:
+λprior(S) =λ max
+
+1−2σ
+ 
+α(S−τ)
+
+,(9)
+whereSis instantiated asS i,t;σ(·)denotes the logistic sig-
+moid,τis a similarity threshold,α >0controls transition
+sharpness, andλ max >0sets the magnitude. WhenS≫
+τ,λ prior(S)<0encourages alignment. WhenS≪τ,
+λprior(S)>0encourages separation. To allow data driven de-
+viations from the prior while keeping the coefficient bounded,
+we introduce a lightweight routerg θ(·), implemented as a two
+layer ReLU MLP with a hidden size of 16 that takes the scalar
+similaritySas input, and define a bounded residual as:
+∆λ(S) =λ res tanh
+ 
+gθ(S)
+
+,(10)
+λ(S) =λ prior(S) + ∆λ(S),(11)
+whereλ res >0ensures|∆λ(S)|≤λ res. Ifαis learnable, we
+enforce positivity as follows:
+α= softplus(α raw).(12)
+wheresoftplus(z) = log(1 + exp(z))is a smooth, strictly
+positive function, so the parameterizationα= softplus(α raw)
+guaranteesα>0[25].
+3.4. Unit norm projected signed subspace regularization
+LoRA has a scaling ambiguity, so a signed subspace objective
+can become unstable by exploiting the scale ofA ℓ
+t, especially
+whenλ<0. To remove this degree of freedom in overlap mea-
+surement, we project each LoRA basis onto the unit Frobenius
+sphere as follows:
+Aℓ
+t = ΠF ( ˜Aℓ
+t) =
+˜Aℓ
+t
+∥ ˜Aℓ
+t∥F
+,∥ ˜Aℓ
+t∥F >0,(13)
+where ˜Aℓ
+t is an unconstrained parameter andΠF (·)denotes the
+projection. For each layerℓ, we define the overlap matrix be-
+tween past speakerSpki and current speakerSpkt as follows:
+Oℓ
+i,t = (Aℓ
+i)⊤Aℓ
+t,(14)
+and use the entry-wise overlap loss as O-LoRA, defined as:
+Lorth(Aℓ
+i,Aℓ
+t) =∥O ℓ
+i,t∥2
+F.(15)
+With the unit Frobenius constraint [26], the overlap magnitude
+is bounded as follows:
+∥Oℓ
+i,t∥F≤∥A ℓ
+i∥F∥Aℓ
+t∥F = 1,(16)
+which prevents degenerate scaling under signed coefficients.
+Whenλ(S i,t)>0, minimizingλ(S i,t)Lorth pushesO ℓ
+i,t to-
+ward zero. Whenλ(S i,t)<0, the objective decreases as
+overlap increases, encouraging alignment and enabling transfer
+among similar speakers.
+3.5. Final objective
+At the speaker indext, SCOLoRA optimizes the current LoRA
+parameters and the controller parameters while keeping all past
+parameters fixed. The objective can be written as follows:
+Lt =L ASR(Dt) +
+X
+ℓ∈L
+t−1X
+i=1
+λ(Si,t)L orth(Aℓ
+i,Aℓ
+t),(17)
+whereL ASR(Dt)is the standard ASR training loss on the
+Spkt’s adaptation set.
+4. Experiments
+4.1. Datasets
+We evaluated continual speaker adaptation on TEDLIUM2 [30],
+TEDLIUM3 [31], and CHiME3 [32]. Each speaker corresponds
+to one index in the speaker stream, and we used a 9:1 dev split
+of the available adaptation data per speaker.
+TEDLIUM2 (TED2).TEDLIUM2 contains 207 hours of TED
+talk speech, with official dev and test sets of approximately 1.6
+and 2.6 hours, respectively. We constructed an 8 speaker stream
+and reported per speaker WER on the test set.
+TEDLIUM3 (TED3).For TEDLIUM3, the duration of speech
+(hours) for the speaker adaptation partition is 346.17, 3.73, and
+3.76 for train, dev and test sets. We constructed an 8 speaker
+stream and reported WER on both dev and test sets.
+CHiME3.CHiME3 is a noisy speech benchmark collected in
+real environments. We built a 4 speaker stream and reported per
+speaker test WER and the average WER.
+4.2. Experimental Setup
+We used Whisper small [33] as the ASR model and imple-
+mented all experiments in ESPnet [34] on one NVIDIA RTX
+4090 GPU. We froze the backbone and trained only LoRA
+adapters; SCOLoRA additionally optimized a lightweight sim-
+ilarity to coefficient mapping with negligible parameter over-
+head. LoRA was applied to attention projection modules with
+rankr= 4,α lora = 8, and dropout 0.05; we used the warmu-
+pLR scheduler with 1,500 warmup updates to a peak learning
+rate of5×10 −4. Adaptation for all speakers started from the
+same previously fine-tuned checkpoint, shared across all meth-
+ods. At each speaker indext, we attached a newly initialized
+LoRA branch and trained it onDt, selecting the best checkpoint
+on the speaker specific dev split. We then merged the learned
+update into the backbone weights for evaluation.
+We compared the similarity thresholdτ∈{0.20,0.25}in
+Table 2 and usedτ= 0.20as the default in Table 1 and Table 3.
+We also testedτ= 0.25, which was used as a same speaker
+threshold in an ECAPA-TDNN-based application [35]; in our
+speaker stream setting, this value made routing more conserva-
+tive and tended to suppress transfer across different speakers.
+For the signed prior in SCOLoRA, we set the sigmoid slope to
+α= 6in fixed slope variants and usedλ max = 0.5. Given
+the unit norm projection in Eq. (13),L orth is bounded, and
+λmax controlled the maximum magnitude of each pairwise sim-
+ilarity conditioned regularization term. We setλ res = 0.1to
+6618
+Table 1:Sequential speaker adaptation results on TEDLIUM3. WER(%) on TEDLIUM3 test and dev sets. Avg denotes the average over
+8 speakers, and forgetting is the reported forgetting score on the dev set.
+Method Test A vg(↓) Dev A vg(↓) Forgetting(↓)
+Spk1 Spk2 Spk3 Spk4 Spk5 Spk6 Spk7 Spk8 Spk1 Spk2 Spk3 Spk4 Spk5 Spk6 Spk7 Spk8
+SeqLoRA 5.92 4.63 4.24 4.24 4.12 4.10 3.86 3.71 4.35 7.90 5.00 4.60 4.60 4.23 4.14 3.83 3.54 4.73 0.10
+EWC [11]* 5.92 4.63 4.21 4.21 4.08 4.12 3.85 3.73 4.34 7.90 5.00 4.59 4.60 4.14 4.14 3.69 3.48 4.69 0.06
+L2P [27]*5.494.48 4.21 4.20 4.12 4.17 3.76 3.69 4.277.004.83 4.40 4.40 4.11 4.13 3.68 3.50 4.51 0.17
+O-LoRA [20]* 5.92 4.50 4.04 4.04 3.90 4.09 4.07 4.12 4.33 7.90 4.74 4.14 4.09 3.88 4.01 3.70 3.55 4.50 0.19
+InfLoRA [28]* 5.74 4.42 4.35 4.35 4.06 4.09 3.84 3.72 4.32 7.59 4.77 4.64 4.64 4.11 4.09 3.72 3.48 4.63 0.11
+GainLoRA [29]* 5.98 4.41 4.14 4.13 3.96 3.99 3.71 3.67 4.25 7.89 4.77 4.43 4.42 4.02 4.01 3.63 3.45 4.58 0.09
+SCOLoRA5.924.20 3.95 3.95 3.85 3.88 3.60 3.55 4.117.904.55 4.10 4.09 3.90 3.90 3.56 3.30 4.41 0.05
+* Reproduced experiments.
+Table 2:Ablation results for SCOLoRA on the TEDLIUM3 test set WER(%). Here, Threshold indicates the cosine similarity threshold
+used to compute the similarity conditioned weighting that controls subspace interactions across speakers.
+Method Threshold=0.20 A vg(↓) Threshold=0.25 A vg(↓)Spk1 Spk2 Spk3 Spk4 Spk5 Spk6 Spk7 Spk8 Spk1 Spk2 Spk3 Spk4 Spk5 Spk6 Spk7 Spk8
+Similarity conditioned (positive) 5.92 4.45 4.03 4.01 3.97 4.03 3.77 3.73 4.23 5.92 4.45 4.05 4.02 3.96 3.92 3.76 3.72 4.23
+Signed,αfixed 5.92 4.28 3.97 3.96 3.96 3.91 3.70 3.56 4.15 5.92 4.34 4.04 4.06 3.88 3.91 3.72 3.68 4.19
+Signed,αlearnable 5.92 4.25 3.97 3.97 3.88 3.90 3.75 3.60 4.15 5.92 4.30 4.02 4.04 3.92 3.92 3.69 3.66 4.18
+Signed,αlearnable + router5.924.20 3.95 3.95 3.85 3.88 3.60 3.55 4.115.924.23 3.96 3.96 3.82 3.87 3.62 3.60 4.12
+bound the router residual and prevent it from overwhelming the
+signed prior. For O-LoRA, we set the orthogonality regulariza-
+tion weight toλ orth = 0.5, and we implemented GainLoRA by
+building on top of the O-LoRA baseline. We evaluated recog-
+nition accuracy using WER(%). Reported average WER values
+are computed using unrounded WER scores. In addition, on the
+TEDLIUM3 dev set, we reported forgetting to quantify perfor-
+mance degradation on past speakers. LetWER i,t denote the
+WER on speakerSpki after adapting up to speaker indext. We
+define forgetting as:
+Forgetting = 1
+T−1
+T−1X
+i=1
+
+WERi,T−min
+t∈{i,...,T}
+WERi,t
+
+.
+(18)
+5. Results
+5.1. Continual speaker adaptation results
+Table 1 shows TEDLIUM3 sequential speaker adaptation re-
+sults. SCOLoRA achieved the lowest average WER on both
+splits: 4.11% on test and 4.41% on dev. On the test split,
+SCOLoRA improved over SeqLoRA, EWC [11], L2P [27], O-
+LoRA [20], InfLoRA [28], and GainLoRA [29], which achieved
+4.35%, 4.34%, 4.27%, 4.33%, 4.32%, and 4.25%, correspond-
+ing to absolute reductions of 0.24 WER relative to SeqLoRA
+and 0.22 WER relative to O-LoRA. The gains were consistent
+across speakers on test, suggesting that SCOLoRA reduced in-
+terference as the speaker stream progresses. This advantage held
+on the dev split. Beyond accuracy, SCOLoRA attained the low-
+est forgetting score in Table 1, reaching 0.05. This improved
+over EWC at 0.06, SeqLoRA at 0.10, L2P at 0.17, O-LoRA
+at 0.19, InfLoRA at 0.11, and GainLoRA at 0.09. Table 3 re-
+ports cross corpus continual speaker adaptation results in terms
+of WER, where SCOLoRA consistently improved performance
+on TEDLIUM2, TEDLIUM3, and CHiME3. Overall, SCOL-
+oRA improves recognition while strengthening retention under
+rehearsal-free continual adaptation.
+5.2. Ablation studies
+Table 2 examined the contribution of each component under two
+similarity thresholds, 0.20 and 0.25. A positive only similarity
+conditioned variant reached an average WER of 4.23% under
+both thresholds. Introducing signed weighting yielded a clear
+improvement, reaching 4.15% under the 0.20 threshold. Mak-
+ing the slopeαlearnable slightly improved robustness under
+the 0.25 threshold, reaching 4.18% compared with 4.19%. The
+full model, combining signed weighting, learnableα, and theλ
+router, performed best, reaching 4.11% under the 0.20 threshold
+and 4.12% under the 0.25 threshold. Notably, the full SCOL-
+oRA showed minimal sensitivity to the threshold choice.
+Table 3:Cross corpus evaluation results (WER(%)).
+Data Method Threshold=0.20 A vg(↓)Spk1 Spk2 Spk3 Spk4 Spk5 Spk6 Spk7 Spk8
+TED2
+SeqLoRA 4.47 4.35 4.13 4.13 4.15 4.14 4.11 4.01 4.18
+O-LoRA 4.47 4.28 4.05 4.05 3.92 3.98 3.75 4.00 4.06
+Ours4.474.23 4.01 4.01 3.97 3.98 3.68 3.65 4.00
+TED3
+SeqLoRA 5.92 4.63 4.24 4.24 4.12 4.10 3.86 3.71 4.35
+O-LoRA 5.92 4.50 4.04 4.04 3.90 4.09 4.07 4.12 4.33
+Ours5.924.20 3.95 3.95 3.85 3.88 3.60 3.55 4.11
+CHiME3
+SeqLoRA 22.73 39.43 28.78 26.35 - - - - 29.32
+O-LoRA 22.73 39.23 24.58 25.83 - - - - 28.09
+Ours22.7323.08 21.78 22.78- - - -22.59
+6. Conclusion
+This study proposed SCOLoRA, a rehearsal-free continual
+speaker adaptation framework for end-to-end ASR that con-
+ditions signed subspace regularization on speaker embedding
+similarity. By enabling subspace alignment for similar speakers
+and orthogonal separation for dissimilar speakers under a norm
+fixed LoRA parameterization, SCOLoRA improves training sta-
+bility and mitigates interference. Experiments on TEDLIUM2,
+TEDLIUM3, and CHiME3 demonstrated consistent WER re-
+ductions, including improved average performance and reduced
+forgetting on TEDLIUM3.
+6619
+7. Acknowledgments
+This work was supported by Institute of Information &
+communications Technology Planning & Evaluation (IITP)
+grant funded by the Korea government (MSIT) (No.RS2020-
+II201373, Artificial Intelligence Graduate School Program
+(Hanyang University)).
+8. Generative AI Use Disclosure
+Generative AI tools were used solely for language editing and
+polishing of the manuscript.
+9. References
+[1] G. Hintonet al., “Deep neural networks for acoustic modeling in
+speech recognition: The shared views of four research groups,”
+IEEE Signal Processing Magazine, vol. 29, no. 6, pp. 82–97,
+2012.
+[2] C. Leggetter and P. C. Woodland, “Maximum likelihood linear
+regression for speaker adaptation of continuous density hidden
+Markov models,”Computer Speech & Language, vol. 9, pp. 171–
+185, 1995.
+[3] J.-L. Gauvain and C.-H. Lee, “Maximum a posteriori estima-
+tion for multivariate Gaussian mixture observations of Markov
+chains,”IEEE Transactions on Speech and Audio Processing,
+vol. 2, no. 2, pp. 291–298, 1994.
+[4] P. Bell, J. Fainberg, O. Klejch, J. Li, S. Renals, and P. Swieto-
+janski, “Adaptation algorithms for Neural Network-Based Speech
+Recognition: An overview,”IEEE Open Journal of Signal Pro-
+cessing, vol. 2, pp. 33–66, 2021.
+[5] A. Senior and I. Lopez-Moreno, “Improving DNN speaker inde-
+pendence with i-vector inputs,” inProc. IEEE International Con-
+ference on Acoustics, Speech and Signal Processing(ICASSP),
+2014, pp. 225–229.
+[6] P. Swietojanski, J. Li, and S. Renals, “Learning hidden unit con-
+tributions for unsupervised speaker adaptation of neural network
+acoustic models,” inProc. IEEE Spoken Language Technology
+Workshop(SLT), 2014, pp. 171–176.
+[7] S. Sadhu and H. Hermansky, “Continual learning in automatic
+speech recognition,” inProc. INTERSPEECH, 2020, pp. 1246–
+1250.
+[8] S. V . Eeckt and H. V . hamme, “Continual learning for monolin-
+gual end-to-end automatic speech recognition,” inProc. European
+Signal Processing Conference(EUSIPCO), 2022, pp. 459–463.
+[9] S. V . Eeckt and H. V . hamme, “Rehearsal-free online contin-
+ual learning for automatic speech recognition,” inProc. INTER-
+SPEECH, 2023, pp. 944–948.
+[10] M. McCloskey and N. J. Cohen, “Catastrophic interference in
+connectionist networks: The sequential learning problem,” inPsy-
+chology of Learning and Motivation, 1989, vol. 24, pp. 109–165.
+[11] J. Kirkpatricket al., “Overcoming catastrophic forgetting in neu-
+ral networks,”Proceedings of the National Academy of Sciences,
+vol. 114, no. 13, pp. 3521–3526, 2017.
+[12] G. I. Parisi, R. Kemker, J. L. Part, C. Kanan, and S. Wermter,
+“Continual lifelong learning with neural networks: A review,”
+Neural Networks, vol. 113, pp. 54–71, 2019.
+[13] N. Houlsbyet al., “Parameter-efficient transfer learning for NLP,”
+inProc. International Conference on Machine Learning(ICML),
+2019.
+[14] E. Ben Zaken, Y . Goldberg, and S. Ravfogel, “Bitfit: Sim-
+ple parameter-efficient fine-tuning for transformer-based masked
+language-models,” inProc. Annual Meeting of the Association for
+Computational Linguistics(ACL), 2022.
+[15] E. Huet al., “LoRA: low-rank adaptation of large language mod-
+els,” inProc. International Conference on Learning Representa-
+tions(ICLR), 2022.
+[16] Q. Gaoet al., “A unified continual learning framework with gen-
+eral parame

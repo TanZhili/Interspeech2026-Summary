@@ -1,0 +1,553 @@
+Diffusion Bridge Learning Between Overfitted and Underfitted
+Representations for speech emotion recognition
+Shi-wook Lee ID
+National Institute of Advanced Industrial Science and Technology (AIST), JAPAN
+s.lee@aist.go.jp
+Abstract
+Robust recognition of human emotions from speech remains
+difficult under domain and language shift because neural en-
+coders often overfit to dataset-specific acoustic cues. This
+paper proposes a diffusion-based representation-space training
+framework that reshapes learned representations toward class-
+centered geometry. The model introduces class prototypes as
+anchors and learns stochastic sample–prototype transformations
+using a conditional denoising diffusion process with paired
+alignment, cycle consistency, and classifier-based regulariza-
+tion. Experiments on cross-lingual emotion recognition be-
+tween English and Japanese show consistent improvements in
+weighted average recall. The proposed method achieves up
+to +6.42 percentage points in English-to-Japanese evaluation
+and +4.00 percentage points in Japanese-to-English evaluation,
+demonstrating improved robustness to cross-language domain
+shift.
+Index Terms: speech emotion recognition, diffusion-bridge,
+out-of-distribution generalization, cross-language
+1. Introduction
+Speech emotion recognition (SER) aims to infer human af-
+fective states from speech and is a key component of em-
+pathic human–machine interaction [1]. Recent advances in self-
+supervised learning (SSL) have substantially improved speech
+representation learning. Large-scale pretrained models such as
+wav2vec 2.0 [2], HuBERT [3], and WavLM [4] now provide
+strong transferable encoders and have become standard back-
+bones for SER, either as frozen feature extractors or via rep-
+resentation fine-tuning [5]. Despite these gains, robust SER
+under domain shift remains challenging: emotional cues are
+subtle and entangled with speaker traits, recording conditions,
+and linguistic content, and available emotion corpora are typi-
+cally small and heterogeneous [6, 7]. As a result, modern deep
+models can achieve high in-domain performance while relying
+on dataset-specific artifacts or spurious correlations, leading to
+poor generalization to unseen corpora.
+A useful lens to understand and mitigate this behavior is
+the representation dynamics of deep models during training.
+Prior work suggests that learned representations evolve from
+relatively smooth and generic structures in early training to
+increasingly specialized and task-discriminative geometry in
+later training [8, 9]. In SER, this transition is particularly pro-
+nounced: early-stage representations often exhibit better robust-
+ness but limited class separation, whereas late-stage represen-
+tations can become sharply discriminative yet overly aligned
+with corpus-specific factors. These observations imply a com-
+plementary trade-off between robustness and discriminability
+across training stages. However, existing SER approaches typi-
+cally rely on a single checkpoint or a single fine-tuning regime,
+implicitly committing to one side of this trade-off.
+In this paper, we ask a simple question:Can we explic-
+itly connect underfitted (early) and overfitted (late) representa-
+tions to combine their complementary strengths?To this end,
+we proposeDiffusion Bridge Learning, a representation-space
+adaptation framework that learns stochastic transformations be-
+tween representations extracted from different stages of train-
+ing. Our key idea is to treat early- and late-stage representa-
+tions as two endpoints and learn a bridge that reshapes the ge-
+ometry of the representation space toward a more class-centered
+organization while preserving emotion semantics. Rather than
+directly translating between early- and late-stage representa-
+tions, we introduce class prototypes as intermediate anchors
+and learn sample–prototype bridges within each representa-
+tion space. This prototype-mediated design stabilizes stochastic
+translation while still connecting complementary training-stage
+geometries.
+Our approach is inspired by diffusion-based generative
+modeling [10, 11] and, more specifically, by diffusion bridge
+models that construct stochastic paths between paired endpoint
+distributions [12, 13]. Unlike conventional diffusion models
+designed for data generation, we use a conditional denoising
+diffusion process directly in representation space as a learning
+mechanism for encoder adaptation. Concretely, we introduce
+class prototypes as anchor points in the representation space
+and learn bidirectional sample–prototype transformations using
+a shared conditional denoiser. To ensure the learned transforma-
+tions are both faithful and stable, we impose paired alignment
+and cycle-consistency constraints, and we jointly train an emo-
+tion classifier with endpoint supervision. Moreover, to preserve
+discriminative decision structure during stochastic translation,
+we introduce a logit-pair Kullback-Leibler (KL) regularization
+that matches softened class-posterior distributions between end-
+points and their translated counterparts.
+Our method is related to data augmentation and domain
+generalization approaches such as Mixup [14], manifold-based
+augmentation [15], and adversarial invariance learning [16, 17].
+In contrast, rather than modifying inputs or enforcing do-
+main invariance explicitly, Diffusion Bridge Learning learns
+a stochastic geometry transformation that bridges complemen-
+tary representation structures arising along the training trajec-
+tory. This viewpoint provides a principled mechanism to mit-
+igate encoder overfitting by smoothing over-specialized direc-
+tions while maintaining emotion-relevant decision boundaries.
+The contributions of this work are summarized as follows:
+• We analyze training-stage-dependent representation charac-
+teristics in SER and identify complementary properties be-
+tween underfitted (early) and overfitted (late) representations.
+• We proposeDiffusion Bridge Learning, a prototype-guided
+7491
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2996
+conditional diffusion framework that learns bidirectional
+sample–prototype transformations with paired alignment, cy-
+cle consistency, and classifier regularization.
+• Through cross-lingual SER experiments between English and
+Japanese, we demonstrate consistent improvements in out-of-
+domain performance, with the largest gains obtained when
+bridging heterogeneous representations (e.g. overfit and un-
+derfit), particularly on the underfitted side.
+2. Proposed Method
+2.1. Problem Setup and Notation
+LetD∈{A,B}denote two representationdomainsextracted
+from different training stages of the same backbone encoder:
+Acorresponds to a late-stage (overfitted) representation andB
+corresponds to an early-stage (underfitted) representation. For
+each utterancei, we assume paired representations(a i,bi)∈
+RD×R D and an emotion labely i ∈{1,...,C}. We stan-
+dardize representations using training-split statistics computed
+jointly overAandB, and denote the resulting training set as
+{(ai,bi,yi)}N
+i=1.
+Our goal is to learn a representation-space transformation
+that improves generalization by exploiting the complementary
+properties of underfitted and overfitted representations while
+preserving emotion semantics. Importantly, instead of directly
+translating betweenAandB, we adopt aprototype-mediated
+design: we learn stochasticsample–prototypebridges within
+each domain (A↔µ A
+y andB↔µ B
+y ), which provides sta-
+ble class-centered geometry while still reflecting training-stage-
+dependent structures.
+2.2. Class Prototypes in Representation Space
+For each domainD∈{A,B}and classc∈{1,...,C}, we
+define a class prototype as the empirical mean over the training
+data:
+µD
+c = 1
+|IDc|
+X
+i∈IDc
+xD
+i ,I D
+c ={i|y i =c}.(1)
+wherexA
+i =a i andxB
+i =b i.
+2.3. Conditional Diffusion Model in Representation Space
+We adopt a conditional denoising diffusion process defined on
+representations. Lett∈ {1,...,T}be a discrete diffusion
+timestep. The forward noising process is
+xt =√¯αt x0 +σ
+√
+1−¯αt ϵ,ϵ∼N(0,I),(2)
+where¯αt = Qt
+s=1(1−β s)is determined by a noise sched-
+ule{β t}T
+t=1 andσis anoise scalecontrolling the strength of
+stochasticity in representation space. We train a conditional de-
+noiserϵθ(xt,t,c)that predictsϵgiven a condition idc.
+We use four condition ids that encodedomainandrole
+(sample vs. prototype):
+c∈{0,1,2,3}:
+(
+0 : (A,sample),1 : (A,prototype),
+2 : (B,sample),3 : (B,prototype).
+We parameterizeϵθ with a lightweight conditional MLP.
+We optimizeϵθ with anϵ-prediction loss over both samples
+and prototypes:
+Leps = 1
+4
+X
+D∈{A,B}
+X
+z∈{s,p}
+Et,ϵ
+hϵθ(xD,z
+t ,t,cD,z)−ϵ
+2
+2
+i
+,
+(3)
+wherexD,s
+0 =xD andxD,p
+0 =µD
+y for labely.
+2.4. Prototype-Mediated Bridge: Sample–Prototype Trans-
+lation
+We model sample–prototype translation as a stochastic bridge
+in representation space. Given a noisy representationx t, we
+estimatex 0 using the predicted noise:
+bx0(xt,t,c) = xt−σ√1−¯αtϵθ(xt,t,c)√¯αt
+.(4)
+We define within-domain bidirectional translations between
+a sample and its class prototype. For domainA, we define
+TA→µ(a) =bx0(at,t,c= 1),a t∼q(a t|a),(5)
+Tµ→A(µA
+y ) =bx0(µA
+y,t,t,c= 0),µ A
+y,t∼q(µ A
+y,t|µ A
+y ).
+(6)
+Definitions for domainBare analogous using conditionsc= 3
+(sample→prototype) andc= 2(prototype→sample).
+We directly supervise the translations toward their targets:
+Lpair = 1
+4
+TA→µ(a)−µ A
+y
+2
+2 +
+Tµ→A(µA
+y )−a
+2
+2
++
+TB→µ(b)−µ B
+y
+2
+2 +
+Tµ→B(µB
+y )−b
+2
+2
+
+.
+(7)
+2.5. Classifier Regularization on Endpoints and Transla-
+tions
+To preserve class-discriminative structure during stochastic
+translation, we jointly learn asharedemotion classifierg ϕ :
+RD→R C (MLP), which is applied to both original endpoints
+(samples and prototypes) and translated representations.
+We first impose standard cross-entropy losses on the origi-
+nal representations and prototypes:
+Lcls = 1
+4
+
+CE
+ 
+gϕ(a),y
+
++ CE
+ 
+gϕ(µA
+y ),y
+
++CE
+ 
+gϕ(b),y
+
++ CE
+ 
+gϕ(µB
+y ),y
+
+.
+(8)
+We further apply classification losses on translated repre-
+sentations:
+Lcls-tr = 1
+4
+
+CE
+ 
+gϕ(TA→µ(a)),y
+
++ CE
+ 
+gϕ(Tµ→A(µA
+y )),y
+
++CE
+ 
+gϕ(TB→µ(b)),y
+
++ CE
+ 
+gϕ(Tµ→B(µB
+y )),y
+
+.
+(9)
+2.6. Cycle Consistency in Representation Space
+To stabilize the learned transformations and preserve semantic
+structure, we impose cycle consistency in representation space:
+CycleA(a) =T µ→A
+ 
+TA→µ(a)
+
+,
+CycleA(µA
+y ) =T A→µ
+ 
+Tµ→A(µA
+y )
+
+,
+(10)
+and analogously for domainB.
+The cycle consistency loss is
+Lcycle = 1
+4
+CycleA(a)−a
+2
+2 +
+CycleA(µA
+y )−µ A
+y
+2
+2
++
+CycleB(b)−b
+2
+2 +
+CycleB(µB
+y )−µ B
+y
+2
+2
+
+.
+(11)
+7492
+2.7. Logit-Pair KL Regularization
+In addition to cross-entropy, we regularize the translated repre-
+sentations to preserve the class-posterior structure of the corre-
+sponding endpoints. Given logitsu(teacher) andv(student),
+we define
+KLT (u|v) =T 2 KL
+ 
+softmax(u/T)|softmax(v/T)
+
+,
+(12)
+whereTis a temperature.
+We apply this constraint to both directions
+(sample→prototype and prototype→sample) in both do-
+mains:
+LKL = 1
+4
+
+KLT
+ 
+gϕ(µA
+y )|g ϕ(TA→µ(a))
+
++KLT
+ 
+gϕ(a)|g ϕ(Tµ→A(µA
+y ))
+
++KLT
+ 
+gϕ(µB
+y )|g ϕ(TB→µ(b))
+
++KLT
+ 
+gϕ(b)|g ϕ(Tµ→B(µB
+y ))
+
+.
+(13)
+2.8. Overall Objective
+The final training objective is a weighted sum of the above
+losses:
+L=λ epsLeps +λ pairLpair +λ cycleLcycle
++λ clsLcls +λ cls-trLcls-tr +λ KLLKL. (14)
+In our experiments,(λ pair,λ cycle)control the strength of bridge
+constraints.
+2.9. Training and Inference Protocol
+We first train baseline classifiers independently onAandBto
+quantify the gap between underfitted and overfitted representa-
+tions. We then jointly train the conditional denoiserϵ θ and the
+shared classifierg ϕ by minimizing Eq. (14). At inference time,
+we evaluate both (i) original representations and (ii) translated-
+to-prototype representations (sample→prototype) usingg ϕ to
+assess whether the learned bridge improves class-centered or-
+ganization and out-of-domain generalization.
+3. Experimental Results
+3.1. Experimental Setup
+Cross-lingual speech emotion recognition (SER) provides a
+challenging benchmark for evaluating out-of-domain general-
+ization. In this study, we assess the proposed framework
+using three emotional speech corpora: the Japanese Twitter-
+based Emotional Speech (JTES) [18], the Interactive Emotional
+Dyadic Motion Capture (IEMOCAP) dataset [19], and MSP-
+IMPROV [20]. Table 1 summarizes the number of utterances in
+each dataset.
+Table 1:Number of utterances in the emotional speech datasets.
+IEMOCAP MSP-IMPROV JTES
+Language English English Japanese
+Anger 1,103 792 5,000
+Happy 1,636 2,644 5,000
+Neutral 1,708 3,477 5,000
+Sadness 1,084 885 5,000
+Total 5,531 7,798 20,000
+To investigate the effect of domain shift, we conduct cross-
+lingual SER experiments between English and Japanese. The
+two English datasets (IEMOCAP and MSP-IMPROV) are com-
+bined to form a single training domain, while JTES is used
+as the Japanese corpus. Accordingly, we perform two cross-
+lingual evaluation scenarios:
+• English→Japanese: models are trained on the English
+datasets (IEMOCAP + MSP-IMPROV) and evaluated on
+JTES.
+• Japanese→English: models are trained on JTES and evalu-
+ated on the English datasets.
+This experimental design involves two linguistically dis-
+tant languages, which provides a challenging benchmark for
+studying cross-domain and cross-lingual generalization in SER.
+We evaluate classification performance using Weighted Average
+Recall (W AR), which measures the overall accuracy weighted
+by the number of samples in each class. For representation
+learning, we employ the pretrained HuBERT Large model as
+the backbone encoder [21]. The overall SER training pipeline
+follows the configuration used in the Speech Processing Univer-
+sal PERformance Benchmark (SUPERB) [5].
+3.2. Cross-lingual Evaluation and Bridge-weight Analysis
+We evaluate cross-lingual generalization in two directions:
+training on English (IEMOCAP + MSP-IMPROV) and testing
+on Japanese (JTES), and vice versa. All values are reported
+aspercent WAR(%). For each setting, we run five trials with
+different random seeds and report mean±standard error (SE).
+Statistical significance is assessed by a pairedt-test between
+AfterandBeforeacross the same five trials. We vary the bridge-
+loss weights(λ pair,λ cycle)while keeping other loss weights
+fixed (i.e.,λ eps,λ cls,λ cls-tr,λ KL are fixed to1.0). We compare
+three representation-pair configurations: (i) underfit–underfit,
+(ii) overfit–overfit, and (iii) overfit–underfit. In the mixed set-
+ting, we separately report improvements for the overfit-side
+classifier (A) and the underfit-side classifier (B) asoverfit (A)–
+underfit and overfit–underfit (B).
+3.2.1. Comparison and Discussion
+Across both directions, bridge learning is most effective when
+combining heterogeneous representations (overfit–underfit),
+particularly on the underfit-side classifier overfit–underfit (B).
+In English→Japanese (Table 2), the high-weight setting
+achieves the largest and most reliable gain:+6.42 %on average
+with∆ max = 8.10 %(p= 0.0011). This trend is consistent
+under low weights as well (+4.42%,p= 0.0042), while the
+no-weight setting yields smaller gains (+3.70%,p= 0.014).
+Overall, increasing(λ pair,λ cycle)improves performance, and the
+improvements exhibit a saturation behavior around(10,1).
+In Japanese→English (Table 3), the high-weight setting
+again produces the strongest improvement for overfit–underfit
+(B)(+4.00%,∆ max = 5.20%,p= 0.0015). Meanwhile,
+same-stage bridging (underfit–underfit or overfit–overfit) tends
+to yield smaller gains, suggesting limited headroom when the
+endpoint representations are already geometrically homoge-
+neous. Notably,overfit (A)–underfit shows comparatively mod-
+est improvements and is often not statistically significant, indi-
+cating that the overfit-side decision geometry can be rigid and
+less amenable to stochastic smoothing.
+These findings support the hypothesis that underfitted and
+7493
+Table 2:English→Japanese cross-lingual SER (Train: IEMOCAP + MSP-IMPROV , Test: JTES). All numbers are WAR(%). Mean±SE
+is computed over five trials.∆is the mean improvement in percentage points (pp), and∆ max is the maximum per-trial improvement
+(pp).λ pair andλ cycle denote the weights ofL pair andL cycle, respectively; other loss weights are fixed. Significance is evaluated by paired
+t-tests (∗p≤0.05,∗∗p≤0.01,∗∗∗p≤0.001).
+Weight(λ pair,λ cycle)Condition Before After∆(pp)∆ max (pp)pSig.
+high (10, 1) underfit – underfit 44.40±1.64 49.34±0.22 4.94±1.48 11.20 0.028 ∗
+high (10, 1) overfit – overfit 44.46±0.15 44.96±0.17 0.50±0.28 1.20 0.12
+high (10, 1)overfit (A)– underfit 43.88±0.23 44.52±0.22 0.64±0.34 1.70 0.11
+high (10, 1) overfit –underfit (B)45.32±0.4951.74±0.176.42±0.808.100.0011 ∗∗
+low (0.1, 0.1) underfit – underfit 44.40±1.64 49.26±0.53 4.86±1.24 11.20 0.026 ∗
+low (0.1, 0.1) overfit – overfit 44.46±0.15 44.74±0.27 0.28±0.36 1.10 0.46
+low (0.1, 0.1)overfit (A)– underfit 43.88±0.23 44.16±0.24 0.28±0.33 1.40 0.42
+low (0.1, 0.1) overfit –underfit (B)45.32±0.49 49.74±0.31 4.42±0.68 6.80 0.0042 ∗∗
+none (0, 0) underfit – underfit 44.40±1.64 49.18±0.56 4.78±1.23 11.10 0.050 ∗
+none (0, 0) overfit – overfit 44.46±0.15 44.80±0.28 0.34±0.31 1.20 0.32
+none (0, 0)overfit (A)– underfit 43.88±0.23 44.26±0.22 0.38±0.29 1.40 0.25
+none (0, 0) overfit –underfit (B)45.32±0.49 49.02±0.35 3.70±0.72 5.90 0.014 ∗
+Table 3:Japanese→English cross-lingual SER (Train: JTES, Test: IEMOCAP + MSP-IMPROV). All numbers are WAR(%).
+Mean±SE is computed over five trials.∆is the mean improvement in percentage points (pp), and∆ max is the maximum per-trial
+improvement (pp).λ pair andλ cycle denote the weights ofL pair andL cycle, respectively; other loss weights are fixed. Significance is
+evaluated by pairedt-tests (∗p≤0.05,∗∗p≤0.01,∗∗∗p≤0.001).
+Weight(λ pair,λ cycle)Condition Before After∆(pp)∆ max (pp)pSig.
+high (10, 1) underfit – underfit 36.14±0.36 38.78±0.25 2.64±0.53 4.40 0.0077 ∗∗
+high (10, 1) overfit – overfit 28.14±0.20 28.78±0.19 0.64±0.21 1.30 0.037 ∗
+high (10, 1)overfit (A)– underfit 29.14±0.16 30.02±0.27 0.88±0.33 2.10 0.055
+high (10, 1) overfit –underfit (B)35.74±0.3039.74±0.244.00±0.515.200.0015 ∗∗
+low (0.1, 0.1) underfit – underfit 36.14±0.36 36.60±0.21 0.46±0.39 1.60 0.30
+low (0.1, 0.1) overfit – overfit 28.14±0.20 29.18±0.19 1.04±0.31 1.90 0.030 ∗
+low (0.1, 0.1)overfit (A)– underfit 29.14±0.16 30.10±0.20 0.96±0.28 1.90 0.027 ∗
+low (0.1, 0.1) overfit –underfit (B)35.74±0.30 36.68±0.24 0.94±0.18 1.50 0.0065 ∗∗
+none (0, 0) underfit – underfit 36.14±0.36 36.62±0.20 0.48±0.53 1.90 0.42
+none (0, 0) overfit – overfit 28.14±0.20 28.26±0.20 0.12±0.25 1.00 0.65
+none (0, 0)overfit (A)– underfit 29.14±0.16 29.62±0.26 0.48±0.29 1.30 0.17
+none (0, 0) overfit –underfit (B)35.74±0.30 36.32±0.37 0.58±0.27 1.30 0.096
+overfitted representations provide complementary properties:
+underfitted representations tend to be smoother and more
+isotropic (lower curvature), while overfitted representations en-
+code sharper, dataset-specific discriminative directions (higher
+anisotropy). The diffusion bridge can be viewed as a stochastic
+regularized projection that may reduce anisotropy and improve
+cross-lingual robustness, and stronger bridge constraints (larger
+λpair,λ cycle) make the transformation more consistent, leading to
+larger gains until saturation.
+4. Conclusions
+We presentedDiffusion Bridge Learning, a representation-space
+adaptation framework for robust speech emotion recognition
+that leverages training-stage complementarity between over-
+fitted (late-stage) and underfitted (early-stage) representations.
+Rather than directly translating across stages, Diffusion Bridge
+Learning adopts a prototype-mediated design and learns bidi-
+rectional sample–prototype transformations via a conditional
+denoising diffusion model. Paired alignment and cycle consis-
+tency stabilize stochastic translation, while cross-entropy and
+logit-pair KL regularization preserve emotion-discriminative
+decision structure during geometry reshaping.
+Across cross-lingual speech emotion recognition in both di-
+rections (English to Japanese and Japanese to English), Diffu-
+sion Bridge Learning yields consistent and statistically signif-
+icant improvements in out-of-domain weighted average recall.
+These improvements are consistent with the view that diffusion-
+based stochastic projection encourages more class-centered rep-
+resentation geometry and reduces over-specialized directions
+in the representation space. The strongest gains arise when
+bridging heterogeneous representations (overfit–underfit), par-
+ticularly on the underfitted-side classifier, indicating improved
+discriminability without sacrificing robustness. Under strong
+bridge constraints, Diffusion Bridge Learning achieves up to
++6.42percentage points on English to Japanese and+4.00
+percentage points on Japanese to English, with improvements
+saturating around(λ pair,λ cycle) = (10,1). These results high-
+light that prototype-guided diffusion bridging is a practical and
+effective mechanism for mitigating encoder overfitting and im-
+proving cross-language generalization in speech emotion recog-
+nition.
+Future work will extend Diffusion Bridge Learning beyond
+sample–prototype mappings toward direct cross-domain trans-
+formations, explore more efficient diffusion schedules for faster
+training and inference, and further analyze when bridging is
+most beneficial using geometric diagnostics such as anisotropy
+and curvature.
+7494
+5. Use of Generative AI Disclosure
+Generative AI tools were used only for English grammar check-
+ing and minor language editing. They were not used for the
+development of research ideas, methodology, experimental de-
+sign, data analysis, or scientific conclusions. The authors
+take full responsibility for the originality and content of this
+manuscript.

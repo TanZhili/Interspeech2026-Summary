@@ -1,0 +1,404 @@
+Empathy Omni: Enabling Empathetic Speech Response Generation Through
+Large Language Model
+Haoyu Wang1, Guangyan Zhang2, Jiale Chen1, Jingyu Li2, Yuehai Wang1, Yiwen Guo3
+1 Zhejiang University
+2 LIGHTSPEED
+3 Independent Researcher
+22331169@zju.edu.cn, gyzhang@link.cuhk.edu.hk, 22431155@zju.edu.cn,
+herbertgogogo@gmail.com, wyuehai@zju.edu.cn, guoyiwen89@gmail.com
+Abstract
+With the development of speech large language models (speech
+LLMs), users can now interact directly with assistants via
+speech. However, most existing models only convert response
+content into speech without fully capturing the rich emotional
+cues in user queries, where the same sentence may convey dif-
+ferent meanings depending on the expression. Emotional under-
+standing is thus essential for improving human–machine inter-
+action. Most empathetic speech LLMs rely on massive datasets,
+demanding high computational cost. A key challenge is to
+build models that generate empathetic responses with limited
+data and without large-scale training. To this end, we propose
+Emotion Omni, a model that understands emotional content in
+user speech and generates empathetic responses. We further de-
+veloped a data pipeline to construct a 200k emotional dialogue
+dataset supporting empathetic speech assistants. Experiments
+show that Empathy Omni achieves comparable instruction-
+following ability without large-scale pretraining, while surpass-
+ing existing models in speech quality and empathy. These
+results confirm its improvements in both speech fidelity and
+emotional expressiveness. Demos are available athttps://
+anonymous.4open.science/w/omni_demo-4876/.
+Index Terms: Speech LLM, Omni, Emotional speech interac-
+tion, Speech assistant
+1. Introduction
+With the emergence of systems such as GPT-4o [1, 2], inte-
+grating speech capabilities with large language models (LLMs)
+has substantially improved user experience and broadened ap-
+plication scenarios, including customer service, education, per-
+sonal assistance, and therapeutic support. Recent end-to-end
+multimodal voice interaction models, such as Mini-Omni [3],
+LLaMA-Omni [4], and V ocalNet [5] move beyond conventional
+cascades (ASR→LLM→TTS) by generating text and speech
+responses directly from spoken queries, which can reduce la-
+tency and improve interaction naturalness.
+Beyond semantic question answering, effective speech in-
+teraction requires robust modeling of paralinguistic informa-
+tion [6, 7, 8]. Paralinguistic cues—including emotion, atti-
+tude, and intention—are central to communication and can fun-
+damentally change the meaning of identical words when de-
+livered with different affect. Without accurately interpreting
+the user’s emotional intent and responding empathetically, a
+speech system may produce inappropriate outputs and degrade
+trust, especially in emotionally sensitive settings such as men-
+tal health support, customer service, and educational tutor-
+ing. While prosodic and emotional dialogue systems have ad-
+vanced [9, 10, 11] and recent speech LLMs begin to address
+empathetic response generation [12, 13, 14], many approaches
+rely on implicitly learning emotion consistency from data with-
+out explicit affective planning, which increases dependence on
+high-quality emotional dialogues and large-scale training. In
+practice, emotional dialogue data is scarce and expensive to an-
+notate, motivating data-efficient and controllable approaches.
+To address these challenges, we propose Empathy Omni, an
+end-to-end model that explicitly leverages emotional features in
+user speech to recognize affect and to control empathetic spoken
+responses. The model conditions on both semantic and emo-
+tional representations extracted from the input speech. It gen-
+erates (i) textual responses and (ii) a token-synchronous emo-
+tion trajectory that serves as an explicit affective plan for speech
+synthesis. This separation between semantic generation and af-
+fect control mitigates feature entanglement and enables finer-
+grained prosody control, including emotion transitions within a
+single utterance. Complementing the model, we develop a cost-
+effective and scalable emotional dialogue construction pipeline
+using controllable TTS and automated quality filters, and fur-
+ther incorporate real-world emotional recordings to improve
+acoustic diversity and generalization.
+Our contributions are threefold: (1) We propose Empa-
+thy Omni, an end-to-end speech LLM that explicitly predicts
+a token-synchronous emotion trajectory and uses it to con-
+trol speech generation. (2) We introduce a DTW-based align-
+ment scheme to supervise token-level emotion planning with-
+out forced alignment, which is robust to non-verbal vocaliza-
+tions. (3) We build EmotionalQA-200k through a scalable
+synthesis-and-filtering pipeline and combine it with real emo-
+tional recordings to improve diversity and generalization.
+2. Methods
+We adopt a two-tower end-to-end architecture similar to omni-
+directional speech LLMs [4]. A LLM performs speech under-
+standing and response text generation, while a causal speech
+decoder generates acoustic tokens conditioned on linguistic and
+paralinguistic cues. To explicitly model paralinguistic informa-
+tion, we extract complementary semantic and emotional fea-
+tures with two frozen pretrained speech encoders. After tem-
+poral downsampling, these features are fused and projected into
+the LLM hidden space. The LLM outputs response tokens and
+a token-synchronous emotion trajectory. The speech decoder
+conditions on token embeddings, corresponding LLM hidden
+states, and the emotion trajectory to generate acoustic tokens
+autoregressively. Training proceeds in two stages (Fig. 1).
+3149
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-984
+Figure 1:Model Architecture and Training Process. In Stage 1, we fine-tune the LLM backbone with LoRA to align speech and text,
+focusing on understanding speech cues and generating empathetic responses. In Stage 2, the text embeddings are first fed into the
+speech decoder to train basic speech generation. Subsequently, the fusion module combines the LLM hidden states, text embeddings,
+and emotional cues to achieve better emotion control and improved speech quality.
+2.1. Speech Encoder
+Given a speech query, we run two pretrained encoders in par-
+allel to extract complementary features: Specifically, we uti-
+lize the Whisper large-v3[15] encoder as the semantic branch
+to capture robust linguistic and phonetic content, while the
+emotion2vec[16] large model serves as the emotion branch to
+extract rich paralinguistic and affective cues. Because the na-
+tive frame rates of these speech foundation models are relatively
+high (e.g., typically 50 Hz), directly feeding their outputs into
+a Large Language Model (LLM) would result in overly long
+sequences and high computational overhead.
+To address this, we introduce lightweight downsampling
+projectors to reduce the frame rate to 10 Hz, thereby im-
+proving efficiency while retaining salient prosodic dynamics.
+Adapted from the SLAM[17], our downsampling module uti-
+lizes a frame-stacking multi-layer perceptron (MLP) architec-
+ture rather than traditional convolutional layers. For a given
+sequence, the projector first truncates residual frames to ensure
+the sequence length is perfectly divisible by the downsampling
+rate k (e.g., k=5). It then reshapes the sequence by concate-
+nating k consecutive frames along the feature dimension and
+passes the stacked vectors through a two-layer linear projection
+with a ReLU activation, mapping the intermediate features to
+the LLM’s hidden size. To preserve the robust representations
+of the pretrained models and stabilize the optimization process,
+both the Whisper and emotion2vec encoders are kept strictly
+frozen. We train only the downsampling adapters and the sub-
+sequent projection parameters. At each frame, the downsam-
+pled semantic and emotion vectors are concatenated and pro-
+jected to yield a synchronized sequence of speech embeddings.
+These joint embeddings holistically represent both what is spo-
+ken (semantics) and how it is expressed (emotion), effectively
+conditioning the LLM during multimodal understanding and re-
+sponse generation.
+2.2. Large Language Model with Emotion Planning
+We employ a pretrained instruction-following LLM as the back-
+bone. To enable explicit affect control, we augment the LLM
+with an emotion prediction head that maps the last-layer hidden
+state of each generated tokent j to an emotion feature vector
+ˆhj ∈R demo, producing a token-synchronous predicted emo-
+tion trajectory ˆHemo ={ ˆh1,..., ˆhN}.
+Supervision and alignment.During training, we derive
+a ground-truth frame-level emotion trajectoryH emo from the
+target response waveform using the same emotion encoder as
+the input branch. Forced aligners can map waveforms to text
+tokens, but they often fail on non-verbal paralinguistic vocal-
+izations (laughter, sighs, breathing) that are important for emo-
+tion yet lack explicit phonetic transcripts. We instead align the
+frame-level emotion featuresH emo with the token-level pre-
+diction ˆHemo using dynamic time warping (DTW) [18]. The
+cumulative alignment costD(i,j)is:
+D(i,j) =d(H emo[i], ˆhj)
++ min{D(i−1,j),D(i,j−1),D(i−1,j−1)},
+(1)
+whered(·,·)is the squared Euclidean distance. The aligned
+target for tokenjis obtained by averaging frames mapped to it
+by the DTW pathπ:
+Htarget
+emo [j] = 1
+|π(j)|
+X
+i∈π(j)
+Hemo[i].(2)
+Training objective.We optimize a multi-task loss:
+Ltotal =L CE +λ 1LMSE +λ 2Lcos,(3)
+whereL CE is the next-token cross-entropy, and the auxil-
+iary lossesL MSE andL cos are computed between ˆhj and
+3150
+Htarget
+emo [j], encouraging both magnitude proximity and direc-
+tional alignment in the emotion embedding space.
+At inference, the LLM emits text tokens and their emo-
+tion vectors synchronously without external predictors or look-
+ahead.
+2.3. Speech Decoder with Gated Fusion and AdaLN
+The speech decoder is a causal Transformer with six decoder
+blocks that autoregressively predicts discrete acoustic tokens.
+At each stepj, the decoder receives two aligned linguistic sig-
+nals: (i) token embeddinge j and (ii) LLM hidden states j. We
+fuse them with a sigmoid gate:
+gj =σ(W g[ej;sj] +bg),(4)
+uj =g j⊙ej + (1−g j)⊙s j,(5)
+where[·;·]denotes concatenation.
+Emotion conditioning.We inject the token-synchronous
+emotion trajectory via adaptive layer normalization
+(AdaLN) [19]:
+zj = AdaLN(uj, ˆhj),(6)
+which generates per-step scale and shift from ˆhj and modulates
+the normalized representation, enabling factorized affect con-
+trol while preserving content.
+During training, we first condition on ground-truth emotion
+features extracted from target speech, then gradually mix in pre-
+dicted emotion vectors to mitigate train–test mismatch, using a
+linear schedule from mixing probabilityp= 0top= 1.
+Acoustic tokenization and waveform synthesis.We
+adopt the discrete acoustic tokenizer and the spectrogram-
+to-waveform components from CosyV oice2 for efficient
+high-fidelity synthesis. Specifically, the decoder predicts
+CosyV oice2 acoustic tokens, which are converted into mel-
+spectrograms using CosyV oice2’s chunk-aware causal flow-
+matching model [20] to support streaming synthesis. Every
+Wgenerated acoustic tokens are grouped into a chunk to bal-
+ance latency and quality. The mel-spectrograms are then trans-
+formed into waveforms by the HiFi-GAN vocoder [21] used in
+CosyV oice2.
+3. EXPERIMENTS
+3.1. Dataset Curation
+We train and evaluate Empathy Omni using V oiceAssistant-
+400k [5] and an emotional dialogue corpus EmotionalQA-200k.
+EmotionalQA-200k.We construct EmotionalQA-200k to
+cover 20 domains and six basic emotion categories (happiness,
+anger, fear, sadness, disgust, surprise). The dataset combines
+synthetic generation and real-world recordings through three
+strategies:
+Strategy 1: End-to-End Synthesis Pipeline.GPT-4o gen-
+erates dialogue text pairs across 20 domains and six emotion
+categories. Emotion labels are expanded into descriptive in-
+struction texts to guide CosyV oice2 controllable synthesis. All
+samples are filtered using (i) ASR-WER intelligibility filtering
+and (ii) SER emotion consistency filtering. This strategy con-
+tributes∼135k samples (67.5%).
+Strategy 2: ESD-Based Text Rewriting and Speech Syn-
+thesis.We use 17.5k read-style sentences from ESD as seeds.
+GPT-4o rewrites each sentence into a natural spoken-style user
+query and generates an empathetic response. Both sides are
+synthesized with CosyV oice2 under emotion instructions; refer-
+ence speaker embeddings are randomly sampled from a speaker
+pool to enhance diversity. After ASR-WER and SER filtering,
+we retain∼15k samples (7.5%).
+Strategy 3: Multi-Stage Extraction from Real-World
+Recordings.We collect real-world recordings from publicly
+available emotional speech corpora and cinematic dialogue
+datasets. Each recording undergoes V AD-based segmentation,
+voice separation and noise reduction, ASR transcription, and
+dual-side emotion annotation and consistency filtering on both
+speech and text modalities. This yields∼50k samples (25%)
+with higher acoustic naturalness and richer emotional dynam-
+ics.
+3.2. Configurations
+We adopt a two-stage training strategy with AdamW opti-
+mization. In Stage 1, we fine-tune the LLM backbone with
+LoRA [26] while training the downsampling adapters and
+the emotion prediction head. The backbone is Qwen2.5-7B-
+Instruct [27] (28 decoder blocks, hidden size 3584), and LoRA
+rank is set to 8. The emotion head is a lightweight Transformer
+encoder plus MLP mapping hidden states to a 768-dim emotion
+vector. We use learning rates of5×10−5 for LoRA parameters
+and2×10 −4 (weight decay 0.01) for adapters and the emotion
+head.
+In Stage 2, we train the speech decoder with six Trans-
+former decoder blocks and a hidden size of 3584. We use a
+learning rate of2×10 −4 and weight decay of 0.01 for the de-
+coder. All training was conducted on 8 NVIDIA H20 GPUs.
+4. Evaluation and Results
+4.1. General QA and Empathetic Generation
+General spoken instruction following.We evaluate gen-
+eral speech understanding and instruction following on
+V oiceBench [28], using the AlpacaEval, CommonEval, Wild-
+V oice, IFEval, and SD-QA subsets. Speech naturalness is as-
+sessed using UTMOS [29]. Table 1 summarizes the results.
+Overall, Empathy Omni achieves competitive performance
+across all V oiceBench subsets, indicating robust speech under-
+standing and instruction execution. In particular, our model at-
+tains the best scores on CommonEval (3.47) and IFEval (27.89),
+suggesting strong instruction-following robustness and con-
+straint satisfaction. While GLM-4-V oice achieves the highest
+Alpaca score and WildV oice score, Empathy Omni remains
+close (3.84 vs. 3.97 on Alpaca; 3.13 vs. 3.18 on WildV oice),
+demonstrating that introducing explicit affect modeling does not
+substantially trade off general QA capability.
+Speech quality.Empathy Omni obtains the highest UT-
+MOS score (4.41), outperforming LLaMA-Omni (3.98) and
+other baselines. We attribute this improvement to the proposed
+speech decoding design: (i) gated fusion of token embeddings
+and LLM hidden states stabilizes pronunciation and long-range
+coherence, and (ii) explicit token-synchronous emotion trajec-
+tories injected via AdaLN enable prosody control without dis-
+rupting linguistic content, reducing unnatural pitch/rhythm arti-
+facts.
+Empathetic response generation.To assess empathy be-
+yond general QA, we construct a test set of 1,000 emotional
+queries spanning diverse scenarios and six emotion categories.
+At inference, the model produces both text and speech re-
+sponses.
+Intelligibility and content consistency (ASR-WER).For
+each speech response, we transcribe the waveform using
+Whisper-large-v3 and compute WER between the ASR tran-
+3151
+Table 1:Performance comparison on VoiceBench and speech quality metrics. Higher is better.
+Model Alpaca↑Common↑IFEval↑WildVoice↑SD-QA↑UTMOS↑
+Qwen2-Audio [22] 3.74 3.43 26.33 3.01 35.71 –
+GLM-4-V oice [12]3.973.42 25.92 3.18 25.92 3.88
+Ichigo [23] 3.79 3.17 21.59 2.83 36.53 3.63
+LLaMA-Omni [4] 3.70 3.46 14.87 2.9239.693.98
+VITA-1.0 [24] 3.38 2.15 22.82 1.87 27.94 3.77
+Moshi [25] 2.01 1.60 10.12 1.30 15.64 3.51
+Ours 3.843.47 27.89 3.1936.874.41
+Table 2:Empathetic Response Evaluation Results
+Model Emotion GPT Score↑Emotion MOS↑ASR-WER↓
+Without explicit empathetic capability
+GLM-4-V oice [12] 2.43 3.42 (±0.11) 5.82
+Ichigo [23] 2.28 3.11 (±0.12) 5.15
+VITA-1.0 [24] 1.96 2.91 (±0.09) 6.43
+Moshi [25] 1.72 2.58 (±0.10) 9.27
+LLaMA-Omni [4] 2.15 3.14 (±0.10) 6.51
+With explicit empathetic capability
+OpenS2S [14] 3.37 4.11 (±0.11) 5.99
+Ours3.97 4.23 (±0.09) 4.61
+script and the model’s text output. Although WER is ASR-
+dependent and does not fully represent human intelligibility, it
+provides an objective proxy for content preservation and pro-
+nunciation stability across systems.
+Empathy alignment (Emotion GPT Score).We employ
+GPT-4o as a blind judge to rate empathy on a 1–5 scale (Emo-
+tion GPT Score). The judge is provided with the user query
+and its target emotion label, the ASR transcript of the generated
+speech, and the emotion predicted by an external speech emo-
+tion recognizer (SER), but not the model identity. The judge
+evaluates whether the response (i) acknowledges the user’s
+emotional state, (ii) conveys an appropriate empathetic stance,
+and (iii) remains semantically and emotionally consistent. We
+use a fixed evaluation prompt and deterministic decoding (tem-
+perature 0) for consistency across all samples.
+Human listening test (Speech Emotion MOS).We further
+conduct a subjective listening test with 40 native speakers. All
+samples from different systems are presented in randomized or-
+der and evaluated in a blind setting. Raters assign a 1–5 MOS
+score considering overall naturalness and emotional expressive-
+ness (Speech Emotion MOS). We report mean MOS with 95%
+confidence intervals.
+As shown in Table 2, Empathy Omni achieves the highest
+Emotion GPT Score (3.97) and Speech Emotion MOS (4.23),
+together with the lowest ASR-WER (5.61%). Compared with
+OpenS2S and LLaMA-Omni, these gains suggest that explicitly
+predicting a token-synchronous emotion trajectory improves
+emotional consistency and expressiveness in speech, while the
+decoder conditioning design helps preserve intelligibility.
+Qualitative observations.We find that Empathy Omni is
+especially effective for emotions requiring sustained prosody
+shaping (e.g., sadness and fear), where the explicit trajectory
+helps maintain a coherent tone across long responses. Remain-
+ing failure cases mainly arise for subtle or mixed emotions,
+where the model may generate semantically appropriate yet
+emotionally generic speech, motivating finer-grained affect rep-
+resentations and intensity control in future work.
+4.2. Ablation Study
+We ablate the proposed fusion module that integrates token-
+level text embeddings, LLM hidden states, and emotion trajec-
+tories via AdaLN. Table 3 reports Emotion GPT Score, Speech
+Emotion MOS, and ASR-WER.
+Effect of removing the fusion module.Without the fu-
+sion module, the decoder cannot effectively combine lexical
+precision from token embeddings with contextual semantics
+from LLM hidden states, nor can it be reliably modulated by
+the emotion trajectory through AdaLN. As a result, emotional
+alignment and naturalness degrade while pronunciation stabil-
+ity weakens. Quantitatively, the Emotion GPT Score drops from
+3.97 to 3.15, Speech Emotion MOS decreases from 4.23 to 3.85,
+and ASR-WER increases from 5.61 to 6.42.
+Listening-based diagnosis.Subjective inspection indi-
+cates that removing token embeddings tends to introduce pro-
+nunciation and rhythm issues, while removing emotion trajec-
+tory conditioning leads to emotionally flatter speech even when
+the textual content appears empathetic. These findings confirm
+that the fusion design is critical for producing speech that is si-
+multaneously intelligible and emotionally expressive.
+Table 3:Ablation study on the fusion module.
+Model Variant Emotion GPT
+Score↑
+Speech Emotion
+MOS↑
+ASR
+WER↓
+w/o Fusion Module 3.15 3.85 (±0.08) 6.42
+Full Model3.97 4.23 (±0.09) 5.61
+5. CONCLUSIONS
+In this study, we present Empathy Omni, a speech LLM that rec-
+ognizes speech input and generates empathetic responses by ef-
+fectively integrating semantic and emotional features. Our cost-
+effective emotional dialogue dataset generation pipeline reduces
+reliance on large-scale labeled data, making empathetic speech
+system development more accessible. The ability to generate
+high-quality empathetic speech with limited resources demon-
+strates the scalability and real-world potential of our approach.
+While results are promising, challenges remain in handling sub-
+tle emotions, as the model sometimes prioritizes semantic con-
+tent over emotional cues. Future work will focus on improving
+sensitivity to nuanced emotions. This research provides a foun-
+dation for building more efficient, accessible, and emotionally
+intelligent speech generation systems.
+3152
+6. Generative AI Use Disclosure
+The authors used generative AI tools only for language editing
+and polishing. All scientific ideas, experimental design, analy-
+ses, results, and conclusions were developed and verified by the
+authors. All authors take full responsibility for the work and the
+content of this paper.

@@ -1,0 +1,362 @@
+EChO-Agent: Evidence Chain Orchestration Agent for Audio Reasoning
+Siyuan Zhang1,∗,∗∗, Jian Zong1,∗, Junyu Wang1, Peiyuan Jiang1, Jiahao Yan1, Jingyu Zhang1, Tianrui
+Wang1, Xiaobao Wang1, Longbiao Wang1, Jianwu Dang2
+1 School of Artificial Intelligence, Tianjin University, Tianjin, China
+2 Shenzhen Institute of Advanced Technology, Chinese Academy of Sciences, Shenzhen, China
+{zhang siyuan, zongjian 66, longbiao wang}@tju.edu.cn
+Abstract
+While LALMs show promise on audio question answering, they
+fail to focus on question-relevant segments of audio and pro-
+vide a clear, checkable reasoning process when dealing with
+complex audio reasoning. Reinforcement learning and tool-
+augmented prompting can help models better relate questions
+to audio but lack a reliable way to understand, integrate, and
+self-verify audio segments. To address this gap, we present
+EChO-Agent, a modular agent framework that reformulates
+complex audio QA as a planning, tool execution, evidence in-
+tegration, and answer verification workflow. Experiments on
+MMAR benchmark show EChO-Agent improves both accuracy
+and rubric scores over baseline and ablation studies show evi-
+dence integration is the key factor.
+Index Terms: audio reasoning, tool-augmented agent, large au-
+dio language model, chain-of-thought verification
+1. Introduction
+Audio reasoning requires models to interpret rich aural informa-
+tion (e.g., speaker intent, affective state, duration and frequency
+of event) and derive logical conclusions from perceptual sig-
+nals [1, 2]. This requires not only recognizing acoustic events
+but also extracting critical evidence and binding it to stepwise
+inference [3, 4].
+Large Audio Language Models (LALMs) integrate LLMs
+with audio encoders [5, 6, 7], showing strong potential for
+audio-text tasks ranging from captioning to question answer-
+ing [8, 9, 10], but complex audio reasoning remains unreli-
+able due to several structural limitations [11, 12]. As sum-
+marized in Figure 1, current LALMs lack question-conditioned
+perception, verifiable reasoning chains [13, 14], sufficient do-
+main knowledge, and the ability to revisit audio to recover
+missed signals [15]. These issues are particularly consequen-
+tial when models are evaluated not only by answer correctness
+but also by whether the reasoning process is faithful to audio
+evidence [16, 11]. This concern is explicitly emphasized by
+the Interspeech 2026 Audio Reasoning Challenge, which eval-
+uatesprocess qualityusing instance-level rubrics [17]. A seem-
+ingly good chain-of-thought of correct answer can still be pe-
+nalized if it is weakly grounded or logically inconsistent with
+audio [14, 18].
+To address these challenges, we propose evidence chain or-
+chestration agent for audio reasoning, short as EChO-Agent, a
+self-verifying tool agent that orchestrates a checkable evidence
+*These authors contributed equally.
+**indicates the corresponding author.
+This work was supported by the National Natural Science Founda-
+tion of China under Grant U23B2053.
+chain for audio reasoning. Our method decomposes inference
+into a four-stage pipeline:Tool→Evidence→Reason→Ver-
+ify. First, agent arranges specialized audio tools to produce ob-
+servations, then distills them into compact, logically structured
+evidence that tied to the question, after that agent performs rea-
+soning grounded on raw audio and evidence, and finally veri-
+fies format compliance and evidence–answer consistency with
+dual-pass arbitration. Experiments on the MMAR benchmark
+demonstrate that EChO-Agent achieves71.0%accuracy and a
+63.0rubric score, improving over the Qwen3-Omni baseline by
++2.3accuracy points and+4.3rubric points, ranking5thon the
+MMAR Agent Track. Ablations confirm that structured evi-
+dence is the key factor: removing it causes the largest drop,
+even below the tool-free baseline, while the verification stage
+reduces avoidable last-mile failures.
+2. Related Work
+2.1. Audio Reasoning Challenge
+The 2026 Interspeech Audio Reasoning Challenge [17] aims
+to evaluateprocess qualityrather than merely focusing on an-
+swer performance, requiring that the reasoning path be faithful
+to audio evidence. Existing solutions, whether single-model or
+agent-based, often produce template-like reasoning, which ap-
+pears coherent but has a weak foundation. The interpretability
+of intermediate evidence is limited, and the handling of tool fail-
+ures is also ad hoc. These limitations suggest that complex au-
+dio reasoning should be treated as a principled evidence-seeking
+and checking process, not a pattern-matching exercise.
+2.2. Large Audio Language Models
+Large Audio Language Models (LALMs), like LTU [6] and
+SALMONN [5] align audio encoders with LLM backbone
+to support acoustic reasoning. Recent models like Qwen-
+Audio [7] inherit strong general-purpose priors and thinker-
+talker structure reduces explicit dependence on text modality,
+but audio tokens lack the discrete, interpretable structure needed
+for step-by-step inference. Without a mechanism to identify
+which part of the audio matters for a specific query, models
+tend to rely on dominant acoustic patterns or linguistic pri-
+ors, resulting in shortcut reasoning rather than grounded evi-
+dence [19, 14].Moreover, LALMs also operate in a closed loop
+after encoding: once subtle cues are missed, the model cannot
+revisit raw audio to verify hypotheses or recover evidence. In
+summary, these limitations of current LALMs are exactly the
+reasons agentic frameworks were introduced in the first place:
+to augment foundation models with controllable reasoning and
+evidence-grounded execution.
+251
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1313
+Figure 1:Key Limitations of Large Audio Language Models for Complex Audio Reasoning
+2.3. Tool-augmented Audio Agents
+Recent works augment LALMs with external tools [20] and op-
+timize how tools are invoked. AuTAgent learns a tool-selection
+policy via reinforcement learning [21]; AudioRouter decou-
+ples tool routing from the reasoning model [22]; CoFi-Agent
+adds coarse-to-fine uncertainty-triggered re-analysis; and Au-
+dioRAG extends agentic pipelines with external knowledge re-
+trieval for multi-hop reasoning [15, 23]. While these works
+improve acoustic perception, they primarily address what in-
+formation is acquired, not how it is used. Raw tool outputs
+are typically passed directly to the reasoner without question-
+conditioned filtering, which can introduce distracting context
+and impede grounded inference [18]. More importantly, none
+of these approaches provide a mechanism to synthesize tool
+outputs into concise, decision-critical evidence and verify the
+consistency between evidence and the final answer.
+3. Methodology
+3.1. Task Formulation
+Given an audio signalaand a natural-language questionqwith
+candidate options{c 1,...,c n}, the audio reasoning task re-
+quires producing the correct answery ∗ along with a faithful
+chain-of-thought ˆYCoT that is evaluated against instance-level
+rubrics. Directly prompting a Large Audio Language Model
+(LALM)M A to jointly perceive and reason often results in
+weakly grounded or shortcut reasoning, as discussed in Sec-
+tion 2. To address this, we decompose the task into a four-stage
+pipeline (Figure 2):
+(q,a)
+1.Tool
+−−−→O
+2.Evidence
+−−−−−→E
+3.Reason
+−−−−→ˆy
+4.Verify
+−−−−→y∗, ˆYCoT (1)
+Here, a LLM-based orchestrator agentM L takes the question
+q(with optionsa), dispatches tool calls to obtain observations
+O, distillsOinto evidenceE, and manages verification; the
+LALMM A performs audio-grounded reasoning conditioned on
+the raw audio andEto produce a candidate answerˆy, which is
+then verified into the final answery ∗ with an auditable reason-
+ing trace ˆYCoT.
+3.2. Tool-Augmented Observation
+The first stage constructs an observation setOby invoking
+a suite of audio analysis tools ona. We adopt aquestion-
+type-conditioned static dispatchstrategy: the orchestrator an-
+alyzesqand selects a predefined tool combination based on
+the question, eliminating variance from stochastic tool selec-
+tion. The tool suite comprises four classes:Audio Event De-
+tection(t aed), where we use Y AMNet [24] to produce frame-
+level sound event labels with confidence scores, providing ev-
+idence about acoustic events and temporal occurrence;Auto-
+matic Speech Recognition(t asr), where we adopt Whisper [25]
+to transcribe spoken content when reasoning depends on lin-
+guistic cues;Speech Emotion Recognition(t ser), where we use
+a SpeechBrain [26] SER model (wav2vec2-based emotion clas-
+sifier) to estimate the speaker’s affective state with confidence;
+andMusic Analysis(t music), where we employ Essentia [27]
+with common MIR extractors (e.g., tempo/key/beat) to de-
+rive measurable musical attributes supporting reasoning about
+music-related cues. For each toolt j, the orchestrator rephrases
+qinto a tool-appropriate directivep j, yieldingo j =t j(a,p j);
+failed invocations are retried (up to 2 times) and, if unrecover-
+able, recorded as[UNAVAILABLE]to prevent hallucination.
+3.3. LLM-Based Evidence Integration
+Raw tool observations are typically verbose and may contain in-
+formation irrelevant toq. This stage employDeepSeek-V3[28]
+as the evidence constructor to distillOinto a compact evidence
+setEthat directly supports answering the question.
+Unlike simply prompting an LLM to summarize or concate-
+nate tool outputs, the evidence integration is guided by a struc-
+tured instruction prompt that defines three operations:Rele-
+vance filtering:M L identifies question-relevant information
+and discards tangential content;Cross-observation synthesis:
+when multiple tools report overlapping information,M L con-
+solidates them and resolves conflicts by comparing confidence
+levels or specificity;Evidence structuring:M L organizes the
+retained signals into a compact evidence chain that groups and
+orders the decision-critical facts in the way they will be used to
+answer the question.
+252
+Figure 2:Auditable Tool-Augmented Agent Workflow for Audio Reasoning
+This stage serves as thebridgebetween perception and rea-
+soning: it converts raw multi-tool outputs into a structured,
+question-focused representation that the LALM can directly
+consume, reducing the burden on the LALM and enabling it
+to focus on evidence-grounded inference rather than noisy ob-
+servation parsing.
+3.4. Evidence-Conditioned Audio Reasoning
+The core reasoning stage invokes Qwen3-Omni-Instruct as the
+LALM backboneM A, taking the original audioa, the ques-
+tionq, the candidate options, and the structured evidenceEas
+joint input. Letrdenote the current iteration index (r= 0for
+the initial attempt). At each iteration, the LALM generates a
+candidate:
+ˆy(r) =M A
+ 
+πans,a,q,{c i},E,f (r−1))(2)
+wheref (r−1) is the diagnostic feedback from the previous ver-
+ification iteration (Section 3.5). By injectingf (r−1) into the
+prompt, the LALM is guided to attend to the specific weak-
+ness and produce a corrected response, rather than regenerating
+blindly. The answer generation promptπ ans instructs the LALM
+to: (i) decompose the question into intermediate sub-decisions;
+(ii) derive each intermediate conclusion by citing the corre-
+sponding evidence entries inE; and (iii) progressively compose
+these intermediate results into the final answer option, which
+is stated clearly in a predefined structured output format.By
+injecting pre-extracted evidence as explicit reasoning anchors,
+the LALM is steered to attend and attribute its decisions to
+question-relevant acoustic cues; moreover, ourprompted step-
+wise reasoning protocol[2] explicitly enforces intermediate
+sub-decisions grounded in evidence, strengthening the model’s
+reasoning process beyond answer-only generation.
+To reduce variance and improve reliability, we run the rea-
+soning stage twice with different configurations (e.g., varied
+temperature and reordered evidence presentation), producing
+two candidate answersˆy(1) andˆy(2). Both candidates, together
+with their reasoning traces, are passed to the verification stage.
+3.5. Verification And Output Arbitration
+The final stage ensures that the output is well-formed, logi-
+cally consistent, and robustly grounded. Under the verifica-
+tion protocolπ ver,M L performs three checks:(a) Format
+compliance—malformed outputs are repaired via rule-based
+post-processing to prevent parsing failures from being scored
+as incorrect;(b) Reasoning–answer consistency—the veri-
+fier checks for contradictions between the evidence cited in
+the CoT and the final answer, and any inconsistency triggers
+either answer correction or re-generation with targeted feed-
+back highlighting the contradiction; and(c) Dual-pass arbitra-
+tion—given two candidatesˆy(1) andˆy(2), the verifier performs
+a comparative evaluation to select the final output:
+y∗ =M L
+ 
+πver,q,E,ˆy (1),ˆy(2))(3)
+When both candidates agree, the shared answer is adopted di-
+rectly.When they disagree, the verifier re-examines the evi-
+dence chain and selects the candidate whose reasoning exhibits
+stronger evidence alignment and internal coherence.This mech-
+anism provides an implicit self-consistency check [13] without
+requiring expensive majority voting over many samples, and
+significantly reduces the rate of random errors in large-scale
+evaluation.
+4. Experiments
+4.1. Setup
+We conduct experiments on the MMAR benchmark, reporting
+modality-wise performance under single-type and composite-
+type audio settings, where composite audios pose stronger in-
+terference and thus challenge question-relevant cue localiza-
+tion. We adopt end-to-end Qwen3-Omni-Instruct as the primary
+baseline. We further perform ablations to verify that the gains
+come from distilling observations into question-tied evidence
+and enforcing a checkable reasoning procedure that can under-
+stand, integrate, and self-verify audio cues. All other settings
+(prompts, decoding configurations) are kept identical across
+runs.
+253
+Table 1:Omni Language Models (OLMs) Performance Comparison
+Models Size Single Modality (%) Mixed Modalities (%) Avg (%)
+Sound Music Speech Sound-
+Music
+Sound-
+Speech
+Music-
+Speech
+Sound-Music-
+Speech
+AnyGPT-chat [29] 8B 24.24 19.42 22.11 27.27 27.52 26.83 29.17 23.70
+OpenOmni [30] 8B 20.61 22.33 35.37 18.18 27.06 23.17 25.00 27.00
+Baichuan-Omni-1.5 [31] 11B 41.21 33.01 40.48 36.36 48.62 39.02 41.67 40.70
+Qwen2.5-Omni [8] 3B 53.94 46.12 53.74 36.36 60.09 57.32 58.33 53.80
+Qwen2.5-Omni 7B 58.79 40.78 59.86 54.55 61.93 67.07 58.33 56.70
+Gemini 2.0 Flash [10] – 61.21 50.97 72.1181.82 72.48 65.85 70.83 65.60
+Qwen3-Omni-instruct [9] 30B 58.79 52.91 78.23 72.7377.06 70.73 70.83 68.70
+Qwen3-Omni-thinking 30B66.67 49.51 79.93 63.64 74.31 71.95 62.50 69.00
+Ours – 63.6453.40 81.29 81.82 77.06 74.39 75.00 71.00
+4.2. Evaluation Method
+All MMAR tasks are multiple-choice questions. We reportac-
+curacy(parsed option vs. ground truth) and therubric score
+from the official MMAR evaluator, which measures faithfulness
+of the reasoning path to instance-level rubrics.
+4.3. Ablation Studies
+We conduct ablation studies on the 2026 Interspeech Audio
+Reasoning Challenge (Table 2) using Qwen3-Omni-instruct as
+baseline to quantify the contribution of each component. Full
+pipeline achieves the best performance in both accuracy and
+rubrics, indicating that tool augmentation is beneficial when
+tool outputs are distilled into compact, decision-relevant evi-
+dence.
+w/o Evidence Integration.Removing integration leads
+to the largest degradation (5.6% accuracy; 6.1 rubrics),even
+below the end-to-end baseline. This highlights that tool use
+without evidence structuring can be harmful: directly injecting
+high-entropy observations introduces distracting context and in-
+creases option-mapping errors. Integration serves as a “knowl-
+edge bridge” that filters and aligns heterogeneous tool outputs
+into decision-ready evidence.
+w/o Observation.Disabling tool calls (1.8% accuracy;
+2.8 rubrics) collapses the pipeline back toward an end-to-end
+LALM that must “listen and reason” within a single hidden
+representation. WithoutO, the system loses access to explicit
+event/ASR/emotion/MIR cues (e.g., event timing, speaker con-
+tent, affect, tempo), making it difficult to localize question-
+relevant segments and to resolve questions that hinge on fine-
+grained acoustic attributes or counting/temporal relations.
+w/o Verification.Removing verification decreases accu-
+racy by 1.9% and rubric scores by 1.5, showing that verification
+mainly improves robustness by correcting avoidable errors such
+as format violations and evidence–answer inconsistencies.
+These results justify our design choice of prioritizing an au-
+ditable evidence chain over naive tool-use augmentation.
+4.4. Results
+Our method achieves71.0%accuracy and a63.0rubric score
+on MMAR, ranking5thin the Agent Track. Compared with
+the end-to-end Qwen3-Omni-Instruct baseline, we improve by
++2.3accuracy points (68.7→71.0) and+4.3rubric points (58.7
+→63.0) under identical backbones and decoding settings. As
+shown in Table 1, EChO-Agent attains thebestaverage accu-
+racy among all compared LALMs. The gains are most pro-
+nounced on composite (mixed-type) audio: converting raw tool
+observations into compact, question-tied evidence helps local-
+ize decision-critical cues rather than being distracted by salient
+but irrelevant segments. The rubric improvement further indi-
+cates a clearer, checkable reasoning process, where intermedi-
+ate evidence is externalized as an auditable chain and verified
+for evidence–answer consistency. Ablations (Table 2) support
+this finding: removing evidence integration yields the largest
+drop, confirming its central role in reliable audio reasoning.
+Table 2:Ablation results of our proposed framework on the
+MMAR benchmark.
+Models Accuracy Rubrics
+Full Pipeline (Ours) 71.0 63.0
+w/o Observation 69.2 60.2
+w/o Evidence Integration 65.4 56.9
+w/o Verification 69.1 61.5
+Qwen3-Omni-Instruct 68.7 58.7
+5. Conclusion
+We proposedEChO-Agent, a tool-augmented framework that
+organizes audio reasoning into aTool→Evidence→Rea-
+son→Verifypipeline with an auditable evidence chain.
+On MMAR, EChO-Agent achieves71.0%accuracy and63.0
+rubric score, ranking5thin the Agent Track. Ablations
+confirm that structured evidence integration is the dominant
+contributor—raw tool outputs without filtering can degrade rea-
+soning quality—while verification reduces avoidable last-mile
+errors. The granularity of sound-modality reasoning is currently
+bounded by perception tools: coarse event labels from Y AMNet
+limit fine-grained sound understanding and remain a bottleneck
+on sound-centric questions. Future work will address this tool-
+induced granularity limit, together with tool uncertainty, cross-
+tool conflicts, and finer-grained temporal analysis.
+254
+6. Generative AI Use Disclosure
+During the preparation of this manuscript, the authors used gen-
+erative AI tools to polish the English language, improve read-
+ability, and assist with LATEX formatting. These tools were not
+used to generate any scientific claims, experimental results, or
+significant parts of the manuscript.

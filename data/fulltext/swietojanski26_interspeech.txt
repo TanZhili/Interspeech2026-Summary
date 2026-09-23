@@ -1,0 +1,471 @@
+Segmental Attention Decoding With Long Form Acoustic Encodings
+Pawel Swietojanski1, Xinwei Li1, Mingbin Xu1, Takaaki Hori1, Dogan Can1, Xiaodan Zhuang1
+1Apple, USA
+{pswietojanski, xinwei li2}@apple.com
+Abstract
+We address the fundamental incompatibility of attention-
+based encoder-decoder (AED) models with long-form acoustic
+encodings. AED trained on segmented utterances learn to en-
+code absolute positions by exploiting limited acoustic context
+beyond segment boundaries, but fail to generalize when decod-
+ing long-form segments where these cues vanish. The model
+loses ability to order acoustic encodings due to permutation in-
+variance of keys and values in cross-attention. We propose four
+modifications: 1) injecting explicit absolute positional encod-
+ings into cross-attention, 2) long-form training with extended
+acoustic context to eliminate implicit absolute position encod-
+ing, 3) segment concatenation to cover diverse segmentations
+needed during training, 4) semantic segmentation to align AED-
+decoded segments with training segments. We show that these
+modifications close the accuracy gap between continuous and
+segmented acoustic encodings, enabling auto-regressive use of
+the attention decoder.
+Index Terms: attention decoder, long form ASR
+1. Introduction and Related Work
+Attention encoder decoder (AED) models [1, 2] make a pop-
+ular family of end-to-end speech recognition models offering
+powerful auto-regressive capabilities, though long-form (LF)
+ASR with AED models remains a challenge [3–5]. Current
+approaches typically rely on external segmentation systems or
+different windowing techniques [6–8] that artificially recreate
+boundary conditions. As such, attention decoder (AD) is often
+used in multi-pass settings instead where the first pass hypothe-
+ses are refined by AD [9,10]. Such rescoring, however, operates
+on n-best lists or discrete tokens, rather than full auto-regressive
+decoding limiting potential accuracy gains. Most recent ef-
+forts related to LF ASR focus on transformer encoders with lin-
+earized attention [11, 12], or alternative architectures [13]. [14]
+recently proposed long-form (LF) training, and evaluated differ-
+ent flavours of linear-time encoders on LF tasks. In this work we
+are interested in the AD inability to use LF encodings in auto-
+regressive manner. Issues with AD on LF data were identified
+before [4], though not addressed to date to our knowledge.
+Our contributions are fourfold: (1) We identify the permu-
+tation invariance problem in attention-based ASR for LF audio,
+demonstrating how short-form boundary effects hide this limita-
+tion during training. (2) To tackle (1), we propose modifications
+including cross-attention positional encodings and LF training.
+(3) We demonstrate that our approach achieves parity between
+segmented and long-form performance while maintaining com-
+petitive results against similarly-sized models. (4) Extend the
+model with first pass semantic segmentation capabilities, show-
+ing it outperforms voice-activity-detection (V AD).
+Acoustic 
+Encoder
+… …
+segment S
+…
+Attention 
+Decoder
+Right 
+Acoustic 
+Context
+Left 
+Acoustic 
+Context
+hs
+tb
+hs
+teh1
+Acoustic 
+features
+Acoustic 
+encodings
+Cmax
+L Cmax
+R
+hT
+Figure 1:Illustration of LFE, left/right acoustic context and
+boundary conditions. Shaded areas denote regions crucial to
+LFE, absent during training and inference on segmented data.
+2. Definitions
+2.1. Attention-based Encoder-Decoder Model
+The AED model converts speech audio to text using three main
+parts: an acoustic encoder, a cross-attention mechanism, and an
+autoregressive decoder [1, 2].
+Acoustic Encoder:The encoderH=E θ(X)takes a se-
+quence of acoustic featuresX= (x 1, ..., xT ′ )and converts
+them into sequence of acoustic encodingsH= (h 1, ..., hT ),
+withT≤T ′. Modern encoders use conformer [15,16] or trans-
+former [17, 18] blocks with convolutional downsampling.
+Attention Decoder:The decodery u =D θ(yu−1,C<u,H)
+produces output tokensY= (y 1, ..., yU )auto-regressively one
+token at a time. At each stepu, the decoder combines three
+pieces of information: the previous token embeddingy u−1, its
+previous internal stateC<u up tou, and acoustic encodingsH.
+Cross-Attention Mechanism:D θ interacts with encoder
+Eθ via cross-attention [17] layers. In AED, dot-product cross-
+attention queries come from decoder statesC, while the keys
+and values are derived from the acoustic encodingsH.
+2.2. Long-Form Acoustic Encodings
+In this work, we investigate the relationship between the recep-
+tive field of the transformer-based encoderEθ and the ability of
+the attention decoderD θ to transcribe any segmentH s∈H,
+for encodingsHcomputed from an audio streamX. Contrary
+to recurrent neural networks, the transformer architecture en-
+ables precise control of the neighbourhood information at each
+step. For example, acoustic encoding at timet,h t =E θ(X)t,
+may be derived from an arbitrary subset of features inX, as de-
+7184
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-341
+fined by the structure of the maskMused in the self-attention
+layers ofE θ. Definitions 1 and 2 specify the notions of long-
+form acoustic encoding, and long-form segment as relevant for
+this work:
+Definition 1(Long-Form Acoustic Encoding (LFE)).An
+acoustic encodinght is an LFE when it satisfies:
+ht =E θ(X)t withC L(t) =C max
+L , C R(t) =C max
+R
+whereC max
+L andC max
+R denote the maximum left/right context
+supported by the encoderEθ when processing inputsX.
+Definition 2(Long-form segment).A segmentsis considered
+long-form if each encodinghs
+t∈H s is an LFE encoding.
+In other words, the encodingh t becomes LFE when computed
+with the full bidirectional context defined by the masking strat-
+egy ofEθ. Fig. 1 illustrates the crucial difference between short-
+form encodings (SFE) and LFE for any segmentS, and its cor-
+responding acoustic encodingsH s = (hs
+tb , ...., hs
+te ). In partic-
+ular, for segmented utterances (without shaded regions)CL(tb)
+ofhs
+tb andCR(te)ofh s
+te is0. In contrast, for LFE (with shaded
+regions)C L(tb) =C max
+L andC R(te) =C max
+R . Global atten-
+tion makes a special case, as any encoding at any time can be an-
+chored relative to the recording’s edge encodings (h 1 andh T ),
+thus mitigating the LF AD issue. Global attention, however, is
+not always practical as i) the encoder may be expected to be
+streaming, and more importantly, ii) global attention for speech
+is known to be sensitive to duration mismatch between train-
+ing and inference conditions [19, 20], an issue that is likely to
+only be exacerbated in long-form scenarios with ever-growing
+left-context. In general, it is not straightforward to eliminate the
+short/long form mismatch for arbitrary length sequences, as the
+length of training utterances is usually more constrained than
+the length of unsegmented audio streams during inference.
+In this work, we keep the left and right contexts ofEθ fixed
+to a number of look-back and look-ahead conformer frames,
+similar to [18], ensuring robust estimation within this regime.
+Under this formulation, the expected context to obtain LFE
+depends on the finite number ofN”look-back” frames each
+self-attention layer sees in the preceding layer, the number
+of transformer layersLand decimation factorR:C max
+L =
+L·N·Racoustic frames. For the right context, we use causal
+chunks [21] as a good trade-off between latency, accuracy and
+hardware utilization, thusC max
+R =M·R, whereMis the maxi-
+mum number of frames within the chunk that self-attention lay-
+ers can look at in the future. Additionally, similar to [22] we
+train models with several chunk sizes so the latency/accuracy
+trade-off can be configured during inference. This context lim-
+ited architecture works well in long-form applications.
+3. Proposed Modifications
+3.1. Explicit Positional Encodings in Cross Attention
+The fundamental property of dot-product cross-attention is its
+permutation invariance [17]. Given any ordering of inputsH,
+attention produces the same output, meaning it cannot distin-
+guish between different acoustic orderings based solely on con-
+tent, unless content itself encodes sequential order.
+This property becomes problematic for continuous long
+form acoustic streams as AED is typically trained on segmented
+utterances where attention can implicitly learn to exploit edge
+effects as positional anchors where acoustic encodings at seg-
+ment boundaries lack full bidirectional context (cf.Fig. 1, with-
+out shaded areas). This creates distinctive patterns that help
+the decoder implicitly track the ordering ofH. However, when
+the encoder processes enough acoustic signal as is the case
+in the long-form scenario (cf.Fig 1 with shaded areas), these
+edge cues vanish and all embeddings appear contextually simi-
+lar, causing the issues with positional tracking. This limitation
+manifests as repeated transcription outputs and an inability of
+AD to emit end-of-sentence (EOS) tokens.
+To address permutation invariance, we add an absolute po-
+sitional codespto each segmentH s,i.e.H s
+p =H s +p. This is
+on top of the usual positional information injected at the encoder
+inputs [17, 23], as we also explicitly incorporate those at the
+LFE levelH, before they are fed into cross-attention keys and
+values. This ensures attention weights reflect temporal position,
+while positional information specific to segmentspropagates
+to the decoder. Crucially, position indices are reset for each de-
+coded segment rather than maintaining global positions, provid-
+ing sufficient temporal grounding without unbounded growth.
+3.2. Data-level transformations
+Typically ASR is trained using segmented data, allowing mod-
+els to (unintentionally) exploit boundary effects that may be-
+come absent in long-form scenarios (see Section 2.2). To en-
+courage the model to leverage explicit signals for acoustic or-
+dering using PE codes (Section 3.1) rather than relying on these
+artifacts, we propose a long-form training approach exposing
+AD to long-form segments (Definition 2). This differs from
+other data-level long-form training regimes [14,24], as we teach
+AD to specifically decode LFE segmentsH s in a long stream
+of audio encodingsH.
+Expanding acoustic context (AC):During training with
+a pair{Y s,X s}, we expand the acoustic encodings toX s
+E =
+[Xs
+L,X s,X s
+R]for randomly selected LF examples to include
+necessary left/right acoustic contexts for a valid LF segmentHs
+(Definition 2). Lack of edge encodings encourages AD to iden-
+tify alternative information sources for understanding acoustic
+encoding order when computing cross-attention, moving be-
+yond reliance on segment boundaries. For AED loss compu-
+tation and cross-attention, we only use the valid subset of ex-
+pandedH s
+E relevant forY s, discarding leftH s
+L and rightH s
+R
+encodings computed forX s
+L andX s
+R, respectively (see shaded
+regions of Fig. 1).
+Segment concatenation (SC):LF acoustic recordings al-
+low us concatenate arbitrary numbers of consecutive segments,
+including their corresponding contiguous acoustic featuresX
+(with all non-speech audio in the neighbourhood of concate-
+nated segments). We found this to improve AD by i) exposing
+attention to more diverse segment durations and ii) exposing
+AD to more LFE encodings. Similar approach has been ex-
+plored before [14,25]. SC differs from AC as the latter removes
+boundary conditions while the former varies training segment
+lengths, and both can be applied jointly.
+Semantic segmentation (SS):In the spirit of using CTC to
+aid attention decoding [8,26], and to tie segmentations with de-
+coding [27] we explicitly use CTC head to model segmentation
+tokens segE. These are used to indicate boundaries of seman-
+tically coherent sentences, as opposed to relying on audio-only
+V AD. This tag, when emitted by CTC, is used to determine seg-
+mentsHs for which to run second pass AD. Note that the ability
+of AD to decode arbitrary subsets of LFEHs∈His one of the
+main contributions of this work, without which one would need
+to recompute the encodingsHs to introduce boundary cues (see
+Sections 3.1 and 4.1 to see why). We append segmentation tags
+for training transcripts using theSegment any Textmodel [28].
+7185
+4. Experiments
+All models in this work are based on the CTC-AED archi-
+tecture [29]. It offers appealing deployment flexibility, from
+streaming to offline or two pass systems. We train two model
+sizes, referred to asOurs.baseandOurs.smallwith approxi-
+mately 90M and 240M parameters, respectively. Both mod-
+els share the sameR= 6times convolutional downsam-
+pling frontend and attention decoderDθ architecture composed
+of 3 unidirectional transformer blocks totalling 18M param-
+eters. Acoustic encodersE θ are based on causal Conformer
+blocks [15]1 and have 70M and 219M paremters, respectively.
+Both share 512 dimensionality and 8 attention heads, with dif-
+ferent numbers of blocks and feed-forward (FF) dimensions.
+Ours.basehas 12 blocks with 2048 FF units, whileOurs.small
+has 28 blocks and 3072 FF dimension. While architectures like
+Whisper [6] distribute parameters equally between encoder and
+decoder, we scaled the encoder and kept the decoder fixed at
+18M params. This allows an efficient decoder for on-device
+auto-regressive decoding, and a more powerful encoder that bet-
+ter leverages neural accelerators. AD and CTC heads model a
+distribution over the same 6081 byte-pair subword units [30].
+We train our models using a mixture of publicly avail-
+able data using Adam optimizer for 300k updates, each up-
+date using 6144 sentences with an average length of 33 sec-
+onds. The training data is composed of English corpora acces-
+sible through LDC 2, SpeechOcean, LibriHeavy [31] but also
+a large-scale LF conversational audio dataset collected from
+publicly accessible sources, referred to as SpeechCrawl [32].
+SpeechCrawl uses pseudo-labels generated using an ensem-
+ble of open-source [6, 16] and in-house models, followed by
+ROVER committee voting [33]. Not all datasets have long form
+contiguous acoustic recordings, as such long-form transforma-
+tions (Section 3.2) are applied on LibriHeavy, SpeechCrawl and
+SpeechOcean. We report our results on public benchmarks in-
+cludingTedlium3[34] andEarnings21[35] for LF andCom-
+monVoice[36],Librispeech[37] for SF decodes, respectively.
+4.1. Results
+Table 1 presents a systematic study demonstrating the impact
+of each proposed modification for fixing AD issues on LFE in-
+troduced in Section 2. We report results for the three decoding
+modes - attention rescoring [9] (Resc), Attention [1] (Att) and
+joint ctc-attention [38] (CTC-Att). All three utilize AD in dif-
+ferent ways, demonstrating varying behaviour when decoding
+LF data. Unless stated otherwise, segmentations for SFE and
+LFE are identical and derived from a stand-alone V AD system
+for Models 0 - 4. The results show a stark contrast between
+performance on SFE and LFE, highlighting the challenges of
+applying AD to transcribe LF audio segments.
+Baseline Performance (Model 0)The first block of Table 1
+reports word error rates (WER) for the baseline AED model.
+We can see that i) there is a significant accuracy gain when go-
+ing from attention rescoring to autoregressive decoding (5.8%
+to 4.9%) for SFE, and ii) going from SFE to LFE is also benefi-
+cial for attention rescoring (5.8% to 5.4%, due to better quality
+of first pass CTC hypotheses). However, there is a significant
+degradation for LFE with attention or CTC attention decoders.
+This demonstrates that vanilla AD trained on segmented data is
+incompatible with LFE representations (Definition 1). Closer
+investigation showed that the model struggled to emit EOS to-
+1We use Layer Norm instead of Batch Norm, and RoPE encodings.
+2https://catalog.ldc.upenn.edu/. We used Fisher, Callhome and ISCI
+Table 1:Impact of proposed modifications on attention decod-
+ing on short– and long-form acoustic encodings (AE). WER (%)
+reported on TED-LIUM3 long-form test for Ours.base model.
+Mdl AE Modifications WER (%)
+SC AC PE SSAR AD CAT
+0 SFE ✗ ✗ ✗ ✗ 5.8 5.1 4.9
+LFE 5.4 295 14.5
+1 SFE ✓ ✗ ✗ ✗ 5.5 4.9 4.8
+LFE 5.1 295 16.6
+2 SFE ✓ ✓ ✗ ✗ 5.6 4.9 4.8
+LFE 5.1 40.3 8.4
+3 SFE ✓ ✗ ✓ ✗ 5.6 5.0 4.8
+LFE 5.1 145 5.5
+4 SFE ✓ ✓ ✓ ✗ 5.5 4.9 4.7
+LFE 5.1 5.0 4.5
+5 LFE✓ ✓ ✓ ✓4.7 4.8 4.3
+SC - Segment Concatenation, AC - Acoustic Context,
+PE - Positional Encoding, SS - Semantic Segmentations
+AR - Attention Rescoring, CAT - Joint CTC-Attention
+ken, which resulted in re-decoding same chunks over and over
+again causing excessive insertions (only limited by decoder set-
+ting of max number of tokens).
+Segment Concatenations (SC, Model 1)Segment con-
+catenation is the first modification we introduce to increase AD
+performance on LF data, by training it on longer multi-segment
+utterances (up to 2 minute 30 seconds in this work). We can see
+this approach decreases general WER across the board for all
+decoding modes for SFE, though does not solve the crucial AD
+failure for LFE segments,i.e.the segments with no boundary
+cues preserved (Definition 2).
+Impact of Acoustic Context (AC, Model 2)Introducing
+acoustic context during training maintains segmented perfor-
+mance while mitigating the baseline’s difficulties on LFE, re-
+ducing WER from 295% to 40.3%, still a large performance
+gap when compared to SFE. The extended AC encourages the
+model to rely less on boundary cues and more on the exist-
+ing relative positional information present in acoustic embed-
+dings via the existing input RoPE [23] positional encodings. For
+Ours.basemodel,L= 12, N= 16, M= 16andR= 6, so
+C max
+L = 1152andC max
+R = 96acoustic frames. To obtain
+LFE, we append thus 11.52s and 0.96s seconds of left and right
+context, respectively (see also Section 2.2).
+Positional Encoding Effects (PE, Model 3)Adding aux-
+iliary absolute positional encodings toH s (Model 3) shows
+modest improvements, roughly halving long-form AD WER to
+145% compared to Model 1. Although less effective than acous-
+tic context, positional encoding should provide essential tempo-
+ral structure information that helps AD make sense of sequence
+ordering in long-form audio. Interestingly, appending these is
+not sufficient for the model to fully leverage them, likely due to
+boundary cues in segmented training data being an easier short-
+cut to learning temporal ordering. Note, however, that these
+auxiliary position codes do improve over existing Rope encod-
+ings already present in the inputs (cf.Model 1).
+While the results for attention-only decoding for Model 3
+suggest that AC expansion (Model 2) produces larger WER re-
+ductions than segmental PE codes (Model 3), a deeper analy-
+sis reveals more nuanced differences between these approaches.
+7186
+Table 2:WER results for the best systems. Results both on segmented and long-form public benchmarks.
+Model Decoder Chunk Size Segmented Long-form
+(seconds) Lbs clean Lbs other CommonV . Tedlium3 Tedlium3 Earnings21
+Whisper base.en [6] AD 30 4.1 9.6 17.5 4.6 4.6 12.5
+Ours.base AR 0.96 2.3 5.9 16.3 4.8 4.7 13.4
+Ours.base AD 0.96 2.2 5.5 14.1 4.8 4.8 13.3
+Ours.base CAT 0.96 2.1 5.4 14.4 4.4 4.3 12.2
+Ours.base CAT 3.84 1.9 4.9 13.7 4.3 4.3 12.1
+Whisper small.en [6] AD 30 3.2 6.7 12.6 4.3 4.6 10.8
+Ours.small AR 0.96 2.0 4.8 13.4 4.6 4.5 12.5
+Ours.small AD 0.96 2.0 4.6 12.1 4.4 4.4 12.1
+Ours.small CAT 0.96 1.8 4.4 12.4 4.1 4.0 11.4
+Ours.small CAT 3.84 1.7 3.9 11.4 3.9 3.9 11.4
+AD - Attention Decoding, AR - Attention Rescoring, CAT - Joint CTC-Attention
+Positional codes (Model 3) enable the attention mechanism
+to decode more coherent and longer sentences, but the model
+struggled to emit EOS tokens. In contrast, acoustic expansion
+(Model 2) generated EOS tokens more frequently, though at the
+cost of increased deletion errors.
+These findings suggest that Model 3 could achieve superior
+overall performance if provided with better guidance on when
+to stop decoding. We tested this hypothesis using jointCTC-
+Attentiondecoding [38], with results shown in the last column
+of Table 1. When guided by CTC, attention decoding with aux-
+iliary positional codes (Model 3) demonstrates better accuracy
+than the model with expanded acoustic context during training
+(Model 2), 5.5% vs 8.4% WER, respectively.
+Combined Context and Positional Encoding (Model 4)
+The combination of acoustic context and positional encoding
+(Model 4), though, yields significant improvements, achieving
+parity on long-form audio w/ AD between SFE and LFE en-
+codings. This result suggests that both spatial (acoustic con-
+text) and temporal (positional encoding) information are com-
+plementary and necessary for long-form attention decoding, and
+that exposing the model to more data without boundary cues
+during training encourages it to rely more on auxiliary posi-
+tional encodings. This result also demonstrates that explicit PE
+information added toH s is important (compare Table 1Attde-
+code results of Models 4 and 2).
+Complete System with all modifications (Model 5)
+Model 5 demonstrates that using first-pass CTC semantic seg-
+mentation tokens to trigger attention decoding consistently out-
+performs V AD-based approaches. This improvement is ex-
+pected since the attention decoder is trained primarily on cor-
+rectly segmented utterances, while V AD may introduce non-
+semantic boundaries that create inference mismatches. In our
+long-form experiments, these V AD inconsistencies typically re-
+sulted in increased deletion errors.
+The CTC-attention hybrid decoder achieves the best over-
+all performance across all decoding modes. Notably, Model 5
+operates naturally in the LFE space, with Model 4 serving as
+its corresponding SFE baseline when using V AD segmentation.
+Similar performance trends were observed on the Earnings-21
+long-form test set, though these results are not reported here.
+4.2. Final results
+Table 2 demonstrates that our proposed system achieves strong
+performance across both segmented and long-form evaluation
+datasets. Importantly, the adaptations made to enable effective
+long-form processing do not degrade performance on standard
+segmented audio, indicating our architectural modifications are
+robust to different types of segmentations.
+Parameter-wise our models deliver comparable perfor-
+mance to similarly-sized Whisper variants, while doing so at
+lower latency. Our model matches Whisper base.en perfor-
+mance on long-form datasets while improving on segmented
+tasks, and our small model consistently outperforms Whis-
+per small.en across most benchmarks. Note thatLibrispeech
+lbs clean,lbs otherandCommonVoiceare zero shot for Whis-
+per, but not for our systems, which could explain better perfor-
+mance of our models across these three benchmarks.
+The use of CAT decoding provides additional practical ad-
+vantages. This hybrid approach often yields the best perfor-
+mance (e.g., 1.8% WER onlbs cleanvs. 2.0% with pure atten-
+tion), while also enabling streaming first pass inference capabil-
+ities, semantic segmentation tags for when to trigger AD, and
+providing more robust decoding in challenging acoustic condi-
+tions where attention-based decoding is prone to hallucinations.
+Since our model was trained with variable masking at the en-
+coder level, we can configure the model’s chunk size to a larger
+value. We report these results in Table 2 for chunk size of 3.96s
+for the best CAT decodes. The overall trend is WER gets further
+reduced, as expected, but at higher latency cost.
+5. Conclusions
+We presented a set of modifications to train attention decoder
+models so that they can process long-form acoustic encodings.
+Through acoustic context expansion, auxiliary positional en-
+coding, and long-form segment sampling and concatenation, the
+attention decoder based system achieves transcription quality
+of long-form acoustic encodings that is on par with decoding
+of segmented encodings, enabling new ways to use attention
+decoders. The hybrid CTC-attention system with first pass se-
+mantic segmentation tags provides a low latency approach to
+use AD two-pass architectu

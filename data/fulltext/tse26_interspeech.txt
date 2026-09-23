@@ -1,0 +1,469 @@
+AudioNoisePrints: Model-free audio watermarking using spatial correlation in
+flow matching TTS
+Timothy Tin-Long Tse ID 1,2, Jian Zhu ID 2, Aidan Pine ID 1, Mengzhe Geng ID 1
+1 National Research Council Canada, Canada
+2 University of British Columbia, Canada
+timothytse1997@gmail.com, jian.zhu@ubc.ca, aidan.pine@nrc-cnrc.gc.ca,
+mengzhe.geng@nrc-cnrc.gc.ca
+Abstract
+We presentAudioNoisePrints, atraining-freewatermarking
+pipeline for flow matching and diffusion TTS models, which
+requires minimal extra computation during inference and does
+not require retraining the TTS model or reducing the generation
+quality. We exploited the fact that there are strong correlations
+between the initial Gaussian noises and the generated outputs
+in diffusion and flow matching models, such that a simple co-
+sine correlation between the initial noise and the generated out-
+put can be used to perform watermaking. Moreover, we train a
+lightweight detector on top for more aggressive augmentations.
+Our method outperformsAudioSeal, a strong baseline for audio
+watermarking under strong augmentations. We experimented
+onF5TTSand other TTS and vocoder models, and concluded
+that they all exhibit similarspatial correlationproperties, sug-
+gesting our watermarking scheme can be used for more flow-
+matching TTS models and even vocoders in the future.
+Index Terms: Audio Watermarking, Speech Synthesis
+1. Introduction
+Flow matching models [1] and diffusion models [2] have anable
+impressive progress in speech synthesis, from multi-speaker
+Text-to-Speech models like MatchaTTS [3], E2TTS [4], and
+F5-TTS [5], to vocoders like DiffWave [6] and WaveFM [7].
+While they are praised for their capability in high-fidelity
+speech synthesis, very little is known of their properties beyond
+generation quality.
+In recent years, researchers have tried to analyze the rela-
+tionship between the intermediate latent representations of dif-
+fusion and flow matching (FM) models and the semantics of the
+generated data. Recent results showed the correlation might be
+straightforward: the latent encodings (originating noise) some-
+what resemble the generated image patterns [8, 9]. More specif-
+ically, the generated image has a much stronger correlation
+with the originating noise than any other randomly generated
+noise (see §2 for elaboration). This property allows a simple
+method of watermarking (namedNoisePrints[9]): determinis-
+tically creating a set of initial noise for generation and using the
+correlation between the known noise and generated output as
+the metric to determine if the image originated from the noise.
+This is especially important for watermarking, as it not only
+prevents the watermarking process from reducing the quality of
+the generated image [10], but it also does not require retraining
+the flow-matching model or an external detector. In this way,
+the approach is ‘model-free’.
+In the original work forNoisePrints, only one specific type
+of model was explored: a latent diffusion model which gener-
+ates images via a V AE. To our knowledge, we are the first to
+investigate this approach on diffusion or flow matching (FM)
+based speech-synthesis models. In this work, our main contri-
+butions can be summarized as follows:
+• Our experiments with F5-TTS and MatchaTTS shows our
+new watermarking scheme achieved better robustness under
+strong augmentation when comparing with state-of-the-art
+post-hoc deep watermarking models; without the need of re-
+training the TTS model or introducing extra compute during
+inference time. Our method also circumvents the trade-off
+between “qualityvsrobustness”
+• We further extend the original approach by introducing an ex-
+ternal detector, which again achieves better result against the
+strong baseline model while maintaining the advantages of
+NoisePrints’s methodology (no overhead during generation
+and no impact on generation quality).
+• We show that other flow matching (FM) and diffusion TTS
+and vocoder models also exhibit strong correlations between
+originating noises and generated data as described by [8, 9],
+proving more TTS and vocoder models can be benefited with
+our simple watermarking approach.
+2. Background
+2.1. Diffusion and Flow-matching
+Diffusion models and flow matching (FM) models are a fam-
+ily of iterative generative models with a similar process of re-
+versing Gaussian noise into the target data distribution [11, 12].
+Consider a data pointx 0 (could either be an image, a Mel-
+spectrogram, or audio frame) and a Gaussian noisex L with in-
+termediate stepsi∈[0,L]. For the diffusion modelϵ ϕ(xi,i),
+we have the following iterative equation (see Lemma 2.2.2 and
+Equation 2.2.9 in [12]):
+xi−1 = 1
+αi
+
+xi− 1−α 2
+ip
+1−¯α2
+i
+ϵϕ(xi,i)
+
+αi andβ i are predetermined constants withα i
+p
+1−β 2
+i
+andβ i∈(0,1), and¯α i
+Qi
+j=0αi. On the other hand, for flow
+matching modelsvϕ(xi,i), we have
+xi−1 =x i +vϕ(xi,i)dti
+Wheredt i are, again, predetermined constants. In both
+cases, we can see that for each step ofi, the model output of
+diffusion (ϵϕ(xi,i)) and flow-matching (v ϕ(xi,i)) models are
+trained to guide the Gaussian noise fromx L all the way to the
+data distribution ofx 0, acting similar to a vector field in the
+target data space (note that we only consider the case for us-
+ing the Euler ODE solver, which is the only solver used in all
+experiments in this paper).
+6881
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2165
+Figure 1:General overview of our approach (AudioNoisePrints) comparing to the commonly used post-hoc watermarking schemes. As
+shown above, the post-hoc watermarking model required altering the audio after it is generated, which creates computation overhead
+and alters the quality of the audio. Our method simply changes the initial noise ˆxinit during generation (without altering the quality
+of the generated audio), and uses either the model-free option (calculating the cosine similarity of the audio-Mel-spectrogram and the
+initial noise) or the more robust detector option to determine if the audio is in fact watermarked.
+In recent developments, there have been multiple findings
+on the relationship betweenx L and the generatedx 0 via diffu-
+sion model, namely, the spatial relations between the two [8, 9].
+They found that the cosine similarity between the generated
+x0 and originating noisex L is significantly higher than that of
+other randomly sampled noisex′
+0∼N(0,I). This resulted in
+a higher Pearson correlation between each pixel inx 0 andx L.
+It seems the patterns in the generated image (or latent) are also
+present in the original noise.
+2.2. Audio Watermarking
+Deep audio watermarking algorithms [13, 14, 15, 16, 17]
+strive to inject robustly detectable yet imperceptible information
+within audio. Most current approaches fall under the following
+two categories.
+2.2.1. Post-hoc watermarking
+Applied on the already generated audio (hence the name “post-
+hoc”), these models are plug-and-play in the sense that you
+can simply download an open-source watermarking model and
+implement it in your pipeline. However, recent research has
+shown that using open-source watermarking schemes is prone
+tooverwriting attacks[18], where the attacker simply has to
+detect which watermarking model is used in the audio and pro-
+ceed to overwrite it with their own watermark (using the same
+open-source model). Post-hoc watermarking also requires ex-
+tra computational resources and latency in the audio generation
+pipeline. Moreover, post-hoc watermarking requires the audio
+to be altered; the more audibly altered the audio is, the more
+robust the watermark becomes to malicious attacks (harder to
+erase), but this also means there exists a fundamental trade-off
+between audio quality and robustness.
+2.2.2. In-model watermarking
+On the other hand, in-model watermarking [19, 15] tries to in-
+troduce the watermark during the generation process, which
+usually requires retraining the generative model (for example,
+[19] retrain the entire TTS model in order to make it detectable).
+While these methods avoid some of the shortcomings of post-
+hoc watermarking, such as extra computation and vulnerability
+to overwriting attacks, they require many more computational
+resources to train, and the generation quality might also be af-
+fected after the in-model watermarking training is conducted, as
+one cannot simply “add” in-model watermarking on top of their
+existing audio generation pipeline.
+Notably,NoisePrints[9] is an in-model watermarking al-
+gorithm for latent image generation models. TheNoisePrints
+watermarking method uses the property of spatial similarity be-
+tween noise and output mentioned in section 2.1 by creating a
+set of predetermined initial noisexspecial
+0 (from a known hash).
+By directly comparing that initial noise and the image’s latent
+x′
+L (encoded by the same V AE encoder) via cosine similarity
+dsim =cosSim(x special
+0 ,x′
+L), they can determine if that im-
+age was in fact generated from that particular noise via compar-
+ing the similarity score with an empirical thresholdτ. In short,
+ifdsim >τ, the image will be determined as having been gen-
+erated from that particular noise.
+In this work, we are able to leverage such properties of dif-
+fusion and flow matching models to create an in-model pipeline
+whichdoes not require retraining the audio generation model,
+while also preserving most (if not all) of the generation quality.
+3. Method
+In this section we will discuss the ways in which we adapt the
+NoisePrintsmethod from the image domain to audio.
+3.1. Adoption of NoisePrints in audio domain
+We define the distance between the original noise (x 0) and
+the generated audio and/or Mel-spectrogramsx L asd org =
+fdist(x0,xL), withf dist being distance functions such as
+cosine-similarity. Unlike the original approach, the distance
+dorg is not calculated in the latent space but rather in the audio
+or Mel-spectrogram domain. Instead of using a fixed threshold
+τlike in [9], we calculate the empirical p-value by compar-
+ing the distance between Mel-spectrogram and original noise
+dorg =f dist(x0,xL)and the distances between the same au-
+dio but withN(500 in all of our experiments) randomly gener-
+ated noise, i.ed rand =f dist(xrand,xL). A thresholdτ p is set
+for the minimum p-value required for a audio to be considered
+“watermarked”.
+6882
+10 15 20 25 30 35 40
+Signal-to-Noise Ratio in db
+0.6
+0.7
+0.8
+0.9
+1.0Accuracy
+White Noise
+Cosine similarity
+Audioseal
+Detector
+10 15 20 25 30 35 40
+Signal-to-Noise Ratio in db
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00Accuracy
+Pink Noise
+500 1000 1500 2000 2500 3000 3500 4000
+high pass cut off
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0Accuracy
+high pass filter
+500 600 700 800 900 1000
+low pass cut off
+0.5
+0.6
+0.7
+0.8
+0.9Accuracy
+low pass filter
+50000 100000 150000 200000 250000 300000
+bit-rate
+0.97
+0.98
+0.99
+1.00Accuracy
+MP3 compression
+1 2 3
+remaining audio length (seconds)
+0.80
+0.85
+0.90
+0.95
+1.00Accuracy
+Audio Cropping
+0.9 0.95 1.0 1.05 1.1
+Speed scaling factor
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0Accuracy
+Speed
+Figure 2:Accuracy comparing the AudioSeal and our approaches. While AudioSeal has a higher top-end score (1.0 accuracy), under
+strong augmentation, our method (using either the model-free Cosine similarity approach or the Detector approach) significantly
+outperforms the post-hoc watermark baseline. Especially in the speed augmentation, where AudioSeal fails even witha 1 percent
+change in stretching.
+3.2. TheDetectorapproach
+AdaptingNoisePrintsfrom the image to audio domain also
+poses new challenges. In TTS, an attack in the frequency do-
+main could significantly reduce our detection accuracy. This
+raises the question: How robust is this spatial correlation in
+the audio Mel-spectrogram space? Moreover, as audio does not
+have a fixed size like a predetermined latent, simple attacks such
+as cropping and speed augmentation can cause the watermark-
+ing recovery to become significantly more complex, requiring
+algorithms that use sliding windows and dynamic time warp-
+ing.
+While we can still use cosine similarity, we devise a new
+watermarking pipeline to reduce these complexities during de-
+tection. We name it theDetectorapproach. Given a special
+noise (ˆxinit in Figure 1), we train an external convolutional neu-
+ral net with the objective of binary classification (if that audio
+is generated from the noiseˆxinit or not, via a specific TTS dif-
+fusion/FM model). In order to increase robustness to combat
+the issue mentioned above, we apply data augmentation meth-
+ods (including compression codecs like MP3 and AAC). We
+synthesize data from the TTS models with two categories: 1)
+generated fromˆxinit, and 2) noisex 0 being randomly sampled.
+To make the noise prediction even more reliable to combat ag-
+gressive attacks such as cropping, we sample the noiseˆx init
+periodically with a fixed length of 100 frames in Mel-space, i.e.
+for every audio with lengthL, we repeatˆx init until the final
+length exceedsL.
+We want to emphasize that while theDetectorapproach re-
+quires additional training, the biggest benefit of a model-free
+approach still persists, namely we do not need to retrain the
+TTS model (which could lead to quality degradation). The de-
+tector approach is only used here to increase inference speed
+and reduce complexity.
+3.3. Experiments
+3.3.1. F5-TTS and MatchaTTS
+For Text-to-Speech models, we use the official implementa-
+tion of F5-TTS1 and MatchaTTS 2, a state-of-the-art Diffusion
+1https://github.com/SWivid/F5-TTS
+2https://github.com/shivammehta25/Matcha-TTS
+τp 0.80 0.85 0.90 0.95 1.00
+CoSim 0.905 0.9300.9490.975 0.988
+L10.392 0.422 0.450 0.476 0.497
+L20.405 0.424 0.448 0.474 0.497
+Dot0.885 0.9220.9550.972 0.986
+Table 1:Performance comparison across similarity thresholds
+and distance functions (F5-TTS).
+F5-TTS
+Augmentation CosSim Detecor AudioSeal
+AAC compression 0.987 0.9947 1.0
+Echo 0.504 0.499 1.0
+Table 2:All three methodologies have near 1.0 accuracy AAC
+(mp4) compression. Yet the current methodology did not per-
+form as well with the “echo” augmentation.
+Transformer (DiT) based FM model [20], with a similar pretrain
+task (text-guided speech-infilling) as the E2 TTS model [4],
+allowing it to leverage reference audio for non-autoaggressive
+generation. On the other hand Matcha-TTS uses its own resid-
+ual U-Net architecture, the training objective is more tradi-
+tional, and it does not make use of reference audio, instead
+using speaker IDs for its multi-speaker TTS objective. For F5-
+TTS, we used theirF5-TTS v1 Basecheckpoint, with the V ocos
+vocoder [21]; and for Matcha-TTS, we used the VCTK check-
+points provided in their repository’s ReadMe.
+3.3.2. Dataset
+For the audio dataset, we choose the commonly used TTS
+datasets LibriTTS [22] and LJSpeech [23]. LJSpeech is used
+for conducting experiments for the DiffWave vocoder. In order
+to create the synthetic dataset to train our external detector, we
+used an additional emotion detection text dataset3.
+3https://huggingface.co/datasets/jakeazcona/short-text-labeled-
+emotion-classification
+6883
+0.005
+ 0.000 0.005 0.010 0.015 0.020 0.025
+Cosine Similarity
+0.0
+2.5
+5.0
+7.5
+10.0
+12.5Frequency
+0.0 0.2 0.4 0.6 0.8 1.0
+Cosine Similarity
+0
+2
+4
+6
+8
+10
+12Frequency
+0.02
+ 0.00 0.02 0.04 0.06
+Cosine Similarity
+0
+2
+4
+6
+8
+10
+12Frequency
+Figure 3:(Top) Distributions of random noise similarity versus originated noise similarity (red line) for the DiffWave vocoder [Left] and
+MatchTTS [Middle] and F5TTS models [Right]. The generated audio is significantly more similar to the original noise than random
+noises.
+3.3.3. Trained and Baseline Detector
+Our Audio NoisePrints detector is a 4-layerConv2DResNet
+trained with a binary classification objective to detect whether
+a Mel-spectrogram was generated from our designated noise or
+not. During training we feed the model both Mel-spectrograms
+generated from randomly initialized noise and specified noise,
+and conduct binary classification using the BCE loss function.
+We compare our model against theAudioSeal[13] base-
+line. It is a classic yet powerful post-hoc watermarking model,
+trained with 4.5K hours of data from the V oxPopuli dataset [24].
+It was used as a strong baseline in multiple post-hoc watermark-
+ing publications [16, 17, 25, 26]. We used their 16k pretrained
+checkpoint from the official repository 4.
+4. Results and Discussion
+4.1. Comparisons with AudioSeal
+In Figure 2,AudioNoisePrintsis shown to be just as (if not
+more) robust against a trained baseline (AudioSeal) across F5-
+TTS and MatchaTTS, models with different architecture and
+training objective. While the top line accuracy does not reach
+100% (unlike Audioseal, but still reaching around 97-98%), it
+performs significantly better under strong augmentations (ex-
+cept MP3, which does not seem to affect detection perfor-
+mance at all). On the other hand,AudioNoisePrintssignifi-
+cantly outperforms AudioSeal in cropping and speed augmenta-
+tion, where AudioSeal completely failed with just a one percent
+change of audio speed. However, our method did not perform
+as well in the “Echo” augmentation (see table 2); this is not
+surprising, as AudioSeal is pretrained with this augmentation,
+while our method was not. Our detector produced strong results
+against conventional audio compression attacks (>97%preci-
+sion and accuracy). Without any additional processing during
+generation or any compromise on generated quality, our model
+performs comparably to the commonly usedAudioSealpost-
+hoc watermarking model.
+The significance of theAudioNoisePrintsapproach is its
+simplicity. While it might not be fair to compare a post-hoc
+watermarking scheme with an in-model (or in-generation) one,
+our new methodology has no computation overhead on the gen-
+eration process or the need to retrain the TTS models (basically
+plug-and-play). This approach is also more robust than the post-
+hoc AudioSeal model in most augmentations, which not only
+specifically trained for the augmentations we tested, it also pre-
+trained on a significantly larger dataset (4.5k hours of training
+data compared with us using just LibriTTS). This shows that if
+the watermark’s objective is to protect (or detect) a Diffusion /
+FM Text-to-speech model, our method is much more computa-
+tionally and data efficient.
+4https://github.com/facebookresearch/audioseal/
+4.2. The choice of spatial distance function
+We also experimented with three other distance functions (L1,
+L2 and dot product). In Table 1,onlycosine similarity and dot-
+product are able to achieve any acceptable performance, though
+cosine similarity perform slightly better, withcutoff= 1.0hav-
+ing the highest accuracy. Accordingly, all the following experi-
+ments will useCosSimas their distance function.
+4.3. Spatial correlations in other TTS models
+As additional validation, we also analyze another diffusion
+vocoder. we evaluatedDiffWave[6], a diffusion vocoder.
+DiffWave uses a bidirectional dilated convolution architecture
+with diffusion modeling, a different architecture than Matcha-
+TTS or F5-TTS. We used the official implementation for both
+MatchaTTS5 and DiffWave6 in all of our experiments. For
+Matcha-TTS, we used the VCTK checkpoints; and for Dif-
+fWave we used the LJSpeech checkpoint.
+In Figure 3, we can see the distance distribution ofd rand
+(in blue) versus the original distanced org (in red) in a sin-
+gle audio sample (and with different models, namely, F5-TTS,
+Matcha-TTS, and the DiffWave vocoder). We can immediately
+see the large divide betweendrand anddorg. We further gener-
+ate 500 audio data for MatchaTTS and DiffWave, and in ev-
+ery single audio, the p-value of the red line is 0.0, meaning
+dorg >>d rand is a general phenomenon for both models. The
+finding above shows the spatial-correlation is not unique to the
+TTS model we tested, suggesting similar watermarking and de-
+tection methodology could be adapted to other FM TTS models
+and vocoders.
+5. Conclusions
+We presentAudioNoisePrints, a model-free watermarking
+scheme for fast audio watermarking. Comparing with the com-
+monly usedpost-hocwatermarking scheme such asAudioSeal,
+our methodology is model-free, with zero computational over-
+head during generation, and without compromising the genera-
+tion quality with the trade-off of robustness. Our experiments
+also show thatAudioNoisePrintsis more robust under strong
+augmentations compared to the baselineAudioSeal, which is
+trained with thousands of hours of audio data. We show that
+the spatial correlation property that enabled our watermark-
+ing methodology also exists in other FM and diffusion models.
+These findings suggest potential for broader adaptations and ap-
+plications in different audio models.
+5https://github.com/shivammehta25/Matcha-TTS
+6https://github.com/lmnt-com/diffwave/
+6884
+6. Use of Generative AI Disclosure
+No generative AI tools were used in the process of generating
+experiment results or writing this manuscript.
+7. Acknowledgments
+This work was done during first author’s internship at the Dig-
+ital Technologies Research Centre, National Research Council
+Canada. A special thanks to Robin Shing-Hei Yuen for provid-
+ing computation resources when needed.

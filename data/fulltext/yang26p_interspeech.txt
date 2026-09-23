@@ -1,0 +1,507 @@
+RobustSpeechFlow: Learning Robust Text-to-Speech Trajectories via
+Augmentation-based Contrastive Flow Matching
+Jinhyeok Yang1, Hyeongju Kim†2, Yechan Yu1, Joon Byun1, Frederik Bous1, Juheon Lee1
+1 Supertone Inc., Republic of Korea
+2 Out of Set Inc., Republic of Korea
+hello@yangyangii.world, juheon@supertone.ai
+Abstract
+While flow-matching text-to-speech (TTS) achieves strong
+zero-shot speaker similarity and naturalness, it remains sus-
+ceptible to content fidelity issues, particularly skip and repeat
+errors from imperfect alignment. We propose RobustSpeech-
+Flow, a training strategy that improves alignment robustness
+by extending contrastive flow matching with length-preserving
+repeat and skip latent augmentations. Requiring no external
+aligners or preference data, our method directly penalizes real-
+istic failure modes and readily integrates into existing pipelines.
+On Seed-TTS-eval, it reduces the word error rate (WER) from
+1.44 to 1.38 using only 0.06B parameters. On our ZERO500
+benchmark, it delivers consistent intelligibility improvements
+across diverse speaker and prosody conditions; at NFE=24,
+it reduces English character error rate (CER) from 0.48% to
+0.35% and Korean CER from 0.81% to 0.57%. Audio samples:
+https://robustspeechflow.github.io/.
+Index Terms: text-to-speech, zero-shot TTS, flow matching,
+alignment robustness, contrastive learning
+1. Introduction
+In text-to-speech (TTS), the primary requirement iscontent fi-
+delity: the system must render the intended text accurately. In
+production, failures such as word or phraserepetitionandskip-
+pingare not minor artifacts; they materially reduce reliability
+and can create safety and compliance risks. As modern gener-
+ative TTS systems continue to improve naturalness and expres-
+sivity, robust text–speech alignment remains a central problem.
+Recent progress in non-autoregressive TTS has increas-
+ingly been driven by flow-matching-based latent generation.
+DiTTo-TTS shows that large-scale diffusion transformers can
+achieve strong zero-shot quality without relying on domain-
+specific factors such as phonemes or phoneme durations, high-
+lighting the value of scalable latent modeling and cross-
+attention-based alignment [1]. F5-TTS further demonstrates
+that flow matching with a DiT backbone can simplify the
+pipeline by removing explicit duration modeling and alignment
+modules while retaining high quality and robustness [2]. At
+the efficiency end of the spectrum, SupertonicTTS shows that
+compact flow-matching TTS can be practical for deployment,
+but also makes clear that content stability becomes increasingly
+difficult under tight capacity and latency constraints [3].
+In parallel, the integration of autoregressive language mod-
+eling with diffusion processes [4] has catalyzed a new wave
+of highly expressive speech generation. Building upon this
+paradigm, recent systems such as DiTAR [5], V oxCPM [6],
+†This work was conducted while the author was with Supertone
+Inc.
+and VibeV oice [7] have substantially improved zero-shot qual-
+ity and contextual naturalness. While these advances broaden
+the scope of generative speech modeling, they do not reliably
+resolve the issue of content fidelity. In practice, both pure flow-
+matching architectures and hybrid LM-diffusion systems con-
+tinue to exhibit alignment errors. Crucially, these skip and re-
+peat failures tend to become more severe as model capacity is
+constrained or the number of function evaluations (NFE) is re-
+duced during inference [2, 3, 5]. Furthermore, as speech gen-
+erative modeling is scaled with increasingly large and diverse
+ASR-curated corpora such as GigaSpeech and Emilia [8, 9], en-
+suring robust quality control and alignment becomes even more
+critical.
+Several directions have been explored to mitigate this mis-
+alignment. At the architectural level, explicit conditioning and
+guidance can improve low-step stability; for instance, Dual-
+Speech uses a phoneme-level latent diffusion formulation with
+multiple classifier-free guidance signals to stabilize generation
+at low NFE [10]. Similarly, stronger architectures and pre-
+trained representations can improve overall robustness, but they
+do not eliminate skip and repeat failures altogether [1]. Beyond
+architectural modifications, preference-based approaches con-
+struct dedicated intelligibility datasets and apply post-training
+objectives such as DPO to penalize failure cases [11, 12]. Other
+approaches introduce auxiliary supervision from recognition or
+metric-optimization models, for example ASR- or CTC-derived
+objectives that directly penalize content errors [13]. While ef-
+fective, these strategies either require costly data curation or in-
+troduce additional models and training complexity, which is un-
+desirable for lightweight deployment settings.
+We proposeRobustSpeechFlow, a simpletraining strategy
+forcontrastive flow matching in TTSthat improves alignment
+robustness without additional models or datasets. Our key idea
+is to convert common TTS failure modes intohard negatives
+in latent space: we synthesize skip- and repeat-like target la-
+tents with length-preserving overwrites and train the model con-
+trastively so that the correct latent trajectory is preferred over
+these corrupted alternatives. This directly aligns the contrastive
+signal with the failure patterns that matter in practice while re-
+maining compatible with standard flow-matching training.
+The main contributions are as follows.
+• We introduce RobustSpeechFlow, a speech-specific
+contrastive flow-matching training strategy that targets
+skip/repeat failures via simple latent-space augmentations.
+• The proposed method requires no preference dataset, no ex-
+ternal aligner or ASR model, and readily integrates into FM-
+TTS pipelines with minimal overhead.
+• We demonstrate consistent improvements on both a public
+zero-shot benchmark and a new multilingual benchmark with
+6916
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3086
+higher speaker, prosody, and text diversity, especially under
+low-NFE inference.
+2. Background
+2.1. Alignment Robustness
+Alignment errors have been a persistent challenge since early
+deep-learning-based TTS. Tacotron 2 improves attention sta-
+bility with location-sensitive attention [14]. Deep Convolu-
+tional TTS (DCTTS) introduces a guided-attention loss and a
+forced-incremental attention heuristic at synthesis time to miti-
+gate skipped or repeated characters [15]. Despite these efforts,
+skip/repeat failures remain common, especially for long or out-
+of-distribution text.
+Recent work has explored post-training and auxiliary-
+guidance approaches. Preference-based methods construct tar-
+geted failure cases and apply direct preference optimization
+(DPO) training [11, 12]. Other approaches introduce auxil-
+iary objectives, such as CTC-based ASR supervision, to di-
+rectly penalize content errors [13, 16]. Alternatively, leveraging
+strong pretrained text and speech representations (e.g., ByT5
+and SpeechT5) has been shown to inherently improve alignment
+stability, as demonstrated in DiTTo-TTS [1].
+While positional encodings like LARoPE [17] provide a
+practical lever to improve alignment under duration variation,
+RobustSpeechFlow operates orthogonally: we reshape train-
+ing using failure-mode contrastive negatives without introduc-
+ing new models or external supervision.
+2.2. Contrastive Learning and Hard Negatives
+Contrastive learning has been widely used to improve discrimi-
+native representations by bringing positives closer and pushing
+negatives apart [18, 19]. In practice, the usefulness of the con-
+trastive signal depends strongly on negative construction: hard
+negatives that remain close to the anchor but violate the condi-
+tioning semantics often provide a stronger gradient than easy,
+unrelated negatives.
+This idea has recently been extended to generative model-
+ing. Contrastive Flow Matching (CFM) [20], originally intro-
+duced for image generation, augments the standard conditional
+flow-matching objective with contrastive regularization terms
+computed from mismatched conditions. Concretely, it keeps
+the predicted vector field aligned with the positive transport di-
+rection while separating it from negative transport directions in-
+duced by incorrect conditions. This improves condition selec-
+tivity during training without changing the FM inference proce-
+dure.
+RobustSpeechFlow adapts this framework to speech gen-
+eration and fundamentally strengthens the negative formula-
+tion for TTS. Rather than relying on random condition mis-
+matches, we construct same-utterance latent corruptions that re-
+main acoustically plausible while explicitly breaking local text–
+speech alignment.
+3. RobustSpeechFlow
+3.1. Preliminaries: Conditional Flow Matching
+Letx∈R C×T be a continuous latent speech sequence pro-
+duced by theSupertonic speech autoencoder[3], and letcde-
+note conditioning inputs (text and optional speaker prompt).
+We use a standard linear probability path for conditional flow
+matching:
+ϵ∼N(0,I), t∼U(0,1), x t = (1−t)ϵ+tx.(1)
+The target velocity isv(x,ϵ) =x−ϵ. We train a neural vector
+fielduθ(xt,t,c)with
+Lpos =E
+
+∥uθ(xt,t,c)−v(x,ϵ)∥ 2
+2
+
+.(2)
+3.2. Baseline: Contrastive FM with Random Negatives
+A simple contrastive extension samples a negative latentx −
+rand
+from another batch item and introduces a contrastive regular-
+ization term based on the corresponding negative velocity:
+Lrand =E
+
+∥uθ(xt,t,c)−v(x −
+rand,ϵ)∥ 2
+2
+
+.(3)
+This term is subtracted in the final objective. In TTS, random
+negatives may be semantically unrelated to the conditioning text
+and thus fail to target alignment errors directly.
+3.3. TTS Failure-mode Negatives via Latent Augmentation
+TTS systems that lose alignment often repeat a pronunciation,
+word, or short clause, or skip a local text span altogether.
+We therefore constructTTS failure-mode negativesby perturb-
+ing theground-truthlatent sequence while keeping the overall
+length fixed. This design is important in practice: variable-
+length corruption complicates batch construction and destabi-
+lizes training in a fixed-length latent pipeline.
+For each utterance, we first choose the augmentation type
+m∈{rep,skip}withPr(m=rep) = Pr(m=skip) = 0.5.
+We then sample a coverage budgetκ:κ∼U(0.2,0.4)for re-
+peat andκ∼U(0.4,0.8)for skip. Within the chosen mode, we
+repeatedly sample span lengths uniformly between the frame
+counts corresponding to 0.1 and 5.0 seconds and apply edits un-
+til the cumulative modified coverage would exceed the sampled
+budget.
+3.3.1. Repeat Augmentation
+We first initialize the negative latent as a copy of the original
+sequence,x−
+rep =x. We then sample a source span[s,s+ℓ)
+and a different target startkwithk+ℓ≤T, and overwrite the
+target region with the source content:
+x−
+rep[k:k+ℓ]←x[s:s+ℓ],s.t.s̸=k.(4)
+By overwriting a target region rather than appending duplicated
+frames, this approach strictly preserves the original sequence
+length. Moreover, because the original content at the target span
+is overwritten, this operation inherently induces a simultaneous
+skip error, effectively simulating the composite repeat-and-skip
+failures frequently observed in real-world TTS misalignment.
+3.3.2. Skip Augmentation
+Similarly, we initialize the negative latent as a copy of the orig-
+inal sequence,x−
+skip =x. We sample a skip start indexs 1 and a
+skip lengthℓ. To simulate a local skip, we shift the subsequent
+latent sequence forward to overwrite the skipped region:
+x−
+skip[s1 :T−ℓ]←x[s 1 +ℓ:T].(5)
+After shifting the sequence, the remainingℓframes at the tail of
+the utterance ([T−ℓ:T]) are replaced with a precomputed si-
+lence latentx sil. By shifting the future context and padding with
+silence rather than explicitly deleting frames, this approach sim-
+ulates a realistic skip error while strictly preserving the global
+sequence duration.
+6917
+Algorithm 1Training step of RobustSpeechFlow
+Require:Batch of audioa, Text conditionsc, Hyperparameters
+λrand,λ aug
+1:x←Encoder(a)▷Extract speech latent representation
+2:ϵ∼N(0,I),t∼U(0,1)▷Sample Gaussian noise and
+time step
+3:x t←(1−t)ϵ+tx ▷Construct flow matching trajectory
+4:v pos←x−ϵ ▷Target vector field (Positive)
+5:x rand←RollBatch(x)▷In-batch random negative sample
+6:v rand←x rand−ϵ ▷Vector field towards random negative
+7:x aug←Augment(x)▷Same-length failure-mode negative
+8:v aug←x aug−ϵ▷Vector field towards augmented negative
+9:u θ←Model(x t,t,c)▷Predict vector field
+10:L pos←∥u θ−v pos∥2
+2 ▷Standard FM loss
+11:L rand←∥u θ−v rand∥2
+2 ▷Contrastive reg. (Random)
+12:L aug←∥u θ−v aug∥2
+2 ▷Contrastive reg. (Hard)
+13:L total←L pos−λ randLrand−λ augLaug ▷Total objective
+14:returnL total ▷Update model parameters via gradient
+descent
+3.3.3. Implementation Details
+These negatives remain close to the original utterance in speaker
+identity and acoustic texture, but they corrupt local text–speech
+correspondence. They are therefore substantially harder and
+more relevant to the conditioning text than random batch neg-
+atives. For implementation convenience, the silence latentx sil
+used to pad the tail of the skip negatives is simply precomputed
+by encoding a zero-padded waveform with the codec and re-
+peating the resulting latent frames to the required length.
+The augmentation-based contrastive regularization is de-
+fined as:
+Laug =E
+
+∥uθ(xt,t,c)−v(x −
+aug,ϵ)∥ 2
+2
+
+,(6)
+wherex−
+aug∈{x−
+rep,x−
+skip}denotes the corrupted latent produced
+by the chosen augmentation mode.
+3.4. Overall Objective
+The overall training objective combines the positive flow-
+matching loss with the contrastive regularization terms:
+L=L pos−λ randLrand−λ augLaug.(7)
+4. Experimental Setup
+4.1. Training Data
+We train on internal corpora of approximately 10k hours, 5M ut-
+terances, and 80k speakers per language (English and Korean),
+utilizing a mix of human-annotated and ASR-generated tran-
+scriptions.
+4.2. Model and Baselines
+We apply RobustSpeechFlow to SupertonicTTS [3], a compact
+flow-matching model operating onSupertonic autoencoderla-
+tents. Keeping the architecture fixed, we compare three objec-
+tives: (i)Baseline(vanilla SupertonicTTS), (ii)ContrastiveFM
+(baseline with random-batch negatives), and (iii)RobustSpeech-
+Flow(ContrastiveFM with augmentation-based hard negatives).
+To isolate the objective’s effect, we train an utterance-level du-
+ration predictor independently and share the exact same pre-
+Table 1:Performance on the Seed-TTS-eval benchmark. Lower
+WER and higher SIM are better. The lower block reports our
+compact in-family baselines and RobustSpeechFlow.
+Model Params WER↓SIM↑
+MegaTTS3 [23] 0.5B 2.79 0.77
+Seed-TTSDiT [21] – 1.730.79
+DiTAR [5] 0.6B 1.69 0.74
+MiniMax-Speech [24] – 1.65 0.69
+F5-TTS [2] 0.3B 2.00 0.67
+CosyV oice3 [25] 1.5B 2.22 0.72
+Spark-TTS [26] 0.5B 3.14 0.57
+OpenAudio S1-Mini [27] 0.5B 1.94 0.55
+IndexTTS2 [28] 1.5B 2.23 0.71
+VibeV oice [7] 1.5B 3.04 0.69
+V oxCPM-Emilia [6] 0.5B 2.34 0.68
+V oxCPM [6] 0.5B 1.85 0.73
+Baseline(SupertonicTTS)0.06B1.44 0.60
+ContrastiveFM0.06B1.41 0.60
+RobustSpeechFlow 0.06B 1.380.60
+trained text-to-latent checkpoint across all methods. Follow-
+ing SupertonicTTS, we input raw text without grapheme-to-
+phoneme conversion.
+4.3. Training and Inference Settings
+Audio is resampled to 44.1 kHz for both training and inference.
+We train all models for 500k steps on 8 NVIDIA H100 GPUs
+using dynamic batching. We use the AdamW optimizer (learn-
+ing rate 5e-4,β= (0.9,0.999), zero weight decay), halving
+the learning rate every 200k steps. Reference speech is sampled
+from a same-speaker segment uniformly drawn from 3 to 10
+seconds. For all methods, we apply Length-Aware RoPE [17]
+and context-sharing batch expansion (factor 6) [3]. While Ro-
+bustSpeechFlow usesλ rand =λ aug = 0.2, ContrastiveFM sets
+λaug = 0.0. For deployment-oriented inference, we use an Eu-
+ler solver with a classifier-free guidance weight of 3.0 at NFE
+∈{12,24}.
+4.4. Evaluation Metrics
+We evaluate on two suites: the public Seed-TTS-eval bench-
+mark [21] and our newly constructed ZERO500 benchmark.
+ZERO500 is designed to stress alignment under diverse condi-
+tions, containing 50 diverse reference voices (e.g., game, news,
+conversational) per language (English and Korean). Each voice
+is randomly paired with 10 text prompts, yielding 500 pairs per
+language. We synthesize each pair twice using different random
+seeds and report the average.
+We transcribe the synthesized audio using Whisper large-
+v3 [22] to compute the character error rate (CER, %) and word
+error rate (WER, %). Scoring applies only light text normal-
+ization, limited to punctuation removal and simple whitespace
+cleanup.
+5. Results
+5.1. Zero-shot Intelligibility on Seed-TTS-eval
+We first evaluate on the public Seed-TTS-eval benchmark [21].
+Table 1 summarizes the benchmark comparison against repre-
+sentative zero-shot TTS systems together with our in-family
+baselines. Within the compact SupertonicTTS setup, standard
+ContrastiveFM already reduces the WER from 1.44 to 1.41, and
+6918
+Table 2:Results on ZERO500 at 500k steps (%). Lower is better.
+Model NFE English Korean
+CER↓WER↓CER↓WER↓
+Baseline 12 0.55 1.25 0.93 8.46
+Baseline 24 0.48 1.18 0.81 8.40
+ContrastiveFM 12 0.41 1.10 0.77 7.92
+ContrastiveFM 24 0.39 1.06 0.65 7.72
+RobustSpeechFlow12 0.43 1.140.577.59
+RobustSpeechFlow240.35 1.03 0.57 7.45
+RobustSpeechFlow further improves it to 1.38 while keeping
+the same similarity score (SIM) of 0.60. This corresponds to a
+relative WER reduction of 4.2% over the vanilla baseline and
+2.1% over standard ContrastiveFM. Remarkably, this achieves
+the lowest WER across the entire benchmark despite utilizing
+only 0.06B parameters. These results show that alignment-
+focused contrastive training can materially improve intelligibil-
+ity even in a compact model regime. Notably, many competing
+systems are 5 to over 20 times larger, yet do not match this
+WER. SIM remains unchanged across the three compact vari-
+ants, suggesting that the WER gain is strictly attributable to im-
+proved alignment rather than a shift in speaker conditioning.
+5.2. Alignment Robustness in Diverse Conditions
+While Seed-TTS-eval is a standard zero-shot benchmark, its re-
+liance on read speech with limited prosodic variation restricts
+its ability to reflect diverse real-world usage conditions. To bet-
+ter evaluate alignment robustness under such diversity, we con-
+structed the ZERO500 benchmark for English and Korean and
+evaluated all systems at the 500k training step.
+Table 2 demonstrates that RobustSpeechFlow consistently
+outperforms the baselines, providing the most reliable align-
+ment. Specifically, under the highly constrained NFE=12 set-
+ting, the proposed method reduces the Korean CER from 0.93%
+to 0.57% and the WER from 8.46% to 7.59% compared to the
+vanilla baseline. This strong performance holds at NFE=24,
+where CER is further reduced to 0.57% and WER to 7.45%.
+On the English subset, RobustSpeechFlow similarly improves
+upon the baseline across both NFE settings, ultimately achiev-
+ing the best overall result at NFE=24 with a CER of 0.35% and a
+WER of 1.03%. Although standard ContrastiveFM shows slight
+advantages on English at NFE=12, its gains do not transfer as
+consistently across languages and NFE regimes. Overall, these
+metrics suggest that augmentation-based hard negatives provide
+a fundamentally more robust alignment signal than random ut-
+terance mismatches alone.
+5.3. Stability Across Training Stages
+Figure 1 provides a clearer perspective on how alignment stabil-
+ity evolves over the course of training, contextualizing the final
+results from Table 2. First, RobustSpeechFlow demonstrates
+markedly superior reliability on Korean. Across both NFE set-
+tings, its CER steadily drops and stabilizes at 0.57% at 500k,
+whereas the baseline plateaus at higher error rates (0.81% at
+NFE=24) and ContrastiveFM ends at 0.65%. This highlights
+the critical benefit of failure-mode negatives when the target
+language and benchmark contain high prosodic variation.
+On English, the training dynamics present a more complex
+picture. While standard ContrastiveFM is competitive early
+on, its trajectory exhibits higher variance. Conversely, Robust-
+100k 200k 300k 400k 500k
+Training Steps
+0.40
+0.45
+0.50
+0.55
+0.60
+0.65
+0.70CER (%)
+A
+B
+C
+(a) ZERO500-en CER (%), NFE=12
+100k 200k 300k 400k 500k
+Training Steps
+0.35
+0.40
+0.45
+0.50
+0.55
+0.60
+0.65CER (%)
+A
+B
+C (b) ZERO500-en CER (%), NFE=24
+100k 200k 300k 400k 500k
+Training Steps
+0.6
+0.7
+0.8
+0.9
+1.0
+1.1
+1.2CER (%)
+A
+B
+C
+(c) ZERO500-ko CER (%), NFE=12
+100k 200k 300k 400k 500k
+Training Steps
+0.6
+0.7
+0.8
+0.9
+1.0CER (%)
+A
+B
+C (d) ZERO500-ko CER (%), NFE=24
+Figure 1:CER (%) over training steps on ZERO500. In
+each panel, legend A, B, and C correspond to Baseline, Con-
+trastiveFM, and RobustSpeechFlow, respectively.
+SpeechFlow establishes a more consistent optimization path as
+training progresses, notably overtaking all methods from 300k
+onward at NFE=24 to reach the lowest final CER. We hypoth-
+esize that explicitly penalizing the model for entering latent re-
+gions associated with skip and repeat errors effectively stabi-
+lizes the loss landscape for cross-attention alignment during the
+later stages of training. Consequently, augmentation-based neg-
+atives yield the most consistent gains in high-stress alignment
+scenarios, particularly for low-NFE regimes.
+6. Discussion and Conclusion
+We presented RobustSpeechFlow, a zero-shot TTS train-
+ing strategy that improves content fidelity through length-
+preserving repeat and skip augmentations in contrastive flow
+matching. By simulating these common failure modes within
+the latent space, our approach directly aligns the contrastive
+penalty with the structured errors observed in real-world de-
+ployment. Consequently, without requiring external models or
+preference data, it reduces the WER on Seed-TTS-eval from
+1.44 (baseline) to 1.38 using only 0.06B parameters. While
+standard contrastive flow matching can remain competitive in
+certain specific settings, our augmentation strategy demon-
+strates broader reliability and delivers the most consistent in-
+telligibility improvements on the diverse ZERO500 benchmark,
+particularly under low-NFE regimes.
+While RobustSpeechFlow excels in alignment robustness, a
+trade-off with speaker similarity remains on the public bench-
+mark. We hypothesize that this gap stems primarily from
+the representational limits of the compact baseline architec-
+ture rather than the proposed objective itself, and can be mit-
+igated by scaling the speech codec and backbone. Further-
+more, while objective ASR-based metrics are valuable for scal-
+able benchmarking, they can be inherently biased by recog-
+nition errors and arbitrary text normalization choices. Future
+work will complement these metrics with comprehensive sub-
+jective assessments (e.g., MOS), expand the design of speech-
+mimicking negative latents to target a broader taxonomy of
+realistic failure modes, and investigate the generalizability of
+this approach across larger flow-matching and autoregressive-
+diffusion frameworks.
+6919
+7. Generative AI Use Disclosure
+Generative AI tools were used exclusively for proofreading, im-
+proving the grammatical quality of the manuscript, and assisting
+in the preparation of the demo webpage. The core text and all
+scientific contributions were fully developed and authored by
+the human authors.

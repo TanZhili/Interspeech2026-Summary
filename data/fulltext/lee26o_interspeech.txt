@@ -1,0 +1,361 @@
+A Sensitivity Analysis of Multi-Event Audio Grounding in Audio LLMs
+Taehan Lee ID 1, Jaehan Jung ID 1, Hyukjun Lee ID 1,∗∗
+1 Sogang University, South Korea
+alpaca@sogang.ac.kr, jhjung22@sogang.ac.kr, hyukjunl@sogang.ac.kr
+Abstract
+Audio LLMs have shown a strong ability to understand audio
+samples, yet their reliability in complex acoustic scenes remains
+under-explored. Unlike prior work limited to small scale or less
+controlled query construction, we present a large-scale evalua-
+tion of event grounding and false alarms as auditory scene com-
+plexity increases. Using 71K AudioCapsV2 clips, we extract
+normalized (source, attribute) events and build two query types:
+present-event queries for ground-truth detection and absent-
+event queries to probe hallucinations, using similarity-filtered
+negative sampling in an audio-aligned text embedding space.
+We evaluate four SOTA Audio LLMs with 12 prompt variants
+over 500K yes/no queries per model. Across models, increas-
+ing event count consistently lowers true-positive rate and raises
+false-positive rate, while prompts induce a strong trade-off be-
+tween the two. Our confidence analysis shows that models be-
+come more uncertain on multi-event audio, revealing room for
+improvement.
+Index Terms: Large Audio Language Models, Hallucination
+1. Introduction
+Recently, large audio-language models (LALMs) [1, 2, 3, 4]
+and omni models [5, 6, 7] have demonstrated strong and versa-
+tile reasoning ability over diverse audio inputs. For real-world
+usage, it is important to assess a model’s faithfulness and ro-
+bustness on complex audio events, because many wild acoustic
+scenes are inherently multi-event, making single-event evalu-
+ation insufficient. Prior work [8] evaluates hallucinations in
+LALMs by extracting candidate sound objects from captions
+via noun parsing and querying their presence. While adver-
+sarial sampling can create challenging queries, it can also in-
+troduce ontology-inconsistent labels (YesforbirdbutNofor
+animal), which penalizes evidence-consistent answers and can
+be mistaken for hallucinations. Manual annotation [9, 10] en-
+ables fine-grained hallucination analysis, but the resulting eval-
+uation sets are typically small (≤400 audio samples), limiting
+coverage over diverse acoustic conditions. Meanwhile, recent
+benchmarks [11, 12, 13] report task accuracy but do not iso-
+late how auditory scene complexity affects event grounding and
+false alarms. To address these limitations, we build a large-
+scale multi-event evaluation from AudioCapsV2 and analyze
+four SOTA Audio LLMs’ responses. Our contributions are:
+• We extract and normalize structured∼145K events from Au-
+dioCapsV2 (71K clips) to construct a multi-event evaluation
+set, consisting of 578 audio event descriptions.
+• We generate∼356K absent-event queries by embedding each
+**indicates the corresponding author.
+event in an audio-aligned text space and sampling absent-
+events that are semantically distant from present-events.
+• We quantitatively characterize detection performance as
+scene complexity grows across 12 prompts, finding that in-
+creasing the number of audio events consistently lowers true-
+positive rates on present-events (∼−29 pp) and raises false-
+positive rates on absent-events (∼+8 pp).
+• We analyze prompt sensitivity, finding a trade-off: prompts
+that maximize true positives often also increase false alarms.
+In other words, phrasing that biases the model toward “Yes”
+will improve recall but worsen hallucinations, and vice versa.
+• Our analysis shows that as audio becomes more complex,
+models show less confidence on correct responses and more
+varied confidence on incorrect responses, revealing that mod-
+els become more uncertain with increased complexity.
+Our code for dataset extraction and evaluation is avail-
+able on our project pagehttps://github.com/
+alm-evaluation/multi-event
+2. Building Queries for Event Grounding
+2.1. Audio event extraction
+We use AudioCapsV2 [14] as our primary source for audio
+event extraction for three reasons: (1) it provides∼90K audio
+clips for large-scale analysis, (2) captions are written by hu-
+man annotators and typically describe salient audio events, and
+(3) the annotation protocol prioritizes audible content, making
+captions largely audio-grounded. These properties make Au-
+dioCapsV2 suitable for constructing event and query sets.
+For each caption, we extract (source,attribute) pairs us-
+ing the Qwen3-Next-80B-A3B-Instruct-FP8 model. Asource
+is a concrete sound producer explicitly mentioned in the cap-
+tion (person,dog), and anattributeis an explicitly stated acous-
+tic action or texture (talking,barking). To improve consistency
+and reduce variability in the extracted events, we enforce a strict
+extraction policy: (i) extract only events explicitly stated in the
+caption and ignore uncertain mentions (maybe); (ii) treat ab-
+stract placeholders or pronouns as invalid sources (something)
+and setsource=nullwhen no valid source is present; and
+(iii) avoid attributes that merely restate the source (car sound)
+and setattribute=nullwhen no explicit acoustic action or
+texture term is stated.
+However, we find that the model often outputs the same
+event in different surface forms (train horn blowing,train blow-
+ing). We therefore first normalize events and then retain only
+event types with more than 20 occurrences to focus our anal-
+ysis on common audio events. Specifically, human annotators
+manually refine and normalize the extracted events with unani-
+mous agreement according to four principles, consulting a stan-
+7012
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1684
+Figure 1:Overall pipeline of audio event extraction.
+Table 1:Distribution of audio samples by the number of events.
+# events 1 2 3 4 5
+# samples 25.8% 49.3% 20.5% 3.8% 0.5%
+dard English dictionary: (1)Ontology normalization: consol-
+idating synonymous or hierarchically related sources into uni-
+fied semantic categories to reduce category sparsity and seman-
+tic overlap (male→man,kitten→cat); (2)Number nor-
+malization: converting plural sources to their singular forms
+to ensure consistency in category aggregation and frequency
+statistics (people→person,dogs→dog); (3)Format nor-
+malization: converting verb-form attributes into their gerund
+(-ing) forms for uniform grammatical representation (rustle→
+rustling,whistle→whistling); (4)Canonical normalization:
+rewriting semantically equivalent expressions into a standard-
+ized (source,attribute) form to reduce lexical and morpholog-
+ical variation ((man,giving speech)→(man,speaking),gun-
+shot→(gun,shooting)).
+Through this extraction and normalization pipeline, we ob-
+tain 145,236 events from 71,174 audio samples. Table 1 shows
+that approximately 74% of the audio samples contain more than
+one event. To examine model behavior across a range of audi-
+tory complexity, we select audio samples containing at most 5
+events. After filtering and normalization, we obtainN= 578
+unique eventsX={x i}N
+i=1, consisting of 129 sources and
+201 attributes. We denote an audio recording withnevents as
+A={x 1,x 2,...,x n}, where eachx i is a normalized (source,
+attribute) event. We evaluate a model’s accuracy on the events
+in each audio sample and refer to this as present-event detec-
+tion. To validate that acoustic representations become more
+complex as event count increases (independently of our extrac-
+tion process), we compute the effective-rank (erank) [15] of
+embeddings from self-supervised audio models [16, 17]. Fig-
+ure 2 shows that embeddings tend to exhibit highererankas
+the number of events increases. The instruction used for event
+extraction is available on our webpage.
+2.2. Constructing valid absent-events
+To evaluate robustness without inflating the measured false-
+positive rate, absent-event queries should avoid beingtoo close
+to present-events. For example, if a clip contains (man, talk-
+ing), answeringYesto (person, chattering) may be evidence-
+1 2 3 4 5
+125
+150
+175
+200
+225
+250
+Figure 2:erankdistribution of audio embeddings from EAT
+(left) and SSLAM (right).
+consistent rather than a hallucination. Rule-based filters (e.g.,
+WordNet [18] hypernyms) are often insufficient because acous-
+tic similarity does not always follow lexical similarity (vibrating
+vs.saw running). We therefore embed each eventxusing a text
+embedding modelf(·)with mean-centering normalization and
+compare events via cosine similarity. We test general-purpose
+language models [6, 19], but find that they often fail to separate
+acoustically similar events. In contrast, ReCLAP [20], trained
+with an audio-text contrastive objective, provides better align-
+ment between textual descriptions and acoustic similarity. As
+shown in Table 2, ReCLAP assigns higher similarity to percep-
+tually related pairs, whereas T5 and Qwen3 do not.
+Table 2:Cosine similaritysim(f(x A),f(x B))and rank ofx B
+relative toxA among all events, denoted #.
+xA (water,splashing) (none,vibrating)
+xB (rain,hitting) (oil,sizzling) (saw,running) (insect,buzzing)
+ReCLAP 0.59 / #16 0.49 / #25 0.22 / #95 0.17 / #128
+T5 0.36 / #37 -0.01 / #230 -0.11 / #538 0.04 / #167
+Qwen3 0.33 / #40 -0.01 / #234 -0.04 / #321 0.14 / #141
+We first consider an audio clip that contains a single event
+and use cosine similarity to filter semantically similar events
+with respect to the present-event. We define the set of dissimilar
+events for a given eventxusing a hyperparameterα, wherex (α)
+is the⌊αN⌋-th most similar event with respect toxinX.
+Dα(x) ={x′|sim(f(x′),f(x))<sim(f(x (α)),f(x))}(1)
+7013
+In our absent-event detection task, we empirically setα= 0.3
+to balance the diversity of sampled absent-events with sufficient
+semantic distance from present-events.
+2.3. Audio with multiple events
+As shown in Table 1, most audio recordings consist of multiple
+events. Given an audio clip containingnevents, we construct
+a set of absent-events that are distinct from its present-events
+by taking the intersection, and then samplingmevents using a
+sampling methodS:
+{x′
+j}m
+j=1∼S
+ n\
+i=1
+Dα(xi)
+!
+(2)
+We use random sampling withm= 5, resulting in 356K absent-
+event queries for multi-event clips. Figure 3 visualizes the event
+embedding spacef(·)and shows that the sampled absent-events
+(xneg)lie far from the present-events(x pos).
+Figure 3:Visualization of the event embedding space on princi-
+pal component axes. Blue dots indicate all other events.
+2.4. Audio LLM evaluation setup
+Table 3:Question templates and response instructions used in
+prompts for evaluating the existence ofxin an audio sample.
+Question Templates
+q1 In this audio, is there any{x}?
+q2 Can you hear a sound of{x}?
+q3 Does this audio contain the sound of{x}?
+q4 Is there any occurrence of{x}?
+Response Instructions
+r1 Respond using only one word: yes or no.
+r2 Answer with only: yes or no.
+r3 Output yes or no only.
+We use vLLM [21] to accelerate inference during evalua-
+tion. We benchmark four publicly available, vLLM-supported
+audio-capable LLMs with strong performance on recent audio
+reasoning benchmarks such as MMAU [11]: Qwen3-Omni-
+30B-A3B-Instruct [6], Qwen2.5-Omni-7B and 3B [5], and
+Audio-Flamingo 3-7B [1]. We design four question templates
+to account for the substantial prompt sensitivity of LALMs [22,
+23]. Since models often produce free-form outputs without ex-
+plicit instructions, we additionally introduce three response in-
+struction templates. We denote each prompt asq irj, yielding
+Figure 4:True Positive Rate (green) on present-event detection
+and False Positive Rate (red) on absent-event detection, plot-
+ted against the number of events across audio LLMs. Solid (-),
+dashed (−−) and dotted (..) lines indicate the average across
+prompts, the prompt with the highest TPR / lowest FPR, and the
+prompt with the lowest TPR / highest FPR, respectively.
+12 prompts (Table 3). We generate all responses with greedy
+decoding and run experiments on an RTX PRO 6000 GPU.
+3. Experiment Results
+3.1. Impact of Auditory Complexity on Model Faithfulness
+Figure 4 shows that as event count increases, TPR drops in
+present-event detection and FPR rises in absent-event detec-
+tion. We also observe substantial prompt sensitivity. In par-
+ticular, Audio-Flamingo 3 shows the largest fluctuations across
+prompts, whereas Qwen2.5-Omni-3B shows less variation. We
+further test whether false alarms decrease when a model cor-
+rectly identifies most present-events. Specifically, we compute
+aconditional FPR(cFPR) over clips where the model correctly
+predicts at least 75% of the present-events, and then measure the
+FPR on the corresponding absent-event queries. Across models,
+cFPR is at most 0.3 percentage points lower than the overall
+FPR, suggesting that false alarms are only weakly coupled to
+7014
+1 2 3 4 5 1 2 3 4 5
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0 Present-event Detection Absent-event DetectionQwen3-Omni-30B-A3B
+1 2 3 4 5 1 2 3 4 5
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0 Present-event Detection Absent-event DetectionQwen2.5-Omni-7B
+1 2 3 4 5 1 2 3 4 5
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0 Present-event Detection Absent-event DetectionQwen2.5-Omni-3B
+1 2 3 4 5 1 2 3 4 5
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0 Present-event Detection Absent-event DetectionAudio-Flamingo 3
+Figure 5:Normalized output token probability distribution of Audio LLMs.Yes/Noscores are at the left / right axis, respectively.
+Table 4:Prompts and their corresponding performance (%).
+PDh / PDl denote the prompts with the highest / lowest TPR on
+present-event detection. ADl / ADh denote the prompts with the
+lowest / highest FPR on absent-event detection.
+Qwen3
+30B Qwen2.5
+7B Qwen2.5
+3B AF3
+7B
+PDh q2r2/91.8q 1r1/90.3q 1r1/90.9q 1r3/94.2
+PDl q4r3/86.4q 3r3/84.6q 4r2/79.3q 3r3/75.8
+ADl q4r3/5.6q 3r2/3.6q 4r2/3.9q 3r1/3.4
+ADh q2r2/11.5q 1r1/9.1q 1r1/11.2q 4r1/21.0
+τbias −0.90−0.66−0.87−0.72
+r −0.949−0.791−0.730−0.848
+p 2.41×10 −6 2.18×10 −3 6.97×10 −3 4.87×10 −4
+present-event recognition. Overall, these results indicate that
+current SOTA Audio LLMs still struggle to reliably distinguish
+what is presentfromwhat is absentin complex acoustic scenes.
+3.2. Prompt effects on present/absent-event detection
+Table 4 summarizes, for each model, the prompts with the high-
+est and lowest TPR on present-event queries, as well as the low-
+est and highest FPR on absent-event queries. We observe a clear
+trade-off: prompts that yield higher TPR often also yield higher
+FPR, reflecting a stronger tendency to answerYes; conversely,
+prompts that reduce FPR tend to also reduce TPR. This sug-
+gests that prompt variations can induce aYes/Noresponse bias
+beyond the intended instruction. To quantify this bias, we com-
+pute Kendall’sτ[24] between prompt rankings by TPR (de-
+scending) on present-event queries and by FPR (ascending) on
+absent-event queries, and denote it asτ bias. Across models,τ bias
+is consistently negative, indicating that prompts ranked highly
+for present-event detection tend to rank poorly for absent-event
+detection. We further assess whether prompt choice affects
+robustness to auditory scene complexity. For each prompt,
+we compute a complexity gap from 1-event to 5-event clips
+(∆TPR = TPR 1−TPR 5 and∆FPR = FPR 5−FPR 1),
+and then compute the Pearson correlation (r) and its p-value
+(p) between∆TPRand∆FPRacross prompts. As shown
+in Table 4, the correlation is strongly negative across models
+(r=−0.73to−0.95), revealing a trade-off in complexity sen-
+sitivity: prompts that induce larger TPR drops tend to induce
+smaller increases in FPR, and vice versa. This highlights that
+prompt sensitivity to audio complexity in one task tends to come
+with reduced sensitivity in the other.
+3.3. Model confidence analysis
+To investigate whether models exhibit different degrees of un-
+certainty when processing more complex audio samples [25,
+26], we extract each model’s output token probabilities [27] and
+compute the normalized probability mass over the answer set,
+as defined in Equation 3.
+conf(y,x) = p(y|x)
+p(Yes|x) +p(No|x), y∈{Yes,No}(3)
+Figure 5 shows that confidence scores for correct outputs
+(conf(Yes,x pos),conf(No,x neg)) exhibit long-tailed distri-
+butions; whereas confidence scores for incorrect outputs
+(conf(No,x pos),conf(Yes,x neg)) are comparatively flat. As
+the number of events in an audio clip increases, confidence for
+correct outputs decreases. In contrast, confidence for incorrect
+outputs shows no consistent trend across models. Overall, these
+results suggest that increased auditory complexity amplifies a
+Yesresponse bias and reduces confidence in correctNode-
+cisions, indicating increased uncertainty on absent-event judg-
+ments in complex acoustic scenes.
+4. Conclusion and Discussion
+We present a large-scale sensitivity analysis of multi-event au-
+dio grounding in audio-capable LLMs using present-event and
+similarity-filtered absent-event queries to measure how scene
+complexity affects grounding and false alarms. Across four
+SOTA audio LLMs, increasing event count consistently reduces
+TPR and raises FPR, indicating that separating present from ab-
+sent events remains challenging in complex scenes. Prompt
+choice strongly affects robustness and often trades higher re-
+call for more false alarms. Our confidence analysis further sug-
+gests increased uncertainty in complex audio, highlighting that
+current audio LLMs have substantial room for improvement in
+handling complex scenes. We hope our analysis will facilitate
+future research on faithful audio grounding.
+7015
+5. Generative AI Use Disclosure
+We employed generative AI tool (ChatGPT) exclusively to sup-
+port English proofreading and improve language quality. No
+scientific content, experimental results, or conclusions were
+generated by the tool. All authors carefully reviewed and in-
+corporated edits as appropriate and remain fully responsible for
+the content of this paper and its submission.

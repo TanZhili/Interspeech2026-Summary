@@ -1,0 +1,438 @@
+ContextCodec: Content-Focused Context Guidance for Ultra-Low Bitrate
+Speech Coding
+Chengbin Liang1, Wenqi Guo2,∗∗, Hao Cao1, Zhijin Qin1
+1 Department of Electronic Engineering, Tsinghua University, Beijing, China
+2 Department of Automation, Tsinghua University, Beijing, China
+lcb25@mails.tsinghua.edu.cn
+Abstract
+Neural speech codecs enable low-bitrate speech communica-
+tion, yet at ultra-low bitrates (<1000bps) preserving percep-
+tual quality and intelligibility is challenging. Existing designs
+often prioritize acoustic details, leaving limited capacity for the
+core linguistic message under tight bitrate constraints. To ad-
+dress this, we propose ContextCodec, a codec that transmits
+content-focused context features to explicitly guide reconstruc-
+tion. ContextCodec adopts a dual-branch encoder that decou-
+ples acoustic details from content-focused context. The context
+branch is trained with a CLIP-style contrastive loss that aligns
+context features with phoneme indices, reducing paralinguistic
+leakage. During decoding, these features are injected at each
+decoding stage for explicit guidance. In addition, we introduce
+a lightweight autoregressive latent refinement module. Experi-
+ments show a strong quality-intelligibility trade-off down to 500
+bps, with an RTF of 0.4886 on a typical mobile CPU.
+Index Terms: Neural speech codec, Ultra-low bitrate, CLIP-
+style phoneme alignment, Autoregressive latent refinement
+1. Introduction
+Neural speech codecs (NSC) aim to convert continuous speech
+signals into compact discrete representations while preserving
+perceptual quality and intelligibility. They are widely used in
+audio tokenization [1, 2, 3] and telecommunications applica-
+tions [4, 5]. As speech communication is increasingly deployed
+in bandwidth-constrained environments such as satellite links,
+ultra-low-bitrate speech coding has become increasingly neces-
+sary [5, 6]. However, once the bitrate is pushed to the ultra-low
+regime, speech coding becomes a zero-sum bit-allocation prob-
+lem: bits used to preserve how speech sounds inevitably reduce
+the capacity available to convey what is being said. As a re-
+sult, maintaining both perceptual naturalness and intelligibility
+becomes fundamentally difficult.
+Existing neural speech codecs can be broadly grouped
+into two families, as shown in Figure 1(a-b). Neural acous-
+tic codecs [7] reconstruct speech waveforms through adver-
+sarial training[8, 9], with improvements in quantizer design
+[10, 11, 12], discriminator architectures [13], and structure [14].
+While these methods achieve strong perceptual quality, their ob-
+jectives are still dominated by acoustic fidelity, encouraging to
+preserve speaker timbre, or other fine acoustic details. Under
+an ultra-low-rate bottleneck, this can leave insufficient capac-
+ity for the linguistic content needed for accurate reconstruction,
+thereby hurting intelligibility.
+Hybrid approaches incorporate semantic features from self-
+supervised learning(SSL) models [15, 16, 17] to strengthen se-
+**indicates the corresponding author.
+Figure 1:Different speech codec architectures. (a) Neural
+acoustic codecs. (b) Hybrid codecs. (c) ContextCodec(ours).
+mantic integrity and downstream audio language model capabil-
+ities [18, 19, 20]. However, the semantic features are often not
+explicitly constrained to focus on linguistic content, and they
+may contain speaker identity and other paralinguistic attributes
+[21]. Moreover, in many hybrid designs, semantic cues are used
+primarily as initial priors; their influence can attenuate across
+successive decoding stages, leaving the final reconstruction still
+largely dominated by acoustic fidelity and vulnerable to intelli-
+gibility degradation at ultra-low bitrates [22, 23].
+These limitations highlight the need for a content-first
+codec design at ultra-low bitrates, where the linguistic mes-
+sage must be prioritized over non-linguistic acoustic variation.
+Motivated by this, we propose ContextCodec, a context-guided
+neural speech codec for ultra-low bitrate speech communica-
+tion (Figure. 1(c)). It adopts a dual-branch encoder that de-
+couples acoustic-detail modeling from content-focused context
+modeling, and learns linguistically aligned context representa-
+tions [24] to guide speech reconstruction. The learned context
+information is then used to support more reliable decoding un-
+der severe bitrate. We then inject the learned context features
+into each decoding stage to actively guide waveform reconstruc-
+tion for improved intelligibility. Finally, inspired by learned
+image codecs [25, 26, 27], we introduce a lightweight autore-
+gressive (AR) latent refinement module that progressively re-
+fines latents before decoding, enabling improved reconstruction
+quality. Our contributions are as follows:
+1) We propose ContextCodec, a content-first neural speech
+codec designed for ultra-low-bitrate communication, which ex-
+plicitly prioritizes linguistic content through decoupled acous-
+tic and context modeling and a CLIP (Contrastive Language–
+Image Pretraining)-style linguistic alignment objective.
+2) We design a context-guided attention decoder that
+preserves contextual guidance under tight bitrate constraints
+through acoustic pre-conditioning and stage-wise context in-
+jection, complemented by a lightweight autoregressive latent
+refinement module that improves reconstruction quality before
+waveform generation.
+3) Extensive objective and subjective evaluations
+demonstrate that ContextCodec achieves a favorable qual-
+1095
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3355
+Figure 2:Overview of ContextCodec. (a) The end-to-end pipeline. (b) The predictorg p. (c) The context-guided attention decoder.
+ity–intelligibility trade-off down to 500 bps with a real-time
+factor (RTF) of 0.4886 on a typical mobile CPU.
+2. Design of ContextCodec
+ContextCodec is built upon a GAN-based quantized autoen-
+coder framework with finite scalar quantization (FSQ) [28]. The
+base blocks of the shared encoder, decoder, and multiple dis-
+criminators follow the same architectural settings as DAC [10].
+2.1. Overall architecture
+As shown in Figure 2(a), ContextCodec maps an input wave-
+formxto shared featuresz s = Enc(x)and applies a dual-
+branch encoder to obtain an acoustic streamy a ∈R B×da×T
+and a context streamy c∈R B×dc×T ; the concatenated latents
+are denoted byy= [y a;yc], whereBis batch size andTis the
+number of codec frames. The overall training pipeline includes
+three components.(1) Autoregressive latent refinement:yis
+partitioned into interleaved phases{yi}P−1
+i=0 , and a reusable pre-
+dictorgp estimates per-phase statistics for phase-specific quan-
+tization, yielding refined symbolsˆyr for transmission; on the
+decoder-side, the restored refined latentsˆyare reconstructed
+fromˆyr.(2) CLIP-style phoneme alignment:ˆyis split into
+ˆya andˆyc, and the quantized context codes are supervised by a
+frame-level contrastive loss against forced-aligned phoneme in-
+dices from text data.(3) Context-guided attention decoding:
+the decoder injectsˆyc into each decoding stage to reconstruct
+the waveformˆx= Dec(ˆya,ˆyc).
+2.2. Autoregressive latent refinement
+To better allocate bits under tight budgets, we refine the concate-
+nated latentsy= [y a;yc]before decoding by sequentially pre-
+dicting per-phase mean/scale from already restored phases and
+quantizing normalized residuals, yielding refined symbolsˆy r
+(and restoredˆy) in a causal, lightweight manner. Specifically,
+we splityintoPinterleavedphase sequences{y i}P−1
+i=0 (frames
+t≡imodP) and process phases in order (0→P−1) within
+eachP-frame block; we describe Enc-side bitstream generation
+and Dec-side reconstruction separately.
+Enc-side.We denote the restored refined result of phasei
+byˆyi. Fori= 0, we directly quantize with a phase-specific
+quantizerQ 0:ˆyr
+0 =Q 0(y0)andˆy0 = ˆyr
+0(setµ 0 = 0,σ 0 = 1).
+For each subsequenti= 1,...,P−1, we use a reusable pre-
+dictorg p to estimate per-time mean and scale from the al-
+ready restored sub-sequences,(µ i,σi) =g p({ˆyj}j<i). As
+shown in Figure 2(b), the moduleg p aggregates the available
+context by computing per-time mean and standard deviation
+across{ˆyj}j<i, applies adaptive average pooling followed by a
+small 1D convolution and sigmoid as a lightweight global gate,
+and then uses a small depthwise-separable 1D conv stack with
+Snake activations to output(µ i,σi). We then remove the pre-
+dicted mean/scale to form a normalized residual:
+εi =f p(yi;µi,σi) = (yi−µi)⊘σ i,(1)
+We quantizeεi with a phase-specific quantizer and restore
+it as:
+ˆyr
+i =Q i(εi),ˆy i =f−1
+p (ˆyr
+i ;µi,σi) =µ i +σi⊙ˆyr
+i.(2)
+where⊘and⊙denote element-wise division and multiplica-
+tion. The refined quantized sequenceˆyr (obtained by interleav-
+ing{ˆyr
+i}P−1
+i=0 back to the full rate) is then coded into a bitstream
+and transmitted to the decoder.
+Dec-side.The decoder parses the received bitstream to
+recover the discrete symbolsˆy r. It then reconstructs the re-
+stored refined latentsˆyby repeating the same phase order
+(0→P−1): fori= 0, setˆy 0 = ˆyr
+0; fori≥1, recompute
+(µi,σi) =g p({ˆyj}j<i)from already restored phases and ap-
+plyˆyi =f −1
+p (ˆyr
+i ;µi,σi). Finally, interleaving{ˆyi}P−1
+i=0 yields
+the full-rateˆy, which is fed into the waveform decoder.
+In a future streaming, stateful implementation, phases can
+be reconstructed in order by caching{ˆyj}j<i, requiring no ex-
+tra fixedP-frame delay; the added algorithmic latency can re-
+main one codec frame.
+2.3. CLIP-style phoneme alignment
+Inspired by Secousticodec [21], we introduce a frame-level
+CLIP-style alignment objective that directly matches the codec
+context features with the paired phoneme sequence at the codec
+frame rate. We obtain frame-level phoneme IDs by Montreal
+Forced Aligner (MFA) forced alignment and map them to learn-
+able vectors by an embedding table as illustrated in Figure 2(a).
+This objective is designed to encourage content-focused, frame-
+consistent context representations and to reduce speaker-related
+and other paralinguistic leakage in the context branch. Letˆyc∈
+RB×dc×T denote the frame-wisequantizedcontext representa-
+tion split fromˆy, and letq∈N B×T be the aligned phoneme
+indices. The embedding table mapsqtoe∈R B×T×d c. We
+define a binary maskm∈ {0,1} B×T to select valid frames
+and perform Mask&Flatten by dropping invalid frames and flat-
+tening only valid frame pairs intoNsamples. The CLIP-style
+contrastive objective is then computed as:
+1096
+ℓij =
+sim(˜yc,i,˜ej )
+τ , i,j= 1,...,N,(3)
+Lclip = 1
+2
+
+CE(ℓ,t) + CE(ℓ⊤,t)
+
+, ti =i,(4)
+where˜yc,˜eareℓ 2-normalized,sim(·,·)is cosine similarity, and
+τis temperature. The positive pair of sampleiis the aligned
+(utterance, frame) pair(˜yc,i,˜ei), while negatives are all other
+valid frames in the mini-batch.
+2.4. Context-guided attention decoder
+As shown in Figure 2(c), the context-guided attention decoder
+Dec(·)injects the quantized context representationˆy c into
+waveform reconstruction, so that the context branch can actively
+guide generation. Rather than conditioning the decoder only at
+its input, we use context features to pre-condition the acoustic
+latents and to modulate each subsequent decoding stage, which
+helps preserve contextual guidance when reconstructing from
+heavily quantized representations.
+Given the restored refined latentsˆy=f −1
+p (ˆyr), we split
+them along the channel dimension into an acoustic streamˆy a
+and a context streamˆy c. Before upsampling, we apply a
+lightweightcontext feature enhancerto modulateˆy a usingˆyc
+through two complementary pathways: (i) a global pathway that
+produces a channel-wise gate and (ii) a local pathway that pre-
+dicts a time-varying residual. The gated and residual-modulated
+features are concatenated and fused by a small fusion net-
+work to produce context-conditioned acoustic features. The two
+pathways and the fusion network are realized with lightweight
+pointwise and kernel-3 1D convolutions with Snake activations.
+We then progressively upsample the acoustic stream with
+transposed-convolution decoder blocks and residual 1D convo-
+lution units with Snake activations. At each decoding stage, the
+context stream is aligned to the current temporal resolution by
+linear interpolation and projected to the acoustic channel size
+with a pointwise convolution, which corresponds toAlign&Proj
+in Figure 2(c). The projected context features also produce a
+sigmoid gate, denoted asSig, and the stage-wiseFusioncon-
+catenates acoustic and projected context features and applies the
+same kernel-3 convolution, Snake, and pointwise convolution.
+The fused output is gated and added back to the acoustic fea-
+tures via a residual connection. The final waveform is produced
+by Snake, a kernel-7 1D convolution, and atanhoutput layer.
+2.5. Training objectives
+We jointly optimize reconstruction, adversarial, and cross-
+modal alignment objectives. The generator loss is:
+LG =λ mLm +λ advLG
+adv +λ fmLfm +λ clipLclip,(5)
+whereL m is the multi-scale mel loss,LG
+adv andL fm are the GAN
+generator and feature-matching losses.L clip is a symmetric In-
+foNCE loss. The discriminator is optimized withL D=LD
+adv.
+3. Experiments
+3.1. Experimental setup
+Datasets and preprocessing.ContextCodec is trained on the
+training sets of LibriTTS [31] and AISHELL-3 [32]. To ob-
+tain frame-level supervision for alignment, we run an offline
+forced-alignment pipeline using MFA 1 to produce phoneme-
+level TextGrids [33]. We then convert phoneme time intervals
+1https://montreal-forced-aligner.readthedocs.
+io/
+into a per-frame phoneme-id sequence at the codec frame rate.
+All training audio is segmented into 3-second clips. For evalu-
+ation, we test on VCTK [34] and ten languages from Common
+V oice 21.0 [35], including English, Chinese, German, French,
+Spanish, Russian, Arabic, Hindi, Japanese, and Korean to val-
+idate reconstruction performance and cross-lingual and cross-
+domain generalization. We randomly sample 6,000 VCTK ut-
+terances and 300 utterances per CV21 language. Each baseline
+runs inference at its native sampling rate, while all objective
+metrics are computed at 16 kHz for fair comparison.
+Model and training.Training is performed at 16 kHz.
+The default model usesNe=4downsampling blocks with rates
+[4,4,5,8]and hop sizeh= Qri=640. Both heads output
+da=dc=512channels; the context head usesN T =2Trans-
+former layers with 4 attention heads. We chooseP=4phases
+and each phase has an independent FSQ quantizer with unequal
+vector. For 500 bps we use{[8×6,4×2],[8×6,4×1],[8×
+6,4×1],[8×6]}and for 1000 bps we increase capacity to
+{[8×12,4×4],[8×12,4×2],[8×12,4×2],[8×12]}. Op-
+timization uses AdamW with lr2×10 −4 and betas(0.8,0.99),
+and we use GAN training with the same discriminators as
+DAC [10]. The temperatureτ=0.07for CLIP-style alignment.
+We train for 1M steps on a single NVIDIA RTX 4090 GPU with
+batch size 8, usingλm=15,λ adv=1,λ fm=2,λ clip=3.
+Baselines and metrics.We compare against representative
+baselines summarized in Table 1 using their official pretrained
+weights and recommended inference settings. For objective
+evaluation, we report signal-level metrics and the word error
+rate (WER) computed by a pre-trained Whisper-Turbo [36].
+For each test language, we explicitly set Whisper-Turbo to the
+corresponding language when computing WER. For subjective
+evaluation, we conduct a preliminary pairwise preference listen-
+ing test [37] with 15 listeners on 15 VCTK utterances sampled
+by stratified random selection, and all test outputs are loudness-
+normalized to -16 dB before playback.
+3.2. Results
+Objective results.Table 1 summarizes objective results. Over-
+all, ContextCodec achieves strong performance on both English
+and multilingual test sets, offering a favorable trade-off between
+intelligibility and perceptual quality at ultra-low bitrates with a
+compact model size. These results also suggest reasonable gen-
+eralization to unseen Common V oice languages, likely benefited
+by our phoneme-index supervision, which provides a shared
+pronunciation-based signal across different scripts. Neverthe-
+less, phonological inventories differ across languages, and rare
+or unseen phonemes may be underrepresented in training.
+Subjective results.We further conduct a subjective pair-
+wise preference test as shown in Table 2, comparing against
+SemantiCodec, the strongest hybrid baseline in our low-bitrate
+objective comparison, and Opus as a widely used traditional
+codec: at 500 bps, ContextCodec is preferred over both base-
+lines, indicating strong perceptual quality at ultra-low bitrates.
+Deployment efficiency.Computational complexity 2 is
+evaluated in Table 3. For on-device evaluation, we report the
+end-to-end RTF on a Snapdragon 8 Gen 3 phone using CPU
+only and standard precision. Results show that ContextCodec
+remains efficient enough for practical deployment.
+3.3. Ablation and analysis
+As Table 4 shows, we investigate the contribution of each pro-
+posed component by comparing against several variants and de-
+2GMACs is the maximum across the ptflops, fvcore, and thop profil-
+ers. RTF is averaged over 10 runs on 10-second speech after warm-up.
+1097
+Table 1:Objective evaluation results on a multilingual set and VCTK. Best results are shown in bold.
+Model Type Bitrate Param
+(M)
+Sample
+rate
+Multilingual (10 langs) VCTK (en)
+PESQ↑STOI↑SI-SDR↑WER↓ PESQ↑STOI↑SI-SDR↑WER↓
+around 1000 bps Comparison
+EnCodec [13] Acoustic 1500 14.85 24 kHz 1.629 0.814 0.511 45.76% 1.786 0.796 0.777 9.60%
+DAC [10] Acoustic 2000 74.18 16 kHz 1.201 0.727 -11.940 77.98% 1.245 0.740 -14.125 20.84%
+SNAC [11] Acoustic 994 19.80 24 kHz 1.835 0.834 -4.119 39.32% 2.384 0.861 0.115 5.28%
+Secousticodec [21] Hybrid 1090 94.75 22 kHz 1.600 0.804 -26.675 56.14% 1.880 0.847 -25.572 9.40%
+SemantiCodec [29] Hybrid 1250 699.41 16 kHz 1.882 0.828 -25.758 30.95% 2.103 0.848 -23.693 4.62%
+FACodec [30] Hybrid 1600 102.33 16 kHz 1.310 0.743 -24.937 51.79% 1.623 0.788 -14.983 4.15%
+SpeechTokenizer [23] Hybrid 1000 103.68 16 kHz 1.242 0.715 -8.789 83.12% 1.351 0.747 -6.449 8.40%
+X-Codec [18] Hybrid 1000 169.33 16 kHz 1.846 0.812 -18.693 31.06% 2.257 0.822 -17.611 3.29%
+Mimi [22] Hybrid 1100 79.31 24 kHz 2.028 0.852 1.614 33.60% 2.256 0.840 2.968 4.57%
+ContextCodec (ours) Hybrid 1000 78.61 16 kHz 2.140 0.866 2.110 28.31% 2.476 0.880 3.614 2.25%
+around 500 bps Comparison
+Mimi [22] Hybrid 550 79.31 24 kHz 1.553 0.790 -5.517 60.35% 1.685 0.772 -4.285 10.22%
+SpeechTokenizer [23] Hybrid 500 103.68 16 kHz 1.150 0.590 -37.434 107.42% 1.210 0.645 -37.209 10.53%
+SemantiCodec [29] Hybrid 625 699.41 16 kHz 1.660 0.788 -26.761 52.69% 1.910 0.820 -24.128 11.42%
+ContextCodec (ours) Hybrid 500 78.61 16 kHz 1.758 0.812 -2.648 52.11% 2.120 0.846 -0.604 5.85%
+Table 2:Subjective pairwise preference test results (%)
+codec preference (%) codec No pref. (%)
+ContextCodec 97.92←2.08 Opus 6K [38] 0.00
+ContextCodec 29.17→54.17 Reference 16.66
+ContextCodec 52.92←40.83 SemantiCodec 6.25
+Reference 66.67←20.83 SemantiCodec 12.50
+Table 3:Complexity and Efficiency Comparison.
+Model GMACs↓ RTF
+(A100)↓
+RTF
+(Android)↓
+ContextCodec 22.55 0.00290.4886
+X-Codec 30.800.0027-
+Mimi11.610.0049 -
+note the variants from top to bottom asM 0–M7: (i)M 1 re-
+places CLIP-style alignment with knowledge distillation from
+pre-trained Wav2Vec 2.0 [17]. We extract teacher represen-
+tations by averaging the hidden states fromallhidden lay-
+ers, align them to codec frames, and match them to the stu-
+dent context featuresˆyc with a cosine-similarity distillation loss
+weighted byλ distill=3; (ii)M 2 andM 3 reduce the CLIP loss
+weight to 0.5 and 0; (iii)M 4 adopts the default decoder [10]
+with stage-wise context injection disabled; (iv)M 5,M 6, and
+M7 vary the number of AR refinement phasesPto 4, 2, and 0
+(no refinement). It supports three conclusions. First, CLIP-style
+phoneme alignment provides more effective semantic supervi-
+sion for intelligibility than distillation (M 0 vs.M 1). Second,
+explicit context guidance is beneficial, and the proposed stage-
+wise context injection mechanism is more effective than decod-
+ing from concatenated latents without guidance (M 0 vs.M 4).
+Third, AR refinement improves perceptual quality (M5 vs.M 7).
+Attribute predictability analysis.We quantify attribute
+predictability on TIMIT using linear probes for three super-
+vision settingsM 0/M1/M3 in Table 4. For each setting, we
+form two types of embeddings from the frame-level quantized
+context representationˆyc for probing: an utterance-level em-
+bedding via time-averaging, and a phoneme-segment-level em-
+bedding using TIMIT boundaries (specifically for the Phone
+probe). We then train logistic-regression probes to predict
+phone, speaker, and dialect. Phone and Dialect probes are
+Table 4:Ablation study on LibriTTS test-clean. “Enh. ” denotes
+stage-wise context injection.
+ID Supervisionλ clip Enh.PPESQ↑STOI↑WER↓
+M0 Phoneme-CLIP 3.0✓4 2.048 0.8925.56%
+M1 SSL-Distill[17] –✓4 2.079 0.895 7.91%
+M2 Phoneme-CLIP 0.5✓42.114 0.9009.14%
+M3 None 0✓4 2.100 0.899 10.58%
+M4 Phoneme-CLIP 3.0×4 2.080 0.896 8.20%
+M5 None 0.0×4 2.047 0.893 10.75%
+M6 None 0.0×2 1.963 0.884 10.51%
+M7 None 0.0×0 1.887 0.880 10.75%
+Table 5:Attribute predictability analysis (accuracy, %).
+ID Supervision Phone↑Speaker↓Dialect↓
+M0 Phoneme-CLIP88.7 51.8 26.6
+M1 SSL-Distill 70.2 91.0 28.2
+M3 None 66.5 82.2 30.8
+trained on the TRAIN split and evaluated on the TEST split.
+For Speaker, since TRAIN and TEST contain disjoint speak-
+ers, we instead split each TRAIN speaker’s utterances into train
+and test sets and report accuracy on the test sets. As shown in
+Table 5, Phoneme-CLIP substantially improves Phone accuracy
+and reduces the predictability of Dialect and Speaker compared
+with SSL-Distill, indicating more content-specific representa-
+tions with lower speaker/dialect leakage.
+4. Conclusion
+We propose ContextCodec, a context-guided neural speech
+codec for ultra-low bitrate speech communication. By prioritiz-
+ing content preservation and using context as an explicit guid-
+ance signal during decoding, ContextCodec achieves a strong
+balance between intelligibility and perceptual quality at bitrates
+down to 500 bps. Extensive objective and subjective evalu-
+ations further demonstrate robust performance across English
+and multilingual test sets, together with an RTF of 0.4886 on a
+typical mobile CPU. Future work includes the streaming imple-
+mentation and strengthening multilingual supervision for rare
+or unseen phonemes.
+1098
+5. Acknowledgements
+This work is supported by the National Key Research
+and Development Program of China under Grant No.
+2023YFB2904300, the National Natural Science Foundation of
+China under Grant No. 62293484, and Beijing Natural Science
+Foundation (F251001).
+6. Generative AI Use Disclosure
+We used generative AI tools (GPT-5.2) to assist with English
+polishing and LATEX formatting suggestions. All technical con-
+tent, experimental results, and final wording were verified and
+approved by the authors.

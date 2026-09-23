@@ -1,0 +1,454 @@
+Representational Instability in Decoupled Audio Encoders
+Ehsan Variani, Tom Bagby, Georg Heigold, Ke Wu, Cyril Allauzen
+Google Research, USA
+{variani, tombagby, heigold, wuke, allauzen}@google.com
+Abstract
+Modern audio processing uses neural encoders to generate dis-
+crete or continuous representations for downstream models
+(e.g., LLMs, ASR). While optimized for the Rate-Distortion
+(RD) trade-off to ensure waveform reconstruction, their stabil-
+ity is often overlooked. We conceptualize the Stability-Rate-
+Distortion (SRD) trade-off, highlighting representational sta-
+bility as a third evaluation axis. Optimizing strictly for re-
+construction leaves representations vulnerable to acoustic nui-
+sances, creating a Stability Penalty. To evaluate this, we in-
+troduce the Continuous Edit Distance (CED) to quantify ge-
+ometric drift. Analyzing state-of-the-art encoders (EnCodec,
+SoundStream, Whisper) reveals catastrophic instability. While
+continuous latents resist minor perturbations, the vector quanti-
+zation (VQ) bottleneck shatters them into disparate discrete se-
+quences—the Quantization Penalty. Evaluating 26 dialects ex-
+poses a cross-lingual ”Language Tax,” where stability collapses
+on low-resource dialects due to weak linguistic priors. High
+waveform fidelity is empirically at odds with representational
+stability in low-bitrate regimes, highlighting a critical vulnera-
+bility in current audio tokens.
+Index Terms: speech recognition, human-computer interac-
+tion, computational paralinguistics
+1. Introduction
+The mathematical foundation of audio compression is tradi-
+tionally rooted in the Source Coding Theorem, which dictates
+the fundamental limits for the trade-off between the informa-
+tion rateR—typically expressed as the transmission bitrate in
+kilobits per second (kbps)—and the reconstruction distortionD
+[1, 2]. For decades, the speech and audio processing commu-
+nity has focused on the minimization of waveform or percep-
+tual distortion at increasingly aggressive bitrates. This long-
+standing pursuit has recently culminated in the emergence of
+neural codecs utilizing Vector Quantization (VQ) [3, 4] and
+Generative Adversarial Networks (GANs) [5] to achieve near-
+transparent reconstruction in the sub-kilobit regime [6, 7, 8]. In
+theseclosed-loopsystems, the latent representation is treated as
+a transient intermediate state; the encoder-decoder pair is jointly
+optimized as a coupled system where the end-to-end fidelity of
+the output waveform ˆXis the primary metric of success.
+However, the recent shift toward multi-modal interleaving
+and large-scale generative modeling has led to the widespread
+adoption ofdecoupledoropen-looparchitectures. In these
+frameworks, compressed latent manifolds or discrete token se-
+quences are leveraged as universal “audio words” to facilitate
+training across disparate modalities and tasks [9, 10, 11]. In this
+paradigm, the encoder’s output is a permanent representation
+that must facilitate semantic reasoning and preserve structural
+consistency across highly variable acoustic environments. Un-
+like a coupled decoder, which can learn to invert complex non-
+linear mappings to reconstruct a signal, downstream consumers
+of these tokens—such as Large Language Models (LLMs) or
+Speech-to-Speech Translators—require representational invari-
+ance. The mappingE:X → Zmust project semantically
+equivalent signals onto stable latent coordinates, regardless of
+the nuisance variables present in the input.
+Despite achieving state-of-the-art reconstruction, high-
+fidelity neural codecs exhibit a profound Discrete Representa-
+tion Inconsistency (DRI) [12]. Empirical evidence suggests that
+these encoders—often driven by adversarial pressures to pre-
+serve high-frequency “textures”—are hyper-sensitive to acous-
+tic nuisances that do not alter the underlying semantic mani-
+fold [13, 14]. While recent works such as StableToken [14] and
+NAST [15] attempt to empirically mitigate this fragility through
+noise-aware tokenization, a unified, architecture-agnostic met-
+ric to evaluate this latent drift has been lacking. For decoupled
+downstream systems, this sensitivity induces catastrophic repre-
+sentational drift. In discrete regimes, a perturbation with negli-
+gible perceptual impact can trigger a near-total reconfiguration
+of the token sequence, effectively presenting the downstream
+model with a disparate linguistic identity for the same acous-
+tic event. We posit that this instability persists because existing
+multi-objective optimizations—even those incorporating auxil-
+iary tasks like ASR—fail to explicitly constrain the stability of
+the mapping under perturbation. When an encoder is primar-
+ily governed by reconstruction distortionD, it is mathemati-
+cally incentivized to preserve all mutual information between
+the sourceXand representationZ, including unstable nuisance
+components.
+To conceptualize this conflict, we propose the Stability-
+Rate-Distortion (SRD) trade-off. We argue that open-loop ar-
+chitectures require a distinct evaluation axis designed specifi-
+cally for downstream machine consumption: representational
+Stability(S). We hypothesize that optimizing strictly for the
+traditional reconstruction bound fundamentally leaves represen-
+tations vulnerable to noise, as the encoder must allocate its rate
+budget to track nuisance textures. Consequently, achieving sta-
+bility in the representation space incurs a conceptual “Stability
+Penalty” (∆S)—a mandatory empirical trade-off between se-
+mantic consistency and waveform reconstruction that current
+state-of-the-art models fail to address. The specific contribu-
+tions of this work are as follows:
+•Conceptual Framework & Metric: We introduce the SRD
+trade-off to conceptualize tokenizer fragility, and propose the
+Continuous Edit Distance (CED), an architecture-agnostic
+metric that robustly quantifies representational drift across
+both continuous latent manifolds and discrete codebooks.
+•Isolating the Quantization Penalty: We present an empir-
+2752
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2487
+ical benchmark demonstrating that while the continuous la-
+tents of modern codecs maintain structural stability under
+noise, the vector quantization (VQ) bottleneck uncondition-
+ally shatters them into entirely different discrete acoustic to-
+ken sequences.
+•The Cross-Lingual Language Tax: In contrast to acoustic
+codecs, we reveal that the instability of semantic ASR en-
+coders (e.g., Whisper) is highly conditional. While they pro-
+duce stable discrete semantic tokens (transcripts) for high-
+resource languages, this robustness collapses strictly on low-
+resource dialects due to weak language model priors, estab-
+lishing a critical vulnerability for global speech systems.
+2. Conceptualizing Representational
+Stability
+The design of traditional audio codecs has historically been
+treated as a signal reconstruction problem, where the objective
+is to transmit a waveform through a capacity-constrained chan-
+nel with minimal loss of fidelity. However, as these codecs tran-
+sition into foundational encoders for downstream AI tasks, the
+objective shifts from signal recovery to representational consis-
+tency. In this section, we conceptualize the conflict between
+reconstruction quality and representational stability. We begin
+by revisiting the classical Rate-Distortion (RD) theorem and
+subsequently extend it conceptually into a three-dimensional
+Stability-Rate-Distortion (SRD) framework.
+2.1. The Classical Rate-Distortion Foundation
+The fundamental limit of data compression is defined by the
+Rate-Distortion FunctionR(D). For a sourceX, the minimum
+rateRrequired to achieve an average distortionDis given by:
+R(D) = inf
+P( ˆX|X)
+I(X; ˆX)subject toE[d(X, ˆX)]≤D
+(1)
+whereI(X; ˆX)is the mutual information between the source
+Xand its reconstruction ˆX, andd(·,·)is a chosen signal-level
+distortion metric (e.g., Mean Squared Error).
+In modern neural architectures, this process is realized via
+an encoder-decoder pair forming the Markov ChainX→Z→
+ˆX, whereZ=E(X)represents the compressed latent rep-
+resentation. According to the Data Processing Inequality, the
+mutual information between the source and the reconstruction
+is bounded by the information captured in the latent bottleneck:
+I(X; ˆX)≤I(X;Z)(2)
+Consequently, the operational bitrate of the codec is determined
+by the entropy ofZ, and any instability in the mappingE:
+X→Znecessarily propagates to the downstream task.
+A critical limitation of this classical view is thatZis treated
+merely as a transient carrier. As long asZcaptures sufficient
+information to satisfy the reconstruction boundD, the theory
+is indifferent to the geometric topology of the mapping. This
+framework does not penalize an encoder where a clean signalX
+and a perturbed variantg(X)map to radically different points
+in the latent spaceZ, provided both points allow for a valid re-
+construction within the error boundD. In our SRD framework,
+we argue that this topological indifference is the primary cause
+of representational collapse in AI-facing encoders.
+2.2. Information Decomposition and Semantic Mapping
+To move beyond reconstruction, we must distinguish between
+the semantic signal and the stochastic noise. We model the
+sourceXas being generated by two latent processes: a se-
+mantic processY(e.g., phonemes, melodic motifs) and a nui-
+sance processN(e.g., reverberation, additive noise, or chan-
+nel effects). Formally, we define a semantic mapping function
+fY :X →Ysuch that any transformationg:X →Xis a
+semantic-preserving perturbation iff Y (X) =f Y (g(X)).
+Following the chain rule of mutual information, the total
+bitrateR=I(X;Z)is exactly decomposed as:
+I(X;Z) =I(Y;Z) +I(N;Z|Y)(3)
+whereI(Y;Z)is the Semantic Information andI(N;Z|Y)is
+the Nuisance Information. In modern high-fidelity codecs, the
+termI(N;Z|Y)is significantly inflated. To satisfy perceptual
+realism, adversarial discriminators [5] force the encoder to track
+high-frequency “textures.” This anchors the representationZ
+to specific realizations of the nuisanceN, rendering the map-
+ping hyper-sensitive to perturbations and destroying its utility
+for downstream machine reasoning.
+2.3. The Stability-Rate-Distortion (SRD) Trade-off
+We conceptually extend the classical 2D Shannon curve into a
+3D SRD formulation by introducing a constraint on representa-
+tional drift. LetX T denote the space of input acoustic signals
+of temporal lengthT, andZ K denote the space of compressed
+latent sequences of lengthK(whereK≤Tdue to the en-
+coder’s temporal striding). For an encoderE:X T →Z K,
+the operational bitrateR(D,S)can be conceptualized as being
+constrained by the intersection of two feasible sets:
+•Fidelity SetD D: Mappings that satisfy the traditional ex-
+pected reconstruction error boundD.
+•Stability SetS S: Mappings that satisfy a strict representa-
+tional drift boundSunder a semantic-preserving perturbation
+g(X), ensuringE[d Z(E(X T ),E(g(X T )))]≤S, whered Z
+is a sequence-level distance metric measuring geometric drift
+in the latent space (formalized in Section 3).
+Because the restricted intersection (D D∩S S) is a sub-
+set of the unconstrained fidelity spaceD D, the minimum re-
+quired information rate must logically exceed or equal the un-
+constrained Shannon limit. We term this conceptual gap the
+Stability Penalty(∆S). As we demand higher stability (reduc-
+ing the allowable driftS), the encoder must either “pay” with a
+higher bitrate to insulate the latent manifold from nuisances, or
+“sell” its reconstruction fidelity by allowingDto increase. Cur-
+rent high-fidelity neural audio codecs are typically optimized to
+approach the Shannon floor (ignoringS), which achieves high
+reconstruction quality at low bitrates but places the model on a
+fragile region of the SRD manifold.
+There have been previous efforts to expand classical RD
+theory by introducing a third dimension. Most notably, the
+Rate-Distortion-Perception (RDP) framework [16] introduces
+a Perception axis that optimizes forstatistical realism(mini-
+mizing distributional divergence) to ensure reconstructed sig-
+nals sound natural to human observers. In contrast, the dimen-
+sion we introduce focuses strictly on representationalstability
+(deterministic geometric invariance) for downstream machine
+consumption. In fact, these two axes are often at odds: opti-
+mizing for RDP’s perceptual realism actively requires models
+to track high-frequency nuisances, which is precisely the mech-
+anism that degrades geometric stability and causes representa-
+tional shattering.
+2753
+2.4. Consequences for Neural Pipelines
+The conceptual framework established above suggests that an
+encoder operating without stability constraints is mathemati-
+cally incentivized to produce fragile latent representations. In
+modern audio processing, where the encoder is often the first
+stage of a larger decoupled pipeline, this instability propagates
+and amplifies downstream. Incontinuous manifolds, uncon-
+strained geometric drift under noise shifts the latent coordi-
+nates. For downstream tasks relying on spatial locality (such
+as contrastive retrieval or continuous LLM prefixes), this dis-
+placement fundamentally degrades semantic matching.
+2.5. Semantic Discontinuity in LLMs
+When these continuous representations are discretized intodis-
+crete tokensZ K
+q and used as input for an Autoregressive Trans-
+former (e.g., Audio-LLMs), the instability is severely amplified.
+If the encoder lacks representational stability, a minor continu-
+ous drift crossing a quantization boundary can cause a “token
+flip”—a discrete jump in the index sequence. This vulnerability
+is particularly catastrophic in modern codecs employing Resid-
+ual Vector Quantization (RVQ). In an RVQ bottleneck, a geo-
+metric drift that causes a boundary crossing in the first quan-
+tizer layer fundamentally alters the residual vector passed to all
+subsequent layers. Consequently, a single micro-perturbation
+can trigger a cascading failure, replacing the entire token hi-
+erarchy with an orthogonal discrete sequence. Because LLMs
+are highly sensitive to sequence context, these flipped tokens
+can easily divert the attention mechanism, leading to semantic
+hallucinations or degraded synthesis in downstream generative
+tasks.
+2.6. The “Fragility-Efficiency” Trade-off
+We postulate a fundamental trade-off inherent in current en-
+coder design across both continuous and discrete paradigms, a
+structural tension which we empirically validate through com-
+prehensive perturbation experiments in Section 4:
+•Efficiency-Focused (HighS): Models like EnCodec at low
+bitrates maximize reconstruction fidelityDby utilizing the
+full expressive capacity of the continuous bottleneck or dis-
+crete codebook without explicitly imposing stability con-
+straints. However, this leaves no “geometric margin” for con-
+sistency, making the resulting representations highly fragile
+to minor, everyday nuisance perturbations.
+•Stability-Aware (LowS): By internalizing a tight stabil-
+ity constraint, the encoder learns a mapping where seman-
+tic clusters inX T map to reliable, invariant regions inZ K.
+Mathematically, increasing this geometric margin requires
+widening the V oronoi cells of the quantizer or allocating re-
+dundant codebook indices to capture the same underlying se-
+mantic concept across diverse acoustic conditions. While this
+requires a higher bitrate to maintain the sameD, it ensures
+that downstream generative models receive a highly consis-
+tent and predictable signal.
+Ultimately, this conceptual framework suggests a critically
+necessary paradigm shift in how we evaluate neural codecs
+and encoders. Rather than focusing solely on the “Rate-
+Distortion” curve (reconstruction quality), we must instead con-
+sider the broader, multidimensional “Stability-Rate-Distortion”
+manifold. Fundamentally, an encoder is only as good as the in-
+herent stability of the representations it provides to subsequent
+models in the processing chain.
+3. The Stability Evaluation Framework
+To evaluate the SRD manifold empirically, we require distance
+functionsd Z that are sensitive to semantic drift while remaining
+invariant to trivial temporal shifts. We categorize these metrics
+based on whether they operate on the quantized token indices
+or the underlying continuous embeddings.
+3.1. Discrete Representations: Unit Edit Distance (UED)
+For codecs that represent audio as sequences of discrete tokens
+Zq∈{1,...,V} K (whereVis the codebook vocabulary size),
+representational stability is measured via the Unit Edit Distance
+(UED). To ensure the metric reflects the true corpus-level drift
+rather than being skewed by outlier short utterances, we com-
+pute the micro-averaged UED across the dataset. This is calcu-
+lated by summing the total Levenshtein operations (insertions,
+deletions, and substitutions) across all perturbed variants and
+normalizing by the total length of the clean reference sequences:
+UED=
+PM
+i=1 Levenshtein(Zq,i,Z′
+q,i)PM
+i=1|Zq,i|
+(4)
+whereMis the total number of evaluated sample pairs,Z q,i is
+the clean reference sequence, andZ′
+q,i is the perturbed variant.
+The UED is our primary tool for detecting “catastrophic
+representational jumps,” where a negligible input perturbation
+causes the vector quantizer to select entirely different codebook
+indices, fundamentally altering the downstream semantic con-
+text. This metric has been previously applied to evaluate the
+stability of speech tokenizers [15].
+3.2. Continuous Representations: Continuous Edit Dis-
+tance (CED)
+For continuous embeddingsZ∈R K×Dz (whereD z is the la-
+tent feature dimension), standard metrics often fail to capture
+the nuances of the SRD manifold. RigidL p norms fail in the
+presence of micro-temporal shifts, while Dynamic Time Warp-
+ing (DTW) can “hide” instability by over-squashing divergent
+frames onto a single reference frame.
+We introduce the Continuous Edit Distance (CED) as a sta-
+ble framework that incorporates geometric substitution costs
+into a formal edit-distance recurrence. To establish a bounded
+and architecture-agnostic metric, we first project all latent
+frames onto a unit hypersphere viaL 2 normalization: ˜zi =
+zi
+||zi||2
+. This guarantees that the maximum Euclidean substitu-
+tion cost between any two disparate frames is strictly bounded
+by the sphere’s diameter (2.0).
+Given normalized sequences ˜Zand ˜Z′, the cumulative cost
+C(i,j)is computed dynamically:
+C(i,j) = min
+
+
+
+C(i−1,j) +w del
+C(i,j−1) +w ins
+C(i−1,j−1) +|| ˜zi− ˜z′
+j||2
+(5)
+where the operations represent Deletion, Insertion, and Substi-
+tution, respectively. Because the maximum substitution cost is
+2.0, we strictly set the temporal gap penalties tow ins =w del =
+2.0to balance elasticity with geometric drift.
+Finally, similar to the UED computation, we calculate a
+corpus-level micro-average to prevent sequence length varia-
+tions from skewing the stability profile. The global CED is the
+sum of the optimal alignment costs across all perturbed variants
+2754
+normalized by the total temporal length of the clean reference
+sequences:
+CED=
+PM
+m=1C(| ˜Zm|,| ˜Z′
+m|)PM
+m=1| ˜Zm|
+(6)
+whereMis the total number of evaluated sequence pairs,
+and| ˜Zm|denotes the frame length of them-th reference se-
+quence.
+3.2.1. Physical Logic of CED Operations
+The choice of weights and costs in CED directly reflects the
+physical nature of representational drift in audio. In neural
+codecs, nuisances like clock drift or micro-temporal shifts can
+cause the encoder to “skip” a frame or produce an extra latent
+frame. The deletion (w del) and insertion (w ins) penalties act as
+the cost for these temporal elasticities.
+Ifw→0, the metric becomes overly permissive, allow-
+ing the representation to drift in time without penalty. Con-
+versely, ifw→∞, the metric degrades into a rigidL p com-
+parison. For our standard continuous evaluations, we strictly set
+wins =w del = 2.0. Because the maximum possible geometric
+substitution cost on the unit hypersphere is2.0, this ensures that
+discarding a valid frame or hallucinating an extra frame carries a
+penalty exactly equivalent to the maximum possible geometric
+displacement, preventing the alignment algorithm from spuri-
+ously skipping frames to artificially lower the distance.
+3.2.2. Flexibility in Substitution Costs (C)
+The power of CED lies in the definition of the substitution cost
+C:
+•Discrete Baseline: SettingC(z i,z′
+j) = 1(and correspond-
+ingly relaxingw= 1) recovers the classical Unit Edit Dis-
+tance, treating every frame-level change as a discrete symbol
+swap.
+•Geometric Drift: SettingC(z i,z′
+j) =∥ ˜zi− ˜z′
+j∥2 penalizes
+the “effort” required to shift along the latent manifold. This
+distinguishes between “jitter” (small movements within a se-
+mantic region) and “jumps” (moving to a distant part of the
+manifold).
+•Centroid-Aware Cost: In quantized systems,Ccan be de-
+fined as the distance between codebook centroids. This pe-
+nalizes “semantic jumps” between indices more heavily than
+small geometric variations within a single V oronoi cell.
+3.2.3. Analytical Extension: Soft-CED for Future Architec-
+tures
+While CED serves as an empirical diagnostic tool in this work,
+it also provides a direct conceptual path toward optimizing the
+SRD manifold. By replacing theminoperator with a smoothed
+Log-Sum-Exp, the metric becomes Soft-CED, a fully differen-
+tiable operator [17]. This allows the Stability constraint to be
+internalized during training via a penalty term:
+Ltotal =L codec +λ·Soft-CED(E(X T ),E(g(X T )))(7)
+Future work will explore whether the inclusion of Soft-CED
+forces an encoder to inherently learn stability-aware mappings,
+ensuring that the latent representation remains intrinsically ro-
+bust to nuisances before quantization occurs.
+4. Experiments and Results
+We evaluate the representational stability of various audio en-
+coding paradigms using the Stability-Rate-Distortion (SRD)
+framework defined in Section 2. Our goal is to empirically
+map the SRD manifold by measuring the divergence between
+“clean” latent representations and those subjected to controlled,
+stochastic acoustic nuisances.
+4.1. Dataset and Nuisance Protocol
+We utilize the clean studio-quality reference audio from the
+Massive Sound Embedding Benchmark (MSEB) [18] Simple
+V oice Questions (SVQ) dataset. To evaluate the fragility of the
+latent manifold, we subject these clean samples to a frequency-
+domain SpecAugment protocol [19].1
+Unlike standard feature-space SpecAugment applied to
+Log-Mel filterbanks, we implement an FFT-Augment-iSTFT
+pipeline directly on the waveform. The audio is transformed via
+STFT (N-FFT = 2048, Hop Length = 512). We then apply ran-
+dom continuous masking to the linear magnitude spectrogram:
+•Time Masking: Suppressing up to 20% of the temporal steps
+(maximum width of 100 frames).
+•Frequency Masking: Suppressing up to 15% of the fre-
+quency bins (maximum width of 27 bins).
+The masked spectrogram is then inverted back to the time do-
+main via inverse-STFT. This linear-domain approach guaran-
+tees mathematically perfect reconstruction of the unmasked re-
+gions, ensuring that any representational drift is strictly a re-
+action to the localized information loss, rather than processing
+artifacts.
+Justification of Synthetic Perturbations:We explicitly
+isolate our evaluation to this stochastic masking protocol rather
+than incorporating real-world additive background noise. Eval-
+uating representations on real-world noise intrinsically alters
+the global acoustic envelope, conflating true global signal loss
+with representational drift. Furthermore, comprehensive real-
+world noise evaluations across 26 languages would require
+strictly parallel datasets, which are unavailable. By guaran-
+teeing that the unmasked regions remain bit-perfect, our FFT-
+SpecAugment pipeline strictly isolates representational drift as
+anarchitectural fragilityof the quantizer.
+Theoretical Alignment:For every clean sampleX, we
+generate5stochastically augm

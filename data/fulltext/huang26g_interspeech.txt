@@ -1,0 +1,428 @@
+MSR-HuBERT: Self-supervised Pre-training for Adaptation to Multiple
+Sampling Rates
+Zikang Huang1, Meng Ge1, Tianrui Wang1, Xuanchen Li1, Xiaobao Wang1, Longbiao Wang1,2,∗∗,
+Jianwu Dang3
+1Tianjin Key Laboratory of Cognitive Computing and Application, School of Artificial Intelligence,
+Tianjin University, China
+2Huiyan Technology Company, Ltd., China
+3Shenzhen Institute of Advanced Technology, China
+huangzikang@tju.edu.cn,longbiao wang@tju.edu.cn
+Abstract
+Self-supervised learning (SSL) has advanced speech process-
+ing. However, existing speech SSL methods typically as-
+sume a single sampling rate and struggle with mixed-rate data
+due to temporal resolution mismatch. To address this limita-
+tion, we propose MSRHuBERT, a multi-sampling-rate adap-
+tive pre-training method. Building on HuBERT, we replace
+its single-rate downsampling CNN with a multi-sampling-rate
+adaptive downsampling CNN that maps raw waveforms from
+different sampling rates to a shared temporal resolution with-
+out resampling. This design enables unified mixed-rate pre-
+training and fine-tuning. In experiments spanning 16 to 48 kHz,
+MSRHuBERT outperforms HuBERT on speech recognition
+and full-band speech reconstruction, preserving high-frequency
+detail while modeling low-frequency semantic structure. More-
+over, MSRHuBERT retains HuBERT’s mask-prediction objec-
+tive and Transformer encoder, so existing analyses and improve-
+ments that were developed for HuBERT can apply directly.
+Index Terms: self-supervised learning, sampling-rate adapta-
+tion, speech reconstruction, speech recognition, fine-tuning
+1. Introduction
+Self-supervised learning (SSL) has enabled major advances in
+natural language processing and computer vision [1, 2]. In
+speech, SSL has emerged as a leading approach for learning
+powerful speech representations by pre-training on large unla-
+beled corpora using objectives that derive supervision from the
+signal itself rather than from human annotations [3, 4, 5, 6].
+After pre-training, these models act as representation extractors
+and are fine-tuned on labeled data for downstream tasks such as
+automatic speech recognition (ASR) [7, 8, 9].
+Mainstream speech SSL models (e.g., wav2vec 2.0, Hu-
+BERT, and WavLM) adopt a common design: a convolutional
+encoder compresses the raw waveform into frame-level features
+with a fixed 20 ms frame shift, which serve as the basic units for
+pre-training and are realized by a 320× temporal downsampling
+for 16 kHz audio [10, 11, 12]. Consequently, these models are
+effectively tied to 16 kHz. For other sampling rates, the ex-
+tracted frame-level features’ frame shift and temporal resolu-
+tion no longer match the expected 20 ms. This resolution mis-
+match leads the models to fail to function correctly during both
+pre-training and fine-tuning. We refer to this issue as the res-
+olution mismatch problem, as illustrated in Fig. 1. The prob-
+lem prevents direct use of non-16 kHz audio in pre-training,
+**indicates the corresponding author. This work was supported by the
+National Natural Science Foundation of China under Grant U23B2053.
+320x Downsampling CNN Extractor
+16k Hz 24k Hz 48k Hz
+25ms20ms 16.66ms13.33ms 8.33ms6.67ms
+Figure 1:The resolution mismatch across diverse sampling
+rates with a fixed 320× downsampling CNN.
+reduces data diversity, and limits applicability to downstream
+tasks that operate at other sampling rates [13, 14, 15]. Address-
+ing sampling-rate compatibility is therefore crucial for robust
+and widely usable speech SSL. To our knowledge, this work
+represents a pioneering effort to explicitly explore solutions to
+this resolution mismatch in speech SSL.
+Simple remedies are unsatisfactory: training separate mod-
+els per sampling rate is costly, and resampling high-rate au-
+dio to 16 kHz discards high-frequency information that is use-
+ful for downstream performance [16]. Frequency-domain tech-
+niques (e.g., subband decomposition or fixed-duration STFTs)
+can achieve sampling-rate independence in speech enhance-
+ment [17, 18], but they do not integrate naturally into exist-
+ing SSL pipelines without disrupting the original paradigm, be-
+cause most speech SSL models operate on the time-domain, and
+the few studies on frequency-domain adaptation target improv-
+ing training efficiency rather than performance [19].
+In this paper, we propose MSRHuBERT, a multi-sampling-
+rate adaptive pre-training method. By introducing a multi-
+sampling-rate adaptive downsampling convolutional feature ex-
+tractor, routing audio of different sampling rates through a con-
+volutional encoder with rate-specific downsampling, it maps in-
+puts to frame-level features on a common temporal resolution,
+thereby alleviating the resolution mismatch problem. Mean-
+while, we retain the standard SSL paradigm, the training ob-
+jective and architecture. We implement our design on a Hu-
+BERT backbone and conduct pre-training and downstream fine-
+tuning on datasets sampled at multiple rates. Results show
+our approach achieves comparable performance on the ASR
+task that depends on low-frequency signal content, while im-
+proving performance on the full-band speech reconstruction
+task that relies on high-frequency information. Moreover, be-
+cause we retain the original SSL objective and architecture, im-
+provements developed for HuBERT can be incorporated into
+our method to yield further gains. Finally, as the first work
+to explicitly mitigate multi-sampling-rate resolution mismatch
+1438
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1354
+in speech SSL, we empirically quantify the severe degrada-
+tion that mismatch induces on ASR and speech reconstruction.
+Our main contributions are: (1) MSRHuBERT, a speech SSL
+framework adaptive for multiple sampling rates, including a
+multi-sampling-rate adaptive downsampling convolutional ex-
+tractor that avoids resolution mismatch while preserving the
+core SSL paradigm; (2) empirical evidence across multiple sam-
+pling rates that the learned representations by our method retain
+low-frequency content that is important for ASR while also cap-
+turing high-frequency details beneficial for reconstruction; (3)
+the first identification and formalization of the resolution mis-
+match problem in speech SSL.
+2. HuBERT
+HuBERT [11] is a typical speech SSL framework. It benefits
+from an offline clustering (e.g., k-means) to generate frame-
+level pseudo labelsU= [u 1,u 2,...,u T ], whereTis the num-
+ber of speech frames. A fixed 320x downsampling convolu-
+tional neural network (CNN)F(·)converts 16 kHz speechs 16k
+into the frame-level featureH= [h 1,h 2,...,h T ]with a frame
+shift of 20 ms, which is then fed to a Transformer encoderG(·)
+to get the contextual representationC= [c 1,c 2,...,c T ]. During
+pre-training, the frame-level featuresHare masked randomly
+before they are passed to the Transformer encoder. The whole
+pipeline can be formalized as
+C= [c 1,c 2,...,c T ] =G(M(F(s 16k))), (1)
+whereM(·)is the mask operation on frame-level features. Fi-
+nally, the model is trained to predict the pseudo labels of the
+masked frames using a cross-entropy (CE) loss function
+LCE (C,U) =−
+X
+t∈O
+logp(u t|ct), (2)
+whereOdenotes the set of indices masked inH. Note that,
+when applied to downstream tasks,His no longer masked and
+the obtained unmasked contextual representationCis used.
+3. Proposed Method
+Fig. 2 illustrates the overall architecture of MSRHuBERT.
+MSRHuBERT is a speech SSL framework that processes
+speech sampled at multiple sampling rates and is explicitly
+designed to resolve the resolution mismatch problem. Given
+speeches at diverse sampling rates, the model maps them to
+a common temporal resolution and performs mixed-rate pre-
+training using a shared codebook. MSRHuBERT departs from
+HuBERT in a principal respect: a multi-sampling-rate adaptive
+downsampling CNN, which aligns frame-level features across
+sampling rates, enabling direct pre-training on raw multi-rate
+waveforms while preserving the intended 20 ms frame shift,
+modeling both low- and high-frequency information.
+3.1. Multi-sampling-rate Adaptive Downsampling CNN
+The multi-sampling-rate adaptive downsampling CNN is de-
+signed to compress speech signals recorded at different sam-
+pling rates into frame-level features that share a common tem-
+poral resolution without resampling, thereby tackling the reso-
+lution mismatch problem while preserving high-frequency in-
+formation. Specifically, given an input waveforms ak sampled
+atakHz, the model routes it to a rate-specific downsampling
+CNNF dr(·)with downsampling ratiodrso that the resulting
+frame-level features match HuBERT’s temporal convention of
+Multi-Sampling-Rate Adaptive Downsampling CNN
+16k Hz 24k Hz 48k Hz
+25ms20ms 25ms20ms 25ms20ms
+320x downsample 480x downsample 960x downsample
+MASK MASK MASK
+Transformer
+Speech Tokenizer (Kmeans)
+Figure 2:The architecture of MSRHuBERT, which takes raw
+waveforms at different sampling rates as input. The multi-
+sampling-rate adaptive downsampling CNN can map wave-
+forms to a common temporal resolution by designing rate-
+specific downsampling, and supports mixed-rate pre-training.
+20 ms frame shift. Inspired by [20], we append a layer normal-
+ization after each downsampling CNN, which removes feature
+aggregation inconsistency across rate-specific CNNs and maps
+all extracted features into a shared feature space by normalizing
+mean and variance independently per branch [21].
+H= [h 1,h 2,...,h T ] = LN dr
+ 
+Fdr(sak)
+
+,(3)
+whereLN dr denotes layer normalizing attached toF dr, and
+downsampling ratiodr=ak×0.02, achieved through carefully
+designing the stride and kernel width of eachF dr (detailed in
+Table 1). This design ensures that all sampling rates are aligned
+to the same temporal resolution before being fed to the shared
+Transformer encoder.
+Compared to HuBERT, the adaptive downsampling CNN
+enables direct processing of raw high-sampling-rate speech
+without resampling, thereby preserving high-frequency infor-
+mation, increasing the diversity of pre-training data, and extend-
+ing applicability to downstream tasks operating at multiple sam-
+pling rates. Because the extracted features all share the standard
+temporal scale and lie in a unified feature space, the following
+mask prediction and Transformer encoder can be retained.
+3.2. Mixed-rate Mask Prediction via Single Codebook
+Because the multi-sampling-rate adaptive downsampling CNN
+maps inputs from different sampling rates to frame-level fea-
+tures on a common temporal grid. This unified temporal scale
+enables the subsequent use of a shared Transformer encoder
+and a single shared codebook for consistent contextual mod-
+eling. This unified formulation preserves the original training
+paradigm while allowing the model to exploit the greater di-
+versity of multi-rate pre-training data. Furthermore, this de-
+sign ensures training efficiency, minimizes additional model
+parameters, and facilitates the effective extraction of robust
+speech representations. Concretely, mask prediction is per-
+1439
+formed on features with a 20 ms frame shift, a convention used
+in prior work to yield effective speech representations. Follow-
+ing the HuBERT paradigm, the frame-level features, produced
+by the adaptive downsampling branch, are masked randomly
+and passed to a shared Transformer encoder whose contextual
+outputs are trained to predict offline clustering pseudo labels, as
+L=− 1
+T
+X
+t∈O
+log exp(sim(Act,e u)/τ)PU
+u′ exp(sim(Act,e u′ )/τ)
+(4)
+whereAis a projection matrix,e u is the embedding for pseudo
+labeluof framet,Tis the number of masked frames, andτ
+scales the logit which is set to 0.1.
+This mixed-rate single shared codebook training enables
+the model to absorb low- and high-frequency cues present
+across different sampling rates, and constrain extracted contex-
+tual representations from diverse rates to lie in a common fea-
+ture space, yielding rate-invariant representations that simplify
+fine-tuning on mixed-rate downstream tasks.
+4. Experiments
+4.1. Pre-training Setup
+For multi-sampling-rate pre-training, we retain the 960-hour
+LibriSpeech corpus [22] at 16 kHz used by HuBERT Base to
+ensure a fair comparison. For the other sampling rates we use
+the clean subset of the DNS Challenge 2022 dataset [23], origi-
+nally recorded at 48 kHz. This subset is uniformly resampled to
+22.05 kHz, 24 kHz and 48 kHz, producing roughly 193 hours
+of speech for each rate.
+All pre-training experiments are implemented using the
+Fairseq toolkit [24]. We train all models from random ini-
+tialization [25] for 400k steps on four 24GB NVIDIA 4090D
+GPUs, using a batch size of 87.5 seconds of audio per GPU
+and eight times gradient accumulation to match HuBERT’s ef-
+fective batch configuration. During pre-training, we control
+same sampling-rate in each batch but mix batches from different
+sampling-rates within each update because of distributed train-
+ing and gradient accumulation, allowing efficient learning from
+diverse data with minimal extra forward computation. Regard-
+ing parameters, our proposed CNN branches contribute little to
+the parameter count, which is mainly from the Transformer En-
+coder. Quantitatively, adding one sampling rate increases pa-
+rameters by only 3%, and the time cost of mixed training with
+4 rates is just 2.6% longer than single-rate training. Other hy-
+perparameters for the model are kept the same as in [11]. We
+use the HuBERT base as the baseline and backbone model, and
+the architecture of our proposed multi-sampling-rate adaptive
+downsampling CNN is shown in Table 1. Note that HuBERT
+Base baseline is pre-trained for one sampling rate using the cor-
+responding single-rate CNN.
+4.2. Fine-tuning Setup
+To evaluate the generality of representations learned by
+MSRHuBERT across different sampling rates, we perform
+fine-tuning experiments under the SUPERB evaluation proto-
+col [26]. In this protocol, the pre-trained model is kept frozen
+and only the lightweight downstream module is learnable.
+For each sampling rate, we select a corresponding dataset:
+train-clean-100 and test-clean subsets of LibriSpeech for 16
+kHz [22], LJSpeech for 22.05 kHz [27], train-clean-100 and
+test-clean subsets of LibriTTS for 24 kHz [28], and VCTK
+for 48 kHz [29]. We evaluate two downstream tasks that em-
+phasize complementary spectral information: automatic speech
+Table 1:Architecture design for proposed multi-sampling-rate
+adaptive downsampling CNN. For the CNN branch of each sam-
+pling rate, the stride and kernel width is determined based on
+the calculation formulas for the downsampling rate, stride, and
+kernel width, as well as the prime factor decomposition.
+Sampling Rate Strides Kernel width
+16 kHz 5, 2, 2, 2, 2, 2, 2 10, 3, 3, 3, 3, 2, 2
+22.05 kHz 7, 7, 3, 3 19, 14, 4, 3
+24 kHz 5, 3, 2, 2, 2, 2, 2 10, 5, 3, 3, 3, 2, 2
+48 kHz 5, 3, 2, 2, 2, 2, 2, 2 10, 5, 3, 3, 3, 3, 2, 2
+recognition (ASR), which primarily depends on low-frequency
+content, and full-band speech reconstruction (SR), which addi-
+tionally requires high-frequency detail. For the speech recon-
+struction task, we adapt the original HiFi-GAN vocoder [30]:
+the vocoder utilizes the representation produced by the frozen
+pre-trained model and reconstructs the waveform [31, 32]. To
+ensure a fair comparison across pre-trained models, the down-
+stream architectures and hyperparameters are identical for each
+evaluated model.
+4.3. Evaluation on SR and ASR
+To evaluate MSRHuBERT’s applicability across sampling rates,
+we compare five pre-training configurations: 1) HuBERT Base:
+Pre-trained only on the 960-hour LibriSpeech at 16 kHz; 2) Re-
+sampled 16k HuBERT Base: Pre-trained on the full multi-rate
+pre-training datasets after resampling all speech to 16 kHz;
+3) Resampled 24k HuBERT Base: Pre-trained on the full
+multi-rate pre-training datasets after resampling all speech to 24
+kHz; 4) Resampled 48k HuBERT Base: Pre-trained on the full
+multi-rate pre-training datasets after resampling all speech to
+48 kHz; 5) MSRHuBERT: Pre-trained on the full datasets with-
+out resampling using our proposed architecture. During down-
+stream fine-tuning and evaluation, we resample each down-
+stream dataset to the sampling rate expected by the pre-trained
+model so that frame-level temporal resolution aligns with the
+pre-training convention and the resolution mismatch is avoided.
+To directly quantify the cost of violating this assumption, we ad-
+ditionally conduct experiments in which the downstream dataset
+is not resampled.
+Table 2 presents comprehensive results for ASR and SR
+downstream tasks using different pre-trained models. From
+these results we draw four main observations: 1) The perfor-
+mance of the HuBERT depends systematically on the sampling
+rate used during pre-training. Models pre-trained at 16 kHz im-
+plicitly focus on low-frequency semantic cues and consequently
+achieve stronger ASR performance, whereas models pre-trained
+at 48 kHz retain high-frequency detail and therefore perform
+better on full-band speech reconstruction, but the additional
+high-frequency information interferes with the model’s ability
+to concentrate on low-frequency semantic structure, degrading
+ASR. 2) Our MSRHuBERT, by design, directly adapts to differ-
+ent sampling rates without resampling. As a result, it preserves
+high-frequency information that benefits reconstruction tasks
+while still maintaining effective modeling of low-frequency se-
+mantic content required by ASR. 3) Because the ASR train-
+ing objective is the sampling-rate invariant transcription text,
+we also conduct a mixed-rate fine-tuning experiment, and our
+method exhibits promising performance. This empirical result
+1440
+Table 2:The comprehensive results for ASR and SR downstream tasks using different pre-trained models.
+Model
+ASR (WER↓) Full-band SR (STOI↑)
+16k Hz 22.05k Hz 24k Hz 48k Hz
+four sampling rates mixed fine-tuning
+16k Hz 22.05k Hz 24k Hz 48k Hz
+16 kHz 22.05 kHz 24 kHz 48 kHz
+HuBERT Base 6.41 3.34 6.84 5.96 7.42 3.35 7.61 6.63 88.46 93.04 88.52 81.42
+Re. 16kHz HuBERT Base 6.033.156.595.61 6.89 2.95 6.975.53 89.35 93.46 88.49 82.49
+- w/o resampling in fine-tuning 6.03 4.47 15.61 38.18 7.69 3.72 10.30 33.72 89.35 91.84 86.71 75.53
+Re. 24kHz HuBERT Base 6.15 3.28 6.54 5.70 6.95 3.02 7.24 5.74 89.61 94.3289.3483.75
+Re. 48kHz HuBERT Base 6.37 3.41 6.72 5.95 7.28 3.29 7.45 6.11 89.75 94.08 89.0785.93
+MSRHuBERT 5.893.356.355.83 6.54 2.90 6.825.56 90.26 94.3889.25 85.79
+0 1 2 3 4 5 6 7 8 9 10 11 12
+Layers
+HuBERT + 16k
+MSRHuBERT + 16k
+HuBERT + 48k
+MSRHuBERT + 48k
+HuBERT + Mix
+MSRHuBERT + Mix
+Settings
+0.05
+0.10
+0.15
+0.20
+0.25
+0.30
+0.35
+Figure 3:Weight analysis on the ASR task of the SUPERB
+Benchmark. Layer 0 corresponds to the input of the first Trans-
+former layer. The y-axis represents different settings, including
+pre-trained model and sampling rate of the downstream dataset
+in ASR.
+supports the feasibility of mixed-rate training for tasks whose
+labels are independent of sampling rate. 4) When the resolution
+mismatch exists between the sampling rate used for pre-training
+and the rate used for fine-tuning, the convention learned during
+pre-training is violated and performance degrades. In addition,
+degradation increases with the magnitude of the sampling rate
+discrepancy.
+4.4. Exploration for Learning Paradigm
+Architecturally, MSRHuBERT retains HuBERT’s core learning
+paradigm: mask prediction objective and the Transformer en-
+coder remain unchanged. Based on the essence of the prob-
+lem, we address the resolution mismatch problem by replac-
+ing the fixed single-rate CNN with a multi-sampling-rate adap-
+tive downsampling CNN that operates directly on time-domain
+waveforms. As a result, existing layer-wise analyses [33] and
+improvements developed for HuBERT can be transferred to
+MSRHuBERT with minimal modification. We verify this view-
+point both qualitatively and quantitatively.
+Following the SUPERB policies, we apply a weighted sum
+to the hidden states of different layers and feed it to the task-
+specific layers. Fig. 3 shows the weights of different layers
+of HuBERT and MSRHuBERT models on the ASR task. The
+larger weight indicates the greater contribution of the corre-
+sponding layer. The two models exhibit qualitatively similar
+weight distributions, with dominant contributions arising from
+the same middle-to-upper layer region [12]. This correspon-
+Table 3:The result of MSRHuBERT with adaptation of inter-
+mediate layer supervision and progressive decoupling in down-
+stream fine-tuning ASR task.
+Model
+ASR (WER↓)
+16k Hz 22.05k Hz 24k Hz 48k Hz
+Re. 16kHz HuBERT Base 6.033.156.59 5.61
+MSRHuBERT 5.89 3.35 6.35 5.83
++ Intermediate Layer Supervision 5.563.17 6.16 5.67
++ Progressive Decoupling 5.63 3.305.94 5.52
+dence indicates that MSRHuBERT sustains the layer-wise rep-
+resentational structure that HuBERT relies on.
+To validate compatibility with existing methods for Hu-
+BERT, we introduce two representative enhancements, interme-
+diate layer supervision [34] and progressive decoupling [35],
+developed for HuBERT to MSRHuBERT and evaluate their ef-
+fects. Table 3 reports the fine-tuning ASR results: both im-
+provements yield additional performance gains when applied to
+MSRHuBERT. These quantitative results confirm that MSRHu-
+BERT retains HuBERT’s training paradigm and therefore bene-
+fits from prior advances, demonstrating practical transferability
+and generalization across sampling rates. Moreover, our ap-
+proach can be easily adapted to other sampling-rate scenarios,
+such as 32 kHz or 44.1 kHz, with minimal modifications to the
+multi-sampling-rate adaptive downsampling CNN architecture.
+Specifically, we choose a downsampling factor matched to each
+input sampling rate so that all waveforms are compressed to a
+common temporal resolution prior to subsequent processing.
+5. Conclusion
+This paper proposes the resolution mismatch problem for
+speech SSL across diverse sampling rates and presents MSRHu-
+BERT to mitigate this issue, using a self-supervised pre-
+training framework that introduces a multi-sampling-rate adap-
+tive downsampling CNN without resampling and holds the core
+learning paradigm. A series of experiments have been carried
+out to show that our method preserves high-frequency detail and
+maintains effective modeling of low-frequency semantic con-
+tent, sustaining the core learning paradigm and the layer-wise
+representational structure.
+1441

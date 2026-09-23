@@ -1,0 +1,437 @@
+Upcycling Pretrained Transformers into Mixture-of-experts
+for Multilingual Speech Recognition
+Kentaro Shinayama, Kohei Matsuura, Jaeyoung Lee, Masato Mimura
+NTT, Japan
+kentaro.shinayama@ntt.com
+Abstract
+Fine-tuning large pretrained models is a powerful way to obtain
+high-accuracy systems for downstream ASR tasks. However,
+when fine-tuning on highly diverse data, such as multilingual
+corpora, performance can degrade compared with training sepa-
+rate models per language, largely due to limited model capacity.
+In this paper, we propose a simple capacity expansion method
+for multilingual fine-tuning by upcycling the feed-forward net-
+work (FFN) components of a pretrained model into a post-hoc
+Mixture-of-Experts (MoE) architecture. This conversion sub-
+stantially increases the model’s representational capacity while
+preserving inference efficiency: at test time, we activate only a
+single upcycled FFN expert, keeping the number of active pa-
+rameters identical to the original dense model. We investigate
+two expert selection strategies: (1) hard routing based on lan-
+guage identity, and (2) soft routing using a learned router. Ex-
+periments on 10-language speech recognition with Common-
+V oice and additional ASR evaluations on four Asian languages
+demonstrate that the proposed upcycling-to-MoE approach con-
+sistently improves multilingual fine-tuning effectiveness.
+Index Terms: multilingual speech recognition, mixture-of-
+experts, pretrained Transformers, Whisper
+1. Introduction
+Multilingual automatic speech recognition (ASR) plays a cen-
+tral role in enabling seamless cross-linguistic communication.
+By training a single model to recognize multiple languages,
+multilingual ASR removes the need to maintain separate mono-
+lingual systems and can improve recognition for low-resource
+languages through cross-lingual knowledge sharing. This
+shared modeling allows the system to exploit common acous-
+tic characteristics and phonetic regularities across languages.
+However, when linguistically diverse languages are trained
+jointly without carefully accounting for inter-language simi-
+larity, multilingual ASR can even underperform monolingual
+models [1][2], a phenomenon commonly viewed as nega-
+tive transfer in machine learning [3]. This degradation may
+arise from two primary factors. First, end-to-end (e2e) ASR
+systems[4] are typically trained to predict highly language-
+dependent grapheme units, which limits cross-lingual knowl-
+edge sharing. Second, model capacity is inherently constrained,
+making it difficult to represent diverse language-specific pat-
+terns within a single parameter space.
+Importantly, this issue can persist even when multilingual
+systems are obtained by fine-tuning large-scale pretrained mod-
+els such as XLS-R [5] and Whisper [6]. Although these mod-
+els learn rich acoustic representations, their final predictions re-
+main grapheme-based, and model capacity is still shared across
+languages, resulting in similar negative-transfer effects [7].
+One possible approach to mitigating this problem is to
+adopt mixture-based, parameter-efficient adaptation methods,
+such as LoRA-based mixture-of-experts (MoE), which have
+been explored in recent multilingual ASR studies [8, 9, 10, 11,
+12]. By routing inputs to different lightweight experts, these
+methods aim to better accommodate heterogeneous data distri-
+butions. However, because each expert is implemented via low-
+rank or bottleneck modules, the effective representational ca-
+pacity remains limited, which can hinder scalability to increas-
+ingly diverse multilingual settings.
+In this paper, we propose a more direct capacity-expansion
+strategy by upcycling the feed-forward network (FFN) layers of
+a pretrained Transformer [13] into a MoE [14, 15, 16, 17] archi-
+tecture. Rather than inserting small auxiliary modules, we repli-
+cate and reorganize the original high-capacity FFN layers into
+multiple experts, thereby increasing model capacity while pre-
+serving pretrained knowledge. This design enables more flexi-
+ble modeling of language-specific patterns and aims to enhance
+the effectiveness of multilingual fine-tuning.
+2. Preliminaries
+2.1. E2e multilingual ASR
+E2e multilingual ASR aims to perform speech recognition
+across multiple languages with a single neural network. The
+output layer’s vocabulary can be either a union of all grapheme
+units across involved languages [18] or more universal byte-
+level tokens [6]. This approach eliminates the need for separate
+models per language and, more importantly, showed improved
+performance for low-resource languages [18][19].
+Large-scale pretrained multilingual models now dominate
+this paradigm. XLS-R [5], based on wav2vec 2.0 [20], was pre-
+trained on over 100 languages, and Whisper [6] demonstrated
+strong zero-shot multilingual ASR performance. To enable effi-
+cient adaptation of these models for target tasks, adapter-based
+methods introduce lightweight modules with few trainable pa-
+rameters [21, 22]. However, joint multilingual training often
+suffers from negative knowledge transfer among distant lan-
+guages. Prior work has addressed this issue using language-
+specific adapters [23, 24], selective parameter updates [25], and
+language-universal output units such as IPA [2, 7].
+2.2. Mixture-of-experts in speech processing
+Mixture-of-experts (MoE) models [14, 16, 15, 17] increase ef-
+fective model capacity by dynamically routing each input (or
+token/frame) to a subset of expert modules. Originally popular-
+ized in large-scale language modeling, MoE has also been suc-
+cessfully adopted in speech processing. Prior work has incor-
+porated MoE into acoustic models to improve recognition accu-
+2466
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1630
+Figure 1:Upcycling transformer FFN into MoE.
+racy while keeping computation manageable [26, 27]. In multi-
+lingual ASR, MoE has been combined with language-specific
+adapters [28] and explored under simplified routing schemes
+such as single-expert routing [15]. More recently, LoRA-based
+MoE adaptations have been studied for Whisper [9]; however,
+because the experts are implemented via low-rank updates, their
+representational capacity remains constrained.
+2.3. Upcycling Transformer
+Recent work in large language models has introducedupcy-
+cling, which converts a pretrained dense model into an MoE
+model without retraining from scratch [29, 30, 31, 32]. Instead
+of independently initializing experts, upcycling replicates pre-
+trained parameters to form multiple experts, preserving prior
+knowledge while expanding capacity.
+In Transformer architectures [13], FFN layers account for
+a large portion of the parameters and perform key non-linear
+transformations. Prior studies show that upcycling only FFN
+layers achieves a favorable balance between capacity and com-
+putation [29, 30, 31, 32], keeping self-attention shared.
+Although widely studied in LLMs, this upcycle-to-MoE ap-
+proach has not been systematically explored for speech founda-
+tion models. For multilingual ASR, converting dense FFNs into
+experts offers a promising way to expand language-specific ca-
+pacity and mitigate negative transfer.
+3. Proposed method
+3.1. Upcycling Transformer FFN into sparse MoE
+We propose a multilingual ASR framework that upcycles the
+FFN layers of a large pretrained Transformer into a sparse MoE
+architecture. In contrast to parameter-efficient approaches that
+insert lightweight modules (e.g., LoRA)[8], our method ex-
+pands capacity directly by converting the original high-capacity
+FFN layers into multiple experts. Our design follows the sparse
+MoE paradigm of Switch Transformer [15]. Rather than com-
+bining all experts through a weighted sum, we activateonly one
+expert per input token. Consequently, the number of active pa-
+rameters per token matches that of the original dense model.
+The original FFN layer in a pretrained model is defined as:
+FFN(x) =W 2σ(W 1x),(1)
+whereW 1 andW 2 denote pretrained linear transformations
+andσ(·)is a non-linear activation function such as ReLU, andx
+is an input vector of sizedto FFN. In our upcycling strategy, we
+replicate these pretrained FFN parameters to formNexperts:
+En(x) =W (n)
+2 σ(W (n)
+1 x),(2)
+where parameters of each expertE n,W (n)
+1 andW (n)
+2 , are ini-
+tialized by copying the original FFN parameters in (1). Routing
+is performed by a router networkG(·)implemented as a fully
+connected layer parameterized withW g of sized×N:
+p(x) =Softmax(W gx),(3)
+G(x) = top-1(p(x)),(4)
+wheretop-1(·)is a selection function that outputs the largest
+value. The sparse MoE output is then defined as:
+MoE(x) =G(x)·E i(x),(5)
+whereiis the index of the selected expert.
+Because only a single expert is active per token, the per-
+token compute and the number of active parameters are iden-
+tical to the original dense FFN. Thus, inference cost remains
+nearly unchanged, while the total model capacity increases lin-
+early with the number of expertsN. This sparse activation en-
+ables dynamic separation of heterogeneous data distributions
+without increasing per-token computation, alleviating the rep-
+resentational bottleneck of low-rank experts and helping reduce
+negative transfer across languages.
+3.2. MoE on Whisper decoder
+We adopt Whisper [6] as our backbone model due to its
+strong multilingual ASR performance. Whisper follows a
+Transformer-based encoder-decoder architecture. In our ap-
+proach, we upcycle the decoder FFN layers into MoE modules,
+while keeping the encoder unchanged. The encoder is expected
+to provide largely language-agnostic acoustic representations
+learned from large-scale multilingual pretraining. In contrast,
+the decoder operates at the token level and is more language-
+dependent because it predicts grapheme sequences. Introduc-
+ing MoE into the decoder therefore promotes better separation
+of language-specific patterns, while retaining shared acoustic
+representations in the encoder.
+3.3. Gating strategies
+3.3.1. Soft routing
+In the standard soft routing setup (Figure 2(a)), the gating net-
+work operates on the decoder hidden representationh t:
+Gsof t(ht) = top-1(Softmax(W ght)).(6)
+This method determines routing decisions based on only
+acoustic or frame-level representations. In multilingual set-
+tings, however, such local cues may not fully reflect language-
+level characteristics. Therefore, we also explore to incorporate
+global language information into routing decisions by feeding
+language embeddings to the router network. Lete l denote the
+embedding for languagel, which is initialized from the corre-
+sponding language token embedding in Whisper’s decoder vo-
+cabulary and fine-tuned jointly with the MoE parameters. In
+this variant, the gating network conditions on bothh t ande l:
+Gsof t([ht;e l]) = top-1(Softmax(W g[ht;e l])),(7)
+where[·;·]denotes concatenation. The final output of the MoE
+module with the soft routing is calculated using (5).
+3.3.2. Language-wise hard routing
+We also explore a language-wise hard routing strategy. Here,
+we assign a dedicated expert to each language and route each
+training example deterministically: samples from languagelare
+always sent to the corresponding expert (Figure 2 (c)).
+2467
+(a)
+ (b)
+ (c)
+Figure 2:Moe routing methods: (a) simple soft routing, (b) soft routing with language embeddings, (c) language-specific hard routing.
+Table 1:Specifications of 10 languages in CommonVoice v16.1
+code subfamily region train (h)
+deGermanic Western Europe 913.7
+enGermanic Worldwide 1720.8
+esRomance, Italic Western Europe 473.1
+frRomance, Italic Western Europe 777.1
+itRomance, Italic Southern Europe 247.9
+bnIndo-Iranian South Asia 33.7
+ruSlavic Eastern Europe 37.8
+swAtlantic-Congo Sub-Saharan Africa 69.4
+thKra–Dai Southeast Asia 37.4
+trTurkic West Asia 31.5
+More formally, in this strategy, each expert indexiis
+mapped one-to-one to the language indexlin the training set.
+The output of the MoE module is calculated as:
+Ghard(ht) = 1,(8)
+MoE(ht) =G hard(ht)·E l(ht),(9)
+wherelis the index of the language of the current input.
+In contrast to the soft routing method that incorporates lan-
+guage embeddings in (7), this strategy enforces explicit lan-
+guage separation at the expert level, preventing cross-lingual
+interference within experts. By restricting each expert to data
+from a single language, the model promotes strong specializa-
+tion and helps reduce negative transfer across linguistically dis-
+tant languages. Although this routing scheme sacrifices some
+flexibility, it provides a simple and interpretable mechanism for
+isolating language-dependent modeling capacity.
+4. Experimental Evaluations
+4.1. Datasets and models
+We conduct experiments on the CommonV oice [33] corpus
+v16.1. Our primary setting consists of ten languages, includ-
+ing five Western languages (WE-5langs) and five non-Western
+languages (Other-5langs). The selected languages are summa-
+rized in Table 1. ForOther-5langssubset, we purposely select
+linguistically and geographically diverse languages. In addi-
+tion, we constructed a new dataset by combining four OpenSLR
+speech datasets in Asian languages, namely, Javanese, Tamil,
+Vietnamese, and Chinese, which we refer to asSLR Asian-
+4langs, and conducted experiments on this dataset as well to
+evaluate the generalization capability of our method. We eval-
+uate performance using word error rate (WER) forWE-5langs,
+while we use character error rate (CER) for other languages,
+because these languages lack explicit word boundaries in their
+writing systems.
+All experiments are conducted using the ESPnet
+toolkit [34]. We use Whisper-small variant as the backbone
+model by default, which consists of a 12-layer Transformer
+encoder and a 12-layer decoder, except for the ablation study
+in Table 5 where we compared larger Whisper models. All
+models are trained using the Transformer learning rate schedule
+with the peak of3.0×10 −5 and 2000 warmup steps, for 20
+epochs. We average the parameters of five checkpoints with the
+lowest validation CERs to build the final model for evaluation.
+We compare the proposed method with several baselines.
+MonoFT serves as an upper bound, where the Whisper de-
+coder is fine-tuned independently for each language without
+cross-lingual interference. MultiFT represents standard multi-
+lingual fine-tuning, where the decoder is jointly trained on all
+languages. We also implement a LoRA-based MoE baseline by
+inserting 10 LoRA experts with rank 16 into each FFN layer
+with a trainable router as defined in 3.3.1.
+4.2. Results
+Table 2 presents the results on the CommonV oice 10 languages.
+The fact that the multilingual model (MultiFT, E2) consistently
+performs worse than the monolingual models (E1) suggests that
+single-model multilingual training may be suboptimal due to
+negative knowledge transfer. All FFN-upcycling variants out-
+perform MultiFT baseline, and all these improvements are sta-
+tistically significant at the 1% level. Among these configura-
+tions, the language-wise hard routing (E8) achieves the best
+overall performance, surpassing both MultiFT and the LoRA-
+based MoE approach (E3). Notably, this hard-routing strategy
+even outperformed the MonoFT upper bound with a single net-
+work. No significant improvement from language embeddings
+was observed with a smaller number of experts (N=5; E4 and
+E6). However, with more experts (N=10; E5 and E7), language
+embeddings yielded statistically significant gains. This suggests
+that language-aware routing becomes effective when sufficient
+expert capacity is available.
+Although the soft routing improves over the multilingual
+baseline, it underperforms hard routing, while it has a clear ad-
+vantage that it works well with fewer experts than the number of
+involved languages and thus is more parameter-efficient (E4 and
+E6). Since all experts are initialized from identical pretrained
+FFN parameters in upcycling, soft routing may fail to induce
+sufficient diversification. In contrast, hard routing enforces ex-
+plicit language-level partitioning, promoting clearer specializa-
+tion. Improving expert diversification for soft routing [29, 30]
+remains future work.
+Table 3 shows the results onSLR Asian-4langsdataset. We
+set the number of experts to be 4. Hard routing again achieves
+the best performance with a relative improvement of 16% from
+the baseline, demonstrating consistent effectiveness across dif-
+2468
+Table 2:Results for CommonVoice 10 languages.
+WE-5langs(WER (%))Other-5langs(CER (%))
+Model
+ID
+Num
+experts Routing Active
+params de en fr it esave.bn ru sw tr thave.
+E1 Mono FT (upper bound) - - 240M * 10 10.0 16.4 15.4 11.8 9.6 12.6 34.0 5.4 10.3 8.2 11.0 13.8
+E2 Multi FT (baseline) - - 240M 11.0 17.2 16.5 12.9 10.3 13.6 34.9 6.4 12.0 10.2 12.3 15.2
+E3 LoRA MoE 10 soft 250M 13.2 18.9 18.5 14.5 12.0 15.4 34.3 7.18.58.6 10.1 13.7
+E4
+FFN Upcycling
+into MoE
+5 soft
+240M
+10.9 16.7 15.9 12.0 9.6 13.0 34.5 5.7 11.3 8.8 11.0 14.3
+E5 10 soft 10.6 16.9 16.1 12.3 9.9 13.2 34.5 6.1 11.9 10.1 11.6 14.8
+E6 5 soft + langemb 10.3 16.7 15.8 11.8 9.8 12.9 34.5 5.7 11.3 8.7 11.1 14.3
+E7 10 soft + langemb 10.3 16.8 15.8 11.9 9.8 12.9 34.5 5.6 11.4 8.7 11.2 14.3
+E8 10 hard9.7 16.3 15.1 11.1 9.3 12.3 33.3 5.210.58.1 9.8 13.4
+Table 3:Results for SLR Asia-4langs (CER (%)).
+Routingjv ta vi zhave.
+Multi FT - 1.9 6.0 10.8 6.0 6.2
+upcycled MoE soft 1.9 6.0 13.4 6.8 7.0
+hard1.5 5.6 8.0 5.6 5.2
+Table 4:Effect of MoE placement across decoder layers.
+Model
+ID
+MoE
+layers
+Trainable
+params
+WE-5langs
+WER (%)
+Other-5langs
+CER (%)
+E8-1 1 200M 12.8 14.3
+E8-2 1 to 3 280M 12.9 14.5
+E8-3 1 to 6 410M 12.9 14.6
+E8-4 12 200M 12.4 13.3
+E8-5 10 to 12 280M 12.313.0
+E8-6 7 to 12 410M12.213.2
+E8 All 660M 12.3 13.4
+ferent datasets. While soft routing exhibits performance varia-
+tion depending on the language likely because of noisy routing
+probabilities, hard routing consistently delivers the lowest error
+rates. These results indicate that explicitly separating experts
+at the language level through hard routing provides a more ro-
+bust and effective strategy for mitigating negative knowledge
+transfer, even in this challenging setting where all languages
+use totally different writing systems.
+In the experiments in Table 2 and 3, we upcycled all de-
+coder layers. However, there may be a more efficient way to
+place MoE modules within the decoder. Therefore, we con-
+duct an ablation study by varying the placement of MoE layers.
+Table 4 presents the results on the effect of MoE placement,
+where, for example, layer 1 denotes the lowest layer. From this
+table, we can see that models with MoE applied to higher layers
+consistently achieve better performance than lower layers. In
+particular, upcycling the top 3 or top 6 layers achieves perfor-
+mance comparable or even superior to the full-layer MoE model
+with much fewer parameters. This suggests that language-
+dependent information is primarily concentrated in the upper
+decoder layers, and that selectively introducing MoE in these
+layers is sufficient to obtain most of the performance gains.
+Finally, Table 5 reports the results obtained from apply-
+ing our proposed method to larger Whisper models (Whisper
+medium and large-v2). Here, we upcycle only top 8 layers and
+use the hard routing. These results show that our capacity ex-
+pansion via FFN upcycling remains effective even for models
+that already have very large capacity (0.77B and 1.55B param-
+eters). We can understand that even these large models do not
+have sufficient capacity to undergo multilingual fine-tuning over
+the highly diverse set of languages, and post-hoc model expan-
+sion by upcycling can help mitigate this issue. All improve-
+ments here are statistically significant at the 1% level.
+Table 5:Results for upcycling larger Whisper models.
+Whisper
+model method
+WE-5langs
+WER (%)
+Other-5langs
+CER (%)
+medium Multi FT 10.6 12.7
+upcycled MoE10.3 12.0
+large-v2 Multi FT 9.7 12.0
+upcycled MoE9.6 11.6
+4.3. Discussion
+From the results in Tables 2–5, we derive three key findings.
+First, directly expanding model capacity via FFN upcycling is
+more effective than relying on lightweight LoRA-based experts,
+in particular for high-resource languages. By preserving the full
+capacity of the original FFN within each expert, the model can
+better capture diverse, language-specific patterns.
+Second, introducing MoE in the upper decoder layers is
+particularly effective, suggesting that language-dependent rep-
+resentations are mainly formed near the token prediction stage.
+Notably, applying MoE only to the top 3-6 layers achieves per-
+formance comparable to full-layer MoE while substantially re-
+ducing the number of trainable parameters. This indicates that
+selective upper-layer upcycling offers an efficient trade-off be-
+tween capacity expansion and parameter efficiency.
+Third, the strong performance of hard routing (E8), relative
+to language-dependent soft routing based on language embed-
+dings (E6 and E7), suggests that explicit language-level separa-
+tion effectively mitigates negative transfer. Its superiority over
+the MonoFT upper bound (E1) further indicates that the pro-
+posed architecture strikes a good balance between specializa-
+tion and shared knowledge, benefiting from both cross-lingual
+transfer and enhanced language-specific modeling capacity.
+5. Conclusion
+We proposed a capacity-expansion method for multilingual
+ASR by upcycling the feed-forward network (FFN) layers of a
+pretrained Transformer into a sparse Mixture-of-Experts (MoE)
+architecture. By activating only a single expert per token,
+our approach preserves inference cost while increasing total
+model capacity. Experiments on multilingual ASR benchmarks
+demonstrated that the proposed method consistently outper-
+forms multilingual fine-tuning and LoRA-based MoE baselines.
+Language-wise hard routing achieved the strongest improve-
+ments and even surpassed monolingual fine-tuning. Further-
+more, applying MoE only to upper decoder layers retained most
+of the performance gains while reducing trainable parameters.
+These results indicate that selective FFN upcycling provides an
+effective and scalable solution for mitigating negative transfer
+in multilingual ASR. Thus, our method removes the burden of
+carefully designing the language set for multilingual finetuning.
+2469
+6. Generative AI Use Disclosure
+Generative AI was used to assist with writing code and modify-
+ing the manuscript; all AI-generated outputs were reviewed and
+verified by the authors.

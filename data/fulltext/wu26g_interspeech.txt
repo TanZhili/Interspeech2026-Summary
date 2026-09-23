@@ -1,0 +1,405 @@
+Accelerating End-to-End ASR via Semi-Autoregressive Speculative Decoding
+Long Wu1, Lingchao Zhao1, Yuanzhong Zheng1, Haojun Fei1, Qing Yang1,∗∗
+1Qifu Technology, China
+wulongucas@163.com, zhaolingchao ai@163.com, zhengyuanzhong-jk@qifu.com,
+zhangchulan-jk@qifu.com, yangqing3-jk@qifu.com
+Abstract
+While autoregressive (AR) models dominate end-to-end speech
+recognition for their accuracy, their sequential nature limits
+inference efficiency. Non-autoregressive (NAR) models offer
+faster parallel decoding but often at the cost of recognition qual-
+ity. In this paper, we propose Semi-Autoregressive Speculative
+Decoding (SASD), an algorithm that bridges this gap by lever-
+aging NAR models for high-confidence tokens and AR models
+for low-confidence ones. Built upon the joint CTC-attention
+framework, SASD uses CTC greedy search for initialization
+and selectively refines “harder” tokens through the attention de-
+coder. Experiments on AISHELL-1, WenetSpeech, and indus-
+trial datasets demonstrate that SASD achieves Character Error
+Rates (CER) comparable to state-of-the-art attention-rescoring
+while providing a 2.8x to 3.5x speedup across various pretrained
+models.
+Index Terms: ASR, E2E, NAR, Semi-Autoregressive Specula-
+tive Decoding
+1. Introduction
+End-to-end (E2E) models have achieved remarkable success
+in automatic speech recognition (ASR) [1], with three pri-
+mary approaches: connectionist temporal classification (CTC)
+[2], recurrent neural network transducer (RNN-T) [3], and
+attention-based encoder-decoder (AED) [4]. While AED mod-
+els are dominant due to their superior accuracy, their autore-
+gressive (AR) nature—generating tokens step-by-step—limits
+parallelism and impacts inference efficiency in large-scale sys-
+tems.
+To accelerate inference, non-autoregressive (NAR) models
+generate sequences in parallel. Prevailing iterative NARs [5, 6]
+approach decoding as a masked language modeling task, refin-
+ing predictions over multiple iterations. However, competitive
+performance still requires several passes, constraining practi-
+cal speed. Single-step NAR models [7, 8, 9] eliminate tem-
+poral dependencies via acoustic representations or Continuous
+Integrate-and-Fire (CIF) mechanisms [10]. Despite progress in
+models like Paraformer [7] and E-Paraformer [11], these often
+struggle with semantic modeling due to incomplete alignment
+or the inherent difficulty of single-pass length prediction.
+Recently, speculative decoding [12] has emerged as an ef-
+fective paradigm for acceleration by running large models in
+parallel on the outputs of smaller models. Several recent stud-
+ies have adapted speculative decoding for speech recognition.
+For instance, some approaches utilize parallel masked decoding
+[13], draft-and-verify strategies for LLM-based ASR [14], or
+audio-prefixed low-rank adaptations [15]. While these methods
+**indicates the corresponding author.
+typically rely on separate drafting models or multiple inference
+passes, our proposed SASD offers a streamlined alternative. In
+SASD, the fast but less accurate CTC greedy search acts as the
+“drafting” mechanism, while the more accurate but slower at-
+tention decoder within the same model selectively “verifies”
+and corrects only the low-confidence tokens. While sharing a
+similar motivation with partially autoregressive (PAR) inference
+[16], SASD operates directly at the token level using CTC’s
+peaky distribution rather than complex masked-span regenera-
+tion. This simpler refinement design ensures high compatibility
+with chunk-based streaming decoding and keeps latency much
+closer to pure CTC greedy search. This approach yields three
+advantages: (1) selective calculation of attention scores for ef-
+ficiency, (2) avoidance of complex CTC-prefix scoring bottle-
+necks, and (3) seamless integration with existing AR models
+without retraining.
+2. Methods
+2.1. AED model
+The traditional AED model consists of three components: (1)
+Shared Encoder, (2) CTC Decoder, and (3) Attention Decoder.
+LetLdenote the output text length,Tthe input speech du-
+ration,Dthe input feature dimension, andVthe output dictio-
+nary size. The objective is to model the joint probability of an
+L-length output sequenceY={y l∈V|l= 1,...,L}given
+anX={x t∈R D|t= 1,...,T}. Here,y l is an output to-
+ken at positionlin the vocabularyVandx t is aD-dimensional
+acoustic feature at framet.
+The attention decoder models the conditional probability
+Patt(Y|X):
+Patt(Y|X) =
+LY
+l=1
+Patt(yl|y1:l−1|X)(1)
+LetAdenote the alignment path,β −1(Y)denote all possi-
+ble alignments compatible withY,P ctc(Y|X)is calculated as
+follows:
+Pctc(Y|X) =
+X
+A∈β−1(Y)
+Pctc(A|X)(2)
+The combined CTC and AED training loss is:
+Lcombined(Y,X) =λlog(P ctc(Y|X))+
+(1−λ) log(P att(Y|X)) (3)
+whereλis a hyperparameter which balances the importance of
+the CTC and attention loss.
+809
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1953
+Speech
+Encoder
+ctc_greedy_search
+ctc_prefix_beam_search
+attention_beam_search
+Decoder
+hybrid CTC/Attention decoding
+ctc prefix score Decoder
+attention_rescoring
+ctc_prefix_beam_search Decoder
+Figure 1:Illustration of the existing E2E ASR decoding meth-
+ods.
+Figure 2:CTC peaky output, where colored lines represent label
+activations over time [19].
+2.2. AED decoding
+For decoding, there are five methods in Figure 1: (1) CTC
+greedy search, (2) CTC prefix beam search, (3) Attention beam
+search, (4) Attention rescoring, and (5) Hybrid CTC/attention
+decoding.
+These methods are effectively implemented in two popu-
+lar ASR toolkits: WENET [17] and ESPNET[18]. In our ex-
+amination of WENET’s decoding methods, several key obser-
+vations emerged. The CTC greedy search, while offering the
+best RTF, yields the lowest performance in terms of recognition
+accuracy. CTC prefix beam search performs similarly to CTC
+greedy search but does not support batch processing, limiting
+its efficiency. Attention beam search outperforms CTC prefix
+beam search in terms of accuracy but requires autoregressive
+processing, which becomes less effective with longer output se-
+quences. Although the attention rescoring strategy can paral-
+lelize rescoring of one-pass results, it first necessitates perform-
+ing CTC prefix beam search. Another common approach is the
+traditional hybrid CTC/attention decoding strategy. However,
+the exact computation of the CTC prefix score in this strategy
+often becomes a bottleneck due to its complex computations
+and increased demands with longer utterances.
+2.3. SASD algorithm
+In previous studies, the spike characteristics of CTC have been
+explored. In Figure 2, the colored lines represent the output
+activations, indicating the probabilities of phonemes occurring
+at specific time points. The CTC network predicts only the
+phoneme sequence, typically as a series of spikes separated
+by blanks (null predictions), with their probabilities shown as
+a grey dotted line. In contrast, the framewise network strives
+to align these predictions with the manual segmentation, repre-
+sented by vertical lines. This means that the CTC probability
+Figure 3:Sentence count ratios vs. average CER across de-
+coding methods as low-confidence ratio increases (AISHELL-1,
+u2++ conformer).
+CTC greedy search
+Generate confidence mask
+Low-confidence Tokens
+Speculative Beam search:
+Attention score + CTC score
+Figure 4:Illustration of the proposed SASD algorithm.
+for high-confidence tokens is close to 1, while the probability
+for low-confidence tokens is less than 1.
+Furthermore, in Figure 3, we present a comparison of sen-
+tence count ratios and average CER across various decoding
+methods as the low-confidence ratio per sentence increases, uti-
+lizing dual y-axes to represent sentence distribution and CER.
+The sentence low-confidence ratios refer to the proportion of
+low-confidence tokens in the sentence. Low-confidence tokens
+are identified when their CTC scores fall below a certain thresh-
+old, which we set to0.99. We can draw several conclusions:
+First, for 80% of sentences, the low-confidence ratio is be-
+low 16%. The average CER is similar across all five decod-
+ing methods, staying under 10%. This indicates that most sen-
+tences have fewer “harder” tokens. Additionally, CTC greedy
+search achieves comparable results to attention methods. Sec-
+ond, as the low-confidence ratio increases, attention methods
+handle “harder” tokens more effectively and outperform CTC
+methods.
+The SASD algorithm is described in detail in Algorithm 1
+and illustrated in Figure 4. It follows five main steps:
+810
+•CTC greedy searchWe use CTC greedy search to obtain an
+initial hypotheses sequence. The speed of CTC greedy search
+ensures fast decoding. It should be noted that no beam search
+is performed in this step.
+•Generate confidence maskDue to the peaky distribution of
+CTC probabilities, we use these probabilities as a confidence
+threshold to generate a confidence mask. This mask is then
+used to guide the selection of tokens for the next attention
+computation.
+•Calculate CTC token probabilityState-of-the-art results
+generally involve interpolating attention scores and CTC
+scores. However, conventional methods require either com-
+puting the precise CTC prefix score or performing CTC pre-
+fix beam search. These complex computations can disrupt
+GPU parallel processing and become a bottleneck. In con-
+trast, the SASD algorithm calculates the mean probability of
+duplicate tokens during greedy search, eliminating the need
+for this computation during beam search.
+•Speculative beam searchBased on the confidence mask re-
+sults, for low-confidence tokens, we rescore the correspond-
+ing segment of the sequence by generating new hypothe-
+ses using the autoregressive attention decoder. This gener-
+ates a list of topkvalues and their corresponding IDs. The
+attention-based scores are then interpolated with CTC scores
+to predict the final token. High-confidence tokens are directly
+predicted using the CTC greedy search results. Importantly,
+because the attention decoder only replaces low-confidence
+tokens at their specific index positionsiwithout altering the
+overall sequence structure, the final output length remains
+strictly identical to the initial CTC greedy search hypothesis.
+•Choose best resultsSelect the best token sequences based
+on the maximum score from the beam search.
+Algorithm 1SASD algorithm
+Require:encoder featuresH; CTC probabilityP ctc; weightsW ctc;
+thresholdPthres; beam sizeKatt.
+Ensure:best sequenceY best;
+1:Y ctc←CTC greedy search(Pctc)(remove duplicates/blanks).
+2: Confidence mask:M conf ← {i|P ctc(yi)< P thres, yi ∈
+Yctc}.
+3:Y out←[SOS], Score←0.0.
+4:fori= 1tolength(Y ctc)do
+5:ifi∈M conf then
+6:logP att = log(Decoder(H, Yout))
+7:logP combined = (1−W ctc)logPatt +Wctc logPctc(yi)
+8:tkv, tkid=topk(logP combined, Katt)
+9:Y out←cat(Yout, tkid);Score←Score+tkv
+10:else
+11:Y out←cat(Yout, Yctc[i])
+12:end if
+13:end for
+14:Y best←Best sequence fromY out
+15:returnY best
+3. Experiments
+3.1. Datasets
+We conducted experiments using two Chinese datasets:
+AISHELL-1 [20] and WenetSpeech [21]. AISHELL-1 has
+7,176 utterances, totaling about 5 hours. WenetSpeech includes
+TestNet (23 hours of internet speech) and TestMeeting (15 hours
+of far-field, conversational, and meeting speech).
+3.2. Experimental Setup
+To evaluate decoding speed, we used five pretrained models
+from WENET in Table 1. RTF was measured on a GPU
+(NVIDIA GeForce RTX 4090) and a CPU (Intel(R) Xeon(R)
+Platinum 8336C @ 2.30GHz).
+Table 1:Pretrained Chinese ASR models in WENET.
+Model Params(M) Size(M) Contributor
+u2++ conformer 46 184 Chumenwenwen
+u2pp conformer 50 201 Chumenwenwen
+u2pp conformer wenetspeech 117 467 Chumenwenwen
+efficient conformer v1 46 185 58AILab
+efficient conformer v2 47 188 58AILab
+3.3. AISHELL-1 task
+3.3.1. Performance
+In this section, we test the pretrained models using the
+AISHELL-1 test dataset. The performance results are listed in
+Table 2. Among the four decoding modes in WENET, atten-
+tion rescoring improves upon CTC results and achieves the best
+CER. The CTC greedy search and CTC prefix beam search
+exhibit similar performance, but degrade significantly as the
+chunk size decreases. The attention mode exhibits slight perfor-
+mance degradation. The SASD algorithm delivers performance
+comparable to attention rescoring, with CER remaining more
+stable and slightly better as the chunk size decreases.
+Table 2:Comparison of decoding methods on AISHELL-1 test
+(CER%).beamsize= 10,ctc weight= 0.2,P thres = 0.99.
+Decoding Chunk u2++ conformer u2pp conformer
+ctc greedy search full 5.18 1.08
+16 5.81 1.82
+ctc prefix beam search full 5.18 1.08
+16 5.81 1.82
+attention full 5.07 0.96
+16 5.34 1.20
+attention rescoring full 4.770.86
+16 5.19 1.28
+SASD full4.73 0.86
+165.12 1.23
+Decoding Chunk efficient conformer v1 efficient conformer v2
+ctc greedy search full 4.99 4.97
+16 5.23 5.20
+ctc prefix beam search full 4.99 4.97
+16 5.23 5.20
+attention full 4.98 4.88
+16 5.13 5.04
+attention rescoring full4.71 4.65
+164.92 4.83
+SASD full 4.744.65
+164.924.85
+3.3.2. RTF
+In the Paraformer paper [7], the open-sourced model trained on
+AISHELL-1 has a model size of approximately 185M. To make
+a fair comparison, we selected the U2++Conformer to test RTF
+performance.
+The CPU and GPU RTF results are listed in Table 3 and
+Table 4. It is important to note that the RTFs of existing
+NAR models are cited from their original papers, which were
+evaluated under different hardware environments and thread
+settings. Therefore, a strict numerical comparison is cur-
+rently not feasible. For GPU RTF, the SASD algorithm is
+811
+slower than CTC greedy search but 2.8 times faster than atten-
+tion rescoring. With the SASD algorithm, we maintain perfor-
+mance and achieve an RTF of 0.0188. For CPU RTF, the SASD
+algorithm achieves a value of 0.0270, which is comparable to
+CTC greedy search. It offers a 2.1 times speedup compared to
+attention rescoring. Although the model size and structure differ
+from published results, the theoretical efficiency gains can still
+be observed. The CTC prefix beam search requires intensive se-
+quential merging that severely disrupts parallelism in attention
+rescoring, which explains why the RTF of attention rescoring
+on a GPU (0.0535) shows nominal improvement over a CPU
+(0.0576). Although SASD involves calculating the autoregres-
+sive decoder as in attention mechanisms, it achieves an RTF
+similar to that of CTC greedy search.
+Compared to GPU-based evaluations of other NAR mod-
+els at a batch size of 1 (Table 4), Paraformer, E-Paraformer,
+and TSNAT report extremely low RTFs of 0.0168, 0.0069,
+and 0.0185 respectively. However, their single-pass generation
+nature restricts their recognition accuracy, resulting in higher
+CERs of 5.20%, 4.79%, and 5.60%. In contrast, our proposed
+SASD achieves a highly competitive CER of 4.73% while main-
+taining a fast RTF of 0.0188. SASD employs the attention
+decoder to speculatively revise low-confidence tokens dynam-
+ically. Because the vast majority of tokens are already highly
+confident from the initial CTC greedy search (as shown in Fig-
+ure 3), SASD avoids significant computational bottlenecks and
+keeps latency comparable to pure NAR models.
+Furthermore, to fully leverage GPU parallelism and bench-
+mark against non-autoregressive models in large-batch infer-
+ence scenarios, we evaluated SASD with a batch size of 8. The
+results are shown in Table 5. We compare our method against
+competitive NAR models evaluated in similar high-throughput
+settings: CTC-Enhanced and Paraformer. While Paraformer
+and CTC-Enhanced achieve RTFs of 0.0026 and 0.0037 respec-
+tively in literature, their CERs remain at 5.20% and 5.90%.
+Conversely, SASD successfully bridges the precision of AR
+models and the throughput speed of NAR models, maintaining
+its superior CER of 4.73% while achieving a fast RTF of 0.0098
+on our hardware.
+Table 3:CPU-Based RTF Comparison of ASR Systems on
+AISHELL-1.batchsize= 1,beamsize= 10,P thres = 0.99.
+AISHELL-1CPU-Decoding test RTF
+Mask-CTC [5] NAR 7.80 0.0500
+Mask-CTC-improved [22] NAR - 0.0740
+u2++ conformer
+ctc greedy search 5.18 0.0222
+attention rescoring 4.77 0.0576
+SASD4.73 0.0270
+Table 4:GPU-Based RTF Comparison of ASR Systems on
+AISHELL-1.batchsize= 1,beamsize= 10,P thres = 0.99.
+AISHELL-1GPU-Decoding test RTF
+TSNAT [23] NAR 5.60 0.0185
+CASS-NAT [24] NAR 5.40 0.0230
+Paraformer [7] NAR 5.20 0.0168
+E-Paraformer [11] NAR 4.790.0069
+u2++ conformer
+ctc greedy search 5.18 0.0112
+attention rescoring 4.77 0.0535
+SASD4.730.0188
+Table 5:GPU-Based RTF Comparison of ASR Systems on
+AISHELL-1.batchsize= 8,beamsize= 10,P thres = 0.99.
+AISHELL-1GPU-Decoding test RTF
+CTC-Enhanced [25] NAR 5.90 0.0037
+Paraformer [7] NAR 5.200.0026
+u2++ conformer SASD4.730.0098
+3.4. WenetSpeech task and Industrial task
+To evaluate SASD in a complex scenario, we com-
+pared five decoding algorithms on WenetSpeech with the
+u2pp conformer wenetspeech model in Table 1. Table 6 shows
+that SASD performs similarly to attention rescoring and better
+than the other algorithms. It remains stable with less perfor-
+mance drop as the chunk size decreases. Additionally, we eval-
+uated SASD with the internal Chinese model using a 33 hours
+test set, which includes dictation, call-center, and assistant sce-
+narios. Table 7 shows that SASD achieves comparable results
+but with a 3.5 times speedup.
+Table 6:Comparison of decoding methods on WenetSpeech
+(CER%).
+Decoding Chunk TestNet TestMeeting
+ctc greedy search full 9.71 15.77
+16 11.36 16.88
+ctc prefix beam search full 9.67 15.58
+16 11.33 16.74
+attention full 9.62 16.78
+16 10.45 17.56
+attention rescoring full9.2615.53
+1610.5216.34
+SASD full 9.4015.35
+16 10.7215.94
+Table 7:SASD algorithm with internal Chinese Model (CER%).
+Decoding Chunk Test Speedup
+E2E full4.571
+E2E+SASDfull 4.583.5
+4. Conclusions
+This paper introduces the SASD algorithm, designed to lever-
+age the strengths of both AR and NAR end-to-end ASR sys-
+tems. During training, the model is trained as an AR model
+to ensure high performance. For decoding, SASD uses NAR
+models for “easier” tokens and AR models for “harder” tokens,
+combining the benefits of both. This approach eliminates the
+need for CTC prefix scoring and CTC beam search. Experi-
+ments with five public pretrained models and three test datasets
+demonstrate that SASD achieves comparable CER performance
+while maintaining high inference speed.
+5. Generative AI Use Disclosure
+We did not use generative AI tools for producing a significant
+part of this manuscript. Generative AI tools may have been used
+for editing and polishing the manuscript.
+812

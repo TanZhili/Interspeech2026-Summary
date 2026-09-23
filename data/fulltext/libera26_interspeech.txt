@@ -1,0 +1,450 @@
+WavSLM: Single-Stream Speech Language Modeling via WavLM Distillation
+Luca Della Libera ID 1,2,∗∗, Cem Subakan ID 3,1,2, Mirco Ravanelli ID 1,2
+1Concordia University 2Mila-Quebec AI Institute 3Universit´e Laval
+luca.dellalibera@mail.concordia.ca, cem.subakan@ift.ulaval.ca,
+mirco.ravanelli@concordia.ca
+Abstract
+Large language models show that simple autoregressive training
+can yield scalable and coherent generation, but extending this
+paradigm to speech remains challenging due to the entanglement
+of semantic and acoustic information. Most existing speech
+language models rely on text supervision, hierarchical token
+streams, or complex hybrid architectures, departing from the
+single-stream generative pretraining paradigm that has proven ef-
+fective in text. In this work, we introduce WavSLM, a speech lan-
+guage model trained by quantizing and distilling self-supervised
+WavLM representations into a single codebook and optimizing
+an autoregressive next-chunk prediction objective. WavSLM
+jointly models semantic and acoustic information within a single
+token stream without text supervision or text pretraining. Despite
+its simplicity, it achieves competitive performance on consis-
+tency benchmarks and speech generation while using fewer pa-
+rameters, less training data, and supporting streaming inference.
+Index Terms: speech language models, speech-to-speech, dis-
+crete tokens
+1. Introduction
+Large language models (LLMs) have transformed natural lan-
+guage processing by showing that scalable, coherent, and con-
+trollable generation can emerge from a simple next-token pre-
+diction objective [1 –5]. Extending this paradigm to speech,
+however, remains a fundamental challenge. Unlike text, speech
+is a high-dimensional, continuous signal that entangles semantic,
+prosodic, and acoustic information across multiple time scales.
+This intrinsic complexity makes both representation learning and
+long-range sequence modeling substantially more difficult than
+in text-based language modeling.
+Speech language models (SLMs) [6] address this challenge
+by converting waveforms into sequences of discrete tokens us-
+ingneural audio codecs[7, 8] and modeling these sequences
+autoregressively. While conceptually similar to text tokeniza-
+tion, speech tokenization is inherently more complex, as it must
+simultaneously preserve semantic content and acoustic detail
+while remaining efficient, streamable, and low-bitrate.
+Early work on audio language modeling primarily focused
+on semantic modeling, quantizing self-supervised speech rep-
+resentations [9–11] into discrete units [12, 13]. Although these
+models produced intelligible speech, they continued to lag be-
+hind text-based language models in terms of factual knowledge,
+long-range consistency, and controllability. To address these lim-
+itations, speech-text models incorporate text supervision or pre-
+trained text language models, either by extending text LLMs with
+**indicates the corresponding author.
+audio tokens [14–17], by interleaving text and speech represen-
+tations [18], or by training joint speech-text objectives [19, 20].
+Beyond semantics, accurately modeling acoustic variation,
+such as speaker identity and fine-grained prosody, is essential for
+high-quality speech generation. Hierarchical generation frame-
+works address this limitation by explicitly modeling acoustic
+tokens conditioned on semantic representations, enabling im-
+proved speaker generalization and acoustic coherence [21, 22].
+More recent work has explored unified semantic-acoustic model-
+ing. Moshi [23] bridges semantic and acoustic representations
+using dedicated codebooks and hybrid architectures that com-
+bine temporal and depth-wise transformers, albeit at the cost of
+significant architectural complexity. LLaMA-Mimi [24], sim-
+ilarly to [18], simplifies this design by interleaving semantic
+and acoustic tokens within a single sequence, although tokens at
+different time steps still serve distinct semantic or acoustic roles.
+Despite recent progress, most semantic-acoustic SLMs rely
+on hybrid pipelines that incorporate text-pretrained LLMs, mul-
+tiple token streams modeled partly autoregressively and partly
+in parallel, or additional text-alignment objectives such as direct
+text supervision or word boundaries. These design choices devi-
+ate from the single-stream generative pretraining paradigm that
+has proven effective in text for enabling strong generalization
+and emergent capabilities. While scaling model size and train-
+ing data can partially compensate for this complexity [25], such
+gains typically require several orders of magnitude more data and
+compute [26], raising concerns about efficiency and scalability.
+This naturally raises a fundamental question:can comparable
+performance instead be achieved through better representations,
+rather than increased scale and architectural complexity?
+In this work, we investigate speech language modeling using
+a single discrete codebook that jointly represents semantic and
+acoustic information, without relying on text supervision or text-
+pretrained models. By closely mirroring the text paradigm of
+simple autoregressive training with a single decoder, our study
+isolates the role of the representation itself. We hypothesize that
+sufficiently expressive speech representations can support effec-
+tive language modeling within a single-stream, single-decoder
+framework. In particular, our contributions are threefold:
+• We introduceWavSLM, an SLM trained by quantizing and
+distillingWavLM representationsinto an autoregressive
+next-chunk predictor over a single stream of tokens. To the
+best of our knowledge, this is the first SLM that jointly cap-
+tures semantic and acoustic information using asingle code-
+book, without hierarchical or multi-stream tokenization.
+• We show that WavSLM achieves competitive performance
+on both semantic and acoustic consistency tasks, as well as
+on speech generation, while being significantly smaller and
+trained on substantially less data than large-scale SLMs. Un-
+like most related work, our model is trainedexclusively on
+4710
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2803
+Compressor
+uN
+...
+...
+u2
+u1
+Quantizer
+Decompressor
+WavLM 7-24 +
+LM Head
+Feature Extractor +
+WavLM 1-6
+zN
+...
+...
+z2
+z1
+eos
+...
+...
+z6
+z5
+Decompressor
+hN
+...
+...
+h2
+h1
+hN
+...
+...
+h2
+h1
+eos
+...
+...
+h6
+h5
+Decoder
+Features Latents Tokens Rec.
+Features Next Tokens Next Rec.
+Features
+FocalCodec-Stream + WavLM
+Figure 1:WavSLM architecture. Raw speech is processed by F ocalCodec-Stream (blue), which includes the feature extractor and lower WavLM layers,
+followed by a compressor , quantizer , decompressor , and decoder to produce a low-bitrate, single-stream sequence of discrete tokens. The decompressor
+converts tokens back into continuous features that are compatible with the upper WavLM layers (red). These layers are used as a causal speech language
+modeling backbone, with a lightweight language modeling head on top. The model is trained with a next-chunk prediction objective, jointly predicting
+C= 4tokens at each autoregressive step.
+speech, without any text supervision or text-pretraining, and
+is fully streamable, enabling real-time speech generation.
+• We analyze several design factors for single-stream speech
+language modeling, including context window size, chunk
+size, and vocabulary size, and study the trade-offs involved in
+jointly modeling semantic and acoustic information.
+Code and checkpoints will be released publicly to foster repro-
+ducibility and further research.Demo samples are available at
+https://lucadellalib.github.io/wavslm-web/.
+2. WavSLM
+2.1. Speech Representations and Tokenization
+A central design choice in the proposed WavSLM framework
+(see Figure 1) is to build on WavLM [11] representations.
+WavLM provides rich, hierarchical speech features spanning
+multiple levels of abstraction, ranging from low-level acoustic
+cues in early layers to increasingly semantic representations in
+deeper layers. Such a hierarchical structure is particularly well-
+suited for speech-language modeling, which must jointly capture
+lexical content, speaker identity, prosody, and other paralinguis-
+tic factors. In particular, we use the representations from the6-th
+transformer layerof WavLM-large, which strike a balance be-
+tween semantic richness and fine-grained acoustic detail [27–30].
+Our hypothesis is that these mid-level representations are suffi-
+ciently expressive to enable autoregressive modeling of speech,
+without relying on text as an intermediate representation.
+Rather than learning a tokenizer for these representations
+from scratch, we leverageFocalCodec-Stream[31], a stream-
+able neural speech codec that operates directly on WavLM-6 fea-
+tures. FocalCodec-Stream builds on a causally distilled WavLM-
+6 encoder, replacing standard convolutions with causal convo-
+lutions and full-context gated relative attention with sliding-
+window gated relative chunked attention to enable streaming.
+The encoder extracts features that capture both acoustic and
+semantic information. These features are mapped to a low-
+dimensional space by a causal compressor based on focal modu-
+lation [32, 33], followed by a single-codebook binary spherical
+quantizer [34], producing asingle stream of discrete tokens
+at 50 Hz. A mirrored causal decompressor, which includes a
+chunk-wise feed-forward refiner module, reconstructs the se-
+quence of continuous features, while a causal WaveNeXt [35]
+decoder resynthesizes the waveform. The system operates with
+a chunk size of 4 tokens, yielding a theoretical streaming latency
+of 80 milliseconds.
+Importantly, the decompressed tokens can be projected back
+into a continuous feature space that remains compatible with the
+upper layers of WavLM. Since FocalCodec-Stream is optimized
+for feature reconstruction, the decoded features can be viewed
+as approximations of the original WavLM representations. This
+design allows FocalCodec-Stream to act as an interface between
+raw speech and higher-level semantic representations: discrete
+tokens serve as the modeling units, while reconstructed features
+preserve access to the hierarchical WavLM feature space.
+2.2. Speech Language Modeling
+Building on the tokenization pipeline described above, we repur-
+pose the remaining WavLM layers (7–24) as an SLM. Specifi-
+cally, we make these layers causal by applying a causal attention
+mask and fine-tune them using an autoregressive language mod-
+eling objective. A lightweight language modeling head is added
+on top to map the resulting features to a distribution over the
+speech token vocabulary. Through this process, the upper por-
+tion of the WavLM stack is distilled into an SLM that operates
+directly on reconstructed codec features and autoregressively
+generates speech continuations in the discrete token space. Cru-
+cially, the entire distillation process isspeech-only, without any
+text supervision or text-pretrained initialization: both the under-
+lying WavLM representations and the tokenization pipeline are
+learned exclusively from speech, and the SLM itself is initial-
+ized directly from the WavLM checkpoint. In contrast to many
+existing SLMs that initialize their weights from pretrained text
+LLMs, all linguistic structure in WavSLM emerges directly from
+speech data, closely mirroring the single-modality pretraining
+paradigm of text language modeling.
+To better align with the temporal resolution of the tokenizer
+(which is causal over chunks of 4 tokens) and improve generation
+efficiency, we adopt anext-chunk predictionobjective rather
+than predicting individual tokens one at a time. At each autore-
+gressive step, the model predicts a chunk of C= 4 consecutive
+tokens, matching the chunk size of the tokenizer. In practice, we
+implement this using chunked causal attention with chunk size
+C, using full attention within chunks and causal masking across
+chunks. The input token sequence is left-shifted by C positions
+to construct the targets, so that at each position the model pre-
+dicts the token C steps ahead, rather than the immediate next
+token. This allows the model to attend to all tokens within the
+current chunk while maintaining causality across chunks.
+This formulation reduces the number of autoregressive steps
+required during generation, leading to faster inference while
+preserving high-resolution tokenization at the input. Addition-
+ally, it decouples temporal resolution from modeling efficiency:
+while the tokenizer produces fine-grained tokens, the effective
+downsampling factor can be controlled at the language modeling
+level via the chunk size, rather than being fixed by the tokenizer
+architecture.
+4711
+Table 1:Likelihood-based evaluation.Bestand second-best results are highlighted. Human scores are boxed when they outperform all models.
+Model Params Textually
+Pretrained Codebooks
+Acoustic Consistency Alignment Spoken Content
+A vg↑
+Sent.↑Spk.↑Gend.↑Sent.↑sWUGGY↑sBLiMP↑tSC↑
+Human [14, 36] – – – 97.2 91.5 98.6 93.3 – – 90.2 –
+Large-Scale Baselines
+TWIST 1.3B [14, 36] 1.3B✓1×500 61.5 69.0 69.553.072.7 57.0 70.6 64.8
+TWIST 7B [14, 36] 7.0B✓1×500 61.5 71.0 70.0 51.574.559.2 76.4 66.3
+SpiRit LM [18, 36] 7.0B✓1×501 54.5 69.5 67.0 48.0 69.0 58.3 82.9 64.2
+SpiRit LM Expr. [18, 36] 7.0B✓[501, 64, 100] 73.5 81.0 85.0 52.0 65.0 54.2 75.4 69.4
+Moshi 7B [23] 7.7B✓8×2048 – – – – 72.6 58.8 83.0 –
+LAST 1.3B [19, 36] 1.3B✓1×500 65.0 64.5 68.5 53.5 – – – –
+SpeechSSM 2B [16] 2.0B✓1×32000 – – – – 55.8 60.9 – –
+SmolTolk 2B [17] 2.0B✓1×500 – – – – –61.9 87.6–
+LLaMA-Mimi 1.3B [24] 1.3B✓4×204879.085.0 83.5 48.5 68.7 54.3 64.0 69.0
+LLaMA-Mimi 8B [24] 8.0B✓4×2048 76.5 86.5 85.5 46.5 68.8 55.1 67.669.5
+Data-Matched Baselines
+HuBERT 25Hz [7]∼357M✓1×500 62.5 69.0 69.553.070.5 60.9 71.5 65.3
+Enc-SMA-24 [7]∼357M✓8×1024 56.5 65.0 70.5 50.0 51.3 51.1 48.2 56.1
+DAC-SMA-16 [7]∼357M✓8×1024 60.0 77.0 81.0 50.0 50.7 51.5 51.5 60.2
+ST-S-16 [7]∼357M✓8×1024 58.0 65.0 66.5 49.5 56.9 51.1 55.7 57.5
+Mimi-S-24 [7]∼357M✓8×2048 71.5 78.0 77.5 52.0 62.2 52.3 54.3 64.0
+DWavL-S-16 [7]∼357M✓6×1000 70.0 86.592.049.0 69.1 54.0 62.4 69.0
+SQ-SMA-16 [7]∼357M✓4×19683 64.0 84.5 83.0 50.5 51.4 51.6 55.1 62.9
+WT-SMA-24 [7]∼357M✓1×4096 78.5 69.0 81.5 50.5 54.6 51.2 52.8 62.6
+Proposed
+WavSLM-2k305M✗1×2048 75.5 86.0 89.5 45.5 63.9 54.6 62.9 68.3
+WavSLM-4k307M✗1×4096 75.088.590.5 51.5 63.7 53.9 63.369.5
+WavSLM-65k370M✗1×65536 75.0 87.5 84.0 45.0 61.4 52.1 60.4 66.5
+To enable real-time and unbounded speech generation, we
+employ a sliding-window attention mechanism, restricting each
+prediction step to attend only to a fixed-length context of past
+tokens. This bounds memory usage and computational complex-
+ity, allowing speech to be generated continuously with constant
+latency.
+3. Experimental Setup
+We train WavSLM on Libri-Light [37] (∼60k hours of unlabeled
+speech). We train three variants of the model, corresponding
+to the three vocabulary sizes of FocalCodec-Stream (2k, 4k,
+and 65k). During training, we randomly sample 30-second
+audio segments from each utterance. Validation is performed on
+LibriSpeech [38]dev-clean.
+WavSLM is initialized from the pretrained WavLM-large
+checkpoint for layers 7–24, while the linear language modeling
+head is randomly initialized. The model is trained using the
+next-chunk prediction objective described in Section 2.2. We do
+not use explicit begin-of-sequence (BOS) or end-of-sequence
+(EOS) tokens. Instead, training utterances are padded with zeros
+at the waveform level, which naturally correspond to silence
+in the token space. This design choice is compatible with con-
+tinuous and streaming generation, where the language model
+can continue producing tokens corresponding to silence without
+requiring a hard termination signal.
+Training is performed in mixed precision with a batch size
+of 16, using the AdamW [39] optimizer with a learning rate
+of 0.0001, weight decay of 0.01, and gradient clipping with a
+maximum L2 norm of 5.0. The learning rate is reduced by a
+factor of 0.9 when the validation loss fails to improve by at least
+0.0025. Training is stopped once no further improvement is
+observed for several consecutive epochs. In some runs, we found
+it beneficial to reset the learning rate after apparent convergence,
+which led to additional improvements. All models are trained on
+a single NVIDIA H100 GPU (80 GB).
+4. Results
+4.1. Likelihood-Based Evaluation
+Tasks. We evaluate the acoustic and semantic modeling capa-
+bilities of WavSLM using likelihood-based benchmarks, follow-
+Table 2:Generation-based evaluation.Bestand second-best results
+are highlighted.
+Model Params Textually
+Pretrained Codebooks UTMOS↑Sim↑PPL↓RTF↑
+LLaMA-Mimi 1.3B [24] 1.3B✓4×2048 3.57 91.3 153 2.0
+LLaMA-Mimi 8B [24] 8.0B✓4×2048 3.56 91.51221.1
+WavSLM-2k305M✗1×20483.72 91.81615.9
+WavSLM-4k307M✗1×4096 3.69 91.6 162 5.8
+WavSLM-65k370M✗1×65536 3.66 91.3 210 5.8
+ing prior work on speech-only evaluation [6, 7, 24]. To assess
+acoustic and paralinguistic modeling, we adopt the SALMon
+benchmark [36], reporting results on sentiment, speaker, and
+gender consistency, as well as sentiment alignment. To evaluate
+semantic and linguistic knowledge, we use the ZeroSpeech [40]
+variants of sWUGGY and sBLiMP, and further assess discourse-
+level coherence on Topic Story-Cloze (tSC) [14, 41].
+Baselines. We compare WavSLM against a diverse set of rep-
+resentative baselines. We include several large-scale SLMs,
+namely TWIST [14], SpiRit LM [18], Moshi [23], LAST [19],
+SpeechSSM [16], SmolTolk [17], and LLaMA-Mimi [24]. These
+baselines are substantially larger than our model variants (1.3–
+8B parameters versus 305–370M for WavSLM), are trained on
+several hundred thousand to millions of hours of speech, and
+rely on text pretraining by bootstrapping from large text LLMs.
+In contrast, WavSLM itself and FocalCodec-Stream are trained
+on ∼60k hours of speech. When also accounting for the data
+used to pretrain WavLM, the total amount of speech amounts
+to ∼94k hours. Importantly, WavSLM does not leverage any
+text pretraining. To provide a more controlled comparison, we
+additionally include data-matched baselines from [7], which are
+comparable to WavSLM in model size and trained on the same
+data. These models, however, still employ text pretraining, as
+they were initialized from Qwen-2.5 0.5B [42].
+We report results from the original papers or subsequent works
+evaluating these models, leaving entries blank when unavailable.
+As all tasks are binary-choice accuracy benchmarks, we addition-
+ally report averaged scores where applicable. To choose between
+the two candidate continuations, we compute their WavSLM
+negative log-likelihood and select the one with the lower score.
+Discussion. As shown in Table 1, despite being substantially
+smaller and trained exclusively on speech, WavSLM performs
+competitively with large-scale, text-pretrained SLMs across most
+4712
+Table 3:Effect of window and chunk size for WavSLM-4k.Bestand second-best results are highlighted.
+Window
+Size
+Chunk
+Size
+Acoustic Consistency Alignment Spoken Content
+A vg↑
+Generation
+Sent.↑Spk.↑Gend.↑Sent.↑sWUGGY↑sBLiMP↑tSC↑UTMOS↑Sim↑PPL↓RTF↑
+512 4 75.088.5 90.5 51.563.7 53.9 63.369.53.69 91.6 162 5.8
+1024 4 76.0 87.5 90.0 47.064.854.7 66.7 69.53.69 91.7151 5.8
+2048 4 74.588.588.5 49.0 64.6 54.7 66.9 69.5 3.70 91.7 1485.8
+512 878.586.0 83.0 48.5 63.755.564.8 68.6 2.92 90.0 174 10.9
+512 16 71.5 84.5 81.5 49.0 57.5 54.7 62.7 65.9 1.97 86.5 18116.4
+metrics. In particular, WavSLM-4k achieves the best average
+score among all proposed models and matches or surpasses
+several billion-parameter baselines, including LLaMA-Mimi and
+SpiRit LM variants, while using an order of magnitude fewer
+parameters and training data.
+Across acoustic consistency tasks, WavSLM shows strong sensi-
+tivity to speaker identity, gender, and sentiment changes, with
+WavSLM-4k achieving top or second-best performance among
+data-matched and large-scale baselines. This suggests that a sin-
+gle codebook can preserve fine-grained acoustic attributes when
+built on expressive self-supervised representations. On acoustic-
+semantic alignment, WavSLM remains competitive, indicating
+that sentiment-related acoustic cues are consistently aligned with
+spoken content despite the absence of text supervision.
+For spoken content evaluation, WavSLM achieves solid perfor-
+mance on sWUGGY , sBLiMP, and tSC, approaching or match-
+ing text-pretrained models trained at much larger scale. Notably,
+WavSLM outperforms all data-matched baselines on average,
+highlighting the effectiveness of distilling WavLM representa-
+tions into an autoregressive next-chunk predictor. Overall, these
+results indicate that strong semantic and acoustic modeling can
+emerge from a single-stream, speech-only language model.
+4.2. Generation-Based Evaluation
+Tasks. To evaluate speech generation capabilities, we consider
+a continuation task where an audio prompt is provided and the
+model generates the remaining speech. We use utterances longer
+than 4 seconds from LibriSpeech [38] test-clean, take the
+first half of the audio as a prompt, and generate a continuation of
+equal duration. Following [24], generation is performed using
+top-k sampling with a temperature of 0.8 and k= 30 . To reduce
+variance, we generate 5 continuations per prompt and average
+all metrics across continuations and utterances in the test set.
+We assess generation quality using three complementary metrics.
+First, we compute UTMOS [43] to measure perceived natural-
+ness. Second, we evaluate speaker consistency by computing the
+cosine similarity between speaker embeddings extracted from
+the prompt and the continuation using WavLM-base-SV [11].
+Third, we assess spoken content quality and coherence by com-
+puting GPT-2-large [44] perplexity on transcriptions obtained
+with Whisper-large-v3 [45] after concatenating the prompt and
+the generated continuation. We additionally report the real-time
+factor, measured on an NVIDIA H100 GPU (80 GB).
+Baselines. We compare WavSLM against LLaMA-Mimi 8B, the
+strongest overall baseline in Table 1 for which public checkpoints
+and inference code are available. Since checkpoints for the data-
+matched baselines are not publicly available, we also include
+LLaMA-Mimi 1.3B to provide a more size-comparable reference
+against our models.
+Discussion. The results are reported in Table 2. Despite be-
+ing substantially smaller and trained without text pretraining,
+WavSLM achieves competitive generation quality across all met-
+rics. In particular, WavSLM-2k obtains the best UTMOS and
+speaker similarity scores, indicating that the generated speech
+remains natural and preserves speaker characteristics from the
+prompt. The 4k variant shows similarly strong performance and
+provides a good overall balance across metrics.
+In terms of spoken content quality, LLaMA-Mimi achieves lower
+perplexity, suggesting stronger linguistic modeling. Neverthe-
+less, the gap remains moderate given the substantial differences
+in model size and training data scale between the models. Fi-
+nally, WavSLM achieves substantially higher real-time factors
+than LLaMA-Mimi, reflecting significantly faster generation.
+This speed advantage stems from the smaller model size and the
+next-chunk generation strategy.
+Interestingly, the 65k variant performs noticeably worse than
+the smaller-vocabulary models. We hypothesize that the larger
+vocabulary increases modeling complexity and requires more
+training data to be effectively learned under the current setup.
+We also note that, for fairness, we used the same generation
+hyperparameters from [24] and did not perform task-specific
+tuning for WavSLM, suggesting that further improvements may
+be possible with optimized decoding settings.
+4.3. Effect of Window and Chunk Size
+We analyze the effect of context window size and chunk size on
+WavSLM-4k in Table 3. Increasing the attention window from
+the default 512 to 1024 or 2048 tokens yields modest but con-
+sistent improvements in spoken-content metrics, particularl

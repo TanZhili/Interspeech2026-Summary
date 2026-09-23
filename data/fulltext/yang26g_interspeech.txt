@@ -1,0 +1,451 @@
+Pitch-Injected Residual Adapter for Tonal Language in Neural Audio Codec
+Jie-Shiang Yang1, Ya-Tse Wu1, Chi-Chun Lee1,∗∗
+1 Department of Electrical Engineering, National Tsing Hua University, Hsinchu, Taiwan
+snoopy963852@gapp.nthu.edu.tw, crowpeter@gapp.nthu.edu.tw, cclee@ee.nthu.edu.tw
+Abstract
+Neural Audio Codecs (NACs) achieve high-fidelity reconstruc-
+tion at low bitrates but remain insensitive to fundamental fre-
+quency (F0) distortion—a critical limitation for tonal languages,
+covering 40%+ of the world’s languages, where F0 contour
+marks lexical distinctions. We propose the Pitch-Injected
+Residual Adapter (PIRA), a lightweight plug-and-play mod-
+ule that restores tonal information in frozen NACs through ex-
+plicit F0 and voiced/unvoiced side-information injection. PIRA
+processes quantized F0 through dilated convolutions to cap-
+ture tone sandhi dependencies, supervised by a CREPE em-
+bedding loss for pitch-specific gradients. A confidence network
+gates injection per-frame, suppressing it for checked tones and
+unvoiced segments. With 1.25M–1.65M trainable parameters,
+PIRA reduces codec-induced Tone Error Rate (dTER) by 35.7%
+on average (macro-averaged across five codecs, each averaged
+over three tonal languages), while preserving English quality
+and adding≤0.4 kbps overhead.
+Index Terms: neural audio codec, tonal language, pitch restora-
+tion, low-resource adaptation, F0 injection
+1. Introduction
+Neural Audio Codecs (NACs) have become foundational to
+modern speech generation, voice conversion, and discrete tok-
+enization for LLM-based speech synthesis [1, 2, 3, 4, 5]. These
+models employ encoder-decoder architectures with Residual
+Vector Quantization (RVQ) to achieve high compression while
+maintaining perceptual quality, with recent single-codebook de-
+signs operating below 1 kbps [6, 7]. However, these codecs are
+predominantly trained on non-tonal language corpora [8] and
+optimized for perceptual metrics—PESQ and STOI—that are
+insensitive to fundamental frequency (F0) distortion [2], treat-
+ing F0 as a secondary prosodic feature. Beyond F0, RVQ-
+induced quantization has been shown to incur broader represen-
+tational deficiencies: semantic content is degraded when codecs
+are integrated with language models [9, 10], and pitch fidelity is
+compromised even with multiple codebooks [11], leading to F0
+smoothing, octave errors, and voicing confusion. While these
+limitations are tolerable for non-tonal languages, they become
+a critical failure mode when F0 contour serves a phonemic—
+rather than merely prosodic—function.
+Tonal languages, comprising over 40% of the world’s lan-
+guages [12], employ F0 contour for lexical distinction: min-
+imal pairs such as Mandarinm ¯a(‘mother’) vs.m ˇa(‘horse’)
+are differentiated solely by tone, rendering F0 preservation crit-
+ical for intelligibility. Many tonal languages further exhibit
+tone sandhi—contextual tonal alternations spanning 3–5 syl-
+lables [13, 14], introducing long-range F0 dependencies that
+**indicates the corresponding author.
+frame-local perceptual losses cannot capture.
+A natural response to this domain mismatch is to fine-tune
+pretrained codecs on target tonal languages. However, end-to-
+end fine-tuning risks catastrophic forgetting [15] of pretrained
+knowledge and demands substantial data and compute—both
+scarce for low-resource tonal languages. More fundamentally,
+standard codec losses lack explicit pitch supervision: even with
+sufficient resources, fine-tuning improves spectral adaptation
+but provides limited F0 restoration—a limitation we empirically
+confirm in Section 4.2. This structural deficiency motivates
+plug-and-play adaptation: lightweight modules that inject pitch-
+specific information directly into frozen codec latent spaces,
+without modifying pretrained parameters. Such parameter-
+efficient adapters are well-established in NLP [16, 17] and
+speaker recognition [18], yet remain unapplied to tonal restora-
+tion in NAC latent spaces.
+The feasibility of explicit F0 conditioning has been demon-
+strated in pitch-controllable synthesis [19, 20, 21, 22]. Cru-
+cially, pretrained NACs already exhibit strong performance
+across diverse downstream speech tasks [23], making frozen-
+model adaptation particularly valuable: it preserves all pre-
+trained capabilities while remaining fully removable for non-
+tonal deployment. Concurrent work on semantic-rich tok-
+enization [24] further highlights the gap between what stan-
+dard perceptual losses optimize and what downstream speech
+LMs require—yet none target the frozen-codec setting or ad-
+dress phonemically contrastive F0. All existing methods require
+full codec retraining and target prosody transfer in synthesis
+pipelines rather than tonal restoration at inference time—and
+therefore cannot serve as plug-and-play baselines on a frozen
+codec, precluding direct comparison (Section 3.3). To the best
+of our knowledge, no prior work addresses post-hoc recovery
+of phonemically contrastive F0 in pre-trained NACs—the set-
+ting where retraining is infeasible.
+We propose the Pitch-Injected Residual Adapter (PIRA),
+a lightweight parallel module that restores tonal informa-
+tion in frozen NACs through explicit F0 and voiced/unvoiced
+(UV) side-information injection. PIRA processes quantized F0
+through a dilated convolutional network [25] with a large recep-
+tive field to capture long-range tone sandhi dependencies, su-
+pervised by a CREPE embedding loss [26] that provides pitch-
+specific gradients absent from standard perceptual objectives. A
+confidence network learns per-frame gating to suppress injec-
+tion for checked tones and unvoiced segments where spectral
+cues carry tonal distinction. With 1.25M–1.65M trainable pa-
+rameters, PIRA reduces codec-induced Tone Error Rate (dTER)
+by 35.7% on average across five state-of-the-art codecs and
+three typologically diverse tonal languages. Crucially, PIRA is
+fully removable: when serving non-tonal languages, the origi-
+nal codec operates unchanged with zero quality degradation—a
+property no fine-tuning approach can offer.
+1074
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1224
+f0
+UV
+Z'
+ Projection  
+Conv1d
+...
+Conv1d
+Conv1d
+Conv1d
+Dilated-Conv1d
+Residual Pitch Injector 
+Raw F0 [T_f0]
+Raw UV [T_f0]
+0=unvoiced, 1=voiced
+Z' = Zq + α ⊙  R
+Conv1d
+Conv1d
+Conv1d
+Conv1d
+Confidence Net
+α
+R
+Input
+Encoder
+Quantizer
+Decoder
+Zq
+Output
+Regular arbitrary NACs
+WORLD Harvest
+F0/UV  Extraction
+Norm.
+ range
+[0, 1]
+4+1 bits/frame
+Quantization
+Tone-Preserving Adapter
+Concat
+[B, 2, T]
+x X̂
+Figure 1:System architecture of PIRA. Symbols:xinput audio; ˆxreconstructed audio;z q RVQ-quantized latent;z′ pitch-corrected
+latent;Rpitch residual;αper-frame confidence gate;ΦPitch Injector;ΨConfidence Network;D θ frozen decoder. F0 and UV
+features are extracted, quantized, and fed intoΦto produceR.Ψlearns per-frame gatingαfromz q and UV . The corrected latent
+z′ =z q +α⊙Ris passed to the frozenD θ.
+2. Methodology
+2.1. System Overview
+Rather than modifying pretrained codec parameters, PIRA op-
+erates as a parallel side-module in thequantized latent space, in-
+jecting pitch-aware residualsRweighted by learned per-frame
+confidenceαto correct tonal distortion while preserving pre-
+trained spectral reconstruction (Figure 1). Only the adapter pa-
+rameters are trainable; both encoder and decoder remain frozen.
+Given input audiox∈R T atf s = 16kHz, the frozen en-
+coder produces latentz∈R D×Tz , whereDis the latent dimen-
+sion andT z =T/rthe temporal resolution. RVQ quantizesz
+toz q. Simultaneously, F0 and voiced/unvoiced (UV) features
+are extracted via WORLD Harvest [27], quantized to discrete
+codes ˆf0 and binary UV flags, and fed into the trainablePitch
+InjectorΦandConfidence NetworkΨ:
+R= Φ( ˆf0,uv), α=σ(Ψ(z q,uv))(1)
+whereσdenotes the sigmoid function. The residualR∈
+RD×Tz and confidenceα∈[0,1] 1×Tz are fused to produce the
+corrected latent:
+z′ =z q +α⊙R(2)
+where⊙is element-wise multiplication (broadcast along
+channels). The frozen decoderD θ (with pretrained parame-
+tersθ) reconstructs ˆx=D θ(z′). F0 is extracted at 100 Hz
+via WORLD Harvest, resampled tof z, and voiced values
+are mapped to 4-bit scalar codes (16 bins, log-spaced over
+[50,550]Hz, covering typical adult and child pitch ranges),
+yielding(4+1)×f z/1000kbps overhead.
+2.2. Residual Pitch Injector with Dilated Convolutions
+The Pitch InjectorΦprocesses concatenated F0/UV features
+[ ˆf0,uv]∈R 2×Tz through a1×1input projection (D h = 256),
+followed byL= 6dilated Conv1d layers with kernel sizek=
+3and base-3 dilation ratesd i = 3i−1, i.e.,[1,3,9,27,81,243].
+Withk=3, base-3 dilation avoids receptive field gaps while
+yielding RF= 729frames vs. 127 for base-2. Each layer
+applies residual connections with GELU activation; skip con-
+nections sum outputs from all layers before the final projection
+to(D,T z). The resulting receptive field covers 9.7 s at 75 Hz
+(EnCodec)—sufficient to capture multi-syllable sandhi depen-
+dencies across prosodic phrases.
+2.3. Confidence-Weighted Fusion for Checked Tones
+Naively injecting F0-based residuals uniformly risks corrupting
+regions where pitch is not the primary tonal cue. Checked tones
+in Cantonese, Hokkien, and Vietnamese are characterized by
+abrupt glottal closures with minimal voicing [28]—e.g., Can-
+tonese tone 1 (high-level) vs. tone 7 (high-entering) differ in
+duration and glottal stop rather than F0 contour—so injecting
+pitch residuals there corrupts spectral cues carrying tonal dis-
+tinction.
+To address this, we introduce aConfidence NetworkΨ
+that learns per-frame gatingα∈[0,1](Eq. 1) to modulate
+residual injection.Ψconsists of three Conv1d layers (kernel
+size 3) mapping(D+1,T z)→(1,T z)via hidden dimensions
+[64, 32] with GELU and sigmoid output. By conditioning on
+zq (spectral context) anduv(voicing state), the network learns
+α→1for voiced tonal regions andα→0for unvoiced seg-
+ments (including checked tones and consonants) through end-
+to-end optimization of the reconstruction objective, without ex-
+plicit frame-level supervision.
+2.4. Training Objective
+Although the decoder is frozen, gradients flow through its dif-
+ferentiable forward pass back to the adapter. We minimize:
+L=λ 1LL1 +λsLstft +λmLmel +λcLcrepe (3)
+withλ 1=0.1,λs=1.0,λm=1.0,λc=30(stable across[10,50];
+selected via grid search on validation set). The first three
+terms—time-domain L1, multi-resolution STFT [2], and mel-
+spectrogram losses—provide spectro-temporal reconstruction
+supervision. The key addition is aCREPE embedding loss:
+Lcrepe =∥ϕ crepe(x)−ϕ crepe(ˆx)∥2
+2 (4)
+whereϕ crepe denotes the penultimate layer (256-dim) activations
+of frozen CREPE-Tiny [26]. We use CREPE-Tiny for com-
+putational efficiency during training. Unlike direct F0 MSE,
+CREPE embeddings encode pitch in a perceptually-weighted
+latent space, providing smoother gradients for tonal restoration.
+3. Experimental Setup
+3.1. Datasets
+We select three typologically diverse tonal languages underrep-
+resented in standard NAC training corpora:Taiwan-Tongues-
+1075
+Table 1:Comparison of PIRA against pretrained baselines across three tonal languages and five codecs. F0-RMSE in cents. Ground
+Truth reports absolute TER; all others report dTER (codec-induced degradation). All improvements are significant (∗p<0.05, paired
+t-test). Best inbold.
+TTASRCE (Hokkien) MDCC (Cantonese) VIVOS (Vietnamese)
+Method dCER dTER F0 GPE VDE dCER dTER F0 GPE VDE dWER dTER F0 GPE VDE
+Ground Truth .000 .057 9.650 .000 .003 .000 .052 10.206 .000 .000 .000 .028 10.191 .000 .000
+75 Hz, 1.50 kbps, 1024×2,D=128— PIRA: 1.25M, 1.88 kbps
+EnCodec .236 .267 117.931 .196 .385 .224 .236 48.908 .043 .154 .536 .490 28.650 .034 .169
+w/ PIRA .147∗ .171∗ 43.138 .024 .144 .152∗ .098∗ 21.880 .024 .118 .182∗ .120∗ 17.950 .015 .093
+50 Hz, 1.00 kbps, 1024×2,D=1024— PIRA: 1.65M, 1.25 kbps
+DAC 16kHz .125 .156 27.466 .032 .159 .111 .154 25.911 .021 .128 .120 .140 21.237 .018 .028
+w/ PIRA .088∗ .124∗ 19.893.032.140 .089∗ .104∗ 18.230 .019 .089 .101∗ .096∗ 17.772 .017 .018
+12.5 Hz, 1.10 kbps, 2048×8,D=512— PIRA: 1.42M, 1.16 kbps
+Mimi .156 .260 38.292 .029 .120 .107 .117 23.402 .024 .098 .124 .109 16.621 .012 .066
+w/ PIRA .134∗ .165∗ 24.414 .021 .085 .089∗ .092∗ 18.773 .022 .071 .101∗ .091∗ 15.543 .009 .049
+75 Hz, 0.90 kbps, 4096×1,D=512— PIRA: 1.42M, 1.28 kbps
+WavTokenizer .194 .270 54.650 .054 .138 .155 .183 32.055 .045 .129 .352 .277 29.432 .058 .103
+w/ PIRA .121∗ .144∗ 31.279 .035 .088 .119∗ .135∗ 26.654 .039 .064 .177∗ .156∗ 19.287 .044 .087
+80 Hz, 1.04 kbps, 8192×1,D=1024— PIRA: 1.65M, 1.44 kbps
+BigCodec .104 .180 41.817 .034 .117 .095 .129 22.784 .012 .079 .128 .129 21.704 .008 .060
+w/ PIRA .078∗ .112∗ 21.852 .029 .084 .081∗ .092∗ 17.821 .011 .067 .091∗ .099∗ 16.667 .007 .049
+ASR-CE (Hokkien)[29] with 7–8 tones and complex tone
+sandhi (8,000 train / 1,000 test, 6.35 hrs);MDCC (Can-
+tonese)[30] with 6–9 tones including checked tones (8,000
+train / 1,000 test, 6.58 hrs);VIVOS (Vietnamese)[31] with
+6 tones distinguished by phonation type (8,000 train / 1,000
+test, 6.40 hrs). Mandarin is excluded as it is well-represented
+in pretraining corpora [8] and its simple tonology (4 tones, no
+checked tones) is less diagnostic for PIRA’s core designs. To
+reflect realistic low-resource deployment conditions, all train-
+ing splits are capped at∼6 hrs per language. Quality filter-
+ing selects utterances achieving CER = 0 on original audio to
+ensure error-free references. ASR models are Whisper-large-
+v3 [32] for Cantonese and Hokkien, and PhoWhisper-large [33]
+for Vietnamese.
+3.2. Evaluation Metrics
+dCER / dWERmeasures the additional transcription error in-
+troduced by codec reconstruction [23], computed as CER(ˆx)−
+CER(x), where ˆxdenotes the codec-reconstructed audio and
+xthe original audio. We report dCER for character-based lan-
+guages (Hokkien, Cantonese) and dWER for word-based Viet-
+namese.
+TER (Tone Error Rate)is our primary metric, measur-
+ing how accurately lexical tones are preserved after codec
+reconstruction. We extract tone sequences from ASR tran-
+scripts using language-specific tools (taibunfor Hokkien,
+pycantonesefor Cantonese, diacritic parsing for Viet-
+namese) and compute:
+TER= Lev(tref,t hyp)
+|tref| ,dTER=TER( ˆx)−TER(x)(5)
+The non-zero Ground Truth TER in Table 1 establishes
+the ASR measurement floor; all other rows report dTER to
+isolate codec-induced degradation, This differential design ab-
+sorbs systematic ASR errors. dTER improvements are cor-
+roborated by ASR-independent signal-level metrics (F0-RMSE,
+GPE), confirming genuine pitch restoration. For signal-level F0
+fidelity, we report three standard pitch metrics [34, 35]:F0-
+RMSE(pitch error in cents, computed over mutually voiced
+frames; 1200 cents = 1 octave),GPE(Gross Pitch Error: voiced
+frames with>50 cents error), andVDE(V oicing Decision Er-
+ror: incorrect voiced/unvoiced classification).
+3.3. Baselines and Implementation
+We evaluate PIRA across five frozen pretrained NACs span-
+ning diverse architectures: multi-codebook RVQ (EnCodec [2],
+DAC [4], Mimi [36]) and single-codebook designs (WavTok-
+enizer [37], BigCodec [6]). PIRA’s output projection dimen-
+sion is adjusted to match each codec’s latent spaceD(see Ta-
+ble 1); all other hyperparameters remain fixed. We compare
+against three baselines:Pretrain(frozen codec without adap-
+tation),Decoder FT(decoder-only fine-tuning), andFull FT
+(joint encoder-decoder fine-tuning), all using identical training
+splits. Training uses AdamW (lr10 −3, clip norm 1.0), 200
+epochs with early stopping (patience 15), ReduceLROnPlateau,
+batch size 64 on a single A100 GPU.1
+4. Results and Analysis
+4.1. PIRA Performance and Generalization
+Table 1 presents PIRA’s performance across five frozen codecs
+and three tonal languages. PIRA achieves statistically signif-
+icant improvements (p <0.05, pairedt-test) on dCER and
+dTER across all 15 codec–language configurations, with con-
+sistent gains on F0-RMSE, GPE, and VDE confirming genuine
+pitch restoration rather than metric-specific overfitting.
+Tonal restoration across codecs:The same architecture
+and hyperparameters attach to any frozen codec by adjusting
+only the output projection dimension to match the codec’s latent
+spaceD. Averaged across three languages, PIRA reduces dTER
+by 56.7% on EnCodec, 28.1% on DAC, 24.8% on Mimi, 38.9%
+on WavTokenizer, and 30.0% on BigCodec (macro-averaged
+relative dTER reduction: 35.7%). The largest gains appear on
+1Code & Demo:https://github.com/Jie-shiang/
+Pitch-Injected-Residual-Adapter
+1076
+Table 2:Comparison of adaptation strategies on EnCodec
+(75 Hz, 1.50 kbps). Each method is trained on the respective
+tonal language and evaluated on both the tonal test set and
+LibriSpeech-test-clean (English, last column) to quantify catas-
+trophic forgetting. Full FT = end-to-end fine-tuning; Dec. FT
+= decoder-only fine-tuning. T.Time = training time (hrs) on a
+single A100 GPU. dCER column reports dWER for Vietnamese.
+Method #Param T.Time dCER↓dTER↓F0↓GPE↓VDE↓ dWER↓(Eng.)
+TTASRCE (Hokkien) Eng.
+Pretrain — — .236 .267 117.9 .196 .385 .013
+Full FT 14.85M 16.66 .032.192 87.1 .132 .238 .068
+Dec. FT 7.43M 9.12 .069 .234 94.1 .149 .301 .049
+PIRA 1.25M 3.17 .147.171 43.1 .024 .144 .013
+PIRA+D.FT 8.68M 12.22 .056 .166 42.1 .021 .138 .045
+MDCC (Cantonese) Eng.
+Pretrain — — .224 .236 48.9 .043 .154 .013
+Full FT 14.85M 15.57 .077.211 37.7 .029 .132 .079
+Dec. FT 7.43M 8.49 .092 .228 39.4 .035 .145 .054
+PIRA 1.25M 2.68 .152.098 21.9 .024 .118 .014
+PIRA+D.FT 8.68M 11.85 .085 .105 23.8 .028 .124 .043
+VIVOS (Vietnamese) Eng.
+Pretrain — — .536 .490 28.7 .034 .169 .013
+Full FT 14.85M 16.09 .087.349 24.4 .027 .124 .084
+Dec. FT 7.43M 9.04 .124 .401 25.7 .029 .124 .059
+PIRA 1.25M 3.01 .182.120 18.0 .015 .093 .014
+PIRA+D.FT 8.68M 13.07 .156 .122 19.2 .019 .102 .050
+EnCodec, whose small latent dimension (D=128) results in se-
+vere F0 degradation (F0-RMSE up to 117.9 cents), precisely
+where explicit pitch side-information provides the greatest com-
+plementary value. These improvements come at modest bitrate
+overhead:(4+1)×f z/1000kbps(e.g., 0.38 kbps at 75 Hz).
+Language-specific analysis:Vietnamese shows the largest
+dTER improvement (up to 75.5% on EnCodec), as its 6-tone
+system relies primarily on F0 contour. Cantonese benefits sub-
+stantially (58.5%) despite its 3 checked tones—demonstrating
+that the confidence network successfully suppresses injection
+in non-pitched regions rather than corrupting spectral cues.
+Hokkien shows moderate gains (36.0%), Hokkien sandhi in-
+volves surface tone forms determined by lexical and prosodic
+context beyond the acoustic signal, imposing a structural ceil-
+ing on purely acoustic F0 restoration.
+4.2. Comparison with Adaptation Strategies
+Table 2 compares PIRA against fine-tuning strategies on En-
+Codec, evaluated on both in-domain tonal test sets and out-of-
+domain LibriSpeech-test-clean (English). Degradation on En-
+glish directly quantifies catastrophic forgetting of the pretrained
+distribution.
+F0 restoration vs. spectral adaptation:Although Full
+FT achieves the lowest dCER by adapting to target-language
+phonetics, it provides limited F0 restoration: on Hokkien, Full
+FT yields F0-RMSE of 87.1 cents vs. PIRA’s 43.1 cents despite
+11.9×more parameters. This confirms that standard codec
+losses lack explicit pitch supervision—even full retraining can-
+not recover tonal information without F0-specific objectives.
+Catastrophic forgetting in fine-tuning:Fine-tuning in-
+curs severe catastrophic forgetting: English dWER degrades to
+.068–.084 (5.2–6.5×pretrained), rendering the codec unusable
+for non-target languages. Fine-tuning also demands 5.3–5.8×
+longer training time—a critical disadvantage when only∼6 hrs
+of target-language data are available. PIRA preserves English
+quality at .013–.014 dWER (identical to pretrained), is fully re-
+movable with zero overhead, and maintains UTMOS (UTokyo-
+SaruLab MOS) [38] perceptual quality (|∆|≤0.02for 14 of 15
+configurations); EnCodec’s positive shift (∆=+0.10–+0.22)
+confirms that severe F0 correction also improves perceived nat-
+Table 3:Ablation study on EnCodec (1.50 kbps), Hokkien
+ConfigurationdCER↓dTER↓F0↓GPE↓VDE↓
+PIRA (4-bit F0) .147 .171 43.1 .024 .144
+w/o Confidence Net .192 .205 49.1 .033 .337
+w/o CREPE loss .188 .192 69.7 .082 .304
+PIRA (8-bit F0).141 .162 38.8 .019 .112
+uralness.
+Adaptation and restoration are orthogonal:PIRA+D.FT
+is included to verify that spectral adaptation and pitch restora-
+tion operate on orthogonal dimensions. The combination sub-
+stantially reduces dCER (e.g., .147→.056 on Hokkien) while
+preserving PIRA’s pitch restoration (dTER .171→.166, F0-
+RMSE 43.1→42.1), confirming that the two mechanisms do not
+interfere. However, PIRA+D.FT inherits fine-tuning’s penal-
+ties: English dWER degrades to .043–.050 and training time
+approaches Full FT.
+4.3. Ablation and Efficiency
+Table 3 isolates each component on EnCodec–Hokkien—the
+configuration with the largest baseline degradation (F0-RMSE
+117.9 cents) and the most complex tonology (7–8 tones, multi-
+syllable sandhi), making component contributions most visi-
+ble. Removing confidence gating (α= 1) causes the largest
+VDE degradation (.144→.337), confirming gating is essential
+for unvoiced and checked-tone regions, which has the richest
+checked-tone inventory (tones 7/8/9). Removing the CREPE
+loss (λc = 0) yields the largest F0-RMSE degradation (43.1
+→69.7 cents) and GPE increase (.024→.082), confirming
+that mel/STFT losses provide insufficient pitch-specific gradi-
+ents. Increasing from 4-bit to 8-bit yields modest gains (dTER
+.171→.162) at doubled F0 bitrate (0.30→0.60 kbps); 4-bit
+achieves a favorable trade-off.
+On a single A100 GPU (5 s audio, 50 runs), PIRA adds
+only 0.92 ms (4.6% overhead) to the frozen EnCodec pipeline
+(19.89 ms). The primary bottleneck is F0 extraction: WORLD
+Harvest requires 1406.66 ms (Real-Time Factor (RTF) = 0.28).
+However, 4-bit quantization maps F0 to 16 log-spaced bins each
+spanning∼260 cents (log-spaced over∼3.46 octaves)—well
+above the extraction noise of faster alternatives (<20 cents)—
+suggesting lighter-weight extractors may substitute without de-
+grading PIRA’s discrete input. With pre-extracted F0 caching,
+end-to-end latency reduces to 20.84 ms (RTF = 0.004).
+5. Conclusion
+We presented PIRA, a plug-and-play adapter that restores tonal
+accuracy in frozen neural audio codecs through explicit F0/UV
+injection, reducing dTER by 35.7% across three tonal lan-
+guages and five codecs with 1.25M–1.65M parameters. Our
+findings yield two insights: first,tonal distortion in NACs is an
+information-routing failure, not an intrinsic compression limi-
+tation—F0 is recoverable from 4 bits per frame, but standard
+perceptual losses lack pitch-specific gradients that the CREPE
+embedding loss bridges. Second,adaptation and restoration
+are complementary: combining PIRA with decoder fine-tuning
+reduces dCER while preserving pitch restoration, confirming
+orthogonal mechanisms. Current limitations—WORLD Har-
+vest latency and F0/UV bitrate overhead—point to substituting
+faster extractors, extending to streaming, and integration with
+speech language models. Formal perceptual evaluation remains
+important future validation.
+1077
+6. Generative AI Use Disclosure
+The authors used Claude (Anthropic) to assist with editing and
+polishing the manuscript. All scientific content, experimental
+design, and conclusions are solely the work of the authors, who
+take full responsibility for the paper.

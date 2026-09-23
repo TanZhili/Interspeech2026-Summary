@@ -1,0 +1,441 @@
+LavaSR: Fast and Flexible Audio Bandwidth Extension via Vocos
+Yatharth Sharma ID
+New York, USA
+yatharthsharma3501@gmail.com
+Abstract
+We propose a V ocos-based bandwidth extension model that en-
+hances audio at 8-48 kHz by generating missing high-frequency
+content. Inputs are resampled to 48 kHz and processed by a
+neural vocoder backbone, enabling a single network to sup-
+port arbitrary upsampling ratios. A lightweight Linkwitz-Riley-
+inspired refiner merges the original low band with the generated
+high frequencies via a smooth crossover. On validation, the
+model achieves competitive log-spectral distance while running
+at a real-time factor of 0.0001 on an NVIDIA A100 GPU and
+0.0053 on an 8-core CPU, demonstrating practical, high-quality
+BWE at extreme throughput.
+Index Terms: bandwidth extension, neural vocoder, audio
+super-resolution, speech enhancement
+1. Introduction
+Bandwidth extension (BWE) aims to recover or hallucinate
+missing frequency components of audio signals captured with
+limited bandwidth, such as legacy recordings or telephony
+speech. Traditional signal processing methods, including
+interpolation-based upsampling and spectral shaping, offer
+high efficiency but often fail to reconstruct convincing high-
+frequency details. Recent learning-based approaches have re-
+formulated BWE as a conditional generation task, predicting
+missing high-band content from the observed low-band signal.
+State-of-the-art diffusion-based models such as Au-
+dioSR [1], have demonstrated exceptional generative quality.
+However, their iterative sampling process is often too compu-
+tationally expensive for real-time or large-scale deployment.
+Conversely, GAN-based approaches offer substantial speed ad-
+vantages and share key similarities with our work, as they fre-
+quently operate in the Fourier domain and utilize ConvNeXt [2]
+backbones. Among these, AP-BWE [3] relies on an interleaved
+magnitude and phase prediction block tailored to fixed in-
+put/output sample-rate pairs (e.g., 16 kHz→48 kHz), restrict-
+ing its flexibility. While recent extensions like MS-BWE [4]
+target arbitrary-rate and faster processing, they introduce intri-
+cate pipelines with specialized multi-scale networks. In con-
+trast, our framework vastly simplifies this paradigm by predict-
+ing complex STFT coefficients simultaneously within a single
+unified head. By pairing this joint prediction with an initial
+input-resampling step to 48 kHz and a Linkwitz-Riley-inspired
+frequency refiner, our model completely eliminates both ratio-
+specific architectures and multi-scale complexities.
+In this paper, we propose a versatile BWE system that
+supports arbitrary input sample rates from 8–48 kHz within
+a single network. We build upon the V ocos [5], leveraging
+its high-fidelity Fourier-domain neural vocoder architecture to
+synthesize missing high frequencies. By resampling all in-
+puts to a 48 kHz and employing a V ocos-style generator, our
+model maintains consistency across various upsampling ra-
+tios. To further enhance fidelity, we introduce a lightweight
+frequency-domain refiner inspired by the Linkwitz-Riley in-
+spired crossover [6]. This refiner smoothly merges the orig-
+inal resampled low-band signal with the generated high-band
+components, ensuring a smooth transition at the crossover fre-
+quency.
+Experimental results on the VCTK corpus [7] demon-
+strate that our proposed model matches or outperforms strong
+baselines in terms of Log-Spectral Distance (LSD) while of-
+fering orders-of-magnitude higher throughput than diffusion-
+based methods.
+The primary contributions of this work are as follows:
+• We introduce the first V ocos-based BWE model to our knowl-
+edge, utilizing a neural vocoder to generate high-frequency
+content for arbitrary input sampling rates.
+• We propose a Linkwitz-Riley inspired frequency-domain re-
+finer that improves perceptual quality by seamlessly combin-
+ing the original low band with the synthesized high band.
+• We demonstrate a superior quality-to-speed trade-off, achiev-
+ing a Real-Time Factor (RTF) of0.0001on an NVIDIA
+A100 and maintaining considerably faster-than-real-time per-
+formance on a standard 8-core CPU.
+2. Proposed Method
+2.1. Problem formulation
+Letx∈R T denote a waveform at 48 kHz, and letx↓r denote a
+band-limited, downsampled observation captured at sample rate
+r∈{8,16,24}kHz(and more generally anyr∈[8,48] kHz).
+The goal of BWE is to estimate a high-band enhanced wave-
+formˆxat 48 kHz that is perceptually and spectrally close to
+x, while being consistent with the low-band content implied by
+x↓r.
+The proposed model first resamples the input to 48 kHz us-
+ing sinc interpolation to obtain a baseband waveformy∈R T
+that preserves the available low-band information but lacks true
+high-frequency detail. A generatorG θ then predicts an en-
+hanced waveform˜x=G θ(y), after which a frequency-domain
+refiner produces the final outputˆx.
+2.2. Model architecture
+The generator operates on a time–frequency representation
+(mel-spectrogram) derived from the 48 kHz resampled input
+and produces a complex STFT representation inverted to the
+waveform via iSTFT.
+Feature extraction.We compute a mel-spectrogram with
+80 mel bins,n fft = 2048, and hop length 512 at 48 kHz. This
+4511
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-2839
+mel representation serves as the conditioning input to the gen-
+erator.
+Backbone.The backbone is initialized from scratch. The
+core consists of 8 residual ConvNeXt-style blocks with a model
+dimension ofC= 512. Each block employs a7×1depthwise
+convolution for temporal modeling, followed by a feed-forward
+network that expands the features to an intermediate dimension
+of1536before projecting back to512channels.
+Layer normalization and GELU activations are applied
+throughout to ensure stable training. The final latent represen-
+tation is passed through a pointwise convolutional layer and
+a linear head, which predicts the complex-valued coefficients
+for the iSTFT-based reconstruction. This configuration allows
+the model to map the 80-bin Mel-spectrogram input to a high-
+fidelity waveform while maintaining a constant temporal reso-
+lution.
+Output head and waveform synthesis.The linear head
+predicts STFT components converted to the waveform via
+iSTFT. The model is initialized from scratch and in this set-
+ting, the input is resampled to 48 kHz and the model is trained
+to generate missing high-frequency content rather than merely
+reconstructing the input band.
+2.3. Linkwitz-Riley inspired frequency refiner
+Neural generators can introduce small inconsistencies or arti-
+facts in regions where the input already contains reliable in-
+formation. The proposed refiner constructs a crossover mask
+M(f)∈[0,1]—designed to emulate the flat-summation prop-
+erty of a Linkwitz-Riley crossover— seamlessly merging the
+low-frequency anchorY(f)with the generated high-frequency
+content ˜X(f). Within the transition region centered at the
+cutoff frequencyf c, we define the normalized frequencyt=
+(f−f start)/(fend−fstart). The mask follows a smooth poly-
+nomial curve:
+M(f) =
+
+
+
+0f < f start
+3t2−2t 3 fstart≤f≤f end
+1f > f end
+(1)
+The refined spectrum ˆX(f)is then computed as a linear inter-
+polation between the two signals:
+ˆX(f) = (1−M(f))Y(f) +M(f) ˜X(f)(2)
+where the final waveformˆxis obtained via the inverse real FFT
+(iRFFT). This formulation ensures a flat magnitude response
+across the crossover while suppressing phase discontinuities at
+the junction. The proposed refiner significantly enhances the
+end quality as a result.
+2.4. Training objectives
+The proposed model is trained using a combination of spectral,
+perceptual, and adversarial losses to ensure both structural ac-
+curacy and high-frequency realism.
+Multi-resolution STFT loss (MRSTFT).STFT losses are
+computed atn fft∈{512,1024,2048}with hop sizesn fft/4.
+This multi-scale approach encourages accurate reconstruction
+across different time–frequency resolutions, capturing both
+fine-grained temporal events and long-term spectral envelopes.
+Mel-spectrogram loss.We apply anL 1 loss between the
+mel-spectrograms of the ground truth and the generated audio.
+This is computed at 48 kHz with 128 mel bins andnfft = 2048,
+focusing the model on perceptually relevant frequency bands.
+Figure 1:Overview of the proposed BWE architecture follow-
+ing the Vocos framework. The input audio is upsampled to
+48 kHz via Sinc interpolation and transformed into an 80-bin
+Mel-spectrogram. The backbone consists of 8 ConvNeXt blocks
+using7×1depthwise and1×1pointwise convolutions. The
+head employs a linear layer and ISTFT for waveform recon-
+struction, followed by a Linkwitz-Riley inspired refiner for sig-
+nificant quality enhancement.
+Multi-Resolution Discriminator (MRD).The MRD [8]
+consists of multiple sub-discriminators that operate on the com-
+plex STFT of the waveform at different scales. By analyzing the
+signal in the frequency domain with varying window sizes, the
+MRD can simultaneously penalize artifacts in high-frequency
+transients (short windows) and preserve the harmonic structure
+of voiced speech (long windows). This prevents the ”phase-
+smearing” common in time-domain-only discriminators.
+Adversarial and Feature Matching Loss.To further im-
+prove stability and fidelity, we incorporate a Feature Matching
+Loss (Lfm). This loss minimizes theL 1 distance between the
+intermediate feature maps of the discriminator when processing
+real vs. generated audio:
+Lfm(G;D) =E
+" LX
+i=1
+1
+Ni
+||D(i)(x)−D (i)(˜x)||1
+#
+(3)
+whereD (i) andNi denote the features and number of elements
+in thei-th layer of the discriminator, respectively. This forces
+the generator to produce audio that shares the same multi-scale
+statistical properties as real speech.
+Optimization.AdamW is used with a learning rate of
+10−4, weight decay of10 −2, and an exponential decay sched-
+uler that scales the learning rate by0.99every 64 steps. The
+model is trained with a batch size of 16.
+4512
+3. Experimental Setup
+3.1. Dataset
+We train on the VCTK corpus (approximately 44 hours
+of speech), using roughly 60,000 audio segments randomly
+cropped to 1.28, 2.56, or 3.2 s.
+3.2. Degradation process
+Clean 48 kHz audio is randomly downsampled tor∈
+{8,12,16}kHz using sinc, ZOH, or linear interpolation. Op-
+tional quantization noise is added to make the model more ro-
+bust. The degraded signal is resampled back to 48 kHz before
+being fed to the generator.
+3.3. Baselines
+Baselines include:
+•Sinc upsampling– standard interpolation.
+•AP-BWE– APNet2 inspired GAN trained for specific ratios.
+•NVSR[9] – neural GAN vocoder based super-resolution
+baseline.
+•AudioSR– diffusion-based audio super-resolution.
+3.4. Evaluation metrics
+Log-Spectral Distance (LSD).The LSD measures the distance
+between the power spectra of the reference signalxand the en-
+hanced signalˆxin the log-decibel scale. Given the power spec-
+traP(k, n) =|X(k, n)| 2 and ˆP(k, n) =| ˆX(k, n)|2, wherek
+andndenote the frequency bin and time frame respectively, the
+distance is defined as:
+LSD(x,ˆx) = 1
+N
+NX
+n=1
+vuut 1
+K
+KX
+k=1
+
+log10 P(k, n)−log 10 ˆP(k, n)
+2
+whereKis the number of frequency bins andNis the number
+of time frames. Lower values indicate better spectral recon-
+struction.
+ViSQOL.ViSQOL [10] compares patches of the refer-
+ence and processed spectrograms using a similarity measure de-
+signed to correlate with human mean opinion scores. Reported
+on a 1–4.75 scale, higher is better.
+SI-SDR.(Scale-Invariant Signal-to-Distortion Ratio) eval-
+uates the quality of an audio signal by comparing it to a clean
+reference in the time domain. Unlike frequency-domain metrics
+like LSD or ViSQOL, it explicitly accounts for phase quality.
+Reported in decibels (dB), higher values indicate better audio
+reconstruction or source separation.
+4. Results and Analysis
+4.1. Quality benchmarks
+Table 1:Log-spectral distance (LSD) comparison on VCTK.
+Method
+8→48 kHz
+(LSD↓)
+12→48 kHz
+(LSD↓)
+16→48 kHz
+(LSD↓)
+Sinc upsampling 3.52 3.19 2.94
+AudioSR 1.61 1.52 1.44
+NVSR 1.22 1.20 1.12
+AP-BWE 0.87 0.81 0.74
+Proposed Model 0.85 0.80 0.74
+Table 2:ViSQOL scores on VCTK. Our model is similar to AP-
+BWE’s perceptual quality.
+Method
+8→48 kHz
+(ViSQOL↑)
+12→48 kHz
+(ViSQOL↑)
+16→48 kHz
+(ViSQOL↑)
+Sinc upsampling 2.10 2.23 2.35
+AudioSR 3.15 3.21 3.40
+NVSR 2.97 3.00 3.10
+AP-BWE3.51 3.54 3.70
+Proposed Model 3.513.53 3.69
+Table 3:SI-SDR performance on VCTK.
+Method
+8→48 kHz
+(SI-SDR [dB]↑)
+NVSR 14.68
+Proposed 18.02
+AP-BWE18.77
+4.2. Performance Analysis
+The experimental results in Table 1, Table 2, and Table 3
+demonstrate the effectiveness of our proposed model across
+various upsampling scales, evaluated through objective spec-
+tral distortion, perceptual quality, and time-domain waveform
+fidelity metrics.
+Discussion:The proposed model achieves the lowest LSD
+across all scenarios, reaching0.85at8→48kHz, outperform-
+ing AudioSR (1.61) and NVSR (1.22). Perceptually, it matches
+AP-BWE at8→48kHz (3.51) and remains competitive at
+16 kHz (3.69). While our SI-SDR (18.02dB) slightly trails AP-
+BWE’s interleaved, dual-backbone architecture, it significantly
+outperforms NVSR (14.68 dB). By predicting complex STFT
+coefficients simultaneously via a single backbone and linear
+head, our single-stream network trades a minor phase optimiza-
+tion delta for extreme simplicity and an order-of-magnitude
+CPU speedup (see Section 4.5). Crucially, our unified frame-
+work supports arbitrary input sampling rates at a fraction of
+the computational cost, delivering a superior quality–efficiency
+trade-off.
+4.3. Robustness to Out-of-Domain Sample Rates
+While the model was primarily trained on common sampling
+anchors (8, 12, 16kHz, etc.), a key advantage of our architecture
+is its ability to handle arbitrary input bandwidths. To evaluate
+this ”zero-shot” generalization, we tested the model on various
+out-of-domain (OOD) sample rates.
+OOD Generalization.As shown in Figure 2, LSD de-
+creases monotonically with higher input rates, with unseen out-
+of-domain (OOD) rates tracking the same linear trend as in-
+domain training anchors.
+This robustness stems from two factors: (1) pre-resampling
+inputs to 48 kHz casts BWE as a fixed-grid spectral comple-
+tion task for the ConvNeXt backbone, and (2) the Linkwitz-
+Riley-inspired refiner dynamically anchors the generated high
+band via a smooth frequency-domain crossover, eliminating the
+spectral discontinuities and metallic artifacts typical of fixed-
+rate systems.
+4.4. Ablation Studies
+We conduct an ablation study to evaluate how different spec-
+tral merging strategies affect the final output quality. We com-
+4513
+8 10 12 14 16 24 32
+0.5
+0.6
+0.7
+0.8
+0.9
+1
+Input Sample Rate (kHz)
+LSD (dB)
+Proposed Model
+Figure 2:Model performance (LSD) across in-domain and out-
+of-domain (OOD) sample rates.
+pare our Linkwitz-Riley inspired approach against three base-
+line configurations:
+•No Refiner:The raw model output is used directly. Without
+anchoring the low frequencies to the ground truth, the model
+often produces slight artifacts in the low frequency region.
+•Naive HP/LP:A simple brickwall cutoff implemented in the
+frequency domain. This creates sharp transitions but often
+results in ringing artifacts near the cutoff.
+•Standard Butterworth:A frequency-domain approxima-
+tion of a 4th-order Butterworth response. While smoother
+than the naive cutoff, it typically introduces a +3 dB mag-
+nitude spike at the crossover point when summing the two
+bands.
+•Proposed (LR-Inspired):Our method uses a squared-
+magnitude response to ensure a flat summation at the
+crossover, effectively stitching the generated high frequen-
+cies to the low-frequency anchor without introducing ampli-
+tude bumps at the crossover.
+Refiner Variant LSD↓(8→48)
+No Refiner (Direct Output) 0.897
+Naive HP/LP Crossover 0.865
+Standard Butterworth Refiner 0.861
+Linkwitz-Riley Inspired (Proposed) 0.850
+Table 4:Ablation results on VCTK validation. The proposed
+refiner achieves the lowest spectral distance by ensuring a flat
+magnitude response at the crossover.
+The results in Table 4 show that even basic spectral anchor-
+ing significantly improves LSD compared to the ”No Refiner”
+baseline (0.897 vs 0.865). However, the Butterworth filter’s in-
+herent magnitude peak limits its performance. By achieving an
+LSD of 0.850, the LR-inspired refiner confirms that maintain-
+ing a flat magnitude response during the merge is essential for
+high-fidelity bandwidth extension.
+4.5. Efficiency
+The computational complexity and inference speed of the pro-
+posed model are evaluated across both CPU and GPU environ-
+ments to assess real-world deployment viability. We compare
+our approach against AudioSR, NVSR, and AP-BWE, using a
+fixed 4-second audio duration for all benchmarks. To ensure
+fairness, we exclude preprocessing (e.g., resampling) and in-
+clude a warm-up phase for all models. We use recommended
+sampling steps for diffusion models.
+Table 5:Inference efficiency comparison on 8-core CPU. RTF
+is measured as(latency/duration). Speed= 1/RTF.
+Method Params RTF↓Speed↑
+AudioSR 258M 50.0000 0.02×
+NVSR∼99M 0.2218 4.5×
+AP-BWE3×30M 0.0495 20.2×
+Proposed 15M 0.0053 190.5×
+As shown in Table 5, our model achieves a nearly 10×
+speedup over the previous state-of-the-art efficient model (AP-
+BWE) on CPU. On an NVIDIA A100 GPU (Table 6), the effi-
+ciency gains are even more pronounced. Our model processes
+4 seconds of audio in 2.5ms at batch size 1 (1600×real-time).
+Table 6:GPU Efficiency and throughput comparison on
+NVIDIA A100. Latency is reported for the entire batch. RTF
+is rounded and calculated aslatency/(duration×BS).
+Method BS Latency (s) RTF↓Speed↑
+AudioSR 1 8.4700 2.1175 0.47×
+NVSR 1 0.0410 0.0103 97.6×
+AP-BWE 1 0.0135 0.0034 296.3×
+AP-BWE 32 0.2879 0.0023 444.6×
+Proposed10.0025 0.0006 1600.0×
+Proposed320.0102 0.0001 12549.0×
+Crucially, our architecture scales exceptionally well with
+batching. At a batch size of 32, our model achieves a total
+throughput of over12,500×real-time, requiring only 10.2ms
+to process 128 seconds of audio. In comparison, AP-BWE
+requires 287.9ms for the same batch size (0.0023RTF). This
+makes the proposed model significantly more suitable for high-
+throughput cloud processing and real-time edge applications.
+This efficiency stems from our streamlined V ocos-based ar-
+chitecture and the Linkwitz-Riley refiner, which bypasses the
+heavy multi-stage upsampling and iterative sampling required
+by GAN and diffusion baselines.
+5. Conclusion
+We presented a V ocos-based bandwidth extension model that
+supports any input sample rate from 8–48 kHz while achiev-
+ing extreme throughput. By resampling inputs to 48 kHz,
+leveraging a ConvNeXt-based V ocos generator, and applying
+a lightweight Linkwitz-inspired frequency-domain refiner, the
+proposed model attains competitive spectral and perceptual
+quality relative to strong baselines. Future work includes eval-
+uation across music, noisy conditions, and exploring adaptive
+refiners for different tasks.
+6. Acknowledgments
+We would like to express our sincere gratitude to Yongyi Zang
+for his insightful feedback and for providing the necessary en-
+dorsement for the arXiv submission. Furthermore, we are grate-
+ful to the open-source community for the support and construc-
+tive discussions following the initial release of the project repos-
+itory. The feedback and engagement from early adopters were
+4514
+instrumental in refining the final manuscript and improving the
+practical clarity of the work.
+7. Use of Generative AI Disclosure
+During the preparation of this work, the authors used Gemini
+3 Flash and GPT-5-mini for LaTeX formatting and paper pol-
+ishing. After using these tools, the authors reviewed and edited
+the content as needed and take full responsibility for the final
+integrity and scientific accuracy of the manuscript.

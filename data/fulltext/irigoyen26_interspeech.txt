@@ -1,0 +1,438 @@
+Pruning as Regularization: Sensitivity-Aware One-Shot Pruning in ASR
+Julian Irigoyen1, Arthur S¨ohler2, Andreas Søeborg Kirkedal3
+1 Danske Bank, Copenhagen, Denmark
+2 Copenhagen Business School, Copenhagen, Denmark
+3 Jabra (GN Group), Copenhagen, Denmark
+jiri@danskebank.dk, arso21ab@student.cbs.dk, askirkedal@jabra.com
+Abstract
+Neural network pruning is typically framed as a post-training
+compression technique. We show that for encoder-decoder
+ASR Transformers, one-shot magnitude pruning can act as
+a strong implicit regularizer: removing redundant parameters
+improves generalization without fine-tuning. Using Whisper-
+small, we introduce a sensitivity diagnostic combining gradi-
+ent and Fisher criteria to identify pruning-fragile vs. pruning-
+resilient components. This reveals an encoder-decoder asym-
+metry: decoder FFNs are pruning-fragile, whereas decoder self-
+attention and late encoder layers contain removable redundancy.
+Without fine-tuning, pruning 50% of decoder self-attention im-
+proves WER by 2.38% absolute on LibriSpeech test-other;
+pruning the last four encoder layers at 50% yields 1.72% im-
+provement. Gains persist on Common V oice and TED-LIUM,
+demonstrating cross-corpus generalization. At 40.8% sparsity,
+sensitivity-aware compression preserves near-baseline accuracy
+where global magnitude pruning collapses.
+Index Terms: magnitude pruning, implicit regularization, sen-
+sitivity analysis, model compression, ASR, Whisper
+1. Introduction
+Over-parameterization in neural networks facilitates training
+convergence but often introduces redundancies that can im-
+pair generalization. Conventional regularizers such as dropout
+[1], weight decay [2], and batch normalization [3] mitigate
+this through stochastic masking or parametric constraints. Be-
+yond these established techniques, we demonstrate that archi-
+tectural analysis can reveal specific over-parameterized compo-
+nents where pruning acts as an implicit regularizer.
+While pruning has traditionally been studied as a compres-
+sion technique aimed at reducing computational cost [4, 5, 6],
+we provide empirical evidence thatpost-training one-shot mag-
+nitude pruningwithout fine-tuning canimproveWER for a
+strong foundation ASR model (Whisper-small), if strategically
+allocated based on component sensitivity. We identify redun-
+dant parameters using gradient and Fisher-based sensitivity di-
+agnostics, and validate them through component- and layer-
+wise pruning experiments. These diagnostics enable targeted
+pruning that can yield meaningful performance gains and im-
+prove robustness to unseen acoustic conditions. They can also
+guide aggressive one-shot pruning and surpass standard pruning
+methods that collapse at similar sparsity levels.
+Our contributions are threefold: (1)Sensitivity diagnos-
+tics framework:A replicable methodology that combines
+gradient-based and Fisher Information-based sensitivity analy-
+sis to quantify per-component and per-layer tolerance to one-
+shot magnitude pruning in ASR systems. (2)Pruning-as-
+regularization:Empirical demonstration that targeted pruning
+of identified redundant components improves ASR generaliza-
+tion across acoustically diverse corpora (LibriSpeech, Common
+V oice, TED-LIUM) without any fine-tuning. (3)Sensitivity-
+aware compression:Our diagnostics enable safer one-shot
+compression via component-specific sparsity allocation, pre-
+serving accuracy even at high sparsity.
+The proposed methodology is model-agnostic and can be
+applied to other Transformer-based ASR architectures beyond
+Whisper, as it relies on post-training gradients and sensitivity
+estimates rather than model-specific characteristics. The result-
+ing sensitivity profiles must be validated separately for each ar-
+chitecture.
+2. Related Work
+Pruning for compression.Researchers originally introduced
+pruning to reduce model size and computation cost [5, 6, 4]. Ar-
+chitectural analyses in Transformers reveal redundancy in atten-
+tion heads [7, 8, 9], with surveys [10] showing magnitude prun-
+ing matching sophisticated approaches in terms of compression-
+accuracy trade-offs. Our focus differs: we leverage magnitude
+pruning primarily as aregularizer.
+Pruning as regularization.Prior studies link pruning to
+generalization. Bartoldson et al. [11] link immediate accuracy
+drops to larger eventual improvements with continued training,
+while Jin et al. [12] attribute improvements to a combination of
+longer training and reduced model size. We extend this per-
+spective topost-trainingone-shot pruning in ASR, reporting
+improvements without any fine-tuning.
+One-shot and sensitivity-based pruning.The Lottery
+Ticket Hypothesis [13] showed sparse subnetworks in dense
+models, inspiring one-shot methods like SNIP [14], GraSP [15],
+and SynFlow [16] that identify masks at initialization via gra-
+dient/flow criteria. Second-order approaches (WoodFisher [17],
+Group Fisher [18]) drive pruning decisions by approximating
+the Hessian. Kwon et al. [19] introduced post-training Fisher-
+based pruning without retraining. We extend these approaches
+by applying bothfirst- and second-orderanalyses post-training
+to diagnose regularization opportunities.
+ASR pruning.Prior ASR pruning research primarily em-
+phasizes compression objectives. Peng et al. [20] explored
+structured pruning for efficiency, Kim et al. [21] investigated
+adaptive multilingual pruning strategies, and Gu et al. [22] de-
+veloped sparse ASR models. In contrast, we demonstrate that
+one-shot magnitude pruning canimprove accuracywithout fine-
+tuning, revealing pruning’s dual role as both a compression tool
+and a regularization technique.
+1744
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-3411
+3. Methodology
+3.1. Theoretical foundation: pruning as regularizer
+Classical regularization augments the empirical risk with ex-
+plicit penalties like∥θ∥ 2
+2 (weight decay) or∥θ∥ 1 (lasso) [2, 23].
+Magnitude pruning instead acts asimplicit regularizationby di-
+rectly removing parameters rather than penalizing them.
+For a neural network with parametersθ∈R d and target
+sparsity levelρ∈[0,1), one-shot magnitude pruning retains
+the(1−ρ)dparameters with largest absolute values:
+θM ={θ i :i∈M},|M|= (1−ρ)d,(1)
+whereM⊂{1,...,d}indexes the retained parameters. The
+pruned networkfθM operates on this sparse subset.
+This deterministic capacity constraint differs fundamentally
+from stochastic regularizers like dropout: by eliminating low-
+magnitude parameters and preserving dominant ones, pruning
+can improve generalization in over-parameterized networks.
+3.2. Sensitivity analysis framework
+We assess pruning robustness at both module and layer gran-
+ularity within both the encoder (E) and decoder (D) com-
+ponents. Our framework combines three complementary ap-
+proaches: (i) first-order (gradient-based) sensitivity, (ii) second-
+order (curvature-based) sensitivity using Fisher Information,
+and (iii) empirical component-wise pruning validation. These
+diagnostics enable component-specific sparsity allocation that
+avoids fragile components and concentrates sparsity in resilient
+regions.
+First-order sensitivity.Following SNIP [14], for module
+m∈ {E,D}with parametersθ m we compute a normalized
+gradient-based sensitivity score:
+S(m)
+g := 1
+N
+NX
+i=1
+∥∇θmL(xi,yi)∥2
+∥θm∥2
+,(2)
+whereL(x i,yi;θ)denotes the negative log-likelihood (cross-
+entropy) loss for acoustic inputx i and transcriptiony i, eval-
+uated overNsamples from the validation set. This scale-
+normalized metric captures the immediate sensitivity of the loss
+to small perturbations inθ m. Higher values indicate greater
+pruning fragility.
+Second-order sensitivity.To capture loss curvature, we
+approximate the diagonal of the Fisher Information Matrix
+(FIM). For negative log-likelihood losses (e.g., cross-entropy),
+the FIM diagonal can be estimated as [24]:
+Fjj≈ 1
+N
+NX
+i=1
+ 
+∇θjL(xi,yi;θ)
+2
+,(3)
+for parameter indexj∈I m, whereI m denotes the parame-
+ter indices belonging to modulem. The module-level Fisher
+sensitivity is then:
+S(m)
+h := 1
+|Im|
+X
+j∈Im
+Fjj.(4)
+LargeS (m)
+h values indicate high local curvature (parameters are
+tightly constrained by the loss landscape), suggesting lower tol-
+erance to pruning. Conversely, low values suggest flat regions
+where pruning may be safer.
+Empirical pruning sensitivity.Beyond these analytic di-
+agnostics, we empirically assess pruning sensitivity by mea-
+suring performance degradation (or improvement) after prun-
+ing. Components maintaining or improving performance when
+pruned reveal implicit regularization opportunities.
+We employ one-shot, unstructured magnitude pruning. For
+each architectural component, we rank all weights by absolute
+value and zero out the lowest-magnitude fraction corresponding
+to the target sparsityρ. All other model parameters remain un-
+changed. We evaluate each component independently in both
+encoder and decoder, as well as layer subsets (early layers 1–4,
+middle 5–8, late 9–12).
+For reproducibility, given target sparsityρand component
+c, we compute the thresholdτ(ρ,c)as the(100ρ)-th percentile
+of{|θj|:j∈c}, then setθ j←0for alljwhere|θ j|≤τ(ρ,c).
+3.3. Experimental setup
+Model.We use the publicly released Whisper-small check-
+point [25], a 244M-parameter encoder–decoder Transformer
+with 12 encoder and 12 decoder layers. All evaluations employ
+Whisper’s standard beam search decoding pipeline.
+Datasets and evaluation protocol.Primary evaluation
+uses LibriSpeech [26]test-clean(clean speech) andtest-other
+(challenging acoustic conditions). We treattest-otheras our
+primary reporting metric due to its greater acoustic variability.
+To assess cross-corpus generalization, we validate on 2000
+randomly sampled utterances from Common V oice v15 En-
+glish (crowd-sourced recordings with diverse accents and con-
+ditions [27]) and TED-LIUM Release 3 (conference talks with
+natural reverberation and spontaneous speech [28]).
+Metrics.We quantify ASR performance using word error
+rate (WER) and character error rate (CER). Pruning resilience is
+measured through∆WER ontest-otherrelative to our unpruned
+baseline (11.64%): negative values indicate improvement. This
+baseline reflects our normalization and scoring pipeline rather
+than an attempt to reproduce the WER reported by Radford et
+al. [25]; conclusions rely on our own paired deltas rather than
+external WER values. Note that unstructured sparsity masks are
+not exploited by standard dense inference kernels in our imple-
+mentation, hence real-time factor (RTF) remains unchanged.
+Evaluation procedure.Our sensitivity diagnostics (S g,
+Sh) are computed post-training using a calibration subset from
+LibriSpeech validation data, purely foranalysis(no parameter
+updates occur). Sparsity levels are swept in 10% increments
+from 0% to failure. Due to the number of tests and space
+constraints, we report salient sparsity points that best illustrate
+regularization gains or failure modes. Pruning configurations
+identified on LibriSpeech are then evaluatedunchanged(same
+masks, no recomputation) on Common V oice and TED-LIUM
+to demonstrate cross-dataset generalization. We never use target
+dataset labels to inform pruning decisions.
+Computing infrastructure.Experiments were performed
+on HPC nodes with NVIDIA H100 GPUs. Sensitivity diagnos-
+tics (gradient and Fisher passes) take approximately 11 minutes.
+WER evaluations across all sparsity levels take approximately
+15 minutes per component. No model training was performed.
+4. Experimental Results & Implications
+4.1. First- and second-order sensitivity diagnostics
+Figure 1 reports module-level sensitivity for encoder and de-
+coder using both first-order (gradient) and second-order (Fisher)
+criteria. Across both diagnostics, the decoder exhibits consis-
+1745
+Figure 1:First-order (gradient) and second-order (Fisher) sen-
+sitivity for encoder/decoder on LibriSpeech dev-clean and dev-
+other validation subsets. Higher values indicate greater prun-
+ing sensitivity.
+Figure 2:WER vs. sparsity when pruning the whole model vs.
+encoder/decoder in isolation on LibriSpeech test-other.
+tently higher sensitivity values, which indicate greater vulnera-
+bility to magnitude pruning. These results indicate an encoder–
+decoder asymmetry in pruning robustness that we verify empir-
+ically and discuss below.
+4.2. Architectural Encoder–Decoder Asymmetry
+Building upon the previous diagnostics, Figure 2 reports WER
+ontest-otherwhen pruning (i) the entire model (global magni-
+tude pruning), (ii) the encoder only, or (iii) the decoder only.
+Global pruning exhibits catastrophic failure between 30–40%
+sparsity, confirming that naive uniform sparsity allocation is
+unsuitable. Separate encoder/decoder pruning reveals the de-
+coder drives this collapse, yielding 30.11% WER at 40% spar-
+sity, whereas encoder-only pruning remains relatively close to
+baseline (12.49%).
+This asymmetry is counterintuitive: the encoder comprises
+36.47% of model parameters while the decoder accounts for
+63.53%. Despite having fewer parameters, the encoder toler-
+ates pruning significantly better than the more heavily parame-
+terized decoder. Notably, encoder-only pruning at 30% sparsity
+improvesover baseline (∆WER = –0.57%), providing initial ev-
+idence for selective pruning inducing beneficial regularization.
+4.3. Layer-wise granularity
+We further analyze layer-level sensitivity by dividing encoder
+and decoder into three blocks: early (layers 1–4), middle (5–8),
+and late (9–12). Table 1 shows results at 50% sparsity.
+Encoder parameter importance decreases with depth: early
+layers exhibit moderate fragility (+1.25%∆WER), likely due
+Table 1:WER (%) for layer-wise pruning at 50% sparsity.
+Layers Clean Other∆Other
+Encoder
+Early (1–4) 3.43 12.89 +1.25
+Middle (5–8) 3.62 11.84 +0.20
+Late (9–12)3.31 9.92 –1.72
+Decoder
+Early (1–4) 38.68 79.14 +67.50
+Middle (5–8) 3.37 12.63 +0.99
+Late (9–12) 6.77 20.54 +8.90
+to their role in low-level acoustic feature extraction from the
+speech signal. Late encoder layers (9–12) not only tolerate 50%
+pruning but activelyimproveperformance by 1.72% absolute
+WER (14.8% relative improvement ontest-other). Their gains
+suggest they may overfit to training-data acoustic patterns, and
+pruning acts as a corrective.
+The decoder shows a U-shaped vulnerability profile: early
+layers (conditioning on encoder context) and late layers (pro-
+ducing final token distributions) are critical, while middle lay-
+ers show tolerance. Early decoder layers are extremely fragile
+(+67.50% at 50%), suggesting essential cross-attention compu-
+tations that cannot be compressed without fine-tuning.
+We attribute this asymmetry to the functional roles of each
+component. The decoder’s autoregressive generation process
+is tightly constrained by the loss: pruning-induced perturba-
+tions compound across output tokens, with errors in early de-
+coder blocks propagating and amplifying at every subsequent
+autoregressive step. The encoder, by contrast, processes the full
+acoustic sequence in parallel through non-causal self-attention
+and residual pathways, distributing information across multi-
+ple heads, layers, and time steps. This overlap provides a nat-
+ural redundancy buffer. Consequently, upper encoder blocks
+act as incremental refinements on an already stable representa-
+tion, making them safe targets for pruning, while early decoder
+blocks shape the state reused at every generation step and can-
+not be disturbed without fine-tuning.
+4.4. Component-specific pruning
+Table 2 summarizes salient sparsity points in our component-
+level pruning sweeps, revealing asymmetries in regularization
+capacities across elements. EncoderFeed-forward networks
+(FFNs)tolerate 40% pruning with slight improvements (–
+0.52%), while decoder FFNs catastrophically fail beyond 30%
+(+40.99% at 40%). This aligns with our sensitivity diagnostics
+and confirms decoder FFNs are critical for maintaining output
+quality.Attention mechanismsexhibit the opposite pattern.
+Encoder self-attention is fragile (fails above 50%), whereas
+decoder self-attention tolerates aggressive pruning and deliv-
+ers the largest regularization gain: 50% sparsity yields –2.38%
+WER (20.4% relative improvement). This persists even at 60%
+sparsity (–1.43%). We hypothesize this occurs because pruning
+eliminates redundant or conflicting attention heads, resulting in
+more focused attention patterns. For the auxiliary components,
+modest pruning ofLayerNorms(10%, –0.63%) and thefinal
+output projection(20%, –1.10%) yields consistent gains.Bias
+parametersare highly sensitive (+7.53% at just 10%), as they
+often carry crucial offset information. Finally, front-endCon-
+volutional layersused for initial feature extraction tolerate 50%
+1746
+pruning with no WER degradation, suggesting greater impor-
+tance for training stability and convergence than as a limiting
+factor for inference performance. Pruning eliminates redundant
+local filters compensated by downstream learned pathways.
+Table 2:Component-wise pruning results. WER (%) at varying
+sparsity.
+Component Sparsity Clean Other∆Other
+Baseline 0 3.45 11.64 –
+Enc Self-Attn 50 3.91 13.06 +1.42
+60 6.06 19.72 +8.08
+Enc FFNs 40 3.46 11.04–0.52
+Dec Self-Attn 40 3.49 10.92–0.72
+50 3.29 9.26–2.38
+60 3.43 10.21–1.43
+Dec Cross-Attn 10 3.42 11.19–0.45
+Dec FFNs 30 3.95 12.16 +0.52
+40 32.24 52.63 +40.99
+LayerNorms 10 3.40 11.01–0.63
+Bias 10 4.01 19.17 +7.53
+Conv Layers 50 3.42 11.64+0.00
+Positional Emb 30 3.68 13.28 +1.64
+Token Emb 30 3.85 13.48 +1.84
+Output Proj 20 3.44 10.54–1.10
+4.5. Cross-dataset validation
+To verify that regularization gains generalize beyond Lib-
+riSpeech, we evaluate pruning configurations (identified using
+LibriSpeech sensitivity analysis) on Common V oice v15 En-
+glish and TED-LIUM 3without any mask recomputation or
+fine-tuning. This strict protocol ensures we assess true cross-
+corpus generalization. Table 3 shows that improvements persist
+across acoustically diverse conditions: accented crowd-sourced
+speech (Common V oice) and reverberant conference presenta-
+tions (TED-LIUM). Decoder self-attention at 50% sparsity con-
+sistently provides the largest WER reductions, while late en-
+coder and output projection pruning deliver smaller yet reliable
+gains. This suggests that the identified redundancies are not
+dataset-specific but reflect architectural over-parameterization
+that manifests across diverse acoustic environments.
+Table 3:Cross-dataset validation of LibriSpeech configura-
+tions.
+Dataset Component Sparsity (%) WER (%)∆WER
+TED-3Baseline 0 6.43 –
+Late enc. (9–12) 50 5.86–0.57
+Dec. self-attn 505.79 –0.64
+Output proj. 20 6.48 +0.05
+CV-15Baseline 0 20.99 –
+(EN) Late enc. (9–12) 50 19.78–1.21
+Dec. self-attn 5018.45 –2.54
+Output proj. 20 20.11–0.88
+4.6. Sensitivity-aware one-shot compression
+Beyond regularization, our sensitivity analysis enables aggres-
+sive one-shot compression by allocating sparsity to resilient
+components while preserving fragile ones. As shown in Sec-
+tion 4.2, global magnitude pruning fails catastrophically at 40%
+sparsity (61.32% WER). In contrast, component-specific allo-
+cation guided by our sensitivity diagnostics achieves the same
+overall sparsity (40.8%) while preserving accuracy.
+Table 4 compares unpruned Whisper-small against our
+sensitivity-aware compressed variant. Despite reducing pa-
+rameters from 241M to 143M and compute from 4.55 to
+2.77 GFLOPs,test-otherWER only worsens by 0.20%, while
+CER actuallyimprovesby 1.06%. This demonstrates that un-
+derstandingwhereto prune is as critical ashow muchto prune.
+Table 4:Sensitivity-aware one-shot compression on Lib-
+riSpeech test-other: Whisper-small vs. Custom Pruned.
+Whisper-small Custom Pruned
+WER (%) 11.64 11.84
+CER (%) 6.97 5.91
+Total parameters (M) 241.73 143.11
+Sparsity (%) 0 40.8
+GFLOPs 4.55 2.77
+Sparse size (MB) 922.3 545.9
+For reproducibility, we used the following sparsity thresh-
+olds: Encoder: Conv. Layers 20%, Self-Attn. 40%, FFNs 55%.
+Decoder: Self-Attn. 50%, Cross-Attn. 45%, FFNs: early 25%,
+middle 45%, late 30%, Token Emb. 25%, Output Proj. 25%.
+5. Conclusion
+We have demonstrated that one-shot magnitude pruning can act
+as an implicit regularizer for encoder-decoder ASR Transform-
+ers, improving generalization without fine-tuning and challeng-
+ing the view of pruning as purely a compression technique.
+Combining gradient-based and Fisher-based sensitivity diag-
+nostics with component-wise experiments, we identify action-
+able asymmetries in Whisper-small: pruning 50% of decoder
+self-attention improves LibriSpeechtest-otherWER by 2.38%
+absolute (20.44% relative), while pruning the late encoder block
+(layers 9–12) at 50% yields a 1.72% improvement. These gains
+transfer to Common V oice and TED-LIUM without mask re-
+computation. Beyond regularization, sensitivity-aware spar-
+sity allocation enables one-shot compression to 40.8% sparsity
+where naive global pruning collapses, providing a reproducible
+methodology for decidingwhereto prune in Transformer-based
+ASR.
+Limitations and future work.Results are currently
+scoped to Whisper-small on English, an intentional choice to
+isolate the pruning-as-regularization effect in a controlled set-
+ting. Pilot runs on other ASR architectures (Parakeet, wav2vec
+2.0, Conformer) revealed each model’s distinct component-
+level pruning sensitivities, indicating the framework’s gener-
+ality. Full empirical validation across these models is on-
+going. Extending to multilingual scenarios, where language-
+specific representations may shift component-level resilience,
+and studying the interaction between sensitivity-guided pruning
+and fine-tuning are promising directions. Encoder-only CTC
+systems such as HuBERT-based ASR lack an autoregressive
+decoder, so the encoder–decoder asymmetry finding does not
+directly transfer, while the same sensitivity framework remains
+applicable.
+1747
+6. Generative AI Use Disclosure
+Generative AI tools were used only for language polishing
+(grammar and clarity). All scientific content, experimental re-
+sults, and conclusions were produced by the authors.

@@ -1,0 +1,409 @@
+Parallel Time–Band Mixing with Learned Observation-Adding for Robust
+ASR Front-Ends
+Xingyu Shen1,3,∗∗, Runze Wang1, Wei-Ping Zhu1, Benoit Champagne2
+1 Department of Electrical and Computer Engineering, Concordia University, Canada
+2 Department of Electrical and Computer Engineering, McGill University, Canada
+3 Artificial Intelligence Research Institute, Shenzhen University of Advanced Technology, China
+xingyu.shen@mail.concordia.ca, runze.wang@mail.concordia.ca, weiping@ece.concordia.ca,
+benoit.champagne@mcgill.ca
+Abstract
+Speech enhancement is often used as a front-end for robust
+ASR, yet recurrent temporal and cross-band modules introduce
+sequential dependencies that reduce parallel efficiency. In this
+paper, we present a sequence-parallel band-split enhancement
+front-end built on a Parallel Time–Band Mixer (PTBM) block
+that eliminates within-block recurrent unrolling. PTBM inte-
+grates intra-band temporal mixing and per-frame cross-band at-
+tention within a unified parallel architecture, enabling efficient
+contextual modeling across both time and frequency dimen-
+sions. The system retains the mask-plus-residual reconstruction
+interface and introduces learned Observation-Adding (LOA)
+to suppress ASR-sensitive artifacts without development-set
+tuning. Experiments on DNS Challenge and CHiME-4 with
+frozen Whisper back-ends show that the proposed front-end
+consistently reduces word error rate relative to recurrent band-
+split baselines while requiring only 0.96 M parameters and
+0.58 GMAC/s for the front-end network.
+Index Terms: speech enhancement, robust ASR, band-split,
+mixer, temporal convolution, cross-band attention, observation-
+adding
+1. Introduction
+Robust automatic speech recognition (ASR) remains challeng-
+ing under real-world noise and reverberation. Deep learning-
+based enhancement and separation have therefore become a
+standard component in robust speech pipelines, especially when
+the recognizer is fixed or difficult to retrain [1]. A common
+practice is to place a speech enhancement (SE) model as a front-
+end to suppress interference before recognition, allowing the
+ASR back-end to remain fixed. In practice, front-end enhance-
+ment is constrained by two factors: (1) enhancement artifacts
+can degrade recognition performance even when speech quality
+appears improved; (2) the front-end must remain computation-
+ally lightweight to enable efficient inference and deployment.
+Several recent works have revisited how to make SE benefi-
+cial to ASR rather than only improving perceptual quality. Yang
+et al.proposed an attentive recurrent network (ARN) operating
+in the time domain, while Dissenet al.trained a small front-end
+adapter with ASR gradients to better match a frozen recognizer
+[2, 3]. Huet al.addressed over-suppression via dual-path style
+learning, and Luoet al.proposed pseudo-supervision to adapt
+SE models to real far-field recordings for downstream speech
+recognition [4, 5]. More broadly, sequence-parallel temporal
+convolution and attention models have shown that long-context
+**indicates the corresponding author.
+modeling can be achieved without recurrent unrolling, motivat-
+ing mixer-style designs for deployable speech front-ends [6, 7].
+These efforts have revealed that ASR is sensitive to the type
+of enhancement error. Iwamotoet al.decomposed enhance-
+ment errors and showed that artifact components can dominate
+ASR degradation; they also demonstrated that Observation-
+Adding (OA), which blends the observed and enhanced sig-
+nals, can mitigate artifacts and improve recognition perfor-
+mance [8]. Guanet al.proposed loss designs that explicitly
+reduce speech distortion and artifacts in enhancement outputs,
+while de Oliveiraet al.cautioned that over-optimizing a single
+enhancement metric can be misleading for recognition perfor-
+mance, highlighting the need for design choices aligned with
+downstream ASR objectives [9, 10].
+Band-split enhancement architectures provide a strong low-
+distortion backbone for ASR front-ends. Yuet al.introduced
+Band-split RNN (BSRNN), which alternates temporal model-
+ing and cross-band modeling to improve full-band reconstruc-
+tion quality [11]. To reduce the overhead of such front-ends,
+Zhaoet al.proposed frame resampling and progressive sub-
+band pruning on top of BSRNN to lower computation while
+maintaining robust ASR performance [12]. Despite these ad-
+vances, BSRNN-style front-ends still rely on recurrent compu-
+tation for both temporal and cross-band modeling, which intro-
+duces sequential dependencies and reduces parallel efficiency.
+Meanwhile, recent work on multichannel enhancement suggests
+that parallelizable sequence modeling with cross-domain inter-
+action is a promising direction for efficient utterance-level sys-
+tems [13].
+Motivated by the above considerations, we propose a
+sequence-parallel band-split SE front-end for robust ASR. Our
+contributions are threefold:
+• We develop the Parallel Time–Band Mixer (PTBM), which
+combines intra-band temporal convolutional mixing and per-
+frame cross-band self-attention in a unified parallel architec-
+ture, eliminating within-block sequential dependencies and
+enabling efficient sequence-parallel processing.
+• We introduce learned Observation-Adding (LOA), a
+lightweight adaptive blending mechanism that automatically
+predicts OA coefficients, thereby eliminating the need for
+development-set tuning.
+• On DNS Challenge and CHiME-4 with frozen Whisper back-
+ends, the proposed front-end consistently reduces WER rel-
+ative to recurrent band-split baselines while requiring only
+0.96 M parameters and 0.58 GMAC/s.
+7065
+Interspeech 2026
+27 September - 1 October 2026, Sydney, Australia
+10.21437/Interspeech.2026-1972
+Figure 1:End-to-end pipeline of the proposed speech-enhancement front-end for robust ASR. The system performs band-split time–
+band modeling with stacked mixer blocks, reconstructs an enhanced waveform using a mask-plus-residual interface, and applies LOA
+before a frozen Whisper recognizer.
+2. Proposed Method
+2.1. Overall Architecture
+Figure 1 shows the end-to-end pipeline. Given a noisy single-
+channel waveformx, we compute its complex STFTXand
+partition the frequency bins ofXintoKnon-overlapping sub-
+bands using a predefined (non-uniform) V4 partition [12]. For
+each sub-band, we form a real-valued feature by concatenating
+the real and imaginary parts and applying a band-wise linear
+embedding, yielding a band-split representationZ (0). We pro-
+cessZ (0) using a stack ofLParallel Time–Band Mixer (PTBM)
+blocks to obtainZ (L). Each PTBM block uses gated dilated
+depthwise temporal convolutions for intra-band temporal mix-
+ing (TCM) and per-frame self-attention over theKsub-bands
+for cross-band interaction (CBA), avoiding within-block recur-
+rent unrolling. Two prediction heads mapZ (L) to a complex
+maskMand a complex residualR, forming the mask-plus-
+residual reconstruction interface. Applying inverse STFT yields
+an enhanced waveformˆs. Finally, the LOA module predicts a
+blending weightω∈[0,1]from signal statistics and produces
+sLOA, a weighted sum of the inputxand the enhanced estimate
+ˆs, which is then fed to a fixed ASR back-end with the recognizer
+kept frozen.
+2.2. Band Split and Reconstruction
+Given the complex STFTX∈C T×F , whereTandFdenote
+the numbers of time frames and frequency bins, respectively,
+we partition the frequency axis intoKnon-overlapping sub-
+bands with predefined (non-uniform) sizes{F k}K
+k=1 satisfyingPK
+k=1Fk =F. We follow the V4 configuration in [11, 12].
+LetX k∈C T×F k denote the sub-band spectrogram extracted
+fromXby selecting the bins assigned to sub-bandk. For each
+sub-band and time frame, we concatenate the real and imagi-
+nary parts of the STFT values across theFk bins to form a real-
+valued feature and apply a band-specific linear layer to obtain a
+C-channel embedding. Stacking theKembeddings over time
+yieldsZ (0)∈R B×K×T×C , whereBis the batch size.
+We adopt the mask-plus-residual reconstruction interface
+used in BSRNN-style front-ends [12]. After processingZ (0)
+withLPTBM blocks, each sub-band feature is passed through
+band-specific fully connected layers to predict the real and
+imaginary parts of the complex mask and residual for the bins
+in that sub-band. Concatenating the predictions from all sub-
+bands yieldsM,R∈C T×F with the same shape asX. The
+enhanced spectrum is reconstructed by
+ˆS=M⊙X+R,(1)
+where⊙denotes element-wise multiplication.
+2.3. Parallel Time–Band Mixer Block (PTBM)
+The core component of the proposed front-end is the PTBM
+block, whose internal operation is detailed in Figure 2. Each
+block takesZ (ℓ−1)∈R B×K×T×C as input and outputsZ (ℓ)
+with the same shape, whereℓ∈ {1,2,···,L}indexes the
+block. PTBM contains two branches that operate in parallel on
+Z(ℓ−1): a Temporal ConvMixer (TCM) branch for intra-band
+temporal mixing and a Cross-Band Attention Mixer (CBA)
+branch for per-frame cross-band interaction. An interaction
+module combines the two branch outputs, and a block-level
+residual connection producesZ (ℓ).
+Figure 2:Structure of the PTBM block. The TCM branch and
+the CBA branch run in parallel, followed by the interaction
+module and a residual connection.
+2.3.1. Temporal ConvMixer (TCM)
+The TCM branch performs temporal-context mixing within
+each sub-band. For each sub-band independently, we apply
+layer normalization (LN) followed by a point-wise bottleneck
+projection fromCtoC b, whereC b is the bottleneck channel
+dimension. We then apply gated dilated depthwise 1D convo-
+lutions along the frame (time) indext(i.e., theTdimension
+inZ (ℓ−1)∈R B×K×T×C ), independently for each example in
+the batch and each sub-band, to capture temporal context with
+low computational overhead. A point-wise projection maps the
+features back toC, yielding the temporal-branch outputZ time.
+7066
+2.3.2. Cross-Band Attention Mixer (CBA)
+The CBA branch performs cross-band interaction at each time
+frame via multi-head self-attention [7]. For each framet, theK
+sub-band vectors are treated as a token sequence. After layer
+normalization (LN), we apply a point-wise bottleneck projec-
+tion fromCtoC b, compute multi-head self-attention across the
+Ktokens, and apply a point-wise projection back toCto obtain
+the cross-band outputZ band. Because attention is applied inde-
+pendently for each frame, this branch is applied in parallel over
+time frames.
+2.3.3. Interaction
+The interaction module in Figure 2 fuses temporal and cross-
+band cues using element-wise gating followed by fusion. Let
+Ztime andZ band denote the outputs of the temporal and cross-
+band branches, respectively. We compute the gate and the fused
+representation by
+G=σ
+ 
+Linear([Ztime;Z band])
+
+,
+Zfuse =G⊙Z time + (1−G)⊙Z band,
+Z(ℓ) =Z (ℓ−1) +Z fuse.
+(2)
+where[·;·]concatenates features along the channel dimension,
+Linear(·)is a point-wise projection shared across time frames
+and sub-bands, andσ(·)is a sigmoid.
+2.4. Learned Observation-Adding (LOA)
+LOA is implemented as a two-layer multilayer perceptron
+(MLP) with a ReLU hidden activation and a sigmoid output,
+taking summary statistics computed from the observed wave-
+formxand the enhanced waveformˆsas input. During training,
+these statistics are computed on the same fixed-length training
+segment (random crop) used as the SE input; during inference,
+they are computed on the full-length test recording.
+The input statistics consist of (i) a log-energy ratioρ E =
+log
+∥x∥2
+2+ϵ
+∥ˆs∥2
+2+ϵ and (ii) the mean and variance of a log-magnitude
+spectral difference; hereϵis a small constant for numerical sta-
+bility (e.g.,10 −8). Using the same analysis STFT as in Sec-
+tion 2.2, we compute the log-magnitude spectral difference be-
+tween the observed spectrumXand the enhanced spectrum ˆS
+from Eq. (1) as∆ t,f = log(|Xt,f|+ϵ)−log(| ˆSt,f|+ϵ). We
+then computeµ ∆ = meant,f(∆t,f)andσ 2
+∆ = vart,f(∆t,f)
+over all time–frequency bins of the current input (training seg-
+ment or test recording). We concatenate(ρ E,µ ∆,σ 2
+∆)as the
+MLP input and predict the blending weightω∈[0,1]via a sig-
+moid output. These statistics capture both energy mismatch and
+spectral mismatch and prevent degenerate solutions that only
+rescale the waveform amplitude. LOA uses the resulting scalar
+weight to synthesize the enhanced speech fed to the ASR:
+sLOA =ωx+ (1−ω) ˆs.(3)
+LOA is trained in a second stage using oracle blending
+weights. We first train the SE network with the signal-level
+objective in Section 2.5. We then freeze the SE network and,
+for each training segment, compute a signal-level oracle weight
+ω∗∈[0,1]by a 1D grid search over the interval[0,1]with a
+resolution of 0.01. The oracle weight is selected as the value
+that minimizes the same signal-level loss between the blended
+waveforms blend(ω) =ωx+ (1−ω)ˆsand the clean refer-
+ence waveforms. The LOA MLP is trained to regressω ∗ from
+the segment-level statistics using theℓ 2 loss, which keeps LOA
+lightweight and recognizer-independent. At inference time,
+LOA predicts a single blending weightωfor each test record-
+ing, with the input statistics computed over all STFT frames of
+that recording; thus, the present LOA formulation is utterance-
+level rather than fully streaming.
+2.5. Training Objective
+We minimize a fixed weighted sum of the multi-resolution
+STFT magnitude loss and the SI-SNR loss between the en-
+hanced waveformˆsand the clean references, following com-
+mon practice in speech enhancement and separation [6, 14]:
+L=L MR-STFT(ˆs,s) +λLSI-SNR(ˆs,s),(4)
+whereλis a fixed weight. We use the standard MR-STFT mag-
+nitude loss definition in [14] and the negative SI-SNR objective
+as in [6]. This objective is fully compatible with the mask-plus-
+residual reconstruction interface in Eq. (1).
+3. Experimental Setup
+3.1. Datasets
+We evaluate the proposed SE front-end on two English bench-
+marks sampled at 16 kHz: DNS Challenge [15] and CHiME-4
+[16]. Following the evaluation protocol in prior band-split front-
+end studies [12], we train an SE front-end separately for each
+benchmark and report results on the corresponding official test
+sets.
+For CHiME-4, we report results on the official single-
+channel real-recorded development and evaluation sets,
+dt05 realandet05 real(1ch track) [16]. Following the online
+simulation protocol used in [12], we generate training mixtures
+on-the-fly by mixing utterances fromtr05 simu 1chwith noise
+segments sampled from the DNS noise corpus [15]. For each
+utterance, a noise segment is randomly cropped to match the ut-
+terance duration and mixed at an SNR uniformly sampled from
+[−5,20]dB.
+For DNS Challenge, we follow the ESPnet-SE recipe [17]
+to construct a 100-hour single-channel noisy-speech training set
+from the official DNS resources [15]. Model selection is per-
+formed on the official DNS validation set, and we report results
+on the official DNS synthetic test sets under two conditions:
+without reverberation and with reverberation [12].
+3.2. Training and Decoding
+All SE front-ends are implemented in ESPnet [17] with the V4
+band partition (K=23) [11, 12] and the STFT analysis (32 ms
+Hann, 16 ms hop, 512-point FFT at 16 kHz). Unless noted, our
+model usesL=12,C=128,C b=48, TCM kernel size 3 with
+dilations{1,2,4,8}, CBA withH=4, and a two-layer LOA
+MLP (hidden 64, sigmoid output).
+For each benchmark, we train a separate SE front-end for
+54k steps using Adam [19] (lr2×10 −4,β 1=0.9,β 2=0.999)
+on 4 s random crops (batch 8) with Eq. (4) (λ=1.0). MR-
+STFT uses three resolutions (FFT/hop/win: 1024/120/600,
+2048/240/1200, 512/50/240) [14]. We select the model with
+the lowest validation loss ondt05 real(CHiME-4) or the DNS
+validation set, then freeze the SE network and train LOA for
+10k steps with Adam (lr1×10 −4) using anℓ 2 regression loss
+to oracle weights from the grid search in Section 2.4.
+We use Whisper [20] as a frozen ASR back-end
+(Tiny/Medium/Large) and decode without an external language
+model using the same decoding and text normalization for all
+7067
+Table 1:Main ASR results and front-end complexity on DNS Challenge and CHiME-4. WER (%) is reported using frozen Whisper
+back-ends (Tiny/Medium/Large). Params (M) and MACs (GMAC/s) are reported for the SE front-end only.
+Method Params MACs
+DNS Challenge CHiME-4
+Without Reverb With Reverb Dev (dt05 real) Eval (et05 real)
+(M) (GMAC/s)Tiny Medium Large Tiny Medium Large Tiny Medium Large Tiny Medium Large
+Noisy – – 15.02 8.85 4.80 39.51 21.13 10.94 21.76 5.55 4.41 35.03 8.63 6.69
+DPARN [18, 12] 0.89 1.22 – – – – – – 21.13 5.52 4.67 32.97 8.84 7.56
+BSRNN [11] 2.60 1.84 11.36 5.59 4.23 36.60 15.34 10.29 16.50 5.19 4.25 26.24 8.17 6.36
+Zhaoet al.[12] 1.55 0.62 11.76 5.72 4.40 36.87 15.61 10.90 16.72 5.31 4.35 27.12 8.30 6.40
+Ours0.96 0.5811.33 5.58 4.17 36.35 15.12 10.06 16.38 5.13 4.18 26.07 8.11 6.24
+methods [12] (lowercasing, punctuation removal, and whites-
+pace normalization). Unless noted, ASR input iss LOA; base-
+lines use OA withωtuned on the corresponding development
+set [8, 12]. We report Word Error Rate (WER) as the primary
+ASR metric, and quantify front-end efficiency using Params and
+MACs (GMAC/s) for the SE network only.
+4. Results and Discussion
+4.1. Main results on DNS Challenge and CHiME-4
+Table 1 reports WER and front-end complexity on DNS Chal-
+lenge and CHiME-4 using frozen Whisper back-ends with three
+model sizes (Tiny/Medium/Large). Across all back-ends, the
+proposed front-end achieves lower WER than the noisy input
+and both band-split baselines (BSRNN [11] and the lightweight
+front-end of Zhaoet al.[12]). The improvements are consis-
+tent on DNS (with/without reverberation) and transfer to real-
+recorded CHiME-4 sets (dt05 real and et05 real), demonstrat-
+ing robustness beyond the synthetic mixtures used for training.
+The table also highlights the accuracy–efficiency trade-off.
+Compared with BSRNN, our model achieves lower WER with
+substantially fewer parameters and lower MACs. Compared
+with Zhaoet al.[12], our model improves WER at similar or
+lower MACs.
+4.2. Ablation study
+Table 2 reports an ablation study using Whisper Large. Un-
+less otherwise noted, LOA is enabled to isolate architectural
+changes in the enhancement front-end.
+Table 2:Ablation study with Whisper Large. We analyze the
+contribution of different components and the effect of model
+depthL. “Proposed (Full)” usesL=12, TCM, CBA, and LOA.
+Configuration Params MACs DNS DNS CHiME-4
+(M) (GMAC/s) w/o Rev w/ Rev Eval
+Proposed (Full)0.96 0.58 4.17 10.06 6.24
+w/o CBA 0.70 0.49 4.62 11.15 6.88
+w/o TCM 0.76 0.35 5.08 12.37 7.14
+w/o OA/LOA (useˆs) 0.96 0.58 4.45 10.65 6.60
+w/ Fixed OA (ω= 0.2onx) 0.96 0.58 4.26 10.21 6.42
+Model Depth Scaling
+L= 60.53 0.31 4.92 11.83 6.91
+L= 90.74 0.44 4.48 10.67 6.53
+L= 151.18 0.72 4.12 9.89 6.17
+Removing cross-band interaction (w/o CBA) consistently
+degrades WER on DNS and CHiME-4, indicating that explicit
+per-frame cross-band modeling helps preserve band-to-band
+structure that is important for recognition. Removing tempo-
+ral mixing (w/o TCM) leads to a larger degradation, confirm-
+ing that strong intra-band temporal context remains crucial for
+suppressing non-stationary interference. Together, these results
+support the PTBM design that combines temporal and cross-
+band mixing within each block. Using the enhanced wave-
+form directly as ASR input (w/o OA/LOA; useˆs) yields worse
+WER than applying OA, consistent with prior observations that
+ASR is sensitive to enhancement artifacts [8]. A fixed OA
+weight improves robustness, while LOA achieves the best per-
+formance without development-set coefficient tuning, simplify-
+ing deployment across varying conditions. Increasing the num-
+ber of PTBM blocksLimproves WER with diminishing re-
+turns. Moving fromL=6toL=12yields substantial gains at
+moderate additional cost, whileL=15provides only a small
+further improvement. We therefore useL=12as the default
+configuration to balance recognition accuracy and front-end
+complexity.
+4.3. Operator-level analysis
+Table 3 compares the temporal and cross-band operators in re-
+current band-split blocks and in PTBM under the default con-
+figuration in Section 3.2. TCM and CBA are sequence-parallel
+and have lower per-invocation cost than gated recurrent unit
+(GRU)-based temporal/cross-band modules, which aligns with
+the front-end MAC reduction reported in Table 1.
+Table 3:Operator complexity of temporal and cross-band mod-
+ules under the default configuration in Section 3.2. Params and
+MACs are reported per module invocation (temporal modules
+per sub-band; cross-band modules per time frame).
+Module Params MACs Seq.-parallel
+Temporal GRU 99k 98k No
+Temporal ConvMixer (TCM) 17k 17k Yes
+Cross-band GRU 99k 2.26M No
+Cross-Band Attn. Mixer (CBA) 22k 0.55M Yes
+5. Conclusion
+We presented a band-split sequence-parallel SE front-end built
+on PTBM blocks that combines temporal convolution mixing
+and per-frame cross-band attention without recurrent unrolling.
+We also introduced LOA, an artifact-aware blending mecha-
+nism that eliminates the need for development-set coefficient
+tuning. Across DNS Challenge and CHiME-4 benchmarks with
+frozen Whisper back-ends, the proposed front-end consistently
+improves WER over recurrent band-split baselines while reduc-
+ing model size and MACs. These results indicate that paral-
+lel time–band mixing is a practical design solution for efficient
+speech-enhancement front-ends in robust ASR pipelines.
+7068
+6. Generative AI Use Disclosure
+Generative AI tools were used only for language editing and
+stylistic polishing of the manuscript text. They were not used
+to generate the scientific ideas, methods, experiments, figures,
+tables, or results. All authors take full responsibility for the
+content of this paper.
