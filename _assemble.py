@@ -49,10 +49,19 @@ def load_summary(c):
     return Path(c["summary_path"]).read_text(encoding="utf-8").strip()
 
 
-def trend_path(kind, key):
+def trend_path(kind, key, existing_file=None):
     p = root / "docs" / "trends" / kind / f"{key}.md"
-    if p.exists():
+    if p.exists() and p.stat().st_size > 80:
         return p.read_text(encoding="utf-8").strip()
+    if existing_file and existing_file.exists():
+        text = existing_file.read_text(encoding="utf-8", errors="replace")
+        start = text.find("## 技术趋势")
+        if start >= 0:
+            rest = text[start + len("## 技术趋势") :]
+            nxt = rest.find("\n## ")
+            body = rest[:nxt].strip() if nxt >= 0 else rest.strip()
+            if len(body) > 80 and "将在该组论文总结齐备后写入" not in body:
+                return body
     return "技术趋势与评论将在该组论文总结齐备后写入。"
 
 
@@ -61,6 +70,7 @@ for s in sessions:
     items = by_session.get(s["id"], [])
     if not items or ready(items):
         continue
+    out = root / s["output_path"]
     parts = [
         f"# {s['title']}",
         "",
@@ -72,12 +82,17 @@ for s in sessions:
         "",
         "## 技术趋势与评论",
         "",
-        trend_path("program", s["id"]),
+        trend_path("program", s["id"], out),
         "",
         "## 论文技术总结",
         "",
     ]
+    seen = set()
     for c in items:
+        sp = str(Path(c["summary_path"]).resolve())
+        if sp in seen:
+            continue
+        seen.add(sp)
         parts.append(load_summary(c))
         parts.append("\n")
     out = root / s["output_path"]
@@ -102,7 +117,12 @@ for doc_key, meta in topics.items():
         "## 论文技术总结",
         "",
     ]
+    seen = set()
     for c in items:
+        sp = str(Path(c["summary_path"]).resolve())
+        if sp in seen:
+            continue
+        seen.add(sp)
         parts.append(load_summary(c))
         parts.append("\n")
     out = root / "docs" / "by-topic" / f"{doc_key}.md"

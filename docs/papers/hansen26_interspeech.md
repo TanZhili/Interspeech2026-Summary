@@ -1,0 +1,22 @@
+# Balancing Speech, Language and Hearing Science with Machine Learning Modeling in the Age of AI: “Know your Problem, Data, and Solution”
+
+- 论文编号：
+- 报告人：John H. L. Hansen
+- 程序：Monday 28 September 2026 / Keynote: John H. L. Hansen
+- 技术分类键：overview
+- 材料：官方程序摘要，没有对应的会议论文 PDF
+
+## 问题
+在 AI 快速发展背景下，如何把语音、语言与听觉科学同机器学习建模对齐，避免问题表述、数据与解法三者脱节。报告面向进入该领域的研究者，强调需同时理解问题、数据与解法。
+
+## 方法
+报告以综述与导引为主：回顾早期语音建模与当代系统中常用创新的对比，并围绕「Know your problem, data, and solution」给出研究取舍建议。摘要提到其工作覆盖语音识别、说话人识别，以及噪声、压力或情绪条件下的鲁棒语音处理，并延伸到语音产生、说话人模型、电信、安全/隐私，以及辅助语音与听力技术；但未展开具体算法模块或训练细节。
+
+## 实验与结果
+官方摘要未报告具体数据集、对比实验或数值指标。
+
+## 结论
+核心主张是：问题—数据—解法必须耦合；进入该领域时先弄清这三者，再谈建模与系统创新。
+
+## 点评
+这是一篇导向性主题报告，价值在于研究范式提醒而非单点方法。材料仅有官方摘要，无法据此复现系统或核对性能数字。

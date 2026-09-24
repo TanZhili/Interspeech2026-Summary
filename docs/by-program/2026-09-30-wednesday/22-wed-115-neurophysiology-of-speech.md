@@ -2,12 +2,23 @@
 
 - 日期：Wednesday 30 September 2026
 - 时间：14:00-16:00
-- 形式：Oral（Area 1 - Oral 2）
+- 形式：Oral
 - Area：1
 - 论文数：6
-- 材料：官方程序摘要（[Program](https://interspeech2026.org/en-AU/pages/program/program)；[ISCA Archive](https://www.isca-archive.org/interspeech_2026/index.html)）。主张均锚定各摘要原文。
 
-## 技术趋势
+## 技术趋势与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
 
 本场围绕言语相关神经信号的表征、跨被试泛化与临床/认知标记展开。一条主线是想象言语、默动与发声条件之间共享表征：用立体定向 EEG 上的线性语谱重建做跨条件迁移，并与非线性网络对比，强调共享结构与刺激级可分性。
 
@@ -17,48 +28,148 @@
 
 整体上，方法从“单条件解码”转向“条件间关系 + 被试不变表示 + 可信时间估计”，服务 BCI、神经导向助听与早期认知标记等方向。
 
-## 技术内容
+## 论文技术总结
 
-### 想象/发声表征与侵入式语音重建
+# Relating the Neural Representations of Vocalized, Mimed, and Imagined Speech
 
-**Relating the Neural Representations of Vocalized, Mimed, and Imagined Speech**（论文 2836；presenter：Rupesh Chillale）  
-利用公开立体定向 EEG，为发声、默动与想象言语分别训练线性语谱重建模型并做跨条件泛化评估。摘要称单条件训练的线性解码器通常可成功迁移，暗示共享言语表征；基于排序的刺激级可分性分析显示条件内/跨条件均保留刺激特异结构。与非线性网络相比，二者均有跨条件迁移，但线性模型在刺激级可分性上更优。
+- 论文编号：2836
+- 报告人：Rupesh Chillale
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/maghsoudi26_interspeech.pdf
 
-**Exploiting EEG-based Gamma-Band Time Frequency Feature in WaveNet Decoder Framework for High-Fidelity Speech Reconstruction**（论文 377；presenter：Rantu Buragohain）  
-从侵入式 EEG 的高伽马频段（70–170 Hz）提取时频特征，经基于 WaveNet 的解码器映射到语音表示，以服务严重言语障碍者的沟通。框架用堆叠因果膨胀卷积残差块与门控激活捕获短时构音与长程时序并保持因果性；残差与跳跃连接促进特征传播与训练稳定。实验显示预测与真实语谱相关性强，并指出稳健性与被试间变异并存。
+## 问题
+发声、默读口型（mimed）与想象言语的神经表征常被分开解码；它们共享多少结构、线性解码器能否跨条件迁移，对 BCI 很关键。
 
-### 跨被试 EEG 解码与解耦表示
+## 方法
+VocalMind 单被试普通话 sEEG（110 电极，100 句×2/条件）：用时间滞后线性模型重建 NSL 皮层谱图，分别得 Gv/Gm/Gi，做条件内与跨条件测试；秩分析测刺激可分性；并复现卷积–RNN 非线性解码器对比。用打乱配对零模型检验显著性。
 
-**Subject-Invariant Dynamic Graph Modeling for Cross-Subject EEG Imagined Speech Decoding**（论文 2884；presenter：Saravanakumar Duraisamy）  
-针对未见被试上想象言语 EEG-BCI 性能显著下降，提出融合多视角动态连通先验、通道图注意力与梯度反转层对抗式被试解耦的框架。严格留一被试协议、15 名被试上，两个独立数据集平均分类准确率分别为 31.20%±3.12% 与 30.36%±4.05%，摘要据此强调结构化连通建模与被试不变训练的重要性。
+## 实验与结果
+条件内重建显著优于零模型（p≪0.001），发声最优，默读次之，想象最弱；跨条件相关仍显著，默读↔发声迁移较强。秩分析显示默读训练解码器在发声上保留刺激结构（如 AUC 模式），想象侧较弱。非线性亦有跨条件迁移，但线性在刺激级可分性上更优。
 
-**DisenEEG-Net: Disentangling EEG features via sufficient information bottleneck and adversarial learning for cross-subject auditory attention detection**（论文 1703；presenter：Tasleem Kausar）  
-为跨被试听觉注意解码（AAD）提出 DisenEEG-Net：并行 Transformer 编码潜在 EEG 表示后分解为正交的任务/被试子空间；充分信息瓶颈保留必要被试信息并抑制任务泄漏，对抗训练强化任务特征的被试不变性，解码器在解耦中保持保真。摘要称在 KUL、DTU、AVED 上跨被试设定达到当时最优表现。
+## 结论
+三种言语产生模式共享可迁移的神经–声学映射；线性解码器可解释且跨条件可用，利于无声输出的 BCI，但想象条件对齐与信息量仍受限。
 
-### 认知标记与 ERP 时间估计
+## 点评
+用跨条件迁移直接量“共享表征”，比单条件重建更有理论含量。强在线性可解释与秩分析；弱在单被试、想象对齐难，外推多被试需谨慎。
 
-**More than a feeling: Expressive style influences cortical speech tracking in subjective cognitive decline**（论文 527；presenter：Matthew King-Hang Ma）  
-SCD 使痴呆风险加倍。60 名认知正常老年被试听不同表达风格（scrambled、descriptive、dialogue、exciting）言语并采集 EEG；用声学、亚音节切分与音位配列特征建立编码模型。皮层追踪强度（CTS）上亚音节语言特征优于声学特征；SCD 更严重对应更弱的（1）亚音节而非声学特征 CTS，以及（2）韵律平坦言语（scrambled、descriptive）的 CTS，提示其作为早期认知下降潜在神经标记。
 
-**Bayesian Generalized Additive Multilevel Models for Accurate ERP Latency Estimation under Moderate Downsampling**（论文 2750；presenter：Zixia Fan）  
-单试次贝叶斯 GAMM 在高采样率下计算昂贵。被动 oddball 范式下比较全分辨率到极端降采样的 ERP 潜伏期估计：失匹配负波潜伏期在中等降采样前较稳定、起始变化小；晚期辨别负波则起始更晚、时程更短；极端分辨率下两成分仍可检出但时间精度下降。结论是可以降采样降成本，但应避免极端降采样。
+# Subject-Invariant Dynamic Graph Modeling for Cross-Subject EEG Imagined Speech Decoding
 
-## 本场要点
+- 论文编号：2884
+- 报告人：Saravanakumar Duraisamy
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/duraisamy26_interspeech.pdf
 
-- 发声/默动/想象言语共享线性可迁移的语谱重建表征，线性模型在刺激级可分性上更有优势。
-- 跨被试想象言语与 AAD 均依赖被试不变表示：动态图+对抗解耦，或信息瓶颈+正交子空间。
-- 高伽马时频 + WaveNet 式解码支撑侵入式 EEG 可听语音重建。
-- SCD 与韵律平坦条件下的亚音节 CTS 被提出为早期认知下降潜在标记。
-- ERP 潜伏期的贝叶斯 GAMM 显示中等降采样可接受，极端降采样损害时间精度。
-- 方法轴从条件内解码扩展到条件间关系、跨被试泛化与测量可信度。
+## 问题
+EEG 想象言语跨被试泛化差：Transformer 常把电极当可交换 token，忽略拓扑与动态连接，且任务特征易与被试特异性纠缠，LOSO 下常近随机。
 
-## 覆盖核对
+## 方法
+在预训练 EEG Transformer（如 EEGPT）上做电极对齐池化；按短窗估计多视图动态连接先验（空间/PLV/相干/包络相关等）注入图偏置注意力；用梯度反转层做对抗被试解缠。两套公开 15 人五词想象言语数据（BCI 2020 与 overt/covert 中的 covert），严格 LOSO。
 
-| 论文 id | 标题 |
-| --- | --- |
-| 2836 | Relating the Neural Representations of Vocalized, Mimed, and Imagined Speech |
-| 2884 | Subject-Invariant Dynamic Graph Modeling for Cross-Subject EEG Imagined Speech Decoding |
-| 377 | Exploiting EEG-based Gamma-Band Time Frequency Feature in WaveNet Decoder Framework for High-Fidelity Speech Reconstruction |
-| 527 | More than a feeling: Expressive style influences cortical speech tracking in subjective cognitive decline |
-| 2750 | Bayesian Generalized Additive Multilevel Models for Accurate ERP Latency Estimation under Moderate Downsampling |
-| 1703 | DisenEEG-Net: Disentangling EEG features via sufficient information bottleneck and adversarial learning for cross-subject auditory attention detection |
+## 实验与结果
+完整模型两数据集平均准确率 31.20%±3.12% 与 30.36%±4.05%，高于仅 Transformer 基线（约 20%）及多种常规基线；图先验与 GRL 消融均有贡献，动态先验优于静态；α≈0.5、收缩 ρ=0.2 较稳。
+
+## 结论
+结构化动态连接建模加被试不变训练可在严格 LOSO 下改善想象言语 EEG 解码，尽管绝对准确率仍有限。
+
+## 点评
+把“电极拓扑 + 动态连接 + 对抗去身份”对上 LOSO 失败模式，问题抓得准。强在双数据集一致增益；弱在五类准确率仍偏低、临床可用性远，且依赖预训练骨干质量。
+
+
+# Exploiting EEG-based Gamma-Band Time Frequency Feature in WaveNet Decoder Framework for High-Fidelity Speech Reconstruction
+
+- 论文编号：377
+- 报告人：Rantu Buragohain
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/buragohain26_interspeech.pdf
+
+## 问题
+从侵入式神经信号直接合成可听语音仍难：噪声高、时序失配，线性/短时模型难抓长程依赖，既往谱重建 PCC 常低于 0.7。
+
+## 方法
+公开荷兰语 sEEG（10 名癫痫患者朗读 100 词）：提高 gamma（70–170 Hz）包络时频特征并堆叠时间上下文，映射到 logMel；用堆叠因果膨胀卷积残差块的 WaveNet 式解码器（门控激活、残差/跳跃连接）重建，再经全连接输出。按被试训练评估 MSE、PCC、STGI。
+
+## 实验与结果
+被试间 PCC 约 0.9014–0.9510，MSE 约 0.317–0.584，STGI 约 0.49–0.54；标准差小，显示相关强但存在被试差异。作者称相对既往线性/浅层非线性有更强相关与时序一致性。
+
+## 结论
+高 gamma 特征 + WaveNet 解码可从 sEEG 获得高相关谱重建，推进神经言语合成；仍受电极位置因临床而异与被试变异限制。
+
+## 点评
+用因果膨胀卷积对准神经–语音长程对齐问题，PCC 数字亮眼。强在公开数据可复现；弱在朗读词表、电极布局非统一、未充分报告可听合成听感/ASR 指标。
+
+
+# More than a feeling: Expressive style influences cortical speech tracking in subjective cognitive decline
+
+- 论文编号：527
+- 报告人：Matthew King-Hang Ma
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/ma26b_interspeech.pdf
+
+## 问题
+主观认知下降（SCD）增加痴呆风险，但客观测验正常；自然言语感知中皮层追踪如何随 SCD 与韵律表达风格变化，尚缺清晰神经标记。
+
+## 方法
+60 名认知正常粤语老年人（MoCA 正常，SCDS 14–58）听四种表达风格（scrambled/descriptive/dialogue/exciting）；用 mTRF 分别用声学、亚音节切分、音位配列特征编码 EEG，得皮层追踪强度（CTS）。混合模型检验 SCDS×模型×风格交互。
+
+## 实验与结果
+音位配列模型 CTS 最高，切分次之，声学最低。SCD 越重，亚音节语言特征 CTS 越弱（切分显著、音位配列边缘），声学模型不显著。SCD 负向调节主要出现在韵律平坦的 scrambled/descriptive，而非 dialogue/exciting。假设中“丰富韵律更敏感”未获支持，作者解释为韵律可能提供补偿脚手架。
+
+## 结论
+平坦言语上的高级语言特征 CTS 可能作为 SCD 早期神经候选标记；声学追踪相对保留。
+
+## 点评
+把特征层级与表达风格交叉，修正“高负荷场景一定更差”的直觉。强在生态材料与统计交互清晰；弱在仅听、无理解行为金标，且刺激生态与合成风格混杂需谨慎外推。
+
+
+# Bayesian Generalized Additive Multilevel Models for Accurate ERP Latency Estimation under Moderate Downsampling
+
+- 论文编号：2750
+- 报告人：Zixia Fan
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/fan26c_interspeech.pdf
+
+## 问题
+单试次 Bayesian GAMM 估 ERP 潜伏期计算昂贵，常靠降采样；不同分量潜伏期变异不同，中等/极端降采样对 onset/offset/持续时长的影响不清。
+
+## 方法
+普通话 Tone3 吱哑声被动 oddball（20 人，标准/偏差 /ia/）：在 1000/500/250/100 Hz 上拟合 Bayesian GAMM，估 MMN 与 LDN 的 onset、offset、持续；报告收敛诊断与组件特异变化。
+
+## 实验与结果
+1000–250 Hz 收敛良好（R-hat≈1.00、无发散）；100 Hz 不稳定（发散约 5%、ESS 低）。MMN 潜伏期从全分辨率到中等分辨率基本稳定、onset 位移小；LDN 随采样率下降出现更晚 onset、更短持续。极端 100 Hz 两分量仍可检出但时间精度下降、可信区间变宽。
+
+## 结论
+适度降采样可降算力且对低变异分量（如 MMN）较安全；应避免极端降采样，尤其对高变异晚期分量（LDN）。
+
+## 点评
+把“能算”与“估得准”拆开，并按分量变异解释为何同一降采样策略效果不等。强在收敛诊断与组件对照；弱在单范式/单语种，阈值选择仍偏经验。
+
+
+# DisenEEG-Net: Disentangling EEG features via sufficient information bottleneck and adversarial learning for cross-subject auditory attention detection
+
+- 论文编号：1703
+- 报告人：Tasleem Kausar
+- 程序：Wednesday 30 September 2026 / Neurophysiology of Speech
+- 技术分类键：phonetics
+- 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/kausar26_interspeech.pdf
+
+## 问题
+EEG 听觉注意解码（AAD）跨被试泛化难：注意相关与被试特异特征纠缠，域偏移使神经导向助听难以落地。
+
+## 方法
+DisenEEG-Net：并行时空 Transformer 提表征后正交分解为任务/被试子空间；充分信息瓶颈约束被试子空间保留身份信息并抑制任务泄漏；GRL 对抗使任务特征被试不变；重建损失保保真。在 KUL、DTU、AVED 上留一被试交叉评测。
+
+## 实验与结果
+跨被试：KUL 1 s 窗口 Acc 75.9%±13.3（超 DARNet 约 5+ 点），2 s 76.1%；DTU 约 57.8–58.7%；AVED 音/视频约 54–55%。消融中去时间支路掉约 8.5 点；正交+瓶颈、对抗+重建均有贡献。分析显示 z_task 可做注意分类，z_dom  alone 不能。
+
+## 结论
+信息论瓶颈与对抗联合解缠可提升跨被试 AAD，更长时间窗有助；为神经导向助听的域泛化提供可行框架。
+
+## 点评
+把正交、充分瓶颈、对抗、重建四约束叠在一起，针对“任务–被试纠缠”较完整。强在三数据集一致超基线；弱在 KUL 方差仍大、绝对准确率在 DTU/AVED 仍接近临界实用。
+

@@ -2,12 +2,23 @@
 
 - 日期：Wednesday 30 September 2026
 - 时间：12:45-13:30
-- 形式：Lunchtime Panel
-- Area：—
-- 论文数：1（面板讨论条目）
-- 材料：官方程序摘要（[Program](https://interspeech2026.org/en-AU/pages/program/program)；[ISCA Archive](https://www.isca-archive.org/interspeech_2026/index.html)）。仅依据面板说明文字，不编造辩论结论或技术指标。
+- 形式：
+- Area：
+- 论文数：1
 
-## 技术趋势
+## 技术趋势与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
 
 本场不是论文宣讲，而是把 AI 在沟通科学（言语病理与听力学）中的定位放到公开辩论：必要性、机遇还是威胁。程序强调汇聚研究与临床实践双方，以差异化视角讨论 AI 对护理与可及性的潜力，以及伦理、专业规范与落地实施挑战。
 
@@ -17,23 +28,28 @@
 
 期待现场出现对 AI“应当与不应当”意味着什么的交锋式讨论；书面材料止于上述框架描述。
 
-## 技术内容
+## 论文技术总结
 
-### 面板：AI 与沟通科学的边界
+# AI in Communication Sciences: Necessity, Opportunity or Threat?
 
-**AI in Communication Sciences: Necessity, Opportunity or Threat?**（论文 id：程序未标注；presenter：John H. L. Hansen, Emma Power, Visar Berisha, Karen Hirschausen, Brendan Lonergan, Nicky Chong-White (Facilitator)）  
-摘要说明本场汇聚研究与临床专家，辩论 AI 在言语病理与听力学中的机遇、风险与现实：从改善护理与可及性的潜力，到伦理、专业与实施挑战；预期多元视角、尖锐提问与热烈讨论，聚焦 AI 对该领域未来“应有何意、不应有何意”。无具体算法或实验结果陈述。
+- 论文编号：
+- 报告人：John H. L. Hansen, Emma Power, Visar Berisha, Karen Hirschausen, Brendan Lonergan, Nicky Chong-White (Facilitator)
+- 程序：Wednesday 30 September 2026 / Lunchtime Panel
+- 技术分类键：overview
+- 材料：官方程序摘要，没有对应的会议论文 PDF
 
-## 本场要点
+## 问题
+AI 进入言语病理学与听力学时，既有改善护理与可及性的可能，也带来伦理、专业与落地实施层面的风险与现实约束。本场把「必要性、机遇还是威胁」交给跨研究与临床实践的专家公开辩论。
 
-- 午餐时段面板，主题明确指向 AI 在沟通科学中的定位辩论。
-- 参与者含多名专家，Nicky Chong-White 任 Facilitator。
-- 覆盖护理/可及性收益与伦理、专业、实施风险两侧。
-- 书面摘要不提供技术指标或案例细节。
-- 适合作为临床—技术交叉日的议程性讨论，而非论文方法汇总。
+## 方法
+形式上是午餐会专题讨论（panel），而非单篇方法论文。摘要称将汇聚研究与临床实践专家，就 AI 在言语病理与听力领域的机遇、风险与现实展开交锋，预期多元视角与尖锐问题。
 
-## 覆盖核对
+## 实验与结果
+非实验报告，官方摘要未提供数据或量化结论。
 
-| 论文 id | 标题 |
-| --- | --- |
-| （未标注） | AI in Communication Sciences: Necessity, Opportunity or Threat? |
+## 结论
+摘要未预设统一结论，而是强调辩论 AI 对领域未来「应该」与「不应该」意味着什么。
+
+## 点评
+材料定位是政策/实践辩论议程，不是算法贡献。阅读价值在问题框架与参与方构成，不在可复现实验。
+

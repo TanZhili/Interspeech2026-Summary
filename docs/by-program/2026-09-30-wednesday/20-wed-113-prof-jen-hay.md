@@ -3,11 +3,22 @@
 - 日期：Wednesday 30 September 2026
 - 时间：11:30-12:30
 - 形式：Keynote speaker
-- Area：—
-- 论文数：1（特邀报告条目）
-- 材料：官方程序条目（[Program](https://interspeech2026.org/en-AU/pages/program/program)；[ISCA Archive](https://www.isca-archive.org/interspeech_2026/index.html)）。程序表未提供本场技术摘要；以下不编造方法、数据或结论。
+- Area：
+- 论文数：1
 
-## 技术趋势
+## 技术趋势与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
 
 本场为 Keynote，程序列出报告题目 *What does it mean to ‘know a word’?*，但未附带摘要正文。因此无法从官方材料中归纳具体实验范式、模型或量化结果。
 
@@ -19,23 +30,28 @@
 
 程序亦未给出 presenter 字段以外的作者列表或补充说明，元数据以 session 标题 Prof Jen Hay 与报告题目为准。
 
-## 技术内容
+## 论文技术总结
 
-### 特邀报告（无摘要）
+# What does it mean to ‘know a word’?
 
-**What does it mean to ‘know a word’?**（论文 id：程序未标注；presenter：程序未标注）  
-官方程序未提供摘要。仅能确认报告主题围绕“认识一个词”的含义展开；方法、语料、实验结果等均不可从当前材料推断，故不作技术细节转述。
+- 论文编号：
+- 报告人：
+- 程序：Wednesday 30 September 2026 / Prof Jen Hay
+- 技术分类键：overview
+- 材料：官方程序摘要，没有对应的会议论文 PDF
 
-## 本场要点
+## 问题
+官方程序未提供摘要。仅能从标题与会场信息判断主题方向：「What does it mean to ‘know a word’?」，安排在「Wednesday 30 September 2026 / Prof Jen Hay」。
 
-- 形式为 Keynote speaker，时段 11:30-12:30。
-- 报告题目为 *What does it mean to ‘know a word’?*。
-- 程序表无 abstract，无法核实具体方法或结果。
-- 技术综述应等待现场内容或后续归档文本，避免 invent 主张。
-- 本批材料中 paper_id、presenter、authors 均为空。
+## 方法
+官方程序无摘要，无法概括具体方法、模型结构或训练流程；此处不作推断。
 
-## 覆盖核对
+## 实验与结果
+官方程序无摘要，未给出数据集、对比设置或定量结果。
 
-| 论文 id | 标题 |
-| --- | --- |
-| （未标注） | What does it mean to ‘know a word’? |
+## 结论
+官方程序无摘要，无法归纳作者结论与适用边界。
+
+## 点评
+该条目目前只有标题与程序位置可参考，后续若有讲义、幻灯片或正式论文，再据此补充问题设定、方法细节与可核验结果。
+

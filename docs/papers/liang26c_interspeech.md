@@ -7,16 +7,16 @@
 - 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/liang26c_interspeech.pdf
 
 ## 问题
-神经音频编解码（NAC）离散 token 能重建音色，但直接做 ASV 远差于 Fbank；究竟是说话人信息丢失，还是常规训练挖不出压缩离散表征里的线索。
+神经音频编解码（NAC）离散 token 在生成任务成功，但直接做 ASV 明显弱于 Fbank；究竟是说话人信息被压缩丢掉，还是常规 CE 训练挖不出 token 中的说话人线索。
 
 ## 方法
-诊断：同 backbone 上 Original Fbank / 解码重建 Fbank / EnCodec token（RVQ 嵌入求和）。提出 Cross-Feature Knowledge Distillation（CFKD）：Fbank 教师与 token 学生同构，用余弦对齐嵌入（L_CLS+λ L_KD）。评 ECAPA-TDNN1024 与 ResNet34；另做特征维打乱探针与多码率 VoxCeleb2 实验。
+诊断：同 ECAPA-TDNN 上对比原 Fbank、解码重构波形再提 Fbank、EnCodec token（各码本嵌入求和）。提出 CFKD：Fbank 教师与 token 学生共享骨干，用余弦嵌入对齐损失 L_KD 与分类损失加权（λ）；学生用 24 kHz EnCodec 全 32 层 RVQ。评 ECAPA-TDNN1024 与 ResNet34；另在 VoxCeleb2 上扫码率，并做特征维乱序探针。
 
 ## 实验与结果
-诊断（Vox1）：EER 2.21→重建 2.57→token 3.38，说明压缩保留多数说话人线索、难点在可学性。CFKD（λ=40）ECAPA token EER 3.38→2.25（相对约 −35%），接近教师；ResNet 7.55→4.03。错误交集显示师生有互补盲区。打乱特征维：ECAPA 对 Fbank/token 近不变；ResNet 在 Fbank 上崩溃、在 token 上本就差且打乱几乎不变，暗示 codec 潜空间缺谱邻接、1D 更合适。Vox2 全码率 24 kbps 上 EER 1.05，相对先前 codec-ASV 明显更好。
+诊断（Vox1）：原 Fbank EER 2.21 → 重构 2.57 → token 3.38，说明信息大体保留但难用。CFKD（λ=40）：ECAPA token 3.38→2.25（相对约 −35%），接近教师；ResNet 7.55→4.03。错误交集显示师生有互补“盲区”。乱序后 ECAPA 对 Fbank/token 均稳，ResNet 在 Fbank 崩溃、在 token 上基线已差且乱序几乎不变，表明 token 维缺乏谱邻接、1D 更合适。Vox2 上 24 kbps EER 1.05，相对 Codec-ASV 报告的 2.08 约 −49.5%。
 
 ## 结论
-性能落差主要是可及性而非信息缺失；嵌入级跨特征蒸馏可逼近 Fbank 教师，且 1D 骨干更适配离散 token。
+瓶颈在可及性而非信息丢失；CFKD 能逼近 Fbank 教师，且 1D 骨干更适配离散表示。
 
 ## 点评
-诊断三元组把“丢信息 vs 难学”说清，比单纯堆蒸馏损失更有解释力。强依赖高质量 Fbank 教师；最优 λ 远大于同质蒸馏常规值，超参迁移需重调。
+诊断三元组把“编解码伤说话人”与“训练范式挖不出”拆开，结论对 codec-LM 生态很有用。最优 λ=40 远高于同质蒸馏惯例，跨特征蒸馏强度需小心调；教师质量上限仍约束学生。

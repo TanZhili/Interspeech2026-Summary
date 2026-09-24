@@ -2,11 +2,23 @@
 
 - 日期：Monday 28 September 2026
 - 时间：14:30-16:30
-- 形式：Oral（Area 2）
+- 形式：Oral
+- Area：2
 - 论文数：6
-- 材料：官方程序中该场全部论文摘要（[Interspeech 2026 Program](https://interspeech2026.org/en-AU/pages/program/program)；[ISCA 列表](https://www.isca-archive.org/interspeech_2026/index.html)）。摘要写明问题、方法与主要结论；未出现的数字与细节不写入。
 
-## 技术趋势
+## 技术趋势与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
+
+与评论
 
 本场从音系演化、方言对比、感知训练、二语范畴感知、连读变调跨代差异，到自监督模型是否补偿声调语境，系统讨论汉语声调及相关方言。共同主题是：声调不止是 F0，而是多线索竞争与语境依赖的动态系统。
 
@@ -14,44 +26,148 @@
 
 感知侧，粤语母语者的非语言音高训练可改善噪声中部分声调词识别，但“拥挤”声调空间收益有限；景颇语母语者对普通话声调的范畴感知受母语声调清单制约。模型侧，纯预训练 wav2vec2.0 嵌入相似度未见语境补偿，探测分类器仅部分复现，提示某些音系规律可能需要监督目标才能抽象。
 
-## 技术内容
+## 论文技术总结
 
-### 多线索权重与方言声学
+# Beyond Pitch: Multidimensional Cue Reweighting of Two High-Falling Tones in Pingdingshan Mandarin
 
-**Beyond Pitch: Multidimensional Cue Reweighting of Two High-Falling Tones in Pingdingshan Mandarin**（论文 361；Zhuo Chen）
-考察平顶山两高降调在音高退化时其他线索是否增强。32 名不同年龄说话人语音与 EGG，分析音高、发声、时长、能量。混合效应与随机森林显示：老年主要靠音高；年轻说话人音高差收窄后，吱嘎发声与时长相对权重显著上升，体现从音高主导到多维线索系统的再加权。
+- 论文编号：361
+- 报告人：Zhuo Chen
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/chen26c_interspeech.pdf
 
-**Tonal Contrasts in Different Vowel Contexts and Different Tonal Systems**（论文 1215；Mingxing Li）
-比较两湘方言（三高度 vs 四高度）在 [ɹ̩]、[i]、[a] 语境下的对立声调。测量 F0 轨迹、均值、时长、强度及 H1*-H2*、HNR、CPP。主要发现：高调通常更短、更强、更周期；[i] 上 F0 范围更宽；XGBoost+SHAP 确认 F0 重要，且高度对立更多的系统倾向依赖更多线索。
+## 问题
+声调发生常描述为从发声到音高；反向过程——音高对比减弱后其他线索增强——在汉语声调系统中少有表观时间证据。平顶山官话 T2 与 T4 均为高降调，是否正经历多维线索再加权尚不清楚。
 
-**Acoustic Differences Between Citation and Sandhi Tones Across Three Generations in Xiamen Southern Min**（论文 2138；Peggy Pik Ki Mok）
-49 名厦门闽南语三代说话人 F0 轮廓比较。变调与本调在高度与斜率上均有差异，即便传统记同调值；青少年本调空间压缩但强化如 /44/>[22a] 与 /24/>[22b] 对立，老年多中和，中年居中，显示稳定语音学分化与年龄分级变化。
+## 方法
+32 名老中青说话人录孤立词与载句；同步声学与 EGG。提 f0、能量、时长、OQ/SQ，并用自动检测二值化 creaky voice；时段 fPCA / logistic fPCA + 线性混合模型；条件随机森林（300 树）估 T2/T4 线索相对权重。
 
-### 感知训练、跨语言范畴与模型补偿
+## 实验与结果
+两调均为高起点降调，后半段音质与能量分化。随代际：T4 的音高差异收窄，OQ、creak、时长差异扩大（年轻人 T2 creak 减少、T4 creak 增多）。随机森林：老年以 F0 主次成分主导；中年重心集中于 F0 PC1；青年 F0 仍重要但时长与 Creak PC1 权重显著上升，部分个体发声权重甚至超过音高。连读整体压缩但不打乱代际趋势。
 
-**Tone-space Distribution Modulates Transfer from Non-linguistic Pitch Training to Cantonese Tone-in-Noise Perception in Native Speakers**（论文 1274；Yi Weng）
-29 名粤语成人在 14 天内完成 8 次 126–217 Hz 纯音辨别训练。辨别阈值下降；噪声词识别改善更明显，T1/T3/T4 收益可泛化到新说话人，T2/T5/T6 收益有限，支持条件依赖的垂直迁移并提示拥挤声调空间需定向训练。
+## 结论
+平顶山两高降调正从音高主导转向音高—发声—时长协同以维持对立，为声调演化中“音高侵蚀→次线索音系化”提供表观时间证据。
 
-**Categorical Perception of Mandarin Tones in Jingpo Native Speakers**（论文 1602；Binghao Wang）
-27 名景颇与 23 名普通话母语者对 12 条合成声调连续体做辨认与辨别。景颇可区分多数普通话音位范畴，但 Tone 35 与 Tone 214 间未表现范畴感知（或与景颇缺降升调有关），且若干对立的 CP 程度显著低于普通话组，支持感知同化模型解释。
+## 点评
+生产端多线索 + 代际对比设计扎实，把“次线索补位”量化为随机森林权重，比单看 creak 有无更有说服力。样本代际人数有限、多数人亦通普通话，感知端是否同步再加权尚待补齐。
 
-**Perceptual compensation for tonal context in self-supervised speech models**（论文 2409；James Kirby）
-伪复现普通话声调语境补偿实验，比较纯预训练 wav2vec2.0 与普通话 ASR 微调模型。纯预训练嵌入相似度无补偿证据；探测分类器有部分补偿与层间范畴化提升，但孤立测试音节上未能复现人类表现，提示监督目标或对抽象部分音系规律必要。
 
-## 本场要点
+# Tonal Contrasts in Different Vowel Contexts and Different Tonal Systems
 
-- 声调演化可见“音高主导→多维线索再加权”，发声与时长可补偿收窄的 F0 对立。
-- 元音语境与声调系统高度数共同调节 F0 范围与线索依赖结构。
-- 本调与变调可在亚音位层面持续分化，并呈跨代差异。
-- 非语言音高训练向噪声粤语感知的迁移受声调空间拥挤度调节。
-- 母语声调清单塑造二语普通话范畴感知边界。
-- 纯 SSL 预训练未必涌现声调语境补偿，监督微调可能关键。
+- 论文编号：1215
+- 报告人：Mingxing Li
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/li26v_interspeech.pdf
 
-## 覆盖核对
+## 问题
+声调由 F0、时长、强度与音质等多线索实现；不同元音（含顶音）有内在音高差异，不同高度区分度的声调系统是否在线索权重上不同，尚欠系统比较。
 
-- 361 | Beyond Pitch: Multidimensional Cue Reweighting of Two High-Falling Tones in Pingdingshan Mandarin
-- 1215 | Tonal Contrasts in Different Vowel Contexts and Different Tonal Systems
-- 1274 | Tone-space Distribution Modulates Transfer from Non-linguistic Pitch Training to Cantonese Tone-in-Noise Perception in Native Speakers
-- 1602 | Categorical Perception of Mandarin Tones in Jingpo Native Speakers
-- 2138 | Acoustic Differences Between Citation and Sandhi Tones Across Three Generations in Xiamen Southern Min
-- 2409 | Perceptual compensation for tonal context in self-supervised speech models
+## 方法
+录两个湘方言：寿燕（SY，约三级高度 /43,33,11/）与梅花（MH，约四级 /55,44,33,21/）。各在顶音 [ɹ̩]、高前 [i]、低后 [a] 上做最小对比词；9/8 名男性说话人，载句内各 9 次。ProsodyPro 提 F0/时长/强度，VoiceSauce 提 H1*-H2*、HNR、CPP、SoE 等。LMM/生长曲线分析 + XGBoost+SHAP 估线索相对贡献。
+
+## 实验与结果
+高调总体更短、更强、更周期（HNR/CPP）。[i] 上调类 F0 跨度更大；音质差异也常在 [i] 更显著，顶音上部分模式例外（如 MH 的 t33 时长最短）。MH 的 t21 相对高度随元音变化大。XGBoost+SHAP：两方言均以 F0 类线索最重要；高度层次更多的 MH 更倾向动用更多线索。
+
+## 结论
+不同高度的调类呈多维差异；同一对立在不同元音上线索权重可变；高度区分更细的系统可能依赖更多线索。
+
+## 点评
+把元音语境与声调库存规模绑在一起比较，对“声调空间如何填满”有启发。仅男性、两方言各一、SHAP 解释仍依赖分类任务构造，外推到更大方言样本需谨慎。
+
+
+# Tone-space Distribution Modulates Transfer from Non-linguistic Pitch Training to Cantonese Tone-in-Noise Perception in Native Speakers
+
+- 论文编号：1274
+- 报告人：Yi Weng
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/weng26_interspeech.pdf
+
+## 问题
+声调语言者音高加工更强，但噪声下声调识别仍脆弱。非语言纯音训练能否 sharpen 已建立的本族调类心理物理表征，并远迁移到噪声中的粤语声调词识别，尤其对拥挤声调空间中的易混调？
+
+## 方法
+29 名粤语母语成人：训前/训后音高敏感度（水平与轮廓 oddity，自适应 JND）+ 词识别（清、0 dB、−5 dB 六话者 babble）；14 天内 8 次在线 ABX 纯音辨别训练（126–217 Hz）。训后另测新说话人泛化。
+
+## 实验与结果
+近迁移：水平与轮廓 oddity 的 JND 训后显著下降。远迁移：安静条件几乎无增益（T6 例外）；噪声下提升更明显。T1、T3、T4 增益可泛化到新说话人；T2、T5、T6（拥挤/重叠分布）增益有限且对新说话人更弱。−5 dB 下部分调类训后→泛化回落。
+
+## 结论
+支持条件依赖的垂直迁移：非语言音高训练 sharpen 心理物理敏锐度，但远迁移主要在信号劣化时显现，且受声调空间分布调节；拥挤调类需超越域一般音高训练的针对性训练。
+
+## 点评
+把“安静天花板 vs 噪声瓶颈”与“声调空间拥挤度”拆开检验，解释了以往安静条件下迁移失败的可能原因。无对照组、训练仅 8 次，泛化衰减提示效应可能部分依赖训练说话人熟悉度。
+
+
+# Categorical Perception of Mandarin Tones in Jingpo Native Speakers
+
+- 论文编号：1602
+- 报告人：Binghao Wang
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/wang26z_interspeech.pdf
+
+## 问题
+景颇语与普通话声调系统不同（缺降升调等），在推普背景下景颇母语者如何感知普通话四声？是否出现范畴感知（CP），以及与普通话母语者差异如何用 PAM 解释。
+
+## 方法
+27 名景颇（普通话二级乙等）与 23 名普通话母语者。基于 [ta] 四声调、PSOLA 合成 6 对对立 × 双向源音节 = 12 条 11 步连续体。识别（二选一）与 AX 辨别任务；以边界位置 x_cb、边界宽度 W_cb、辨别峰度 P_pk 判定 CP。
+
+## 实验与结果
+景颇组多数对立具清晰边界与对齐辨别峰，呈 CP；唯 T2–T3 无可靠峰、W_cb 大，呈连续感知。相对普通话组：T1–T2、多数 T1–T3 接近；T1–T4、T2–T3、T2–T4、T3–T4 上景颇 W_cb 更大和/或 P_pk 更小，范畴化程度较弱。
+
+## 结论
+景颇听者能在音位层面区分多数普通话调对，但 T2–T3 因双方声调系统（普通话轮廓相似 + 景颇缺降升调）难以形成 CP；若干对立范畴化弱于母语者，支持 PAM 式 L1 同化解释。
+
+## 点评
+连续体双向源音节设计有助于控制发声差异，结果与 PAM 预测吻合。被试普通话水平统一为二级乙等，年龄跨度大；识别选项为汉字，部分效应可能混入字形/词汇熟悉度。
+
+
+# Acoustic Differences Between Citation and Sandhi Tones Across Three Generations in Xiamen Southern Min
+
+- 论文编号：2138
+- 报告人：Peggy Pik Ki Mok
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/xie26d_interspeech.pdf
+
+## 问题
+厦门闽南语“声调变调圈”常把本调与变调记成相同调值；二者是否声学等价？三代说话人是否呈现年龄分级变化？
+
+## 方法
+49 人（青少/中年/老年）图片命名：单音节本调 + 双音节变调（整词图 / 两图组合）。母语者听辨筛正确 token；ProsodyPro 十点 F0 + 说话人内 z 归一；GAMM/LMM 比较调类、位置、年龄。
+
+## 实验与结果
+本调：青少年 /44/–/22/ 高度比与 /24/ 升幅显著小于中老年；降调 /53/–/21/ 对立在老年最大、青少年最小。变调：与同记本调在高度与斜率上系统不同；/44/>[22a] 与 /24/>[22b] 传统记为中和 /22/，但 F0 高度有别，且青少年对比最强（比值约 1.07）、老年近乎中和（约 1.02）、中年居中。
+
+## 结论
+变调与本调存在稳定次音位差异，“变调圈”掩盖了语音对立；系统呈年龄分级变化——青少年压缩本调空间却强化部分变调对立。
+
+## 点评
+用声学证据挑战结构保持变调圈的记音便利性，三代对比把“稳定差异”与“进行中变化”分开。右主导变调域中的协同发音需与真正音系分化区分；感知端是否利用 [22a]/[22b] 对立尚未检验。
+
+
+# Perceptual compensation for tonal context in self-supervised speech models
+
+- 论文编号：2409
+- 报告人：James Kirby
+- 程序：Monday 28 September 2026 / Tones
+- 技术分类键：phonetics
+- 全文：https://www.isca-archive.org/interspeech_2026/kirby26_interspeech.pdf
+
+## 问题
+人类听者会对声调协同发音做感知补偿（如高收尾前接语境使 T3–T4 边界移动）。纯自监督预训练的 wav2vec2.0 是否已编码此类音系语境，还是需要监督微调？
+
+## 方法
+伪复制 [21]：从 AISHELL-3 约 40 说话人提取双音节，重合成约 1.37 万条 14 步 T4–T3 连续体（前接 T1/T2/T4 或无语境）。比较仅普通话预训练 vs AISHELL-1 ASR 微调的 wav2vec2.0。分析：层间嵌入相对端点相似度（GAMM）+ 线性探针分类。
+
+## 实验与结果
+预训练嵌入各层均无人类式补偿；微调模型后期层有弱语境敏感，但模式与人类不完全一致（如 T2/T4 聚类、相对无语境基线不清）。探针显示层间范畴化增强、微调第 8 层较像人类，但孤立音节上强烈偏 T4、缺人类式 S 形曲线。
+
+## 结论
+至少对声调语境补偿，纯 SSL 预训练不足；监督目标可能仍必要以抽象部分音系规律。模型更像依赖宽语境条件，而非“不变范畴 + 局部偏置”。
+
+## 点评
+用声调把“SSL 是否隐式学音系”的主张放到更难、更易受多因素扰动的 F0 域，负结果有校正意义。探针训于整句嵌入、测于孤立音节存在训练—测试语境错配，解释需保留；但不削弱“预训练 alone 无补偿”的核心发现。
+

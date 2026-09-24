@@ -7,16 +7,19 @@
 - 全文：https://www.isca-archive.org/interspeech_2026/cooper26_interspeech.pdf
 
 ## 问题
-自动语音质量评估（如 VoiceMOS/UTMOS）主要基于中性合成语料（BVCC、SOMOS），难泛化到情感 TTS。情感系统除自然度外还需评情绪匹配度，但公开情感听评结果稀缺，自然情感语料（IEMOCAP、MSP-Podcast）又无合成样本。
+情感 TTS 的金标准仍是听测，但成本高、难快速迭代。现有自动质量评估（如 UTMOS）多在中性合成语料上训练，难以泛化到情感合成；情感 TTS 还需评估表达力与目标情绪匹配度，而公开听测结果与含合成样本的标注数据几乎空白。
 
 ## 方法
-构建大规模听评数据集：18,208 条五类情绪样本，来自 13 套 SOTA 合成系统与自然情感语音；262 名美式英语母语听者，每条约 4–9 分（多数 7 分）。材料覆盖 ESD 自然/合成、DailyTalk 对话合成、开源克隆与文本提示 TTS、API（Gemini）等；音量统一用 sv56。收集 QMOS、EMOS、自由感知情绪类别，以及 valence/arousal/dominance（SAM）。测试分三部分以降低疲劳。
+构建大规模听感数据集（非提出新合成模型）：
+1. 收集/生成约 18,208 条样本：自然情感语音（主要 ESD）+ 13 类合成系统（Emo-DPO、EmoSpeech、ECSS、GPT-Talker、EmoKnob、Tortoise、MaskGCT、VALL-E X、Vevo、PromptTTS++、ParaSpeechCaps、MiMo-Audio、Gemini API 等），覆盖克隆、文本提示说话人与 API 预设音色。
+2. 262 名美式英语母语听者评分：QMOS、EMOS、自由选择感知情绪类别、valence/arousal/dominance（SAM 量表）；多数样本约 7 次评分。
+3. 分析评分关系，并用 SSL-MOS、UTMOS、Emotion2Vec、Gemini LLM-as-judge 做零样本预测实验。
 
 ## 实验与结果
-组内系统排名给出 QMOS/EMOS（跨组不宜直接比）。感知目标情绪比例与 EMOS 相关达 0.92；VAD 分布相对 ESD 自然语音的 EMD 与 EMOS 强相关。零样本预测：UTMOS 对 QMOS 系统级 SRCC 总体 0.80（Angry 较弱）；Emotion2vec 概率对 EMOS 总体约 0.81–0.82；Gemini-as-judge 对 EMOS 总体 0.84。VAD 零样本相关仅中等（valence 0.45、dominance 0.42、arousal 0.58）。
+组内系统排名给出（跨组因内容/说话人不同不可直接比）：如 ESD 自然语音 QMOS/EMOS 3.71/3.90；Gemini API 4.21/3.89；Tortoise QMOS 高但 EMOS 偏低。目标情绪选择比例与 EMOS 相关约 0.92。VAD 分布相对自然语音的 EMD 与 EMOS 呈强负相关（按情绪有所不同）。零样本预测：UTMOS 对 QMOS 系统级 SRCC 总体 0.80；Gemini 对 EMOS 总体 0.84；各情绪差异大（如 Angry 更具挑战）。
 
 ## 结论
-作者给出首个面向情感合成语音的大规模多维听评数据集，并将公开以支持自动评估模型；现有 MOS/情绪/LLM 预测器有一定相关，但仍有明显改进空间且随情绪类别波动。
+作者贡献首个面向情感合成语音质量评估的大规模听感数据集，将公开以支持自动评估模型开发；现有预测器有一定相关性但仍有明显提升空间，且表现依赖情绪类别。
 
 ## 点评
-贡献在「评测基础设施」而非新合成器：把质量、类别匹配与 VAD 放在同一批合成+自然样本上，正好填补情感 TTS 客观指标训练数据的空白。分析也提醒跨系统公平比较受文本/说话人条件限制。脆弱点：听者与语种偏美式英语；部分合成条件不一致使「系统排行」只宜作资源而非严格 SOTA 榜；零样本预测结果说明 Angry 等类别仍是难点。
+这是「评测基础设施」论文：价值在于把多系统、多轴标注做成可训练资源，而不是比拼某个 TTS 分数。分析部分有用地提醒：QMOS/EMOS/VAD 可互补，中性 MOS 预测器不能直接当情感评测银弹。脆弱点：系统间条件不完全对齐（作者已强调），零样本预测不等于专用评估模型上限；公开后实际训练效果仍待社区验证。

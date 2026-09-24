@@ -7,16 +7,16 @@
 - 全文：PDF 链接 https://www.isca-archive.org/interspeech_2026/ryu26_interspeech.pdf
 
 ## 问题
-多模态情绪识别常做静态按句融合，默认模态贡献时间不变；对话中文本/语音/视觉重要性是否随时间与类别变化，缺少协议对齐的实证与归因验证。
+对话情绪跨话轮展开，但多数 MER 做静态句级融合，隐含模态重要性时间不变；是否真存在随时间、随类别变化的模态权重，缺少可控证据。
 
 ## 方法
-解耦：GPT-2、HuBERT、VideoMAE 提单模态特征后冻结主干。对比静态 MLP、时序 GRU、local/contextual/emotion-query 门控。emotion-query 用可学类别查询与上一时刻状态算类条件模态权重再边缘化为 α_t。IEMOCAP 6 类（exc→hap）5-fold LOSO，K=8；用时间遮挡与 time×modality 遮挡的 AOPC 检验忠实性。
+解耦单模态编码与融合：冻结 GPT-2 / HuBERT / VideoMAE（视频可解冻末两块），导出 768-D 特征。对比静态 MLP、无门控 GRU、local/contextual/emotion-query 门控。emotion-query 用可学习类查询与前一时刻状态产生类条件模态分布，再边缘化为时间步权重（上下文 K=8）。IEMOCAP 6 类 LOSO；用时间与时间×模态遮挡及 AOPC 做忠实归因。
 
 ## 实验与结果
-Temporal EQ-Gate：Macro-F1 0.5731、UA 0.5734；相对静态 logits MLP 平均提升约 +9（mean(F1,UA)），相对无门控 GRU +1.63；并超过同协议 Transformer/MulT/MMER，参数仅约 0.076M。hap/fru/sur 等类受益更明显。门权重均值文本最高但各模态标准差非零；AOPC 随 top-k 遮挡单调上升。McNemar/bootstrap 相对静态显著。
+静态 logits MLP Macro-F1/UA≈0.48；无门控 GRU≈0.557；emotion-query 0.5731/0.5734，优于同协议 Transformer/MulT/MMER，且参数约 0.076M。相对静态 mean(F1,UA) 约 +9.01，相对无门控 +1.63。hap/fru/sur 提升更明显。门控轨迹显示文本平均权重最高但各模态 std>0；AOPC 随 top-k 遮挡单调上升。
 
 ## 结论
-模态重要性非平稳且类条件；显式时序门控比单纯加大融合容量更有效，多模态 SER 应视为动态决策而非静态融合。
+模态重要性非平稳；时间建模是主增益，类条件动态门控再补一小步。MER 宜视为动态决策而非静态融合。未来需更自然对话语料验证。
 
 ## 点评
-用“分析优先、不大模型堆叠”把假设钉死，并用扰动 AOPC 补注意力不可信问题，证据结构清晰。IEMOCAP 偏剧本、文本干净，文本权重大部分来自标签对齐；自然对话外推仍待验证。
+目标明确是证伪“静态模态重要性”，用协议对齐消融 + 扰动归因，比堆 SOTA 更有分析价值。IEMOCAP 部分剧本、干净转写抬高文本权重；未宣称跨数据集 SOTA。
